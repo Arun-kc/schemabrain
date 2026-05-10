@@ -37,8 +37,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/arunkc/schemabrain"
-Issues = "https://github.com/arunkc/schemabrain/issues"
+Homepage = "https://github.com/Arun-kc/schemabrain"
+Issues = "https://github.com/Arun-kc/schemabrain/issues"
 
 [project.scripts]
 schemabrain = "schemabrain.cli:main"
