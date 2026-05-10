@@ -28,6 +28,17 @@ fingerprint set, treats every column as added, and re-profiles — which
 is correct recovery, just not free. Acceptable for v0; if it ever
 matters, merge both writes into a single store-level method that opens
 one transaction.
+
+**Semantic-fingerprint comparison gap:** today the diff loop compares
+ONLY structural fingerprints. The semantic fingerprint (which embeds
+`PROMPT_VERSION`) is computed and stored at write time, so the cached
+hash always reflects the prompt version at the time of writing. But a
+bare `PROMPT_VERSION` bump on an unchanged schema does NOT yet trigger
+re-work — the indexer skips structural-match tables entirely. Wiring
+the semantic-fp comparison into the diff (and the corresponding
+"re-enrich without re-profile" path) lands with the LLM enrichment
+pipeline in the next slice; today's behavior would otherwise re-profile
+from Postgres on every prompt bump, which we don't want.
 """
 
 from __future__ import annotations
@@ -41,6 +52,7 @@ from schemabrain.core.fingerprint import (
     fk_targets_for_column,
 )
 from schemabrain.core.store import SQLiteStore
+from schemabrain.enrichment.prompts import PROMPT_VERSION
 from schemabrain.profiler.base import Profiler
 
 
@@ -131,6 +143,7 @@ def index(
                     col,
                     fk_targets_for_column(table, col.name),
                     stats.get(col.name),
+                    PROMPT_VERSION,
                 ),
             )
             for col in table.columns

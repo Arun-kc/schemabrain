@@ -82,11 +82,20 @@ def column_semantic_fingerprint(
     col: Column,
     fk_targets: tuple[str, ...],
     stats: ColumnStats | None,
+    prompt_version: str,
 ) -> str:
-    """SHA-256 hex of structural identity + profiler-derived semantic signal.
+    """SHA-256 hex of structural identity + profiler signal + prompt version.
 
-    Includes the column's structural fingerprint plus its sorted sample
-    values. Raw counts (`total_rows`, `null_count`, `distinct_count`) are
+    Inputs to the hash:
+    - the column's structural fingerprint
+    - its sorted sample values
+    - its sorted shape patterns
+    - `prompt_version` — the version of the LLM prompt template that
+      will/did generate the cached description. Bumping this invalidates
+      every cached enrichment for the source, which is the discipline we
+      use whenever the prompt template changes.
+
+    Raw counts (`total_rows`, `null_count`, `distinct_count`) are
     deliberately NOT in the hash — a column whose row count grew but
     whose representative samples didn't shouldn't churn through LLM
     enrichment again.
@@ -95,6 +104,11 @@ def column_semantic_fingerprint(
     object so an "unprofiled" cache entry can never collide with a
     "profiled but empty" one.
     """
+    if not prompt_version:
+        # An empty prompt_version would silently produce a consistent
+        # but meaningless cache key. Almost always a caller bug — refuse
+        # rather than poison the cache.
+        raise ValueError("prompt_version must be a non-empty string")
     structural = column_structural_fingerprint(col, fk_targets)
     if stats is None:
         samples_payload = None
@@ -109,6 +123,7 @@ def column_semantic_fingerprint(
         "structural": structural,
         "samples": samples_payload,
         "shapes": shapes_payload,
+        "prompt_version": prompt_version,
     }
     return _hash_json(payload)
 

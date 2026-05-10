@@ -19,6 +19,12 @@ from schemabrain.core.fingerprint import (
 from schemabrain.core.models import Column, ForeignKey, Table
 from schemabrain.profiler.stats import ColumnStats
 
+# Test sentinel for the prompt-version arg. Real callers pass
+# `schemabrain.enrichment.prompts.PROMPT_VERSION`; here we keep the
+# tests independent of the live prompt module so we can vary the value
+# explicitly when testing prompt-version invalidation.
+_PV = "test_v"
+
 
 def _make_column(
     name: str = "id",
@@ -235,7 +241,7 @@ class TestColumnSemanticFingerprint:
             distinct_count=10,
             sample_values=("a", "b"),
         )
-        fp = column_semantic_fingerprint(_make_column(), (), stats)
+        fp = column_semantic_fingerprint(_make_column(), (), stats, _PV)
         assert len(fp) == 64
 
     def test_includes_structural_signal(self) -> None:
@@ -248,8 +254,8 @@ class TestColumnSemanticFingerprint:
             distinct_count=1,
             sample_values=("a",),
         )
-        a = column_semantic_fingerprint(_make_column(data_type="TEXT"), (), stats)
-        b = column_semantic_fingerprint(_make_column(data_type="BIGINT"), (), stats)
+        a = column_semantic_fingerprint(_make_column(data_type="TEXT"), (), stats, _PV)
+        b = column_semantic_fingerprint(_make_column(data_type="BIGINT"), (), stats, _PV)
         assert a != b
 
     def test_sample_change_invalidates(self) -> None:
@@ -268,8 +274,8 @@ class TestColumnSemanticFingerprint:
             distinct_count=1,
             sample_values=("b",),
         )
-        a = column_semantic_fingerprint(col, (), stats_a)
-        b = column_semantic_fingerprint(col, (), stats_b)
+        a = column_semantic_fingerprint(col, (), stats_a, _PV)
+        b = column_semantic_fingerprint(col, (), stats_b, _PV)
         assert a != b
 
     def test_sample_order_does_not_affect_fingerprint(self) -> None:
@@ -288,8 +294,8 @@ class TestColumnSemanticFingerprint:
             distinct_count=2,
             sample_values=("b", "a"),
         )
-        a = column_semantic_fingerprint(col, (), stats_a)
-        b = column_semantic_fingerprint(col, (), stats_b)
+        a = column_semantic_fingerprint(col, (), stats_a, _PV)
+        b = column_semantic_fingerprint(col, (), stats_b, _PV)
         assert a == b
 
     def test_none_stats_distinct_from_empty_stats(self) -> None:
@@ -300,8 +306,8 @@ class TestColumnSemanticFingerprint:
             null_count=0,
             distinct_count=0,
         )
-        a = column_semantic_fingerprint(col, (), None)
-        b = column_semantic_fingerprint(col, (), empty_stats)
+        a = column_semantic_fingerprint(col, (), None, _PV)
+        b = column_semantic_fingerprint(col, (), empty_stats, _PV)
         assert a != b
 
     def test_shape_change_invalidates(self) -> None:
@@ -326,8 +332,8 @@ class TestColumnSemanticFingerprint:
             sample_values=("foo", "bar"),
             shape_patterns=("aaa@aaaa.aaa",),
         )
-        assert column_semantic_fingerprint(col, (), stats_a) != column_semantic_fingerprint(
-            col, (), stats_b
+        assert column_semantic_fingerprint(col, (), stats_a, _PV) != column_semantic_fingerprint(
+            col, (), stats_b, _PV
         )
 
     def test_shape_pattern_order_does_not_affect_fingerprint(self) -> None:
@@ -348,9 +354,42 @@ class TestColumnSemanticFingerprint:
             sample_values=("a", "b", "c"),
             shape_patterns=("9", "A", "a"),
         )
-        assert column_semantic_fingerprint(col, (), stats_a) == column_semantic_fingerprint(
-            col, (), stats_b
+        assert column_semantic_fingerprint(col, (), stats_a, _PV) == column_semantic_fingerprint(
+            col, (), stats_b, _PV
         )
+
+    def test_empty_prompt_version_raises(self) -> None:
+        # An empty prompt_version would produce a consistent but
+        # meaningless cache key — refuse rather than poison the cache.
+        col = _make_column()
+        stats = ColumnStats(
+            column_name="x",
+            total_rows=1,
+            null_count=0,
+            distinct_count=1,
+            sample_values=("a",),
+        )
+        import pytest
+
+        with pytest.raises(ValueError, match="prompt_version"):
+            column_semantic_fingerprint(col, (), stats, "")
+
+    def test_prompt_version_change_invalidates(self) -> None:
+        # The whole point of baking prompt_version into the semantic
+        # fingerprint: bumping it must re-enrich every cached column,
+        # because the prompt template changed and old descriptions are
+        # now generated from a different contract.
+        col = _make_column()
+        stats = ColumnStats(
+            column_name="x",
+            total_rows=1,
+            null_count=0,
+            distinct_count=1,
+            sample_values=("a",),
+        )
+        a = column_semantic_fingerprint(col, (), stats, "v1")
+        b = column_semantic_fingerprint(col, (), stats, "v2")
+        assert a != b
 
     def test_count_changes_alone_do_not_invalidate(self) -> None:
         # Per the plan, sample values (not raw counts) drive semantic
@@ -371,8 +410,8 @@ class TestColumnSemanticFingerprint:
             distinct_count=3,
             sample_values=("a", "b", "c"),
         )
-        a = column_semantic_fingerprint(col, (), stats_small)
-        b = column_semantic_fingerprint(col, (), stats_large)
+        a = column_semantic_fingerprint(col, (), stats_small, _PV)
+        b = column_semantic_fingerprint(col, (), stats_large, _PV)
         assert a == b
 
     def test_golden_hash_locks_semantic_serialization_format(self) -> None:
@@ -397,8 +436,8 @@ class TestColumnSemanticFingerprint:
             sample_values=("a@x.io", "b@x.io"),
             shape_patterns=("a@a.aa",),
         )
-        fp = column_semantic_fingerprint(col, ("public.contacts.email",), stats)
-        assert fp == "978db757fdf115b6c9b2e4068617d2e7f3d358fe50d24192eb36290288cf959e"
+        fp = column_semantic_fingerprint(col, ("public.contacts.email",), stats, _PV)
+        assert fp == "aea5ae8a4366a0d84a504349e13ab1f6a227b35f8429bd185d3d1f9232be3859"
 
 
 class TestTableStructuralFingerprint:
