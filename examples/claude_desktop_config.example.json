@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "schemabrain": {
+      "command": "/ABSOLUTE/PATH/TO/.venv/bin/schemabrain",
+      "args": [
+        "serve",
+        "--source",
+        "postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME",
+        "--store-path",
+        "/ABSOLUTE/PATH/TO/schemabrain.db"
+      ]
+    }
+  }
+}
