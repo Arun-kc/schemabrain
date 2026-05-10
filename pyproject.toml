@@ -49,6 +49,17 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["schemabrain"]
+# Bundled data files inside the package directory. Hatchling's wheel
+# default would include these (no `exclude` shadows them today), but
+# pinning them explicitly via `artifacts` makes the contract durable —
+# a future contributor can't silently drop them by adding an `exclude`
+# pattern. Both files are referenced by `DEFAULT_GOLDEN_PATH` and the
+# eval CLI quickstart respectively; losing either breaks the
+# "pip install + 3 commands works" Preview-DoD line.
+artifacts = [
+    "schemabrain/eval/golden_sets/*.json",
+    "schemabrain/eval/fixtures/*.sql",
+]
 
 [tool.ruff]
 line-length = 100

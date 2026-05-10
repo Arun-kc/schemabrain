@@ -151,3 +151,24 @@ class TestBundledGoldenSet:
         for q in gs.questions:
             for t in q.expected_tables:
                 assert "." in t, f"unqualified table in {q.id}: {t!r}"
+
+    def test_bundled_sql_fixture_is_present_and_non_empty(self) -> None:
+        # `fixtures/ecommerce.sql` is the schema users apply to their
+        # Postgres before running the bundled eval — quickstart depends
+        # on it. Test the same `Path(__file__).parent / ...` pattern that
+        # would resolve inside an installed wheel, so accidental wheel-
+        # exclusion via a future pyproject.toml edit fails this test.
+        from schemabrain.eval import golden
+
+        fixture = Path(golden.__file__).parent / "fixtures" / "ecommerce.sql"
+        assert fixture.exists(), f"bundled SQL fixture missing at {fixture}"
+        assert fixture.parent.name == "fixtures"
+        # Sanity check the contents — DDL for at least the five tables
+        # the golden set's questions assume. Match permissively (with or
+        # without `IF NOT EXISTS`, with or without schema prefix) so a
+        # stylistic edit to the SQL doesn't false-positive this test.
+        text = fixture.read_text()
+        for table in ("users", "products", "categories", "orders", "order_items"):
+            assert (
+                f"TABLE IF NOT EXISTS public.{table}" in text or f"TABLE public.{table}" in text
+            ), f"fixture missing CREATE TABLE for {table!r}"
