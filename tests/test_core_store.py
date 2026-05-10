@@ -295,3 +295,161 @@ class TestSchemaVersion:
         conn.close()
         with pytest.raises(SchemaVersionMismatchError, match="999"):
             SQLiteStore(db_path)
+
+
+SOURCE_X = "src_x"
+SOURCE_Y = "src_y"
+
+
+class TestDeleteTable:
+    def test_removes_table_columns_and_fks(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        assert store.list_tables(source_connection_id=SOURCE_X) == [("public", "users")]
+        store.delete_table("public", "users", source_connection_id=SOURCE_X)
+        assert store.list_tables(source_connection_id=SOURCE_X) == []
+        assert store.get_table("public", "users", source_connection_id=SOURCE_X) is None
+        store.close()
+
+    def test_idempotent_on_missing_table(self) -> None:
+        store = SQLiteStore(":memory:")
+        # No write — table doesn't exist. Delete must be a silent no-op.
+        store.delete_table("public", "users", source_connection_id=SOURCE_X)
+        store.delete_table("public", "users", source_connection_id=SOURCE_X)
+        store.close()
+
+    def test_isolates_by_source_connection_id(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table(_users_table(), source_connection_id=SOURCE_Y)
+        store.delete_table("public", "users", source_connection_id=SOURCE_X)
+        # SOURCE_X gone; SOURCE_Y intact.
+        assert store.list_tables(source_connection_id=SOURCE_X) == []
+        assert store.list_tables(source_connection_id=SOURCE_Y) == [("public", "users")]
+        store.close()
+
+
+class TestColumnFingerprints:
+    def test_get_returns_empty_dict_when_none_stored(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        assert store.get_table_fingerprints("public", "users", source_connection_id=SOURCE_X) == {}
+        store.close()
+
+    def test_write_then_get_round_trip(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        fps = {
+            "id": ("struct_id", "sem_id"),
+            "email": ("struct_email", "sem_email"),
+            "created_at": ("struct_ts", "sem_ts"),
+        }
+        store.write_table_fingerprints(
+            "public", "users", source_connection_id=SOURCE_X, fingerprints=fps
+        )
+        got = store.get_table_fingerprints("public", "users", source_connection_id=SOURCE_X)
+        assert got == fps
+        store.close()
+
+    def test_write_replaces_existing(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table_fingerprints(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            fingerprints={"id": ("v1_struct", "v1_sem")},
+        )
+        store.write_table_fingerprints(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            fingerprints={"id": ("v2_struct", "v2_sem")},
+        )
+        got = store.get_table_fingerprints("public", "users", source_connection_id=SOURCE_X)
+        assert got == {"id": ("v2_struct", "v2_sem")}
+        store.close()
+
+    def test_write_isolates_by_source_connection_id(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table(_users_table(), source_connection_id=SOURCE_Y)
+        store.write_table_fingerprints(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            fingerprints={"id": ("x_struct", "x_sem")},
+        )
+        store.write_table_fingerprints(
+            "public",
+            "users",
+            source_connection_id=SOURCE_Y,
+            fingerprints={"id": ("y_struct", "y_sem")},
+        )
+        assert store.get_table_fingerprints("public", "users", source_connection_id=SOURCE_X) == {
+            "id": ("x_struct", "x_sem")
+        }
+        assert store.get_table_fingerprints("public", "users", source_connection_id=SOURCE_Y) == {
+            "id": ("y_struct", "y_sem")
+        }
+        store.close()
+
+    def test_delete_table_cascades_to_fingerprints(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table_fingerprints(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            fingerprints={"id": ("s", "m")},
+        )
+        store.delete_table("public", "users", source_connection_id=SOURCE_X)
+        # Cascade — fingerprints gone too.
+        assert store.get_table_fingerprints("public", "users", source_connection_id=SOURCE_X) == {}
+        store.close()
+
+    def test_write_table_cascades_clears_old_fingerprints(self) -> None:
+        # write_table does DELETE+INSERT on the parent row, which cascades
+        # to delete column_fingerprints. Confirm this so the indexer flow
+        # (write_table then write_table_fingerprints) is well-defined.
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table_fingerprints(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            fingerprints={"id": ("old_s", "old_m")},
+        )
+        # Re-write the same table: old fingerprints get cleared.
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        assert store.get_table_fingerprints("public", "users", source_connection_id=SOURCE_X) == {}
+        store.close()
+
+    def test_write_fingerprints_without_table_row_raises(self) -> None:
+        # FK enforces that the parent table row exists. Document this.
+        import sqlite3
+
+        store = SQLiteStore(":memory:")
+        with pytest.raises(sqlite3.IntegrityError):
+            store.write_table_fingerprints(
+                "public",
+                "missing",
+                source_connection_id=SOURCE_X,
+                fingerprints={"col": ("s", "m")},
+            )
+        store.close()
+
+    def test_empty_fingerprints_dict_is_a_clear(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table_fingerprints(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            fingerprints={"id": ("s", "m")},
+        )
+        store.write_table_fingerprints(
+            "public", "users", source_connection_id=SOURCE_X, fingerprints={}
+        )
+        assert store.get_table_fingerprints("public", "users", source_connection_id=SOURCE_X) == {}
+        store.close()

@@ -88,6 +88,21 @@ _DDL_STATEMENTS: tuple[str, ...] = (
             ON DELETE CASCADE
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS column_fingerprints (
+        schema_name TEXT NOT NULL,
+        table_name TEXT NOT NULL,
+        column_name TEXT NOT NULL,
+        source_connection_id TEXT NOT NULL,
+        structural_hash TEXT NOT NULL,
+        semantic_hash TEXT NOT NULL,
+        fingerprinted_at INTEGER NOT NULL,
+        PRIMARY KEY (schema_name, table_name, column_name, source_connection_id),
+        FOREIGN KEY (schema_name, table_name, source_connection_id)
+            REFERENCES tables (schema_name, name, source_connection_id)
+            ON DELETE CASCADE
+    )
+    """,
 )
 
 
@@ -236,6 +251,80 @@ class SQLiteStore:
             columns=columns,
             foreign_keys=foreign_keys,
         )
+
+    def delete_table(self, schema_name: str, name: str, *, source_connection_id: str) -> None:
+        """Idempotent: delete the table row (and cascade to columns, FKs,
+        and column_fingerprints). No-op if the row is absent.
+        """
+        conn = self._require_conn()
+        with conn:
+            conn.execute(
+                "DELETE FROM tables WHERE schema_name = ? AND name = ? "
+                "AND source_connection_id = ?",
+                (schema_name, name, source_connection_id),
+            )
+
+    def get_table_fingerprints(
+        self, schema_name: str, name: str, *, source_connection_id: str
+    ) -> dict[str, tuple[str, str]]:
+        """Return `{column_name: (structural_hash, semantic_hash)}` for the
+        table. Empty dict if no fingerprints have been written yet.
+        """
+        # Pure read — no `with conn:` transaction wrap. Writers need the
+        # transaction guard; readers don't, and the wrap reads as
+        # misleading ("what mutation does this need to protect?").
+        conn = self._require_conn()
+        rows = conn.execute(
+            "SELECT column_name, structural_hash, semantic_hash "
+            "FROM column_fingerprints "
+            "WHERE schema_name = ? AND table_name = ? "
+            "AND source_connection_id = ?",
+            (schema_name, name, source_connection_id),
+        ).fetchall()
+        return {row["column_name"]: (row["structural_hash"], row["semantic_hash"]) for row in rows}
+
+    def write_table_fingerprints(
+        self,
+        schema_name: str,
+        name: str,
+        *,
+        source_connection_id: str,
+        fingerprints: dict[str, tuple[str, str]],
+    ) -> None:
+        """Replace all fingerprints for the table atomically.
+
+        DELETE existing rows, INSERT every entry from `fingerprints`. The
+        caller is responsible for having written the parent `tables` row
+        first (via `write_table`); without it the FK on
+        `column_fingerprints` will reject the inserts.
+        """
+        conn = self._require_conn()
+        now = int(time.time())
+        with conn:
+            conn.execute(
+                "DELETE FROM column_fingerprints "
+                "WHERE schema_name = ? AND table_name = ? "
+                "AND source_connection_id = ?",
+                (schema_name, name, source_connection_id),
+            )
+            conn.executemany(
+                "INSERT INTO column_fingerprints "
+                "(schema_name, table_name, column_name, source_connection_id, "
+                "structural_hash, semantic_hash, fingerprinted_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        schema_name,
+                        name,
+                        col_name,
+                        source_connection_id,
+                        structural,
+                        semantic,
+                        now,
+                    )
+                    for col_name, (structural, semantic) in fingerprints.items()
+                ],
+            )
 
     def list_tables(self, *, source_connection_id: str | None = None) -> list[tuple[str, str]]:
         conn = self._require_conn()

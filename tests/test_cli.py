@@ -136,13 +136,47 @@ class TestIndexCommandValidation:
             def __exit__(self, *_args: object) -> None:
                 pass
 
-            def list_tables(self) -> list[tuple[str, str]]:
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
                 return []
+
+            def get_table(self, name: str, schema: str):
+                # Never called when list_tables returns empty, but the
+                # Protocol still requires this method.
+                raise NotImplementedError
 
             def close(self) -> None:
                 pass
 
+        from schemabrain.core.models import Table as _Table
+        from schemabrain.profiler.stats import ColumnStats as _ColumnStats
+
+        class _StubProfiler:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self) -> "_StubProfiler":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                pass
+
+            def profile_table(self, table: _Table) -> dict[str, _ColumnStats]:
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        # Sanity: the stubs must satisfy the Protocols the indexer
+        # programs against, otherwise this test could pass while the
+        # real CLI flow breaks on a Protocol divergence.
+        from schemabrain.connectors.base import DataSource
+        from schemabrain.profiler.base import Profiler
+
+        assert isinstance(_EmptySource("postgresql://fake/db"), DataSource)
+        assert isinstance(_StubProfiler("postgresql://fake/db"), Profiler)
+
         monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
+        monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
         store_path = tmp_path / "schemabrain.db"
         exit_code = main(["index", "postgresql://fake/db", "--store-path", str(store_path)])
         assert exit_code == 0

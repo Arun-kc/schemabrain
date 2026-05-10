@@ -2,9 +2,15 @@
 
 Entry point: `schemabrain <subcommand>`.
 
-Week 1 ships only `index`, which connects to a Postgres URL, walks every
-user-visible schema and table, and writes the introspected models to a
-local SQLite store.
+`index` connects to a Postgres URL, introspects every user-visible
+schema and table, profiles columns whose schema changed since the last
+run, and writes both the structural metadata and content-addressable
+fingerprints to a local SQLite store.
+
+Re-running `index` against an unchanged source is a no-op — the
+fingerprint cache lets us skip introspection-result writes AND skip the
+profiler entirely. This is what keeps the eventual Week 3 LLM
+enrichment cost bounded.
 """
 
 from __future__ import annotations
@@ -17,6 +23,8 @@ from urllib.parse import urlparse
 
 from schemabrain.connectors.postgres import PostgresDataSource
 from schemabrain.core.store import SQLiteStore
+from schemabrain.indexer import index
+from schemabrain.profiler.postgres import PostgresProfiler
 
 _DEFAULT_STORE_PATH = "./schemabrain.db"
 
@@ -71,18 +79,23 @@ def _cmd_index(url: str, store_path: str) -> int:
 
     source_id = _make_source_id(url)
     started = time.monotonic()
-    count = 0
-    with PostgresDataSource(url) as source, SQLiteStore(store_path) as store:
-        for schema_name, table_name in source.list_tables():
-            table = source.get_table(table_name, schema=schema_name)
-            store.write_table(table, source_connection_id=source_id)
-            count += 1
+    with (
+        PostgresDataSource(url) as source,
+        PostgresProfiler(url) as profiler,
+        SQLiteStore(store_path) as store,
+    ):
+        result = index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=source_id,
+        )
     elapsed = time.monotonic() - started
     print(
-        f"Indexed {count} table(s) from {canonical} into {store_path} in {elapsed:.1f}s",
+        f"{result.summary()} | source={canonical} store={store_path} in {elapsed:.1f}s",
         file=sys.stderr,
     )
-    if count == 0:
+    if result.tables_seen == 0:
         print(
             "warning: no tables indexed (empty database, or all tables are in "
             "system schemas that were skipped)",
