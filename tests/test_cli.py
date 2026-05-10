@@ -514,3 +514,224 @@ class TestIndexEndToEnd:
         captured = capsys.readouterr()
         assert "Indexed" in captured.err
         assert "table" in captured.err
+
+
+class TestEvalSubcommandValidation:
+    """The `eval` subcommand's argparse + early validation paths."""
+
+    def test_eval_requires_source(self):
+        with pytest.raises(SystemExit) as exc:
+            main(["eval"])
+        assert exc.value.code != 0
+
+    def test_eval_malformed_source_returns_exit_2(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "eval",
+                "--source",
+                "not-a-url",
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        assert exit_code == 2
+        assert "error" in capsys.readouterr().err.lower()
+
+    def test_eval_missing_golden_file_returns_exit_2(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "eval",
+                "--source",
+                "postgresql://fake/db",
+                "--store-path",
+                str(store_path),
+                "--golden",
+                str(tmp_path / "missing.json"),
+            ]
+        )
+        assert exit_code == 2
+        assert "not found" in capsys.readouterr().err.lower()
+
+    def test_eval_invalid_golden_file_returns_exit_2(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        bad = tmp_path / "bad.json"
+        bad.write_text("{not valid json")
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "eval",
+                "--source",
+                "postgresql://fake/db",
+                "--store-path",
+                str(store_path),
+                "--golden",
+                str(bad),
+            ]
+        )
+        assert exit_code == 2
+        assert "invalid" in capsys.readouterr().err.lower()
+
+    def test_eval_default_limit_is_ten(self):
+        from schemabrain.cli import _DEFAULT_EVAL_LIMIT
+
+        assert _DEFAULT_EVAL_LIMIT == 10
+
+
+class TestEvalSubcommandIntegration:
+    """End-to-end through the eval CLI against a real (empty + populated)
+    SQLite store, no Postgres required."""
+
+    def _seed_store(self, store_path: Path, source_id: str) -> None:
+        from schemabrain.core.description import ColumnDescription
+        from schemabrain.core.models import Column, Table
+        from schemabrain.core.store import SQLiteStore
+
+        users = Table(
+            name="users",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="users",
+                    schema_name="public",
+                    data_type="BIGINT",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+                Column(
+                    name="email",
+                    table_name="users",
+                    schema_name="public",
+                    data_type="TEXT",
+                    nullable=False,
+                    ordinal_position=2,
+                ),
+            ),
+        )
+        with SQLiteStore(store_path) as store:
+            store.write_table(users, source_connection_id=source_id)
+            store.write_table_descriptions(
+                "public",
+                "users",
+                source_connection_id=source_id,
+                descriptions={
+                    "id": ColumnDescription(
+                        text="primary user identifier",
+                        model="m",
+                        prompt_version="v",
+                        input_tokens=1,
+                        cached_input_tokens=0,
+                        output_tokens=1,
+                        cost_usd=0.0,
+                    ),
+                    "email": ColumnDescription(
+                        text="user email address for contact",
+                        model="m",
+                        prompt_version="v",
+                        input_tokens=1,
+                        cached_input_tokens=0,
+                        output_tokens=1,
+                        cost_usd=0.0,
+                    ),
+                },
+            )
+
+    def test_runs_against_seeded_store_and_prints_recall(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        from schemabrain.cli import _make_source_id
+
+        source_url = "postgresql://fake-host/eval-test"
+        store_path = tmp_path / "store.db"
+        self._seed_store(store_path, _make_source_id(source_url))
+
+        # Tiny one-question golden set — `users` table only.
+        golden_path = tmp_path / "g.json"
+        golden_path.write_text(
+            '{"version":"1","schema_description":"t",'
+            '"questions":[{"id":"q1","question":"Where do user emails live?",'
+            '"expected_tables":["public.users"]}]}'
+        )
+
+        exit_code = main(
+            [
+                "eval",
+                "--source",
+                source_url,
+                "--store-path",
+                str(store_path),
+                "--golden",
+                str(golden_path),
+            ]
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "recall@1" in out
+        assert "recall@3" in out
+        assert "recall@10" in out
+        # `users` is the only table in the store and matches "user emails"
+        # via both column name and description text → top-1 hit.
+        assert "1.000" in out
+
+    def test_runs_against_empty_store(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+        # Eval against a store with no tables for the given source must
+        # still print a clean report (all questions miss).
+        store_path = tmp_path / "empty.db"
+        from schemabrain.core.store import SQLiteStore
+
+        SQLiteStore(store_path).close()  # initializes schema, leaves it empty
+
+        golden_path = tmp_path / "g.json"
+        golden_path.write_text(
+            '{"version":"1","schema_description":"t",'
+            '"questions":[{"id":"q1","question":"x?",'
+            '"expected_tables":["public.users"]}]}'
+        )
+        exit_code = main(
+            [
+                "eval",
+                "--source",
+                "postgresql://fake-host/empty",
+                "--store-path",
+                str(store_path),
+                "--golden",
+                str(golden_path),
+            ]
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "recall@1=0.000" in out
+        assert "MISS" in out
+
+    def test_uses_bundled_default_golden_when_omitted(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        # Omitting --golden falls back to the bundled e-commerce golden set.
+        # Against an empty store, every question misses but the run still
+        # succeeds and emits a 10-question report.
+        store_path = tmp_path / "empty.db"
+        from schemabrain.core.store import SQLiteStore
+
+        SQLiteStore(store_path).close()
+
+        exit_code = main(
+            [
+                "eval",
+                "--source",
+                "postgresql://fake-host/default-golden-test",
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        # Bundled set has 10 questions per the file in this slice.
+        assert "10 questions" in out

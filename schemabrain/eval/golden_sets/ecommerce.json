@@ -1,0 +1,56 @@
+{
+  "version": "1",
+  "schema_description": "ONE example domain — synthetic e-commerce schema (six tables under `public`: users, products, categories, product_categories, orders, order_items) defined in `schemabrain/eval/fixtures/ecommerce.sql`. E-commerce was chosen because its tables are universally legible, NOT because Schema Brain is e-commerce-specific. Schema Brain is a generic semantic layer for ANY production database; author your own `golden_sets/<your-schema>.json` for your real schema and pass it via `schemabrain eval --golden`.",
+  "questions": [
+    {
+      "id": "q001",
+      "question": "Where do we store user contact information like email addresses?",
+      "expected_tables": ["public.users"]
+    },
+    {
+      "id": "q002",
+      "question": "Which table tracks individual orders placed by customers?",
+      "expected_tables": ["public.orders"]
+    },
+    {
+      "id": "q003",
+      "question": "How can I find the line items inside a single customer order?",
+      "expected_tables": ["public.order_items", "public.orders"]
+    },
+    {
+      "id": "q004",
+      "question": "Where do we keep product prices and SKU codes?",
+      "expected_tables": ["public.products"]
+    },
+    {
+      "id": "q005",
+      "question": "Where is the parent-child hierarchy of product categories modeled?",
+      "expected_tables": ["public.categories"]
+    },
+    {
+      "id": "q006",
+      "question": "Which table maps each product to one or more categories?",
+      "expected_tables": ["public.product_categories"]
+    },
+    {
+      "id": "q007",
+      "question": "How do I look up the registration date of a user account?",
+      "expected_tables": ["public.users"]
+    },
+    {
+      "id": "q008",
+      "question": "Where is the lifecycle status of an order recorded?",
+      "expected_tables": ["public.orders"]
+    },
+    {
+      "id": "q009",
+      "question": "Where do I find how many units of a product were purchased in an order?",
+      "expected_tables": ["public.order_items"]
+    },
+    {
+      "id": "q010",
+      "question": "How can I compute total revenue from a given customer over time?",
+      "expected_tables": ["public.orders", "public.users"]
+    }
+  ]
+}

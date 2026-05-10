@@ -16,6 +16,15 @@ Cost discipline: `--max-cost N` (default $10) hard-caps LLM spend per
 run. Exceeding the cap aborts cleanly before the next call.
 ANTHROPIC_API_KEY must be set in the environment unless `--no-enrich`
 is passed.
+
+`eval` scores a `Retriever` against a hand-curated `GoldenSet` and
+prints recall@1/@3/@10. Today the only retriever is `KeywordRetriever`
+(a placeholder until embedding-based retrieval ships). The harness is
+schema-agnostic: pass `--golden /path/to/your-schema.json` for a real
+schema. The bundled default is just one starter example
+(`schemabrain/eval/golden_sets/ecommerce.json`, paired with the
+synthetic fixture in `schemabrain/eval/fixtures/ecommerce.sql`) so the
+CLI works out of the box.
 """
 
 from __future__ import annotations
@@ -31,11 +40,15 @@ from schemabrain.connectors.postgres import PostgresDataSource
 from schemabrain.core.store import SQLiteStore
 from schemabrain.enrichment.anthropic_client import AnthropicHaikuClient
 from schemabrain.enrichment.pipeline import CostCapExceeded, EnrichmentPipeline
+from schemabrain.eval.golden import DEFAULT_GOLDEN_PATH, load_golden
+from schemabrain.eval.retriever import KeywordRetriever
+from schemabrain.eval.runner import format_report, run_eval
 from schemabrain.indexer import index
 from schemabrain.profiler.postgres import PostgresProfiler
 
 _DEFAULT_STORE_PATH = "./schemabrain.db"
 _DEFAULT_MAX_COST_USD = 10.0
+_DEFAULT_EVAL_LIMIT = 10
 
 # 16 hex chars = 64 bits of SHA-256. For a single user's plausible set of
 # databases (<1000), birthday-collision probability is ~10^-14. If we ever
@@ -56,12 +69,23 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns process exit code."""
     parser = _build_parser()
     args = parser.parse_args(argv)
-    return _cmd_index(
-        args.url,
-        args.store_path,
-        no_enrich=args.no_enrich,
-        max_cost_usd=args.max_cost,
-    )
+    if args.command == "index":
+        return _cmd_index(
+            args.url,
+            args.store_path,
+            no_enrich=args.no_enrich,
+            max_cost_usd=args.max_cost,
+        )
+    if args.command == "eval":
+        return _cmd_eval(
+            golden_path=args.golden,
+            store_path=args.store_path,
+            source_url=args.source,
+            limit=args.limit,
+        )
+    # argparse `required=True` on subparsers prevents reaching here, but
+    # leaving an explicit branch is cheaper than a guarded assertion.
+    parser.error(f"unknown command: {args.command}")  # pragma: no cover
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -93,6 +117,35 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_DEFAULT_MAX_COST_USD,
         help=f"Hard cap on USD spend per run (default: ${_DEFAULT_MAX_COST_USD:.2f}). "
         "Aborts cleanly when reached; no effect with --no-enrich.",
+    )
+
+    p_eval = sub.add_parser(
+        "eval",
+        help="Score a Retriever against the bundled golden set; print recall@1/@3/@10",
+    )
+    p_eval.add_argument(
+        "--source",
+        required=True,
+        help="The same source URL passed to `index` — used to resolve which "
+        "tables in the local store to score against.",
+    )
+    p_eval.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_eval.add_argument(
+        "--golden",
+        default=str(DEFAULT_GOLDEN_PATH),
+        help="Path to a golden-set JSON file. The default is one starter "
+        "example (synthetic e-commerce); for your own schema, author a "
+        f"matching JSON and pass it here. (default: {DEFAULT_GOLDEN_PATH})",
+    )
+    p_eval.add_argument(
+        "--limit",
+        type=int,
+        default=_DEFAULT_EVAL_LIMIT,
+        help=f"Top-K cap passed to the retriever (default: {_DEFAULT_EVAL_LIMIT})",
     )
     return parser
 
@@ -154,6 +207,36 @@ def _cmd_index(
             "system schemas that were skipped)",
             file=sys.stderr,
         )
+    return 0
+
+
+def _cmd_eval(
+    *,
+    golden_path: str,
+    store_path: str,
+    source_url: str,
+    limit: int,
+) -> int:
+    try:
+        source_id = _make_source_id(source_url)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    try:
+        golden = load_golden(golden_path)
+    except FileNotFoundError:
+        print(f"error: golden file not found: {golden_path}", file=sys.stderr)
+        return 2
+    except ValueError as e:
+        print(f"error: invalid golden file: {e}", file=sys.stderr)
+        return 2
+
+    with SQLiteStore(store_path) as store:
+        retriever = KeywordRetriever(store=store, source_connection_id=source_id)
+        report = run_eval(golden=golden, retriever=retriever, limit=limit)
+
+    print(format_report(report))
     return 0
 
 
