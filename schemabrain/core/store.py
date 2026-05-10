@@ -525,6 +525,39 @@ class SQLiteStore:
             )
         return results
 
+    def list_all_foreign_keys(
+        self, *, source_connection_id: str
+    ) -> list[tuple[str, str, ForeignKey]]:
+        """Return every FK in the source as `(source_schema, source_table, fk)`.
+
+        Bulk reader for graph-building consumers (`suggest_joins`) that
+        would otherwise pay N round-trips iterating `list_tables` +
+        `get_table`. Order is deterministic: `(source_schema,
+        source_table, fk_name)` ascending so BFS tiebreaks reproduce.
+        """
+        conn = self._require_conn()
+        rows = conn.execute(
+            "SELECT source_schema, source_table, name, source_columns, "
+            "target_schema, target_table, target_columns "
+            "FROM foreign_keys WHERE source_connection_id = ? "
+            "ORDER BY source_schema, source_table, name",
+            (source_connection_id,),
+        ).fetchall()
+        return [
+            (
+                row["source_schema"],
+                row["source_table"],
+                ForeignKey(
+                    name=row["name"],
+                    source_columns=tuple(json.loads(row["source_columns"])),
+                    target_schema=row["target_schema"],
+                    target_table=row["target_table"],
+                    target_columns=tuple(json.loads(row["target_columns"])),
+                ),
+            )
+            for row in rows
+        ]
+
     def get_table_embeddings(
         self, schema_name: str, name: str, *, source_connection_id: str
     ) -> dict[str, ColumnEmbedding]:

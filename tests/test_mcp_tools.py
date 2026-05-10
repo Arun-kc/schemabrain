@@ -19,12 +19,16 @@ from schemabrain.mcp.tools import (
     ColumnDetail,
     ColumnNotFoundError,
     IncomingForeignKeyInfo,
+    JoinEdge,
+    JoinPath,
+    SuggestJoinsResult,
     TableDescription,
     TableHit,
     TableNotFoundError,
     describe_column_impl,
     describe_table_impl,
     find_relevant_tables_impl,
+    suggest_joins_impl,
 )
 
 
@@ -811,3 +815,550 @@ class TestDescribeColumnImpl:
         )
         assert result.description == ""
         store.close()
+
+
+# ---------------------------------------------------------------------
+# suggest_joins_impl
+# ---------------------------------------------------------------------
+
+
+def _bare_table(name: str, cols: tuple[str, ...], fks: tuple[ForeignKey, ...] = ()) -> Table:
+    """Build a tiny Table with one PK column + extra FK columns. Just
+    enough structure for FK-graph tests; types and stats don't matter.
+    """
+    columns = tuple(
+        _column(
+            c,
+            table_name=name,
+            data_type="BIGINT",
+            nullable=False,
+            ordinal_position=i + 1,
+            is_primary_key=(c == "id"),
+        )
+        for i, c in enumerate(cols)
+    )
+    return Table(name=name, schema_name="public", columns=columns, foreign_keys=fks)
+
+
+@pytest.fixture
+def fk_graph_store(tmp_path: Path) -> SQLiteStore:
+    """A small FK graph for suggest_joins tests:
+
+        users  ←(user_id)— orders —(product_id)→ products
+                                       ↑
+                            order_items —(order_id)→ orders
+                            order_items —(product_id)→ products
+
+        events (isolated, no FKs)
+
+    Direct edges:
+      orders → users
+      orders → products
+      order_items → orders
+      order_items → products
+
+    Multi-hop:
+      users ↔ products via orders (2 hops)
+      users ↔ order_items via orders (2 hops)
+    """
+    store = SQLiteStore(tmp_path / "fkgraph.db")
+    sid = "src1"
+
+    users = _bare_table("users", ("id", "email"))
+    products = _bare_table("products", ("id", "sku"))
+    orders = _bare_table(
+        "orders",
+        ("id", "user_id", "product_id"),
+        fks=(
+            ForeignKey(
+                name="orders_user_id_fkey",
+                source_columns=("user_id",),
+                target_schema="public",
+                target_table="users",
+                target_columns=("id",),
+            ),
+            ForeignKey(
+                name="orders_product_id_fkey",
+                source_columns=("product_id",),
+                target_schema="public",
+                target_table="products",
+                target_columns=("id",),
+            ),
+        ),
+    )
+    order_items = _bare_table(
+        "order_items",
+        ("id", "order_id", "product_id"),
+        fks=(
+            ForeignKey(
+                name="order_items_order_id_fkey",
+                source_columns=("order_id",),
+                target_schema="public",
+                target_table="orders",
+                target_columns=("id",),
+            ),
+            ForeignKey(
+                name="order_items_product_id_fkey",
+                source_columns=("product_id",),
+                target_schema="public",
+                target_table="products",
+                target_columns=("id",),
+            ),
+        ),
+    )
+    events = _bare_table("events", ("id",))
+
+    for t in (users, products, orders, order_items, events):
+        store.write_table(t, source_connection_id=sid)
+
+    return store
+
+
+class TestSuggestJoinsImpl:
+    def test_returns_typed_result(self, fk_graph_store: SQLiteStore) -> None:
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.orders", "public.users"],
+        )
+        assert isinstance(result, SuggestJoinsResult)
+        assert all(isinstance(p, JoinPath) for p in result.paths)
+        for p in result.paths:
+            assert all(isinstance(e, JoinEdge) for e in p.edges)
+
+    def test_direct_fk_one_hop(self, fk_graph_store: SQLiteStore) -> None:
+        # orders has FK to users — should be a 1-hop direct edge.
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.orders", "public.users"],
+        )
+        assert len(result.paths) == 1
+        path = result.paths[0]
+        assert path.start_qualified_name == "public.orders"
+        assert path.end_qualified_name == "public.users"
+        assert path.hops == 1
+        assert len(path.edges) == 1
+        edge = path.edges[0]
+        assert edge.fk_name == "orders_user_id_fkey"
+        assert edge.left_qualified_name == "public.orders"
+        assert edge.left_columns == ["user_id"]
+        assert edge.right_qualified_name == "public.users"
+        assert edge.right_columns == ["id"]
+        assert edge.confidence == 1.0
+        assert edge.via == "foreign_key"
+        assert path.confidence == 1.0
+        assert result.unreachable_pairs == []
+
+    def test_reverse_traversal_swaps_columns(self, fk_graph_store: SQLiteStore) -> None:
+        # users → orders requires traversing the FK BACKWARD. Edge must
+        # present columns from the path's perspective: left_columns are
+        # on `users` (the target side of the FK), right_columns on
+        # `orders` (the source side).
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.users", "public.orders"],
+        )
+        assert len(result.paths) == 1
+        path = result.paths[0]
+        assert path.hops == 1
+        edge = path.edges[0]
+        assert edge.left_qualified_name == "public.users"
+        assert edge.left_columns == ["id"]
+        assert edge.right_qualified_name == "public.orders"
+        assert edge.right_columns == ["user_id"]
+        # FK identity is preserved — the join condition is identical.
+        assert edge.fk_name == "orders_user_id_fkey"
+
+    def test_multi_hop_path(self, fk_graph_store: SQLiteStore) -> None:
+        # users ↔ products has no direct FK; shortest path is 2 hops via
+        # orders (users→orders→products) OR via order_items+orders (3 hops).
+        # BFS prefers the 2-hop. Two equally-short variants exist:
+        #   users→orders→products via (orders.user_id→users, orders.product_id→products)
+        # Plus via order_items+orders is 3 hops, longer.
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.users", "public.products"],
+        )
+        assert len(result.paths) == 1
+        path = result.paths[0]
+        assert path.hops == 2
+        assert path.start_qualified_name == "public.users"
+        assert path.end_qualified_name == "public.products"
+        # First edge connects users → some intermediate; second edge
+        # connects intermediate → products.
+        assert path.edges[0].left_qualified_name == "public.users"
+        assert path.edges[-1].right_qualified_name == "public.products"
+        # The intermediate table is the same on both edges.
+        assert path.edges[0].right_qualified_name == path.edges[1].left_qualified_name
+
+    def test_unreachable_pair_recorded(self, fk_graph_store: SQLiteStore) -> None:
+        # `events` has no FKs to/from anything else.
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.users", "public.events"],
+        )
+        assert result.paths == []
+        assert result.unreachable_pairs == [["public.events", "public.users"]]
+
+    def test_three_table_input_returns_pairwise_paths(self, fk_graph_store: SQLiteStore) -> None:
+        # 3 tables → 3 unordered pairs. Each pair gets one shortest path
+        # (or shows up in unreachable_pairs).
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.users", "public.orders", "public.products"],
+        )
+        # Pairs: (users, orders) 1-hop, (orders, products) 1-hop,
+        # (users, products) 2-hop. All reachable.
+        assert len(result.paths) == 3
+        assert result.unreachable_pairs == []
+        # Sorted by hops asc → 1-hops first, then 2-hops.
+        hops = [p.hops for p in result.paths]
+        assert hops == sorted(hops)
+
+    def test_paths_sorted_by_hops_then_qualified_name(self, fk_graph_store: SQLiteStore) -> None:
+        # Three pairs: (orders, users) 1-hop, (orders, products) 1-hop,
+        # (users, products) 2-hop. Within hops=1 tier, tiebreak is
+        # alphabetical by (start, end) qualified name.
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.users", "public.orders", "public.products"],
+        )
+        signatures = [(p.hops, p.start_qualified_name, p.end_qualified_name) for p in result.paths]
+        assert signatures == sorted(signatures)
+
+    def test_input_tables_normalized_to_unique_set(self, fk_graph_store: SQLiteStore) -> None:
+        # Duplicate input tables shouldn't double-count pairs. Two
+        # `public.users` entries collapse to one — but the pair count
+        # still requires ≥2 distinct tables to produce any path.
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.users", "public.orders", "public.users"],
+        )
+        # Effective pairs: just (users, orders).
+        assert len(result.paths) == 1
+        assert result.paths[0].hops == 1
+
+    def test_fewer_than_two_distinct_tables_raises(self, fk_graph_store: SQLiteStore) -> None:
+        with pytest.raises(ValueError, match="at least 2 distinct tables"):
+            suggest_joins_impl(
+                store=fk_graph_store,
+                source_connection_id=SOURCE_ID,
+                tables=["public.users"],
+            )
+
+    def test_empty_tables_raises(self, fk_graph_store: SQLiteStore) -> None:
+        with pytest.raises(ValueError, match="at least 2 distinct tables"):
+            suggest_joins_impl(
+                store=fk_graph_store,
+                source_connection_id=SOURCE_ID,
+                tables=[],
+            )
+
+    def test_duplicate_only_tables_raise(self, fk_graph_store: SQLiteStore) -> None:
+        # Two identical names collapse to one unique → still degenerate.
+        with pytest.raises(ValueError, match="at least 2 distinct tables"):
+            suggest_joins_impl(
+                store=fk_graph_store,
+                source_connection_id=SOURCE_ID,
+                tables=["public.users", "public.users"],
+            )
+
+    def test_malformed_qualified_name_raises_from_parser(self, fk_graph_store: SQLiteStore) -> None:
+        # Reuse the same parser as describe_table_impl — anything not
+        # `schema.name` form is rejected uniformly.
+        with pytest.raises(ValueError, match=r"schema\.name"):
+            suggest_joins_impl(
+                store=fk_graph_store,
+                source_connection_id=SOURCE_ID,
+                tables=["public.users", "no_schema_here"],
+            )
+
+    def test_missing_table_raises_table_not_found(self, fk_graph_store: SQLiteStore) -> None:
+        with pytest.raises(TableNotFoundError, match=r"public\.ghost"):
+            suggest_joins_impl(
+                store=fk_graph_store,
+                source_connection_id=SOURCE_ID,
+                tables=["public.users", "public.ghost"],
+            )
+
+    def test_filters_by_source_connection_id(self, fk_graph_store: SQLiteStore) -> None:
+        # All input tables exist under `src1`; querying a different
+        # source treats them as missing.
+        with pytest.raises(TableNotFoundError):
+            suggest_joins_impl(
+                store=fk_graph_store,
+                source_connection_id="OTHER",
+                tables=["public.users", "public.orders"],
+            )
+
+    def test_token_estimates_are_positive(self, fk_graph_store: SQLiteStore) -> None:
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.users", "public.orders"],
+        )
+        assert result.token_estimate > 0
+        assert result.paths[0].token_estimate > 0
+
+    def test_max_hops_truncates_long_paths(self, fk_graph_store: SQLiteStore) -> None:
+        # users ↔ products is 2 hops via orders. With max_hops=1, only
+        # direct FKs are explored — pair becomes unreachable.
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.users", "public.products"],
+            max_hops=1,
+        )
+        assert result.paths == []
+        assert result.unreachable_pairs == [["public.products", "public.users"]]
+
+    def test_max_hops_zero_or_negative_raises(self, fk_graph_store: SQLiteStore) -> None:
+        for bad in (0, -1):
+            with pytest.raises(ValueError, match="max_hops"):
+                suggest_joins_impl(
+                    store=fk_graph_store,
+                    source_connection_id=SOURCE_ID,
+                    tables=["public.users", "public.orders"],
+                    max_hops=bad,
+                )
+
+    def test_composite_fk_columns_round_trip(self, tmp_path: Path) -> None:
+        # A composite FK from events(member_org_id, member_user_id) →
+        # org_members(org_id, user_id) must surface BOTH source and
+        # target column lists in the JoinEdge — not just the first.
+        store = SQLiteStore(tmp_path / "comp.db")
+        sid = "src1"
+        org_members = Table(
+            name="org_members",
+            schema_name="public",
+            columns=(
+                _column(
+                    "org_id",
+                    table_name="org_members",
+                    data_type="BIGINT",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+                _column(
+                    "user_id",
+                    table_name="org_members",
+                    data_type="BIGINT",
+                    nullable=False,
+                    ordinal_position=2,
+                    is_primary_key=True,
+                ),
+            ),
+        )
+        events = Table(
+            name="events",
+            schema_name="public",
+            columns=(
+                _column(
+                    "id",
+                    table_name="events",
+                    data_type="BIGINT",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+                _column(
+                    "member_org_id",
+                    table_name="events",
+                    data_type="BIGINT",
+                    nullable=False,
+                    ordinal_position=2,
+                ),
+                _column(
+                    "member_user_id",
+                    table_name="events",
+                    data_type="BIGINT",
+                    nullable=False,
+                    ordinal_position=3,
+                ),
+            ),
+            foreign_keys=(
+                ForeignKey(
+                    name="events_member_fkey",
+                    source_columns=("member_org_id", "member_user_id"),
+                    target_schema="public",
+                    target_table="org_members",
+                    target_columns=("org_id", "user_id"),
+                ),
+            ),
+        )
+        store.write_table(org_members, source_connection_id=sid)
+        store.write_table(events, source_connection_id=sid)
+
+        result = suggest_joins_impl(
+            store=store,
+            source_connection_id=sid,
+            tables=["public.events", "public.org_members"],
+        )
+        assert len(result.paths) == 1
+        edge = result.paths[0].edges[0]
+        assert edge.left_qualified_name == "public.events"
+        assert edge.left_columns == ["member_org_id", "member_user_id"]
+        assert edge.right_qualified_name == "public.org_members"
+        assert edge.right_columns == ["org_id", "user_id"]
+        store.close()
+
+    def test_isolated_subgraph_pairs_all_unreachable(self, fk_graph_store: SQLiteStore) -> None:
+        # `events` has no FKs anywhere — pairs against it are all
+        # unreachable but pairs WITHIN the connected component still work.
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.users", "public.orders", "public.events"],
+        )
+        # Pairs in input order: (users, orders) is 1-hop;
+        # (users, events) and (orders, events) are unreachable. Path
+        # orientation honors input order — `users` came first, so
+        # the path starts at users. Unreachable pairs canonicalize
+        # alphabetically.
+        assert len(result.paths) == 1
+        assert result.paths[0].start_qualified_name == "public.users"
+        assert result.paths[0].end_qualified_name == "public.orders"
+        assert result.unreachable_pairs == [
+            ["public.events", "public.orders"],
+            ["public.events", "public.users"],
+        ]
+
+    def test_self_referential_fk_does_not_break_graph(self, tmp_path: Path) -> None:
+        # `employees.manager_id → employees.id` is a self-referential FK.
+        # The adjacency builder adds two entries for `employees` pointing
+        # back to itself; BFS must still terminate cleanly when the
+        # graph contains a self-loop, and a path from a SECOND table to
+        # `employees` must still resolve correctly.
+        store = SQLiteStore(tmp_path / "self.db")
+        sid = "src1"
+        employees = Table(
+            name="employees",
+            schema_name="public",
+            columns=(
+                _column(
+                    "id",
+                    table_name="employees",
+                    data_type="BIGINT",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+                _column(
+                    "manager_id",
+                    table_name="employees",
+                    data_type="BIGINT",
+                    nullable=True,
+                    ordinal_position=2,
+                ),
+            ),
+            foreign_keys=(
+                ForeignKey(
+                    name="employees_manager_id_fkey",
+                    source_columns=("manager_id",),
+                    target_schema="public",
+                    target_table="employees",
+                    target_columns=("id",),
+                ),
+            ),
+        )
+        tasks = Table(
+            name="tasks",
+            schema_name="public",
+            columns=(
+                _column(
+                    "id",
+                    table_name="tasks",
+                    data_type="BIGINT",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+                _column(
+                    "owner_id",
+                    table_name="tasks",
+                    data_type="BIGINT",
+                    nullable=False,
+                    ordinal_position=2,
+                ),
+            ),
+            foreign_keys=(
+                ForeignKey(
+                    name="tasks_owner_id_fkey",
+                    source_columns=("owner_id",),
+                    target_schema="public",
+                    target_table="employees",
+                    target_columns=("id",),
+                ),
+            ),
+        )
+        store.write_table(employees, source_connection_id=sid)
+        store.write_table(tasks, source_connection_id=sid)
+
+        result = suggest_joins_impl(
+            store=store,
+            source_connection_id=sid,
+            tables=["public.tasks", "public.employees"],
+        )
+        # Direct FK tasks → employees, 1 hop. Self-loop on employees
+        # must not interfere.
+        assert len(result.paths) == 1
+        path = result.paths[0]
+        assert path.hops == 1
+        assert path.edges[0].fk_name == "tasks_owner_id_fkey"
+        assert result.unreachable_pairs == []
+        store.close()
+
+
+class TestJoinPathInvariants:
+    """The `JoinPath` model is part of the public MCP contract. The
+    `hops == len(edges)` validator is the only piece of construction-
+    time enforcement; pin it here so it can't be silently weakened.
+    """
+
+    def test_hops_must_match_edges_length(self) -> None:
+        edge = JoinEdge(
+            fk_name="x",
+            left_qualified_name="public.a",
+            left_columns=["id"],
+            right_qualified_name="public.b",
+            right_columns=["a_id"],
+            confidence=1.0,
+            via="foreign_key",
+        )
+        with pytest.raises(ValueError, match="hops"):
+            JoinPath(
+                start_qualified_name="public.a",
+                end_qualified_name="public.b",
+                hops=2,  # wrong — only 1 edge
+                edges=[edge],
+                confidence=1.0,
+                token_estimate=1,
+            )
+
+    def test_well_formed_path_constructs_cleanly(self) -> None:
+        edge = JoinEdge(
+            fk_name="x",
+            left_qualified_name="public.a",
+            left_columns=["id"],
+            right_qualified_name="public.b",
+            right_columns=["a_id"],
+            confidence=1.0,
+            via="foreign_key",
+        )
+        path = JoinPath(
+            start_qualified_name="public.a",
+            end_qualified_name="public.b",
+            hops=1,
+            edges=[edge],
+            confidence=1.0,
+            token_estimate=1,
+        )
+        assert path.hops == 1

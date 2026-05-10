@@ -1,10 +1,10 @@
 """FastMCP server wiring for Schema Brain.
 
 `build_server(store, source_connection_id, embedder)` returns a
-configured `FastMCP` instance with three tools registered:
-`find_relevant_tables`, `describe_table`, and `describe_column`. The
-wiring is intentionally thin — all logic lives in `mcp/tools.py` so
-it's testable without touching the MCP transport.
+configured `FastMCP` instance with four tools registered:
+`find_relevant_tables`, `describe_table`, `describe_column`, and
+`suggest_joins`. The wiring is intentionally thin — all logic lives in
+`mcp/tools.py` so it's testable without touching the MCP transport.
 
 `run_stdio()` is a convenience that builds the server and runs it on
 stdio (the transport Claude Desktop and most local-MCP clients use).
@@ -21,22 +21,26 @@ from schemabrain.core.store import SQLiteStore
 from schemabrain.enrichment.embeddings import Embedder
 from schemabrain.mcp.tools import (
     ColumnDetail,
+    SuggestJoinsResult,
     TableDescription,
     TableHit,
     describe_column_impl,
     describe_table_impl,
     find_relevant_tables_impl,
+    suggest_joins_impl,
 )
 
 _DEFAULT_LIMIT = 10
+_DEFAULT_MAX_HOPS = 4
 _SERVER_NAME = "schemabrain"
 _SERVER_INSTRUCTIONS = (
     "Schema Brain — semantic understanding of an indexed database. "
     "Use `find_relevant_tables` to discover which tables are relevant to "
     "a question, `describe_table` to get the full structural and semantic "
-    "shape of one table, and `describe_column` to drill into a single "
-    "column (including which other tables join in to it). All three "
-    "tools return token estimates so you can budget context."
+    "shape of one table, `describe_column` to drill into a single column "
+    "(including which other tables join in to it), and `suggest_joins` "
+    "to get ranked FK-graph join paths between two or more tables. All "
+    "four tools return token estimates so you can budget context."
 )
 
 
@@ -107,6 +111,27 @@ def build_server(
             store=store,
             source_connection_id=source_connection_id,
             qualified_name=qualified_name,
+        )
+
+    @app.tool(
+        description=(
+            "Find shortest foreign-key join paths between two or more "
+            "tables. Pass qualified names (`schema.table`) and get back "
+            "one path per pair, including the FK columns on each side "
+            "ready to drop into a SQL JOIN. Multi-hop paths via "
+            "intermediate tables are returned when there's no direct FK. "
+            "Pairs that cannot be connected within `max_hops` (default 4) "
+            "appear in `unreachable_pairs`. Use this after "
+            "`find_relevant_tables` to wire chosen tables into a real "
+            "query."
+        )
+    )
+    def suggest_joins(tables: list[str], max_hops: int = _DEFAULT_MAX_HOPS) -> SuggestJoinsResult:
+        return suggest_joins_impl(
+            store=store,
+            source_connection_id=source_connection_id,
+            tables=tables,
+            max_hops=max_hops,
         )
 
     return app

@@ -22,7 +22,7 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 
 from schemabrain.core.embedding import ColumnEmbedding
-from schemabrain.core.models import Column, Table
+from schemabrain.core.models import Column, ForeignKey, Table
 from schemabrain.core.store import SQLiteStore
 from schemabrain.mcp import build_server
 
@@ -73,9 +73,14 @@ def server_with_one_table(tmp_path: Path) -> Generator[FastMCP, None, None]:
 
 
 class TestFastMCPIntegration:
-    def test_three_tools_are_registered(self, server_with_one_table) -> None:
+    def test_four_tools_are_registered(self, server_with_one_table) -> None:
         names = {t.name for t in asyncio.run(server_with_one_table.list_tools())}
-        assert names == {"find_relevant_tables", "describe_table", "describe_column"}
+        assert names == {
+            "find_relevant_tables",
+            "describe_table",
+            "describe_column",
+            "suggest_joins",
+        }
 
     def test_tool_descriptions_are_non_empty(self, server_with_one_table) -> None:
         for tool in asyncio.run(server_with_one_table.list_tools()):
@@ -163,6 +168,105 @@ class TestFastMCPIntegration:
                 )
             )
         assert "qualified_name" in str(exc_info.value)
+
+
+@pytest.fixture
+def server_with_fk_pair(tmp_path: Path) -> Generator[FastMCP, None, None]:
+    """Two tables with one FK between them — minimum for suggest_joins."""
+    store = SQLiteStore(tmp_path / "store.db")
+    sid = "src1"
+
+    users = Table(
+        name="users",
+        schema_name="public",
+        columns=(
+            Column(
+                name="id",
+                table_name="users",
+                schema_name="public",
+                data_type="BIGINT",
+                nullable=False,
+                ordinal_position=1,
+                is_primary_key=True,
+            ),
+        ),
+    )
+    orders = Table(
+        name="orders",
+        schema_name="public",
+        columns=(
+            Column(
+                name="id",
+                table_name="orders",
+                schema_name="public",
+                data_type="BIGINT",
+                nullable=False,
+                ordinal_position=1,
+                is_primary_key=True,
+            ),
+            Column(
+                name="user_id",
+                table_name="orders",
+                schema_name="public",
+                data_type="BIGINT",
+                nullable=False,
+                ordinal_position=2,
+            ),
+        ),
+        foreign_keys=(
+            ForeignKey(
+                name="orders_user_id_fkey",
+                source_columns=("user_id",),
+                target_schema="public",
+                target_table="users",
+                target_columns=("id",),
+            ),
+        ),
+    )
+    store.write_table(users, source_connection_id=sid)
+    store.write_table(orders, source_connection_id=sid)
+    app = build_server(store=store, source_connection_id=sid, embedder=_StubEmbedder())
+    yield app
+    store.close()
+
+
+class TestSuggestJoinsViaFastMCP:
+    def test_suggest_joins_round_trips_via_call_tool(self, server_with_fk_pair) -> None:
+        _content, structured = asyncio.run(
+            server_with_fk_pair.call_tool(
+                "suggest_joins", {"tables": ["public.orders", "public.users"]}
+            )
+        )
+        assert "paths" in structured
+        assert len(structured["paths"]) == 1
+        path = structured["paths"][0]
+        assert path["start_qualified_name"] == "public.orders"
+        assert path["end_qualified_name"] == "public.users"
+        assert path["hops"] == 1
+        assert path["edges"][0]["fk_name"] == "orders_user_id_fkey"
+        assert path["edges"][0]["left_columns"] == ["user_id"]
+        assert path["edges"][0]["right_columns"] == ["id"]
+        assert structured["unreachable_pairs"] == []
+        assert structured["token_estimate"] > 0
+
+    def test_suggest_joins_invalid_input_propagates_error(self, server_with_fk_pair) -> None:
+        # Single-table input should raise the ValueError from
+        # `suggest_joins_impl` and surface as a ToolError to the client.
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(
+                server_with_fk_pair.call_tool("suggest_joins", {"tables": ["public.users"]})
+            )
+        assert "at least 2 distinct tables" in str(exc_info.value)
+
+    def test_suggest_joins_unknown_table_propagates_error(self, server_with_fk_pair) -> None:
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(
+                server_with_fk_pair.call_tool(
+                    "suggest_joins",
+                    {"tables": ["public.users", "public.ghost"]},
+                )
+            )
+        assert "public.ghost" in str(exc_info.value)
 
 
 class TestRunStdio:

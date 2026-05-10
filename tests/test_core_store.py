@@ -1021,3 +1021,179 @@ class TestForeignKeyBackReferences:
             assert len(result) == 1, f"composite FK must match on column {col!r}"
             assert result[0].name == "events_member_fkey"
         store.close()
+
+
+class TestListAllForeignKeys:
+    """`list_all_foreign_keys` is the bulk reader used by `suggest_joins`
+    to build the FK adjacency graph in one query — avoids the N round-
+    trips of iterating `list_tables` and calling `get_table` per row.
+    """
+
+    def test_empty_store_returns_empty_list(self) -> None:
+        store = SQLiteStore(":memory:")
+        assert store.list_all_foreign_keys(source_connection_id=SOURCE_X) == []
+        store.close()
+
+    def test_returns_all_fks_with_source_table_context(self) -> None:
+        # Two tables with one FK each. Result must include source table
+        # info so callers can build a graph without a second lookup.
+        store = SQLiteStore(":memory:")
+        sid = SOURCE_X
+        store.write_table(_users_table(), source_connection_id=sid)
+        orders = Table(
+            name="orders",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="orders",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+                Column(
+                    name="user_id",
+                    table_name="orders",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=2,
+                ),
+            ),
+            foreign_keys=(
+                ForeignKey(
+                    name="orders_user_id_fkey",
+                    source_columns=("user_id",),
+                    target_schema="public",
+                    target_table="users",
+                    target_columns=("id",),
+                ),
+            ),
+        )
+        store.write_table(orders, source_connection_id=sid)
+
+        result = store.list_all_foreign_keys(source_connection_id=sid)
+        assert len(result) == 1
+        source_schema, source_table, fk = result[0]
+        assert source_schema == "public"
+        assert source_table == "orders"
+        assert fk.name == "orders_user_id_fkey"
+        assert fk.source_columns == ("user_id",)
+        assert fk.target_schema == "public"
+        assert fk.target_table == "users"
+        assert fk.target_columns == ("id",)
+        store.close()
+
+    def test_filters_by_source_connection_id(self) -> None:
+        # FKs from a different source must not leak in.
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table(_users_table(), source_connection_id=SOURCE_Y)
+
+        orders_x = Table(
+            name="orders",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="orders",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+                Column(
+                    name="user_id",
+                    table_name="orders",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=2,
+                ),
+            ),
+            foreign_keys=(
+                ForeignKey(
+                    name="orders_user_id_fkey",
+                    source_columns=("user_id",),
+                    target_schema="public",
+                    target_table="users",
+                    target_columns=("id",),
+                ),
+            ),
+        )
+        store.write_table(orders_x, source_connection_id=SOURCE_X)
+
+        x = store.list_all_foreign_keys(source_connection_id=SOURCE_X)
+        y = store.list_all_foreign_keys(source_connection_id=SOURCE_Y)
+        assert len(x) == 1
+        assert y == []
+        store.close()
+
+    def test_deterministic_order(self) -> None:
+        # Ordering must be stable across calls so callers (suggest_joins
+        # BFS adjacency) get reproducible tiebreaks. Sort key is
+        # (source_schema, source_table, fk_name).
+        store = SQLiteStore(":memory:")
+        sid = SOURCE_X
+        store.write_table(_users_table(), source_connection_id=sid)
+        # An "orders" table with two FKs to users (e.g. created_by,
+        # updated_by) — composite per-table case.
+        orders = Table(
+            name="orders",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="orders",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+                Column(
+                    name="created_by",
+                    table_name="orders",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=2,
+                ),
+                Column(
+                    name="updated_by",
+                    table_name="orders",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=3,
+                ),
+            ),
+            foreign_keys=(
+                ForeignKey(
+                    name="orders_updated_by_fkey",
+                    source_columns=("updated_by",),
+                    target_schema="public",
+                    target_table="users",
+                    target_columns=("id",),
+                ),
+                ForeignKey(
+                    name="orders_created_by_fkey",
+                    source_columns=("created_by",),
+                    target_schema="public",
+                    target_table="users",
+                    target_columns=("id",),
+                ),
+            ),
+        )
+        store.write_table(orders, source_connection_id=sid)
+
+        first = store.list_all_foreign_keys(source_connection_id=sid)
+        second = store.list_all_foreign_keys(source_connection_id=sid)
+        assert first == second
+        # Within a table, FKs sort by name.
+        names = [fk.name for _, _, fk in first]
+        assert names == ["orders_created_by_fkey", "orders_updated_by_fkey"]
+        store.close()
