@@ -42,6 +42,7 @@ from schemabrain.enrichment.anthropic_client import (
     anthropic_haiku_45_client,
     anthropic_sonnet_46_client,
 )
+from schemabrain.enrichment.embeddings import Embedder, fastembed_default
 from schemabrain.enrichment.pipeline import CostCapExceeded, EnrichmentPipeline
 from schemabrain.eval.golden import DEFAULT_GOLDEN_PATH, load_golden
 from schemabrain.eval.retriever import KeywordRetriever
@@ -79,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
             no_enrich=args.no_enrich,
             max_cost_usd=args.max_cost,
             enable_sonnet=args.enable_sonnet,
+            no_embed=args.no_embed,
         )
     if args.command == "eval":
         return _cmd_eval(
@@ -132,6 +134,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "to keep automatic runs cheap; enable when indexing schemas with "
         "many cryptic identifiers.",
     )
+    p_index.add_argument(
+        "--no-embed",
+        action="store_true",
+        help="Skip generating local sentence embeddings for column "
+        "descriptions. Embeddings power Slice 4-C's EmbeddingRetriever; "
+        "skipping them saves ~10ms per column at index time but disables "
+        "semantic retrieval. Default off (embeddings ON). Implied when "
+        "--no-enrich is set, since there are no descriptions to embed.",
+    )
 
     p_eval = sub.add_parser(
         "eval",
@@ -171,6 +182,7 @@ def _cmd_index(
     no_enrich: bool,
     max_cost_usd: float,
     enable_sonnet: bool,
+    no_embed: bool,
 ) -> int:
     try:
         canonical = _canonical_url(url)
@@ -195,6 +207,13 @@ def _cmd_index(
             max_cost_usd=max_cost_usd,
         )
 
+    # Build the embedder only if both enrichment AND embedding are
+    # active. With no enrichment, there's no description text to embed,
+    # so constructing a 70MB ONNX runtime is pure waste.
+    embedder: Embedder | None = None
+    if not no_enrich and not no_embed:
+        embedder = fastembed_default()
+
     source_id = _make_source_id(url)
     started = time.monotonic()
     try:
@@ -209,6 +228,7 @@ def _cmd_index(
                 store=store,
                 source_connection_id=source_id,
                 pipeline=pipeline,
+                embedder=embedder,
             )
     except CostCapExceeded as e:
         print(f"error: {e}", file=sys.stderr)

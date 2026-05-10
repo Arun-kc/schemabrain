@@ -21,14 +21,22 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import struct
 import time
 from pathlib import Path
 
 from schemabrain.core.description import ColumnDescription
+from schemabrain.core.embedding import ColumnEmbedding
 from schemabrain.core.models import Column, ForeignKey, Table
 
-_SCHEMA_VERSION = "1"
+# Bumped to "2" in Slice 4-B when `column_embeddings` was added. Older
+# stores raise SchemaVersionMismatchError; pre-alpha users re-create.
+_SCHEMA_VERSION = "2"
 _MEMORY_PATH = ":memory:"
+
+# float32 = 4 bytes per dim. BLOBs are little-endian packed via struct.
+_FLOAT32_FORMAT = "<f"
+_FLOAT32_BYTES = 4
 
 
 class SchemaVersionMismatchError(RuntimeError):
@@ -124,7 +132,50 @@ _DDL_STATEMENTS: tuple[str, ...] = (
             ON DELETE CASCADE
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS column_embeddings (
+        schema_name TEXT NOT NULL,
+        table_name TEXT NOT NULL,
+        column_name TEXT NOT NULL,
+        source_connection_id TEXT NOT NULL,
+        model TEXT NOT NULL,
+        dimension INTEGER NOT NULL,
+        vector BLOB NOT NULL,
+        embedded_at INTEGER NOT NULL,
+        PRIMARY KEY (schema_name, table_name, column_name, source_connection_id),
+        FOREIGN KEY (schema_name, table_name, source_connection_id)
+            REFERENCES tables (schema_name, name, source_connection_id)
+            ON DELETE CASCADE
+    )
+    """,
 )
+
+
+def _pack_vector(vector: tuple[float, ...]) -> bytes:
+    """Serialize a float vector to a little-endian float32 BLOB.
+
+    Float32 is the native dtype of fastembed's ONNX output, so this is
+    the right precision to persist. Higher precision would bloat the
+    store without changing retrieval results (cosine similarity in
+    float32 is more than sufficient for 384-dim sentence embeddings).
+    """
+    return struct.pack(f"<{len(vector)}f", *vector)
+
+
+def _unpack_vector(blob: bytes, dimension: int) -> tuple[float, ...]:
+    """Inverse of `_pack_vector`. Validates blob length matches dimension.
+
+    Defensive: a corrupt or truncated BLOB would otherwise produce a
+    silently wrong-length vector, which would then explode much later in
+    a cosine similarity computation with a confusing error.
+    """
+    expected_bytes = dimension * _FLOAT32_BYTES
+    if len(blob) != expected_bytes:
+        raise ValueError(
+            f"vector BLOB length {len(blob)} does not match expected "
+            f"{expected_bytes} bytes for dimension {dimension}"
+        )
+    return struct.unpack(f"<{dimension}f", blob)
 
 
 class SQLiteStore:
@@ -274,8 +325,10 @@ class SQLiteStore:
         )
 
     def delete_table(self, schema_name: str, name: str, *, source_connection_id: str) -> None:
-        """Idempotent: delete the table row (and cascade to columns, FKs,
-        and column_fingerprints). No-op if the row is absent.
+        """Idempotent: delete the table row and cascade to all child
+        tables — `columns`, `foreign_keys`, `column_fingerprints`,
+        `column_descriptions`, and `column_embeddings`. No-op if the
+        row is absent.
         """
         conn = self._require_conn()
         with conn:
@@ -423,6 +476,72 @@ class SQLiteStore:
                 ],
             )
 
+    def get_table_embeddings(
+        self, schema_name: str, name: str, *, source_connection_id: str
+    ) -> dict[str, ColumnEmbedding]:
+        """Return `{column_name: ColumnEmbedding}` for the table.
+
+        Empty dict if no embeddings have been stored yet.
+        """
+        conn = self._require_conn()
+        rows = conn.execute(
+            "SELECT column_name, model, dimension, vector "
+            "FROM column_embeddings "
+            "WHERE schema_name = ? AND table_name = ? "
+            "AND source_connection_id = ?",
+            (schema_name, name, source_connection_id),
+        ).fetchall()
+        return {
+            row["column_name"]: ColumnEmbedding(
+                vector=_unpack_vector(row["vector"], row["dimension"]),
+                model=row["model"],
+                dimension=row["dimension"],
+            )
+            for row in rows
+        }
+
+    def write_table_embeddings(
+        self,
+        schema_name: str,
+        name: str,
+        *,
+        source_connection_id: str,
+        embeddings: dict[str, ColumnEmbedding],
+    ) -> None:
+        """Replace all embeddings for the table atomically.
+
+        Caller must have written the parent `tables` row first; otherwise
+        the FK on `column_embeddings` will reject the inserts.
+        """
+        conn = self._require_conn()
+        now = int(time.time())
+        with conn:
+            conn.execute(
+                "DELETE FROM column_embeddings "
+                "WHERE schema_name = ? AND table_name = ? "
+                "AND source_connection_id = ?",
+                (schema_name, name, source_connection_id),
+            )
+            conn.executemany(
+                "INSERT INTO column_embeddings "
+                "(schema_name, table_name, column_name, source_connection_id, "
+                "model, dimension, vector, embedded_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        schema_name,
+                        name,
+                        col_name,
+                        source_connection_id,
+                        emb.model,
+                        emb.dimension,
+                        _pack_vector(emb.vector),
+                        now,
+                    )
+                    for col_name, emb in embeddings.items()
+                ],
+            )
+
     def list_tables(self, *, source_connection_id: str | None = None) -> list[tuple[str, str]]:
         conn = self._require_conn()
         if source_connection_id is None:
@@ -457,7 +576,10 @@ class SQLiteStore:
         if stored is not None and stored["value"] != _SCHEMA_VERSION:
             raise SchemaVersionMismatchError(
                 f"Store schema version {stored['value']!r} does not match "
-                f"expected {_SCHEMA_VERSION!r}. Re-create the store or migrate."
+                f"expected {_SCHEMA_VERSION!r}. Schema Brain is pre-alpha and "
+                f"does not yet provide migrations — delete or move the store "
+                f"file (path passed to SQLiteStore) and re-run `schemabrain "
+                f"index` to rebuild from scratch."
             )
 
     def _require_conn(self) -> sqlite3.Connection:

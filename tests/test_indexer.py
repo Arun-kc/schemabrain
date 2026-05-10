@@ -661,6 +661,222 @@ class TestEnrichmentIntegration:
         store.close()
 
 
+class TestEmbeddingIntegration:
+    def _pipeline(self):
+        from schemabrain.enrichment.llm import FakeLLMClient
+        from schemabrain.enrichment.pipeline import EnrichmentPipeline
+
+        client = FakeLLMClient(text_provider=lambda system, user: "fake description")
+        return EnrichmentPipeline(client=client), client
+
+    def _embedder(self, dimension: int = 8):
+        from schemabrain.enrichment.embeddings import FakeEmbedder
+
+        return FakeEmbedder(dimension=dimension)
+
+    def test_no_embedder_means_no_embeddings_persisted(self) -> None:
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        pipeline, _ = self._pipeline()
+
+        result = index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+        )
+        embs = store.get_table_embeddings("public", "users", source_connection_id=SOURCE_ID)
+        assert embs == {}
+        assert result.embeddings_generated == 0
+        store.close()
+
+    def test_embedder_without_pipeline_is_no_op(self) -> None:
+        # Embedding a column requires a description; if no pipeline ran,
+        # there's nothing to embed. Pipeline-less indexing must not call
+        # the embedder.
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        embedder = self._embedder()
+
+        result = index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            embedder=embedder,
+        )
+
+        assert embedder.calls == []
+        assert result.embeddings_generated == 0
+        embs = store.get_table_embeddings("public", "users", source_connection_id=SOURCE_ID)
+        assert embs == {}
+        store.close()
+
+    def test_with_embedder_persists_one_embedding_per_described_column(self) -> None:
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        pipeline, _ = self._pipeline()
+        embedder = self._embedder(dimension=8)
+
+        result = index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+            embedder=embedder,
+        )
+
+        embs = store.get_table_embeddings("public", "users", source_connection_id=SOURCE_ID)
+        assert set(embs.keys()) == {"id", "email"}
+        assert all(e.dimension == 8 for e in embs.values())
+        assert all(e.model == "fake-embedder" for e in embs.values())
+        # 2 columns => 2 embedder calls and 2 stored embeddings.
+        assert len(embedder.calls) == 2
+        assert result.embeddings_generated == 2
+        store.close()
+
+    def test_unchanged_table_does_not_call_embedder(self) -> None:
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        pipeline, _ = self._pipeline()
+        embedder = self._embedder()
+
+        index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+            embedder=embedder,
+        )
+        calls_after_first = len(embedder.calls)
+
+        result = index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+            embedder=embedder,
+        )
+
+        assert len(embedder.calls) == calls_after_first
+        assert result.embeddings_generated == 0
+
+    def test_changed_table_re_embeds_only_that_table(self) -> None:
+        source = FakeDataSource([_users_table(), _orders_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        pipeline, _ = self._pipeline()
+        embedder = self._embedder()
+        index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+            embedder=embedder,
+        )
+        calls_after_first = len(embedder.calls)
+
+        # Mutate users.email type — only users should re-embed.
+        mutated_columns = (
+            _column(
+                "id",
+                table_name="users",
+                data_type="BIGINT",
+                nullable=False,
+                ordinal_position=1,
+                is_primary_key=True,
+            ),
+            _column(
+                "email",
+                table_name="users",
+                data_type="VARCHAR(255)",
+                nullable=False,
+                ordinal_position=2,
+            ),
+        )
+        source.set_tables([_users_table(columns=mutated_columns), _orders_table()])
+        result = index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+            embedder=embedder,
+        )
+
+        assert len(embedder.calls) == calls_after_first + 2
+        assert result.embeddings_generated == 2
+
+    def test_embeddings_cleared_on_table_drop(self) -> None:
+        source = FakeDataSource([_users_table(), _orders_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        pipeline, _ = self._pipeline()
+        embedder = self._embedder()
+        index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+            embedder=embedder,
+        )
+        source.set_tables([_users_table()])
+        index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+            embedder=embedder,
+        )
+        orders_embs = store.get_table_embeddings("public", "orders", source_connection_id=SOURCE_ID)
+        assert orders_embs == {}
+        store.close()
+
+    def test_cost_cap_during_enrichment_leaves_embeddings_untouched_for_table(self) -> None:
+        # Mirrors the description cost-cap test: if enrichment fails
+        # mid-table, NO embeddings for that table should be persisted.
+        from schemabrain.enrichment.llm import FakeLLMClient
+        from schemabrain.enrichment.pipeline import (
+            CostCapExceeded,
+            EnrichmentPipeline,
+        )
+
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        client = FakeLLMClient(text_provider=lambda s, u: "x" * 5_000_000)
+        pipeline = EnrichmentPipeline(client=client, max_cost_usd=2.0)
+        embedder = self._embedder()
+
+        with pytest.raises(CostCapExceeded):
+            index(
+                source=source,
+                profiler=profiler,
+                store=store,
+                source_connection_id=SOURCE_ID,
+                pipeline=pipeline,
+                embedder=embedder,
+            )
+
+        assert store.get_table_embeddings("public", "users", source_connection_id=SOURCE_ID) == {}
+        # Embedder is only called AFTER all descriptions for a table
+        # complete — cost cap fires inside enrichment, so no embeddings
+        # were attempted at all.
+        assert embedder.calls == []
+        store.close()
+
+
 class TestIndexResultSummary:
     def test_summary_shows_all_counts(self) -> None:
         result = IndexResult(
@@ -682,6 +898,7 @@ class TestIndexResultSummary:
         assert "-0" in summary
         # No LLM section when no enrichment happened.
         assert "LLM:" not in summary
+        assert "Embeddings:" not in summary
 
     def test_summary_includes_llm_section_when_descriptions_generated(self) -> None:
         result = IndexResult(
@@ -699,3 +916,19 @@ class TestIndexResultSummary:
         assert "LLM:" in summary
         assert "3 descriptions" in summary
         assert "$0.0042" in summary
+
+    def test_summary_includes_embeddings_section_when_generated(self) -> None:
+        result = IndexResult(
+            tables_seen=1,
+            tables_changed=1,
+            tables_unchanged=0,
+            tables_removed=0,
+            columns_added=2,
+            columns_changed=0,
+            columns_removed=0,
+            descriptions_generated=2,
+            llm_cost_usd=0.001,
+            embeddings_generated=2,
+        )
+        summary = result.summary()
+        assert "Embeddings: 2" in summary

@@ -421,6 +421,184 @@ class TestEnrichmentCliFlags:
         # Same API key plumbed to both.
         assert haiku_calls[0]["api_key"] == sonnet_calls[0]["api_key"] == "sk-ant-fake"
 
+    def test_default_constructs_embedder(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ):
+        # Default index run (no flags) must construct the fastembed
+        # embedder. Stub the factory to capture the call without
+        # downloading the 70MB ONNX model.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+
+        embedder_calls: list[None] = []
+
+        class _DummyEmbedder:
+            model_name = "fake-emb"
+            dimension = 4
+
+            def embed(self, text: str) -> tuple[float, ...]:
+                return (0.0, 0.0, 0.0, 0.0)
+
+        def _track_embedder():
+            embedder_calls.append(None)
+            return _DummyEmbedder()
+
+        monkeypatch.setattr("schemabrain.cli.fastembed_default", _track_embedder)
+
+        class _EmptySource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return []
+
+            def get_table(self, name: str, schema: str):
+                raise NotImplementedError
+
+            def close(self) -> None:
+                pass
+
+        class _StubProfiler:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def profile_table(self, table):
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
+        monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(["index", "postgresql://fake/db", "--store-path", str(store_path)])
+        assert exit_code == 0
+        assert len(embedder_calls) == 1
+
+    def test_no_embed_skips_embedder(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ):
+        # --no-embed must NOT call the fastembed factory.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+
+        def _fail_if_called():
+            raise AssertionError("fastembed_default must not be called with --no-embed")
+
+        monkeypatch.setattr("schemabrain.cli.fastembed_default", _fail_if_called)
+
+        class _EmptySource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return []
+
+            def get_table(self, name: str, schema: str):
+                raise NotImplementedError
+
+            def close(self) -> None:
+                pass
+
+        class _StubProfiler:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def profile_table(self, table):
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
+        monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            ["index", "postgresql://fake/db", "--store-path", str(store_path), "--no-embed"]
+        )
+        assert exit_code == 0
+
+    def test_no_enrich_implies_no_embedder(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ):
+        # With --no-enrich there are no descriptions, so the embedder is
+        # pointless. Verify the factory is not called.
+        def _fail_if_called():
+            raise AssertionError("fastembed_default must not be called when --no-enrich is set")
+
+        monkeypatch.setattr("schemabrain.cli.fastembed_default", _fail_if_called)
+
+        class _EmptySource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return []
+
+            def get_table(self, name: str, schema: str):
+                raise NotImplementedError
+
+            def close(self) -> None:
+                pass
+
+        class _StubProfiler:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def profile_table(self, table):
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
+        monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            ["index", "postgresql://fake/db", "--store-path", str(store_path), "--no-enrich"]
+        )
+        assert exit_code == 0
+
     def test_with_api_key_constructs_pipeline_and_runs(
         self,
         monkeypatch: pytest.MonkeyPatch,

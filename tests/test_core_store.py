@@ -582,3 +582,195 @@ class TestColumnDescriptions:
         )
         assert store.get_table_descriptions("public", "users", source_connection_id=SOURCE_X) == {}
         store.close()
+
+
+class TestColumnEmbeddings:
+    def _emb(self, vector: tuple[float, ...] = (0.1, 0.2, 0.3)) -> object:
+        from schemabrain.core.embedding import ColumnEmbedding
+
+        return ColumnEmbedding(
+            vector=vector,
+            model="BAAI/bge-small-en-v1.5",
+            dimension=len(vector),
+        )
+
+    def test_get_returns_empty_dict_when_none_stored(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        assert store.get_table_embeddings("public", "users", source_connection_id=SOURCE_X) == {}
+        store.close()
+
+    def test_write_then_get_round_trip(self) -> None:
+        from schemabrain.core.embedding import ColumnEmbedding
+
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        embs = {
+            "id": self._emb((0.1, 0.2, 0.3)),
+            "email": self._emb((0.4, 0.5, 0.6)),
+        }
+        store.write_table_embeddings(
+            "public", "users", source_connection_id=SOURCE_X, embeddings=embs
+        )
+        got = store.get_table_embeddings("public", "users", source_connection_id=SOURCE_X)
+        assert set(got.keys()) == {"id", "email"}
+        assert got["id"].vector == (
+            pytest.approx(0.1),
+            pytest.approx(0.2),
+            pytest.approx(0.3),
+        )
+        assert got["email"].vector == (
+            pytest.approx(0.4),
+            pytest.approx(0.5),
+            pytest.approx(0.6),
+        )
+        assert got["id"].model == "BAAI/bge-small-en-v1.5"
+        assert got["id"].dimension == 3
+        assert isinstance(got["id"], ColumnEmbedding)
+        store.close()
+
+    def test_write_replaces_existing(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table_embeddings(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            embeddings={"id": self._emb((1.0, 0.0, 0.0))},
+        )
+        store.write_table_embeddings(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            embeddings={"id": self._emb((0.0, 1.0, 0.0))},
+        )
+        got = store.get_table_embeddings("public", "users", source_connection_id=SOURCE_X)
+        assert got["id"].vector == (
+            pytest.approx(0.0),
+            pytest.approx(1.0),
+            pytest.approx(0.0),
+        )
+        store.close()
+
+    def test_delete_table_cascades_to_embeddings(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table_embeddings(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            embeddings={"id": self._emb()},
+        )
+        store.delete_table("public", "users", source_connection_id=SOURCE_X)
+        assert store.get_table_embeddings("public", "users", source_connection_id=SOURCE_X) == {}
+        store.close()
+
+    def test_isolated_by_source_connection_id(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table(_users_table(), source_connection_id=SOURCE_Y)
+        store.write_table_embeddings(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            embeddings={"id": self._emb((1.0, 0.0, 0.0))},
+        )
+        store.write_table_embeddings(
+            "public",
+            "users",
+            source_connection_id=SOURCE_Y,
+            embeddings={"id": self._emb((0.0, 1.0, 0.0))},
+        )
+        x = store.get_table_embeddings("public", "users", source_connection_id=SOURCE_X)
+        y = store.get_table_embeddings("public", "users", source_connection_id=SOURCE_Y)
+        assert x["id"].vector == (
+            pytest.approx(1.0),
+            pytest.approx(0.0),
+            pytest.approx(0.0),
+        )
+        assert y["id"].vector == (
+            pytest.approx(0.0),
+            pytest.approx(1.0),
+            pytest.approx(0.0),
+        )
+        store.close()
+
+    def test_write_embeddings_without_table_row_raises(self) -> None:
+        import sqlite3
+
+        store = SQLiteStore(":memory:")
+        with pytest.raises(sqlite3.IntegrityError):
+            store.write_table_embeddings(
+                "public",
+                "missing",
+                source_connection_id=SOURCE_X,
+                embeddings={"col": self._emb()},
+            )
+        store.close()
+
+    def test_empty_embeddings_dict_clears(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table_embeddings(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            embeddings={"id": self._emb()},
+        )
+        store.write_table_embeddings(
+            "public", "users", source_connection_id=SOURCE_X, embeddings={}
+        )
+        assert store.get_table_embeddings("public", "users", source_connection_id=SOURCE_X) == {}
+        store.close()
+
+    def test_corrupt_blob_length_raises_clear_error(self) -> None:
+        # Defensive: if a BLOB on disk has the wrong byte count for its
+        # claimed dimension (database corruption, manual UPDATE, schema
+        # drift), `get_table_embeddings` must surface it loudly rather
+        # than returning a silently wrong-length vector. Public writers
+        # can't produce this state — we have to inject through the
+        # store's connection to simulate it.
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        # claimed dimension = 4 (16 bytes), actual blob = 4 bytes
+        store._conn.execute(  # type: ignore[union-attr]
+            "INSERT INTO column_embeddings "
+            "(schema_name, table_name, column_name, source_connection_id, "
+            "model, dimension, vector, embedded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("public", "users", "id", SOURCE_X, "m", 4, b"\x00\x00\x00\x00", 0),
+        )
+        store._conn.commit()  # type: ignore[union-attr]
+        with pytest.raises(ValueError, match="BLOB length 4 does not match expected 16 bytes"):
+            store.get_table_embeddings("public", "users", source_connection_id=SOURCE_X)
+        store.close()
+
+    def test_round_trip_preserves_float32_precision_within_tolerance(self) -> None:
+        # We persist float32 BLOBs. Values that fit in float32 should round-trip
+        # exactly; values that don't should round to the nearest float32. This
+        # test pins the contract.
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        # 384-dim like the real BAAI/bge-small-en-v1.5 model.
+        original = tuple(i / 1000.0 for i in range(384))
+        store.write_table_embeddings(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            embeddings={"id": self._embedding_of_dim(original)},
+        )
+        got = store.get_table_embeddings("public", "users", source_connection_id=SOURCE_X)
+        assert got["id"].dimension == 384
+        assert len(got["id"].vector) == 384
+        for orig, restored in zip(original, got["id"].vector, strict=True):
+            assert restored == pytest.approx(orig, abs=1e-6)
+        store.close()
+
+    def _embedding_of_dim(self, vector: tuple[float, ...]) -> object:
+        from schemabrain.core.embedding import ColumnEmbedding
+
+        return ColumnEmbedding(
+            vector=vector,
+            model="BAAI/bge-small-en-v1.5",
+            dimension=len(vector),
+        )

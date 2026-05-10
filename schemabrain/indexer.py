@@ -22,20 +22,28 @@ reorder triggers re-work even with no name or type change.
 
 **Atomicity caveat:** the per-table flow `store.write_table()` then
 `store.write_table_fingerprints()` then `store.write_table_descriptions()`
-runs in three separate SQLite transactions. If the process is killed
-between them, the table row exists with no fingerprints/descriptions.
-The next `index()` run sees an empty fingerprint set, treats every
-column as added, and re-profiles + re-enriches — correct recovery, just
-not free. Acceptable for v0; if it ever matters, merge into a single
-store-level method that opens one transaction.
+then `store.write_table_embeddings()` runs in four separate SQLite
+transactions. If the process is killed between (1) and (2), the table
+row exists with no fingerprints/descriptions/embeddings; the next run
+sees an empty fingerprint set, treats every column as added, and
+re-profiles + re-enriches + re-embeds — correct recovery, just not
+free. The asymmetric failure window is between (3) and (4): if the
+process dies after descriptions are persisted but before embeddings,
+the next run sees a fingerprint hit and skips the table — descriptions
+exist, embeddings don't, gap is permanent until a real schema change
+triggers re-enrichment. Local ONNX embedder calls are essentially
+infallible so this window is theoretical; if remote embedders are ever
+wired in, revisit. Acceptable for v0; if it ever matters, merge into a
+single store-level method that opens one transaction.
 
 **Cost-cap behavior:** the per-table flow runs `profile → enrich (all
-columns) → write_table → write_fingerprints → write_descriptions` in
-that order, so a `CostCapExceeded` raised during enrichment leaves the
-cache exactly as it was before this table started — nothing is
-persisted for the in-flight table. The next run will see the table as
-still-changed (cache miss) and retry. Tables fully enriched before the
-cap tripped keep their descriptions and fingerprints.
+columns) → embed (all columns) → write_table → write_fingerprints →
+write_descriptions → write_embeddings` in that order, so a
+`CostCapExceeded` raised during enrichment leaves the cache exactly as
+it was before this table started — nothing is persisted for the
+in-flight table. The next run will see the table as still-changed
+(cache miss) and retry. Tables fully enriched before the cap tripped
+keep their descriptions, fingerprints, and embeddings.
 
 **Semantic-fingerprint comparison gap:** today the diff loop still
 compares ONLY structural fingerprints. A bare `PROMPT_VERSION` bump on
@@ -52,12 +60,14 @@ from dataclasses import dataclass
 
 from schemabrain.connectors.base import DataSource
 from schemabrain.core.description import ColumnDescription
+from schemabrain.core.embedding import ColumnEmbedding
 from schemabrain.core.fingerprint import (
     column_semantic_fingerprint,
     column_structural_fingerprint,
     fk_targets_for_column,
 )
 from schemabrain.core.store import SQLiteStore
+from schemabrain.enrichment.embeddings import Embedder, embedding_for
 from schemabrain.enrichment.pipeline import EnrichmentPipeline
 from schemabrain.enrichment.prompts import PROMPT_VERSION
 from schemabrain.profiler.base import Profiler
@@ -74,6 +84,11 @@ class IndexResult:
     `descriptions_generated` is the count of NEW LLM calls made this
     run (zero if no pipeline was supplied or no tables changed).
     `llm_cost_usd` is the cumulative cost of those calls.
+
+    `embeddings_generated` is the count of NEW local-embedding calls
+    made this run (zero if no embedder was supplied or no tables
+    changed). Local embeddings are free at runtime so there's no cost
+    field.
     """
 
     tables_seen: int
@@ -85,6 +100,7 @@ class IndexResult:
     columns_removed: int
     descriptions_generated: int = 0
     llm_cost_usd: float = 0.0
+    embeddings_generated: int = 0
 
     def summary(self) -> str:
         base = (
@@ -96,6 +112,8 @@ class IndexResult:
         )
         if self.descriptions_generated > 0 or self.llm_cost_usd > 0:
             base += f". LLM: {self.descriptions_generated} descriptions (${self.llm_cost_usd:.4f})"
+        if self.embeddings_generated > 0:
+            base += f". Embeddings: {self.embeddings_generated}"
         return base
 
 
@@ -106,6 +124,7 @@ def index(
     store: SQLiteStore,
     source_connection_id: str,
     pipeline: EnrichmentPipeline | None = None,
+    embedder: Embedder | None = None,
 ) -> IndexResult:
     """Perform one cache-aware indexing pass and return the diff summary.
 
@@ -113,6 +132,13 @@ def index(
     enriched with an LLM-generated description and the result persisted
     to `column_descriptions`. If `pipeline` is `None`, profiling and
     fingerprinting still happen but no LLM calls are made.
+
+    If both `pipeline` and `embedder` are supplied, every column whose
+    description is generated this run is also embedded into a local
+    vector and persisted to `column_embeddings`. An `embedder` without a
+    `pipeline` is a no-op for embeddings (there are no descriptions to
+    embed) — backfill of embeddings for previously-enriched columns is a
+    future slice.
     """
     current_tables = source.list_tables()
     cached_tables = store.list_tables(source_connection_id=source_connection_id)
@@ -130,6 +156,7 @@ def index(
     columns_changed = 0
     columns_removed = 0
     descriptions_generated = 0
+    embeddings_generated = 0
 
     for schema, name in current_tables:
         table = source.get_table(name, schema)
@@ -178,8 +205,20 @@ def index(
                 descriptions[col.name] = desc
                 descriptions_generated += 1
 
+        # Embed AFTER all descriptions for the table are in hand. Done in
+        # this order so a partial failure inside enrichment never leaves
+        # half-embedded tables on disk — the same atomic-table guarantee
+        # we already give for descriptions+fingerprints. Embedder calls
+        # are local + free; if a future remote embedder is wired in,
+        # revisit whether each call should also check a cost-cap.
+        embeddings: dict[str, ColumnEmbedding] = {}
+        if embedder is not None and descriptions:
+            for col_name, desc in descriptions.items():
+                embeddings[col_name] = embedding_for(desc.text, embedder=embedder)
+                embeddings_generated += 1
+
         # Now persist. write_table cascades to delete any stale
-        # fingerprints/descriptions; the two writes that follow
+        # fingerprints/descriptions/embeddings; the writes that follow
         # repopulate them.
         store.write_table(table, source_connection_id=source_connection_id)
         new_fingerprints = {
@@ -207,6 +246,13 @@ def index(
                 source_connection_id=source_connection_id,
                 descriptions=descriptions,
             )
+        if embeddings:
+            store.write_table_embeddings(
+                schema,
+                name,
+                source_connection_id=source_connection_id,
+                embeddings=embeddings,
+            )
 
         tables_changed += 1
         columns_added += len(col_added)
@@ -223,4 +269,5 @@ def index(
         columns_removed=columns_removed,
         descriptions_generated=descriptions_generated,
         llm_cost_usd=pipeline.spent_usd if pipeline is not None else 0.0,
+        embeddings_generated=embeddings_generated,
     )
