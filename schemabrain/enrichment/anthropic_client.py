@@ -1,17 +1,23 @@
-"""Anthropic Claude Haiku 4.5 adapter.
+"""Anthropic SDK adapter (Claude Haiku 4.5 or Sonnet 4.6).
 
 Implements the `LLMClient` Protocol against the official `anthropic`
 Python SDK. The shared system prompt (which never varies between
 column-description calls in a single index run) is marked with ephemeral
 `cache_control` so Anthropic caches it for 5 minutes — every call after
 the first in a run pays the much cheaper cached input rate for the
-system prefix.
+system prefix, when the prefix is large enough to qualify (≥2048 tokens
+for Haiku, ≥1024 for Sonnet).
+
+The class is model-agnostic: pass any Anthropic model name and the
+matching `max_output_tokens`. For ergonomics, prefer the factory
+functions `anthropic_haiku_45_client()` and `anthropic_sonnet_46_client()`,
+which set sensible defaults for each tier.
 
 The adapter accepts a pre-constructed SDK client via the `client=`
 parameter, which lets tests inject a fake without instantiating the
 real `Anthropic()` (no API key needed in the test environment).
 
-**Do NOT call `AnthropicHaikuClient.complete` directly from application
+**Do NOT call `AnthropicClient.complete` directly from application
 code** — always go through `EnrichmentPipeline.enrich_column`, which
 enforces the `--max-cost` cap. Calling `complete` directly bypasses the
 cap and can produce uncapped LLM spend.
@@ -23,14 +29,27 @@ from typing import Any
 
 from schemabrain.enrichment.llm import LLMResponse, LLMUsage
 
-__all__ = ["AnthropicHaikuClient"]
+__all__ = [
+    "AnthropicClient",
+    "anthropic_haiku_45_client",
+    "anthropic_sonnet_46_client",
+]
 
-_DEFAULT_MODEL = "claude-haiku-4-5"
-_DEFAULT_MAX_OUTPUT_TOKENS = 200
+_HAIKU_45_MODEL = "claude-haiku-4-5"
+_SONNET_46_MODEL = "claude-sonnet-4-6"
+
+# Haiku is asked for one short sentence (≤30 words). 200 is comfortably
+# above that; hitting it indicates the model went off-prompt.
+_HAIKU_DEFAULT_MAX_OUTPUT_TOKENS = 200
+
+# Sonnet handles cryptic columns that may need a slightly longer
+# explanation to convey what an abbreviated name actually represents.
+# Still bounded so a runaway response surfaces as a max_tokens error.
+_SONNET_DEFAULT_MAX_OUTPUT_TOKENS = 300
 
 
-class AnthropicHaikuClient:
-    """One-shot completion via Anthropic Claude Haiku 4.5.
+class AnthropicClient:
+    """One-shot completion via Anthropic Claude (Haiku or Sonnet).
 
     Caches the system prefix via Anthropic's ephemeral cache. The user
     message is per-column and not cache-marked.
@@ -39,10 +58,10 @@ class AnthropicHaikuClient:
     def __init__(
         self,
         *,
+        model: str,
         api_key: str | None = None,
         client: Any | None = None,
-        model: str = _DEFAULT_MODEL,
-        max_output_tokens: int = _DEFAULT_MAX_OUTPUT_TOKENS,
+        max_output_tokens: int = _HAIKU_DEFAULT_MAX_OUTPUT_TOKENS,
     ) -> None:
         if client is None:
             # Lazy import so the unit tests (which inject a fake client)
@@ -53,6 +72,11 @@ class AnthropicHaikuClient:
         self._client = client
         self._model = model
         self._max_output_tokens = max_output_tokens
+
+    @property
+    def model(self) -> str:
+        """The model name this client targets (e.g. `"claude-haiku-4-5"`)."""
+        return self._model
 
     def complete(self, *, system: str, user: str) -> LLMResponse:
         message = self._client.messages.create(
@@ -74,6 +98,39 @@ class AnthropicHaikuClient:
         )
 
 
+def anthropic_haiku_45_client(
+    *,
+    api_key: str | None = None,
+    client: Any | None = None,
+) -> AnthropicClient:
+    """Construct an `AnthropicClient` configured for Claude Haiku 4.5."""
+    return AnthropicClient(
+        model=_HAIKU_45_MODEL,
+        api_key=api_key,
+        client=client,
+        max_output_tokens=_HAIKU_DEFAULT_MAX_OUTPUT_TOKENS,
+    )
+
+
+def anthropic_sonnet_46_client(
+    *,
+    api_key: str | None = None,
+    client: Any | None = None,
+) -> AnthropicClient:
+    """Construct an `AnthropicClient` configured for Claude Sonnet 4.6.
+
+    Used by the enrichment pipeline for columns that the routing
+    heuristic flags as cryptic (e.g. `acct_dim_v3`, `pmt_fct_h`) where
+    Sonnet's deeper reasoning is worth the ~5x cost over Haiku.
+    """
+    return AnthropicClient(
+        model=_SONNET_46_MODEL,
+        api_key=api_key,
+        client=client,
+        max_output_tokens=_SONNET_DEFAULT_MAX_OUTPUT_TOKENS,
+    )
+
+
 def _extract_text(message: Any) -> str:
     content = message.content
     if not content:
@@ -86,8 +143,8 @@ def _extract_text(message: Any) -> str:
             "the prompt must elicit a plain-text reply"
         )
     # Surface a truncated reply rather than silently storing a half-sentence.
-    # `max_tokens=200` is comfortably above 30 words; hitting it usually
-    # means the model went off-script and produced a wall of text.
+    # `max_tokens` is comfortably above the expected reply length;
+    # hitting it usually means the model went off-script.
     if getattr(message, "stop_reason", None) == "max_tokens":
         raise RuntimeError(
             "Anthropic hit max_tokens before finishing the description. "

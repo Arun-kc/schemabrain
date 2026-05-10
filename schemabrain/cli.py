@@ -38,7 +38,10 @@ from urllib.parse import urlparse
 
 from schemabrain.connectors.postgres import PostgresDataSource
 from schemabrain.core.store import SQLiteStore
-from schemabrain.enrichment.anthropic_client import AnthropicHaikuClient
+from schemabrain.enrichment.anthropic_client import (
+    anthropic_haiku_45_client,
+    anthropic_sonnet_46_client,
+)
 from schemabrain.enrichment.pipeline import CostCapExceeded, EnrichmentPipeline
 from schemabrain.eval.golden import DEFAULT_GOLDEN_PATH, load_golden
 from schemabrain.eval.retriever import KeywordRetriever
@@ -75,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
             args.store_path,
             no_enrich=args.no_enrich,
             max_cost_usd=args.max_cost,
+            enable_sonnet=args.enable_sonnet,
         )
     if args.command == "eval":
         return _cmd_eval(
@@ -118,6 +122,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Hard cap on USD spend per run (default: ${_DEFAULT_MAX_COST_USD:.2f}). "
         "Aborts cleanly when reached; no effect with --no-enrich.",
     )
+    p_index.add_argument(
+        "--enable-sonnet",
+        action="store_true",
+        help="Route cryptic column names (heavily abbreviated, e.g. "
+        "`acct_dim_v3`) to Claude Sonnet 4.6 instead of Haiku 4.5. "
+        "Sonnet is ~5x more expensive per call but produces better "
+        "descriptions for hard-to-decode names. Default off (Haiku-only) "
+        "to keep automatic runs cheap; enable when indexing schemas with "
+        "many cryptic identifiers.",
+    )
 
     p_eval = sub.add_parser(
         "eval",
@@ -156,6 +170,7 @@ def _cmd_index(
     *,
     no_enrich: bool,
     max_cost_usd: float,
+    enable_sonnet: bool,
 ) -> int:
     try:
         canonical = _canonical_url(url)
@@ -173,8 +188,10 @@ def _cmd_index(
                 file=sys.stderr,
             )
             return 2
+        cryptic_client = anthropic_sonnet_46_client(api_key=api_key) if enable_sonnet else None
         pipeline = EnrichmentPipeline(
-            client=AnthropicHaikuClient(api_key=api_key),
+            client=anthropic_haiku_45_client(api_key=api_key),
+            cryptic_client=cryptic_client,
             max_cost_usd=max_cost_usd,
         )
 

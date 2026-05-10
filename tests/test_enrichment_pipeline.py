@@ -90,7 +90,9 @@ class TestEnrichmentPipelineHappyPath:
         )
 
         assert desc.text == "User email address"
-        assert desc.model == "fake-model"
+        # FakeLLMClient defaults to a Haiku-family model name so the
+        # pipeline's cost dispatch resolves cleanly in tests.
+        assert desc.model == "claude-haiku-4-5"
         assert desc.prompt_version  # whatever the live PROMPT_VERSION is
         assert desc.input_tokens > 0
         assert desc.output_tokens > 0
@@ -226,3 +228,152 @@ class TestCostReporting:
         assert desc.cached_input_tokens == 900
         assert desc.input_tokens == 1000
         assert desc.output_tokens == 20
+
+
+def _cryptic_table() -> Table:
+    """Table with a deliberately cryptic column name (per the plan's example)."""
+    return Table(
+        name="ledger",
+        schema_name="public",
+        columns=(
+            Column(
+                name="id",
+                table_name="ledger",
+                schema_name="public",
+                data_type="BIGINT",
+                nullable=False,
+                ordinal_position=1,
+                is_primary_key=True,
+            ),
+            Column(
+                name="acct_dim_v3",
+                table_name="ledger",
+                schema_name="public",
+                data_type="JSONB",
+                nullable=True,
+                ordinal_position=2,
+            ),
+        ),
+    )
+
+
+class TestTwoTierRouting:
+    """Single-client mode is the default; cryptic-tier kicks in only
+    when a second client is wired."""
+
+    def test_single_client_mode_routes_everything_to_default(self) -> None:
+        # No cryptic_client → both clear and cryptic columns hit the
+        # default client. Backward-compatible with everything before.
+        haiku = FakeLLMClient(text_provider=lambda s, u: "x", model="claude-haiku-4-5")
+        pipeline = EnrichmentPipeline(client=haiku)
+        assert pipeline.has_cryptic_tier is False
+
+        table = _cryptic_table()
+        for col in table.columns:
+            pipeline.enrich_column(table=table, column=col, stats=None, fk_targets=())
+        assert len(haiku.calls) == 2
+
+    def test_clear_column_routes_to_default_client(self) -> None:
+        haiku = FakeLLMClient(text_provider=lambda s, u: "clear", model="claude-haiku-4-5")
+        sonnet = FakeLLMClient(text_provider=lambda s, u: "sonnet", model="claude-sonnet-4-6")
+        pipeline = EnrichmentPipeline(client=haiku, cryptic_client=sonnet)
+        assert pipeline.has_cryptic_tier is True
+
+        table = _users_table()  # only `id` and `email` — both clear
+        for col in table.columns:
+            pipeline.enrich_column(table=table, column=col, stats=None, fk_targets=())
+        assert len(haiku.calls) == 2
+        assert len(sonnet.calls) == 0
+
+    def test_cryptic_column_routes_to_cryptic_client(self) -> None:
+        haiku = FakeLLMClient(text_provider=lambda s, u: "clear", model="claude-haiku-4-5")
+        sonnet = FakeLLMClient(
+            text_provider=lambda s, u: "sonnet-explained", model="claude-sonnet-4-6"
+        )
+        pipeline = EnrichmentPipeline(client=haiku, cryptic_client=sonnet)
+
+        table = _cryptic_table()  # `id` clear, `acct_dim_v3` cryptic
+        for col in table.columns:
+            pipeline.enrich_column(table=table, column=col, stats=None, fk_targets=())
+        assert len(haiku.calls) == 1, "clear column must use default client"
+        assert len(sonnet.calls) == 1, "cryptic column must use cryptic client"
+
+    def test_chosen_model_appears_on_description(self) -> None:
+        # The model name on the produced ColumnDescription tells us
+        # which tier actually handled each column — useful for both
+        # debugging and for the final cost-tier breakdown.
+        haiku = FakeLLMClient(text_provider=lambda s, u: "clear", model="claude-haiku-4-5")
+        sonnet = FakeLLMClient(text_provider=lambda s, u: "sonnet", model="claude-sonnet-4-6")
+        pipeline = EnrichmentPipeline(client=haiku, cryptic_client=sonnet)
+        table = _cryptic_table()
+        clear_desc = pipeline.enrich_column(
+            table=table, column=table.columns[0], stats=None, fk_targets=()
+        )
+        cryptic_desc = pipeline.enrich_column(
+            table=table, column=table.columns[1], stats=None, fk_targets=()
+        )
+        assert clear_desc.model == "claude-haiku-4-5"
+        assert cryptic_desc.model == "claude-sonnet-4-6"
+
+    def test_cumulative_spend_includes_both_tiers(self) -> None:
+        # The cap is shared across BOTH clients — Sonnet calls add to
+        # the same counter that Haiku calls add to.
+        haiku = FakeLLMClient(text_provider=lambda s, u: "x", model="claude-haiku-4-5")
+        sonnet = FakeLLMClient(text_provider=lambda s, u: "x", model="claude-sonnet-4-6")
+        pipeline = EnrichmentPipeline(client=haiku, cryptic_client=sonnet)
+        table = _cryptic_table()
+        for col in table.columns:
+            pipeline.enrich_column(table=table, column=col, stats=None, fk_targets=())
+        # Both calls happened; both contributed to spend.
+        assert pipeline.spent_usd > 0.0
+        assert len(haiku.calls) == 1
+        assert len(sonnet.calls) == 1
+
+    def test_cap_fires_regardless_of_tier(self) -> None:
+        # If spend hit the cap on a Haiku call, the next call (whether
+        # it would route to Haiku or Sonnet) is refused.
+        big = "x" * 5_000_000
+        haiku = FakeLLMClient(text_provider=lambda s, u: big, model="claude-haiku-4-5")
+        sonnet = FakeLLMClient(text_provider=lambda s, u: "small", model="claude-sonnet-4-6")
+        pipeline = EnrichmentPipeline(client=haiku, cryptic_client=sonnet, max_cost_usd=0.5)
+        table = _cryptic_table()
+        # First call (clear column → haiku) blows the cap.
+        pipeline.enrich_column(table=table, column=table.columns[0], stats=None, fk_targets=())
+        assert pipeline.spent_usd > pipeline.max_cost_usd
+        # Second call (cryptic → would route to sonnet) is refused
+        # before either client is touched.
+        with pytest.raises(CostCapExceeded):
+            pipeline.enrich_column(table=table, column=table.columns[1], stats=None, fk_targets=())
+        assert len(sonnet.calls) == 0, "sonnet must not be called after cap"
+
+
+class TestUnknownModelRejected:
+    """If the response model has no pricing entry, the pipeline raises
+    immediately rather than silently free-riding past the cost cap."""
+
+    def test_unknown_model_in_response_raises(self) -> None:
+        client = FakeLLMClient(text_provider=lambda s, u: "x", model="claude-opus-4-5")
+        pipeline = EnrichmentPipeline(client=client)
+        table = _users_table()
+        with pytest.raises(ValueError, match="unknown"):
+            pipeline.enrich_column(table=table, column=table.columns[0], stats=None, fk_targets=())
+
+    def test_unknown_model_does_not_record_spend(self) -> None:
+        # Document the current behavior: when `cost_usd_for` raises
+        # AFTER the LLM call succeeded, that single call's cost escapes
+        # the cap counter. This is acceptable in practice because:
+        #   (1) reaching this branch requires a programming error
+        #       (a routed-to model has no pricing entry in llm.py),
+        #   (2) the exception propagates and tanks the run, so no
+        #       further calls happen,
+        #   (3) the un-recorded cost is bounded by `max_output_tokens`.
+        # If this behavior ever needs to change (e.g. add a worst-case
+        # fallback charge), this test will catch the silent change.
+        client = FakeLLMClient(text_provider=lambda s, u: "x", model="claude-opus-4-5")
+        pipeline = EnrichmentPipeline(client=client)
+        table = _users_table()
+        with pytest.raises(ValueError):
+            pipeline.enrich_column(table=table, column=table.columns[0], stats=None, fk_targets=())
+        assert pipeline.spent_usd == 0.0
+        # The LLM call DID happen — only the cost-recording failed.
+        assert len(client.calls) == 1

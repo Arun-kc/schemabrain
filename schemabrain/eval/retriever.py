@@ -145,9 +145,7 @@ class KeywordRetriever:
         # store is a single-process SQLite read — no concurrent deleter
         # can race. Use a conditional raise (not `assert`) so the guard
         # survives a `-O` run.
-        tbl = self.store.get_table(
-            schema, table, source_connection_id=self.source_connection_id
-        )
+        tbl = self.store.get_table(schema, table, source_connection_id=self.source_connection_id)
         if tbl is None:  # pragma: no cover — invariant from list_tables
             raise RuntimeError(
                 f"store inconsistency: list_tables returned ({schema!r}, {table!r}) "

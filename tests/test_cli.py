@@ -270,6 +270,157 @@ class TestEnrichmentCliFlags:
 
         assert _DEFAULT_MAX_COST_USD == 10.0
 
+    def test_enable_sonnet_default_is_off(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # Default index run must NOT construct a Sonnet client — Sonnet
+        # is opt-in to keep automatic runs cheap. Verify by stubbing the
+        # Sonnet factory and asserting it was never called.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+
+        sonnet_calls: list[dict] = []
+
+        def _track_sonnet(**kwargs):
+            sonnet_calls.append(kwargs)
+            raise AssertionError("Sonnet factory must not be called without --enable-sonnet")
+
+        monkeypatch.setattr("schemabrain.cli.anthropic_sonnet_46_client", _track_sonnet)
+
+        class _EmptySource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return []
+
+            def get_table(self, name: str, schema: str):
+                raise NotImplementedError
+
+            def close(self) -> None:
+                pass
+
+        class _StubProfiler:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def profile_table(self, table):
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
+        monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(["index", "postgresql://fake/db", "--store-path", str(store_path)])
+        assert exit_code == 0
+        assert sonnet_calls == []
+
+    def test_enable_sonnet_constructs_cryptic_tier(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # With --enable-sonnet, the CLI constructs the Sonnet client and
+        # passes it to the pipeline as `cryptic_client`. Verify by spying
+        # on both factory calls.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+
+        haiku_calls: list[dict] = []
+        sonnet_calls: list[dict] = []
+
+        class _DummyClient:
+            model = "claude-haiku-4-5"
+
+            def complete(self, *, system, user):
+                raise NotImplementedError("no tables → no calls")
+
+        class _DummySonnetClient:
+            model = "claude-sonnet-4-6"
+
+            def complete(self, *, system, user):
+                raise NotImplementedError("no tables → no calls")
+
+        def _track_haiku(**kwargs):
+            haiku_calls.append(kwargs)
+            return _DummyClient()
+
+        def _track_sonnet(**kwargs):
+            sonnet_calls.append(kwargs)
+            return _DummySonnetClient()
+
+        monkeypatch.setattr("schemabrain.cli.anthropic_haiku_45_client", _track_haiku)
+        monkeypatch.setattr("schemabrain.cli.anthropic_sonnet_46_client", _track_sonnet)
+
+        class _EmptySource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return []
+
+            def get_table(self, name: str, schema: str):
+                raise NotImplementedError
+
+            def close(self) -> None:
+                pass
+
+        class _StubProfiler:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def profile_table(self, table):
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
+        monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                "postgresql://fake/db",
+                "--store-path",
+                str(store_path),
+                "--enable-sonnet",
+            ]
+        )
+        assert exit_code == 0
+        assert len(haiku_calls) == 1
+        assert len(sonnet_calls) == 1
+        # Same API key plumbed to both.
+        assert haiku_calls[0]["api_key"] == sonnet_calls[0]["api_key"] == "sk-ant-fake"
+
     def test_with_api_key_constructs_pipeline_and_runs(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -278,8 +429,9 @@ class TestEnrichmentCliFlags:
     ):
         # With ANTHROPIC_API_KEY set, the CLI builds the pipeline. We
         # don't want to make a real call, so stub out the source/profiler
-        # to return empty (no tables → no LLM call) AND stub the
-        # AnthropicHaikuClient to avoid the real SDK construction.
+        # to return empty (no tables → no LLM call) AND rely on the
+        # Anthropic factory's lazy SDK construction (no network call
+        # until messages.create) to avoid burning real credits.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
 
         class _EmptySource:
@@ -332,7 +484,7 @@ class TestEnrichmentCliFlags:
         capsys: pytest.CaptureFixture[str],
     ):
         # Stub the source to return one table, the profiler to return
-        # empty stats, and the AnthropicHaikuClient with a fake that
+        # empty stats, and the Anthropic Haiku factory with a fake that
         # produces enormous output → trips a tiny --max-cost cap.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
 
@@ -414,7 +566,15 @@ class TestEnrichmentCliFlags:
 
         monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _OneTableSource)
         monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
-        monkeypatch.setattr("schemabrain.cli.AnthropicHaikuClient", _ExpensiveClient)
+        # Stub the Haiku factory: the CLI calls
+        # `anthropic_haiku_45_client(api_key=...)` and the return value
+        # is what gets handed to EnrichmentPipeline as `client=`. We
+        # return an `_ExpensiveClient` directly so the pipeline talks
+        # to it without an SDK round-trip.
+        monkeypatch.setattr(
+            "schemabrain.cli.anthropic_haiku_45_client",
+            lambda *, api_key=None: _ExpensiveClient(api_key=api_key),
+        )
 
         store_path = tmp_path / "schemabrain.db"
         exit_code = main(

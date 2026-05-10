@@ -78,7 +78,7 @@ class TestPromptVersion:
     def test_locked_value(self) -> None:
         # Changing this string is a deliberate cache-invalidation event.
         # Bumping it must be paired with a prompt change (or vice versa).
-        assert PROMPT_VERSION == "2026-05-10-1"
+        assert PROMPT_VERSION == "2026-05-10-2"
 
     def test_format_is_date_stamped(self) -> None:
         # Format: `YYYY-MM-DD-N`. Locks the convention so future bumps

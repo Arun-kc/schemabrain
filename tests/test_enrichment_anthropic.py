@@ -12,7 +12,11 @@ from typing import Any
 
 import pytest
 
-from schemabrain.enrichment.anthropic_client import AnthropicHaikuClient
+from schemabrain.enrichment.anthropic_client import (
+    AnthropicClient,
+    anthropic_haiku_45_client,
+    anthropic_sonnet_46_client,
+)
 from schemabrain.enrichment.llm import LLMClient
 
 
@@ -52,9 +56,9 @@ class _FakeAnthropic:
         self.messages = _FakeMessagesAPI(response)
 
 
-def _make_client(response: _FakeMessage) -> tuple[AnthropicHaikuClient, _FakeAnthropic]:
+def _make_client(response: _FakeMessage) -> tuple[AnthropicClient, _FakeAnthropic]:
     fake_sdk = _FakeAnthropic(response)
-    return AnthropicHaikuClient(client=fake_sdk), fake_sdk
+    return anthropic_haiku_45_client(client=fake_sdk), fake_sdk
 
 
 class TestRealClientConstruction:
@@ -63,22 +67,29 @@ class TestRealClientConstruction:
         # and instantiates it. The Anthropic() ctor is lazy — no network
         # call until messages.create — so we can build it with a fake
         # api_key without burning real credits.
-        client = AnthropicHaikuClient(api_key="sk-ant-fake-key-for-construction-test")
-        # Verify the SDK object was actually built and the model is set.
-        assert client._client is not None
-        assert client._model == "claude-haiku-4-5"
+        client = anthropic_haiku_45_client(api_key="sk-ant-fake-key-for-construction-test")
+        assert client.model == "claude-haiku-4-5"
 
 
 class TestProtocolConformance:
-    def test_satisfies_llm_client_protocol(self) -> None:
-        # Construct with the SDK injected (no API key needed in tests).
+    def test_haiku_factory_satisfies_llm_client_protocol(self) -> None:
         fake = _FakeAnthropic(
             _FakeMessage(
                 content=[_FakeTextBlock(text="x")],
                 usage=_FakeUsage(input_tokens=1, output_tokens=1),
             )
         )
-        client = AnthropicHaikuClient(client=fake)
+        client = anthropic_haiku_45_client(client=fake)
+        assert isinstance(client, LLMClient)
+
+    def test_sonnet_factory_satisfies_llm_client_protocol(self) -> None:
+        fake = _FakeAnthropic(
+            _FakeMessage(
+                content=[_FakeTextBlock(text="x")],
+                usage=_FakeUsage(input_tokens=1, output_tokens=1),
+            )
+        )
+        client = anthropic_sonnet_46_client(client=fake)
         assert isinstance(client, LLMClient)
 
 
@@ -222,7 +233,7 @@ class TestPromptCachingRequest:
 
 
 class TestModelSelection:
-    def test_default_model_is_haiku_45(self) -> None:
+    def test_haiku_factory_uses_haiku_model(self) -> None:
         client, fake = _make_client(
             _FakeMessage(
                 content=[_FakeTextBlock(text="x")],
@@ -231,6 +242,35 @@ class TestModelSelection:
         )
         client.complete(system="s", user="u")
         assert fake.messages.calls[0]["model"] == "claude-haiku-4-5"
+
+    def test_sonnet_factory_uses_sonnet_model(self) -> None:
+        fake = _FakeAnthropic(
+            _FakeMessage(
+                content=[_FakeTextBlock(text="x")],
+                usage=_FakeUsage(input_tokens=1, output_tokens=1),
+                model="claude-sonnet-4-6",
+            )
+        )
+        client = anthropic_sonnet_46_client(client=fake)
+        client.complete(system="s", user="u")
+        assert fake.messages.calls[0]["model"] == "claude-sonnet-4-6"
+
+    def test_sonnet_factory_uses_higher_max_output_tokens(self) -> None:
+        # Sonnet handles cryptic columns and may need slightly longer
+        # responses; the factory bumps max_tokens accordingly. If this
+        # ever flips, Sonnet truncations would surface as mysterious
+        # max_tokens errors despite Haiku passing the same prompt.
+        haiku = anthropic_haiku_45_client(api_key="sk-ant-fake")
+        sonnet = anthropic_sonnet_46_client(api_key="sk-ant-fake")
+        # Access the protected attr — the public property only exposes
+        # the model. The token cap isn't user-tunable today, so a pin.
+        assert sonnet._max_output_tokens > haiku._max_output_tokens
+
+    def test_class_requires_explicit_model(self) -> None:
+        # No default model on the underlying class — callers must be
+        # explicit, which is what the factories provide ergonomically.
+        with pytest.raises(TypeError, match="model"):
+            AnthropicClient(api_key="sk-ant-fake")  # type: ignore[call-arg]
 
 
 class TestErrorHandling:

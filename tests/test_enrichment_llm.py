@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from schemabrain.enrichment.llm import (
     FakeLLMClient,
     LLMClient,
     LLMResponse,
     LLMUsage,
+    cost_usd_for,
     haiku_45_cost_usd,
+    sonnet_46_cost_usd,
 )
 
 
@@ -101,6 +105,100 @@ class TestHaikuCost:
         usage = LLMUsage(input_tokens=100, cached_input_tokens=500, output_tokens=0)
         cost = haiku_45_cost_usd(usage)
         assert cost >= 0.0
+
+
+class TestSonnetCost:
+    # Sonnet 4.6 pricing (per 1M tokens):
+    #   Input non-cached: $3.00
+    #   Input cached:     $0.30
+    #   Cache write:      $3.75
+    #   Output:           $15.00
+
+    def test_zero_usage_costs_zero(self) -> None:
+        usage = LLMUsage(input_tokens=0, cached_input_tokens=0, output_tokens=0)
+        assert sonnet_46_cost_usd(usage) == 0.0
+
+    def test_non_cached_input_only(self) -> None:
+        usage = LLMUsage(input_tokens=1_000_000, cached_input_tokens=0, output_tokens=0)
+        assert math.isclose(sonnet_46_cost_usd(usage), 3.00, rel_tol=1e-9)
+
+    def test_output_tokens(self) -> None:
+        usage = LLMUsage(input_tokens=0, cached_input_tokens=0, output_tokens=1_000_000)
+        assert math.isclose(sonnet_46_cost_usd(usage), 15.00, rel_tol=1e-9)
+
+    def test_fully_cached_input_charged_at_cached_rate(self) -> None:
+        usage = LLMUsage(input_tokens=1_000_000, cached_input_tokens=1_000_000, output_tokens=0)
+        assert math.isclose(sonnet_46_cost_usd(usage), 0.30, rel_tol=1e-9)
+
+    def test_cache_creation_tokens_charged_at_125x_rate(self) -> None:
+        usage = LLMUsage(
+            input_tokens=1_000_000,
+            cached_input_tokens=0,
+            output_tokens=0,
+            cache_creation_tokens=1_000_000,
+        )
+        # 1M creation tokens at $3.75 per MTok = $3.75
+        assert math.isclose(sonnet_46_cost_usd(usage), 3.75, rel_tol=1e-9)
+
+    def test_sonnet_is_meaningfully_more_expensive_than_haiku(self) -> None:
+        # Sanity: any non-trivial Sonnet call costs more than the same
+        # Haiku call. If this ever flips, the routing logic gets the
+        # premium relationship backwards and we'd silently pay 5x.
+        usage = LLMUsage(input_tokens=500, cached_input_tokens=0, output_tokens=50)
+        assert sonnet_46_cost_usd(usage) > haiku_45_cost_usd(usage)
+
+
+class TestCostDispatch:
+    """`cost_usd_for(model, usage)` picks the right per-model function
+    using the model name returned by the API (which carries a date
+    suffix like `claude-haiku-4-5-20251001`)."""
+
+    def test_haiku_alias_resolves(self) -> None:
+        usage = LLMUsage(input_tokens=1_000_000, cached_input_tokens=0, output_tokens=0)
+        assert math.isclose(cost_usd_for("claude-haiku-4-5", usage), 0.80, rel_tol=1e-9)
+
+    def test_haiku_with_date_suffix_resolves(self) -> None:
+        # The real API stamps the model with a date — the dispatch must
+        # handle that, not just the bare alias.
+        usage = LLMUsage(input_tokens=1_000_000, cached_input_tokens=0, output_tokens=0)
+        assert math.isclose(cost_usd_for("claude-haiku-4-5-20251001", usage), 0.80, rel_tol=1e-9)
+
+    def test_sonnet_alias_resolves(self) -> None:
+        usage = LLMUsage(input_tokens=1_000_000, cached_input_tokens=0, output_tokens=0)
+        assert math.isclose(cost_usd_for("claude-sonnet-4-6", usage), 3.00, rel_tol=1e-9)
+
+    def test_sonnet_with_date_suffix_resolves(self) -> None:
+        usage = LLMUsage(input_tokens=1_000_000, cached_input_tokens=0, output_tokens=0)
+        assert math.isclose(cost_usd_for("claude-sonnet-4-6-20260301", usage), 3.00, rel_tol=1e-9)
+
+    def test_unknown_model_raises_value_error(self) -> None:
+        usage = LLMUsage(input_tokens=1, cached_input_tokens=0, output_tokens=1)
+        with pytest.raises(ValueError, match="unknown"):
+            cost_usd_for("claude-opus-4-5", usage)
+
+    def test_empty_model_string_raises(self) -> None:
+        usage = LLMUsage(input_tokens=1, cached_input_tokens=0, output_tokens=1)
+        with pytest.raises(ValueError):
+            cost_usd_for("", usage)
+
+    def test_numeric_extension_does_not_false_positive_haiku(self) -> None:
+        # `claude-haiku-4-50` would naively match `"haiku-4-5" in model`
+        # and route to Haiku 4.5 pricing, silently mis-billing the
+        # hypothetical successor. Anchored regex must reject it.
+        usage = LLMUsage(input_tokens=1, cached_input_tokens=0, output_tokens=1)
+        with pytest.raises(ValueError, match="unknown"):
+            cost_usd_for("claude-haiku-4-50", usage)
+
+    def test_numeric_extension_does_not_false_positive_sonnet(self) -> None:
+        usage = LLMUsage(input_tokens=1, cached_input_tokens=0, output_tokens=1)
+        with pytest.raises(ValueError, match="unknown"):
+            cost_usd_for("claude-sonnet-4-60", usage)
+
+    def test_substring_with_no_dash_does_not_false_positive(self) -> None:
+        # `claude-haiku-4-5xyz` (no dash separator) is also rejected.
+        usage = LLMUsage(input_tokens=1, cached_input_tokens=0, output_tokens=1)
+        with pytest.raises(ValueError, match="unknown"):
+            cost_usd_for("claude-haiku-4-5xyz", usage)
 
 
 class TestLLMResponse:

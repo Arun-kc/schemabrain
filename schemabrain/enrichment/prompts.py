@@ -27,7 +27,7 @@ from schemabrain.profiler.stats import ColumnStats
 # date-stamp lets a future debugger reconstruct "what prompt was in use
 # when these cached fingerprints were stamped" without checking out an
 # old commit. Tests treat this as a load-bearing constant.
-PROMPT_VERSION = "2026-05-10-1"
+PROMPT_VERSION = "2026-05-10-2"
 
 SYSTEM_PROMPT = """\
 You are a data engineer documenting columns in a relational database for an AI agent.
