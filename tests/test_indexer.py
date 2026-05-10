@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import pytest
+
 from schemabrain.connectors.base import DataSource
 from schemabrain.core.models import Column, ForeignKey, Table
 from schemabrain.core.store import SQLiteStore
@@ -445,6 +447,220 @@ class TestEmpty:
         store.close()
 
 
+class TestEnrichmentIntegration:
+    def _pipeline(self, *, max_cost_usd: float = 10.0):
+        from schemabrain.enrichment.llm import FakeLLMClient
+        from schemabrain.enrichment.pipeline import EnrichmentPipeline
+
+        client = FakeLLMClient(text_provider=lambda system, user: "fake description")
+        return EnrichmentPipeline(client=client, max_cost_usd=max_cost_usd), client
+
+    def test_no_pipeline_means_no_descriptions_persisted(self) -> None:
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+
+        result = index(
+            source=source, profiler=profiler, store=store, source_connection_id=SOURCE_ID
+        )
+        descs = store.get_table_descriptions("public", "users", source_connection_id=SOURCE_ID)
+        assert descs == {}
+        assert result.descriptions_generated == 0
+        assert result.llm_cost_usd == 0.0
+        store.close()
+
+    def test_with_pipeline_writes_descriptions_for_every_column(self) -> None:
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        pipeline, client = self._pipeline()
+
+        result = index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+        )
+
+        descs = store.get_table_descriptions("public", "users", source_connection_id=SOURCE_ID)
+        assert set(descs.keys()) == {"id", "email"}
+        assert all(d.text == "fake description" for d in descs.values())
+        assert result.descriptions_generated == 2
+        assert result.llm_cost_usd > 0.0
+        # One LLM call per column.
+        assert len(client.calls) == 2
+        store.close()
+
+    def test_unchanged_table_does_not_call_llm(self) -> None:
+        # The Slice 3 no-op-rerun invariant extends to LLM cost: a
+        # second index on an unchanged schema must not make any new
+        # LLM calls.
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        pipeline, client = self._pipeline()
+
+        # First run — fills cache + descriptions.
+        index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+        )
+        calls_after_first = len(client.calls)
+
+        # Second run — must be a no-op.
+        result = index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+        )
+
+        assert len(client.calls) == calls_after_first, "no-op rerun must not call the LLM"
+        assert result.descriptions_generated == 0
+
+    def test_changed_table_re_enriches_only_that_table(self) -> None:
+        source = FakeDataSource([_users_table(), _orders_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        pipeline, client = self._pipeline()
+        index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+        )
+        first_call_count = len(client.calls)
+
+        # Mutate users.email type.
+        mutated_columns = (
+            _column(
+                "id",
+                table_name="users",
+                data_type="BIGINT",
+                nullable=False,
+                ordinal_position=1,
+                is_primary_key=True,
+            ),
+            _column(
+                "email",
+                table_name="users",
+                data_type="VARCHAR(255)",
+                nullable=False,
+                ordinal_position=2,
+            ),
+        )
+        source.set_tables([_users_table(columns=mutated_columns), _orders_table()])
+        result = index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+        )
+
+        # Only `users` was re-enriched (2 columns), not `orders`.
+        assert len(client.calls) == first_call_count + 2
+        assert result.descriptions_generated == 2
+        assert result.tables_unchanged == 1
+        assert result.tables_changed == 1
+
+    def test_cost_cap_during_enrichment_leaves_cache_unchanged_for_that_table(
+        self,
+    ) -> None:
+        # Regression for the order-of-operations bug: if CostCapExceeded
+        # fires mid-enrichment, NOTHING for that table should be in the
+        # cache, so the next run sees the table as still-changed and
+        # retries. Otherwise we'd stamp fingerprints without ever writing
+        # descriptions and the table would be permanently un-described
+        # until a real schema change occurred.
+        from schemabrain.enrichment.llm import FakeLLMClient
+        from schemabrain.enrichment.pipeline import (
+            CostCapExceeded,
+            EnrichmentPipeline,
+        )
+
+        source = FakeDataSource([_users_table()])  # 2 columns
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        # Cap that allows the first call but trips on the second.
+        # Each huge response costs ~$5; cap of $2 lets call 1 through
+        # and triggers the cap on entry to call 2.
+        client = FakeLLMClient(text_provider=lambda s, u: "x" * 5_000_000)
+        pipeline = EnrichmentPipeline(client=client, max_cost_usd=2.0)
+
+        with pytest.raises(CostCapExceeded):
+            index(
+                source=source,
+                profiler=profiler,
+                store=store,
+                source_connection_id=SOURCE_ID,
+                pipeline=pipeline,
+            )
+
+        # After the failed run, NOTHING for users should be cached:
+        # not the table row, not fingerprints, not descriptions.
+        assert store.list_tables(source_connection_id=SOURCE_ID) == []
+        assert store.get_table_fingerprints("public", "users", source_connection_id=SOURCE_ID) == {}
+        store.close()
+
+    def test_cost_cap_exception_propagates(self) -> None:
+        # Pipeline configured with a tiny cap that the first call breaks.
+        from schemabrain.enrichment.pipeline import CostCapExceeded
+
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        # Build a pipeline whose response is huge to trip the cap fast.
+        from schemabrain.enrichment.llm import FakeLLMClient
+        from schemabrain.enrichment.pipeline import EnrichmentPipeline
+
+        client = FakeLLMClient(text_provider=lambda s, u: "x" * 5_000_000)
+        pipeline = EnrichmentPipeline(client=client, max_cost_usd=0.5)
+
+        with pytest.raises(CostCapExceeded):
+            index(
+                source=source,
+                profiler=profiler,
+                store=store,
+                source_connection_id=SOURCE_ID,
+                pipeline=pipeline,
+            )
+        store.close()
+
+    def test_descriptions_cleared_on_table_drop(self) -> None:
+        source = FakeDataSource([_users_table(), _orders_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        pipeline, _ = self._pipeline()
+        index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+        )
+        # Drop orders.
+        source.set_tables([_users_table()])
+        index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+        )
+        orders_descs = store.get_table_descriptions(
+            "public", "orders", source_connection_id=SOURCE_ID
+        )
+        assert orders_descs == {}
+        store.close()
+
+
 class TestIndexResultSummary:
     def test_summary_shows_all_counts(self) -> None:
         result = IndexResult(
@@ -464,3 +680,22 @@ class TestIndexResultSummary:
         assert "+3" in summary
         assert "~1" in summary
         assert "-0" in summary
+        # No LLM section when no enrichment happened.
+        assert "LLM:" not in summary
+
+    def test_summary_includes_llm_section_when_descriptions_generated(self) -> None:
+        result = IndexResult(
+            tables_seen=1,
+            tables_changed=1,
+            tables_unchanged=0,
+            tables_removed=0,
+            columns_added=3,
+            columns_changed=0,
+            columns_removed=0,
+            descriptions_generated=3,
+            llm_cost_usd=0.0042,
+        )
+        summary = result.summary()
+        assert "LLM:" in summary
+        assert "3 descriptions" in summary
+        assert "$0.0042" in summary

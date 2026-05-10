@@ -65,6 +65,14 @@ def column_description_user_prompt(
     profiler-derived signal. Stats lines are suppressed entirely when
     `stats` is `None` or when the relevant tuple is empty (avoids
     emitting empty `Sample values: ` lines that confuse the model).
+
+    **TRUST BOUNDARY:** `stats.sample_values` and `stats.shape_patterns`
+    are sent to the LLM verbatim. The contract is that the profiler
+    (`schemabrain.profiler.postgres.PostgresProfiler`) has already run
+    PII redaction (email/SSN/CC) before populating `ColumnStats`. If a
+    custom profiler ever returns un-redacted PII in `sample_values`, it
+    will reach Anthropic. Do not change the profiler contract without
+    re-evaluating this assumption.
     """
     siblings = [c for c in table.columns if c.name != column.name][:_SIBLING_LIMIT]
 

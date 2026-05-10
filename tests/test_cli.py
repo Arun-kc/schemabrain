@@ -178,9 +178,257 @@ class TestIndexCommandValidation:
         monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
         monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
         store_path = tmp_path / "schemabrain.db"
-        exit_code = main(["index", "postgresql://fake/db", "--store-path", str(store_path)])
+        # --no-enrich so we don't need ANTHROPIC_API_KEY for this test.
+        exit_code = main(
+            [
+                "index",
+                "postgresql://fake/db",
+                "--store-path",
+                str(store_path),
+                "--no-enrich",
+            ]
+        )
         assert exit_code == 0
         assert "no tables indexed" in capsys.readouterr().err
+
+
+class TestEnrichmentCliFlags:
+    def test_missing_api_key_without_no_enrich_returns_nonzero(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # Without ANTHROPIC_API_KEY and without --no-enrich, the CLI must
+        # refuse to run rather than silently fall back to a no-LLM mode.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(["index", "postgresql://fake/db", "--store-path", str(store_path)])
+        assert exit_code == 2
+        assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+
+    def test_no_enrich_skips_api_key_requirement(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        class _EmptySource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return []
+
+            def get_table(self, name: str, schema: str):
+                raise NotImplementedError
+
+            def close(self) -> None:
+                pass
+
+        class _StubProfiler:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def profile_table(self, table):
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
+        monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                "postgresql://fake/db",
+                "--store-path",
+                str(store_path),
+                "--no-enrich",
+            ]
+        )
+        assert exit_code == 0
+
+    def test_max_cost_default_is_ten(self) -> None:
+        # Default --max-cost should match the EnrichmentPipeline default.
+        from schemabrain.cli import _DEFAULT_MAX_COST_USD
+
+        assert _DEFAULT_MAX_COST_USD == 10.0
+
+    def test_with_api_key_constructs_pipeline_and_runs(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # With ANTHROPIC_API_KEY set, the CLI builds the pipeline. We
+        # don't want to make a real call, so stub out the source/profiler
+        # to return empty (no tables → no LLM call) AND stub the
+        # AnthropicHaikuClient to avoid the real SDK construction.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+
+        class _EmptySource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return []
+
+            def get_table(self, name: str, schema: str):
+                raise NotImplementedError
+
+            def close(self) -> None:
+                pass
+
+        class _StubProfiler:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def profile_table(self, table):
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
+        monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
+
+        store_path = tmp_path / "schemabrain.db"
+        # No --no-enrich → exercises the pipeline construction path.
+        exit_code = main(["index", "postgresql://fake/db", "--store-path", str(store_path)])
+        assert exit_code == 0
+
+    def test_cost_cap_exceeded_returns_exit_3(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # Stub the source to return one table, the profiler to return
+        # empty stats, and the AnthropicHaikuClient with a fake that
+        # produces enormous output → trips a tiny --max-cost cap.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+
+        from schemabrain.core.models import Column, Table
+        from schemabrain.enrichment.llm import LLMResponse, LLMUsage
+
+        users = Table(
+            name="users",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="users",
+                    schema_name="public",
+                    data_type="BIGINT",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+                Column(
+                    name="email",
+                    table_name="users",
+                    schema_name="public",
+                    data_type="TEXT",
+                    nullable=False,
+                    ordinal_position=2,
+                ),
+            ),
+        )
+
+        class _OneTableSource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return [("public", "users")]
+
+            def get_table(self, name: str, schema: str):
+                return users
+
+            def close(self) -> None:
+                pass
+
+        class _StubProfiler:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def profile_table(self, table):
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        class _ExpensiveClient:
+            def __init__(self, *, api_key: str | None = None) -> None:
+                self.model = "claude-haiku-4-5"
+
+            def complete(self, *, system: str, user: str) -> LLMResponse:
+                # Each call costs ~$1, way over the 0.01 cap.
+                return LLMResponse(
+                    text="x",
+                    model=self.model,
+                    usage=LLMUsage(
+                        input_tokens=1_000_000, cached_input_tokens=0, output_tokens=100
+                    ),
+                )
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _OneTableSource)
+        monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
+        monkeypatch.setattr("schemabrain.cli.AnthropicHaikuClient", _ExpensiveClient)
+
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                "postgresql://fake/db",
+                "--store-path",
+                str(store_path),
+                "--max-cost",
+                "0.01",
+            ]
+        )
+        assert exit_code == 3
+        assert "cap" in capsys.readouterr().err.lower()
 
 
 @pytest.mark.integration
@@ -189,7 +437,7 @@ class TestIndexEndToEnd:
         self, seeded_pg_url: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ):
         store_path = tmp_path / "schemabrain.db"
-        exit_code = main(["index", seeded_pg_url, "--store-path", str(store_path)])
+        exit_code = main(["index", seeded_pg_url, "--store-path", str(store_path), "--no-enrich"])
         assert exit_code == 0
 
         with SQLiteStore(store_path) as store:
@@ -204,7 +452,7 @@ class TestIndexEndToEnd:
         self, seeded_pg_url: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ):
         store_path = tmp_path / "schemabrain.db"
-        main(["index", seeded_pg_url, "--store-path", str(store_path)])
+        main(["index", seeded_pg_url, "--store-path", str(store_path), "--no-enrich"])
 
         source_id = _make_source_id(seeded_pg_url)
         with SQLiteStore(store_path) as store:
@@ -226,13 +474,13 @@ class TestIndexEndToEnd:
         store_path = tmp_path / "schemabrain.db"
         source_id = _make_source_id(seeded_pg_url)
 
-        main(["index", seeded_pg_url, "--store-path", str(store_path)])
+        main(["index", seeded_pg_url, "--store-path", str(store_path), "--no-enrich"])
         with SQLiteStore(store_path) as store:
             first_tables = sorted(store.list_tables())
             first_users = store.get_table("public", "users", source_connection_id=source_id)
             first_members = store.get_table("public", "org_members", source_connection_id=source_id)
 
-        main(["index", seeded_pg_url, "--store-path", str(store_path)])
+        main(["index", seeded_pg_url, "--store-path", str(store_path), "--no-enrich"])
         with SQLiteStore(store_path) as store:
             second_tables = sorted(store.list_tables())
             second_users = store.get_table("public", "users", source_connection_id=source_id)
@@ -252,7 +500,7 @@ class TestIndexEndToEnd:
     ):
         # The seeded_pg_url contains test/test credentials
         store_path = tmp_path / "schemabrain.db"
-        main(["index", seeded_pg_url, "--store-path", str(store_path)])
+        main(["index", seeded_pg_url, "--store-path", str(store_path), "--no-enrich"])
         captured = capsys.readouterr()
         # The default testcontainers user/password is "test"; ensure neither
         # the password nor "test:test" credential pair appears in the summary.
@@ -262,7 +510,7 @@ class TestIndexEndToEnd:
         self, seeded_pg_url: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ):
         store_path = tmp_path / "schemabrain.db"
-        main(["index", seeded_pg_url, "--store-path", str(store_path)])
+        main(["index", seeded_pg_url, "--store-path", str(store_path), "--no-enrich"])
         captured = capsys.readouterr()
         assert "Indexed" in captured.err
         assert "table" in captured.err

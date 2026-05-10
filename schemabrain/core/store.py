@@ -24,6 +24,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+from schemabrain.core.description import ColumnDescription
 from schemabrain.core.models import Column, ForeignKey, Table
 
 _SCHEMA_VERSION = "1"
@@ -97,6 +98,26 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         structural_hash TEXT NOT NULL,
         semantic_hash TEXT NOT NULL,
         fingerprinted_at INTEGER NOT NULL,
+        PRIMARY KEY (schema_name, table_name, column_name, source_connection_id),
+        FOREIGN KEY (schema_name, table_name, source_connection_id)
+            REFERENCES tables (schema_name, name, source_connection_id)
+            ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS column_descriptions (
+        schema_name TEXT NOT NULL,
+        table_name TEXT NOT NULL,
+        column_name TEXT NOT NULL,
+        source_connection_id TEXT NOT NULL,
+        description TEXT NOT NULL,
+        model TEXT NOT NULL,
+        prompt_version TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL,
+        cached_input_tokens INTEGER NOT NULL,
+        output_tokens INTEGER NOT NULL,
+        cost_usd REAL NOT NULL,
+        generated_at INTEGER NOT NULL,
         PRIMARY KEY (schema_name, table_name, column_name, source_connection_id),
         FOREIGN KEY (schema_name, table_name, source_connection_id)
             REFERENCES tables (schema_name, name, source_connection_id)
@@ -323,6 +344,82 @@ class SQLiteStore:
                         now,
                     )
                     for col_name, (structural, semantic) in fingerprints.items()
+                ],
+            )
+
+    def get_table_descriptions(
+        self, schema_name: str, name: str, *, source_connection_id: str
+    ) -> dict[str, ColumnDescription]:
+        """Return `{column_name: ColumnDescription}` for the table.
+
+        Empty dict if no descriptions have been generated yet.
+        """
+        conn = self._require_conn()
+        rows = conn.execute(
+            "SELECT column_name, description, model, prompt_version, "
+            "input_tokens, cached_input_tokens, output_tokens, cost_usd "
+            "FROM column_descriptions "
+            "WHERE schema_name = ? AND table_name = ? "
+            "AND source_connection_id = ?",
+            (schema_name, name, source_connection_id),
+        ).fetchall()
+        return {
+            row["column_name"]: ColumnDescription(
+                text=row["description"],
+                model=row["model"],
+                prompt_version=row["prompt_version"],
+                input_tokens=row["input_tokens"],
+                cached_input_tokens=row["cached_input_tokens"],
+                output_tokens=row["output_tokens"],
+                cost_usd=row["cost_usd"],
+            )
+            for row in rows
+        }
+
+    def write_table_descriptions(
+        self,
+        schema_name: str,
+        name: str,
+        *,
+        source_connection_id: str,
+        descriptions: dict[str, ColumnDescription],
+    ) -> None:
+        """Replace all descriptions for the table atomically.
+
+        Caller must have written the parent `tables` row first; otherwise
+        the FK on `column_descriptions` will reject the inserts.
+        """
+        conn = self._require_conn()
+        now = int(time.time())
+        with conn:
+            conn.execute(
+                "DELETE FROM column_descriptions "
+                "WHERE schema_name = ? AND table_name = ? "
+                "AND source_connection_id = ?",
+                (schema_name, name, source_connection_id),
+            )
+            conn.executemany(
+                "INSERT INTO column_descriptions "
+                "(schema_name, table_name, column_name, source_connection_id, "
+                "description, model, prompt_version, input_tokens, "
+                "cached_input_tokens, output_tokens, cost_usd, generated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        schema_name,
+                        name,
+                        col_name,
+                        source_connection_id,
+                        desc.text,
+                        desc.model,
+                        desc.prompt_version,
+                        desc.input_tokens,
+                        desc.cached_input_tokens,
+                        desc.output_tokens,
+                        desc.cost_usd,
+                        now,
+                    )
+                    for col_name, desc in descriptions.items()
                 ],
             )
 

@@ -4,29 +4,38 @@ Entry point: `schemabrain <subcommand>`.
 
 `index` connects to a Postgres URL, introspects every user-visible
 schema and table, profiles columns whose schema changed since the last
-run, and writes both the structural metadata and content-addressable
-fingerprints to a local SQLite store.
+run, generates LLM descriptions for changed columns (unless
+`--no-enrich`), and writes structural metadata, fingerprints, and
+descriptions to a local SQLite store.
 
-Re-running `index` against an unchanged source is a no-op — the
-fingerprint cache lets us skip introspection-result writes AND skip the
-profiler entirely. This is what keeps the eventual Week 3 LLM
-enrichment cost bounded.
+Re-running `index` against an unchanged source is a no-op: the
+fingerprint cache lets us skip introspection writes, profiler queries,
+AND LLM calls.
+
+Cost discipline: `--max-cost N` (default $10) hard-caps LLM spend per
+run. Exceeding the cap aborts cleanly before the next call.
+ANTHROPIC_API_KEY must be set in the environment unless `--no-enrich`
+is passed.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import sys
 import time
 from urllib.parse import urlparse
 
 from schemabrain.connectors.postgres import PostgresDataSource
 from schemabrain.core.store import SQLiteStore
+from schemabrain.enrichment.anthropic_client import AnthropicHaikuClient
+from schemabrain.enrichment.pipeline import CostCapExceeded, EnrichmentPipeline
 from schemabrain.indexer import index
 from schemabrain.profiler.postgres import PostgresProfiler
 
 _DEFAULT_STORE_PATH = "./schemabrain.db"
+_DEFAULT_MAX_COST_USD = 10.0
 
 # 16 hex chars = 64 bits of SHA-256. For a single user's plausible set of
 # databases (<1000), birthday-collision probability is ~10^-14. If we ever
@@ -47,7 +56,12 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns process exit code."""
     parser = _build_parser()
     args = parser.parse_args(argv)
-    return _cmd_index(args.url, args.store_path)
+    return _cmd_index(
+        args.url,
+        args.store_path,
+        no_enrich=args.no_enrich,
+        max_cost_usd=args.max_cost,
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -67,29 +81,68 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_DEFAULT_STORE_PATH,
         help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
     )
+    p_index.add_argument(
+        "--no-enrich",
+        action="store_true",
+        help="Skip the LLM enrichment step. Useful for cost-free dry runs "
+        "and for environments without an ANTHROPIC_API_KEY.",
+    )
+    p_index.add_argument(
+        "--max-cost",
+        type=float,
+        default=_DEFAULT_MAX_COST_USD,
+        help=f"Hard cap on USD spend per run (default: ${_DEFAULT_MAX_COST_USD:.2f}). "
+        "Aborts cleanly when reached; no effect with --no-enrich.",
+    )
     return parser
 
 
-def _cmd_index(url: str, store_path: str) -> int:
+def _cmd_index(
+    url: str,
+    store_path: str,
+    *,
+    no_enrich: bool,
+    max_cost_usd: float,
+) -> int:
     try:
         canonical = _canonical_url(url)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
+    pipeline: EnrichmentPipeline | None = None
+    if not no_enrich:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            print(
+                "error: ANTHROPIC_API_KEY not set. Either set it in the "
+                "environment or re-run with --no-enrich.",
+                file=sys.stderr,
+            )
+            return 2
+        pipeline = EnrichmentPipeline(
+            client=AnthropicHaikuClient(api_key=api_key),
+            max_cost_usd=max_cost_usd,
+        )
+
     source_id = _make_source_id(url)
     started = time.monotonic()
-    with (
-        PostgresDataSource(url) as source,
-        PostgresProfiler(url) as profiler,
-        SQLiteStore(store_path) as store,
-    ):
-        result = index(
-            source=source,
-            profiler=profiler,
-            store=store,
-            source_connection_id=source_id,
-        )
+    try:
+        with (
+            PostgresDataSource(url) as source,
+            PostgresProfiler(url) as profiler,
+            SQLiteStore(store_path) as store,
+        ):
+            result = index(
+                source=source,
+                profiler=profiler,
+                store=store,
+                source_connection_id=source_id,
+                pipeline=pipeline,
+            )
+    except CostCapExceeded as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 3
     elapsed = time.monotonic() - started
     print(
         f"{result.summary()} | source={canonical} store={store_path} in {elapsed:.1f}s",

@@ -453,3 +453,132 @@ class TestColumnFingerprints:
         )
         assert store.get_table_fingerprints("public", "users", source_connection_id=SOURCE_X) == {}
         store.close()
+
+
+class TestColumnDescriptions:
+    def _desc(self, text: str = "User identifier") -> object:
+        from schemabrain.core.description import ColumnDescription
+
+        return ColumnDescription(
+            text=text,
+            model="claude-haiku-4-5",
+            prompt_version="2026-05-10-1",
+            input_tokens=300,
+            cached_input_tokens=100,
+            output_tokens=20,
+            cost_usd=0.0003,
+        )
+
+    def test_get_returns_empty_dict_when_none_stored(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        assert store.get_table_descriptions("public", "users", source_connection_id=SOURCE_X) == {}
+        store.close()
+
+    def test_write_then_get_round_trip(self) -> None:
+        from schemabrain.core.description import ColumnDescription
+
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        descs = {
+            "id": self._desc("Numeric primary key"),
+            "email": self._desc("User's email address"),
+        }
+        store.write_table_descriptions(
+            "public", "users", source_connection_id=SOURCE_X, descriptions=descs
+        )
+        got = store.get_table_descriptions("public", "users", source_connection_id=SOURCE_X)
+        assert set(got.keys()) == {"id", "email"}
+        assert got["id"].text == "Numeric primary key"
+        assert got["email"].text == "User's email address"
+        # Provenance fields round-trip too.
+        assert got["id"].model == "claude-haiku-4-5"
+        assert got["id"].prompt_version == "2026-05-10-1"
+        assert got["id"].input_tokens == 300
+        assert got["id"].cached_input_tokens == 100
+        assert got["id"].output_tokens == 20
+        assert got["id"].cost_usd == 0.0003
+        assert isinstance(got["id"], ColumnDescription)
+        store.close()
+
+    def test_write_replaces_existing(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table_descriptions(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            descriptions={"id": self._desc("original")},
+        )
+        store.write_table_descriptions(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            descriptions={"id": self._desc("rewritten")},
+        )
+        got = store.get_table_descriptions("public", "users", source_connection_id=SOURCE_X)
+        assert got["id"].text == "rewritten"
+        store.close()
+
+    def test_delete_table_cascades_to_descriptions(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table_descriptions(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            descriptions={"id": self._desc()},
+        )
+        store.delete_table("public", "users", source_connection_id=SOURCE_X)
+        assert store.get_table_descriptions("public", "users", source_connection_id=SOURCE_X) == {}
+        store.close()
+
+    def test_isolated_by_source_connection_id(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table(_users_table(), source_connection_id=SOURCE_Y)
+        store.write_table_descriptions(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            descriptions={"id": self._desc("x desc")},
+        )
+        store.write_table_descriptions(
+            "public",
+            "users",
+            source_connection_id=SOURCE_Y,
+            descriptions={"id": self._desc("y desc")},
+        )
+        x = store.get_table_descriptions("public", "users", source_connection_id=SOURCE_X)
+        y = store.get_table_descriptions("public", "users", source_connection_id=SOURCE_Y)
+        assert x["id"].text == "x desc"
+        assert y["id"].text == "y desc"
+        store.close()
+
+    def test_write_descriptions_without_table_row_raises(self) -> None:
+        import sqlite3
+
+        store = SQLiteStore(":memory:")
+        with pytest.raises(sqlite3.IntegrityError):
+            store.write_table_descriptions(
+                "public",
+                "missing",
+                source_connection_id=SOURCE_X,
+                descriptions={"col": self._desc()},
+            )
+        store.close()
+
+    def test_empty_descriptions_dict_clears(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table_descriptions(
+            "public",
+            "users",
+            source_connection_id=SOURCE_X,
+            descriptions={"id": self._desc()},
+        )
+        store.write_table_descriptions(
+            "public", "users", source_connection_id=SOURCE_X, descriptions={}
+        )
+        assert store.get_table_descriptions("public", "users", source_connection_id=SOURCE_X) == {}
+        store.close()
