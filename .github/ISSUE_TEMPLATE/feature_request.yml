@@ -1,0 +1,65 @@
+name: Feature request
+description: Suggest something Schema Brain should do that it doesn't.
+title: "[feat] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Schema Brain has a deliberately small surface — most "missing"
+        features are deferred on purpose, not forgotten. Please describe
+        the underlying problem first; the maintainer will propose the
+        smallest fix rather than implementing the requested change verbatim.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: |
+        Describe the situation, not the solution. "I can't write SQL
+        against my warehouse without knowing which tables to JOIN" is
+        better than "Add a `suggest_joins` MCP tool" — the second
+        forecloses on alternative fixes.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround (if any)
+      description: How are you working around the limitation today?
+    validations:
+      required: false
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: |
+        Optional. If you have a specific design in mind, describe it.
+        Treat this as a starting point for discussion, not a spec.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: who-uses-it
+    attributes:
+      label: Who would use this?
+      options:
+        - Just me
+        - My team / organization
+        - I think it's broadly useful
+        - Not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      description: "Schema Brain v0 stays small on purpose. Please confirm:"
+      options:
+        - label: I've checked the README's "Roadmap" section to see if this is already planned.
+          required: true
+        - label: I've checked open and closed issues for similar requests.
+          required: true

@@ -1,0 +1,107 @@
+# GitHub Actions CI for Schema Brain.
+#
+# Two jobs run on every push to `main` and every pull request:
+#   - lint-and-unit: ruff + pytest unit tests across Python 3.11 + 3.12.
+#                    Fast (target: under 60s warm cache); blocks merge.
+#   - integration:   pytest integration tests (Docker / testcontainers
+#                    Postgres). Single Python (3.11) since the integration
+#                    surface is dialect-driven, not interpreter-driven.
+#                    Slower (~2-3 min, dominated by container boot); also
+#                    blocks merge so we don't ship regressions in the
+#                    Postgres connector or profiler.
+#
+# Both jobs use `uv` for env management — same tool the dev workflow uses,
+# so CI failures reproduce locally with `uv sync --extra dev && uv run pytest`.
+#
+# OS matrix: ubuntu-latest only at v0. macOS is documented as supported
+# for local dev on Python 3.11, but `onnxruntime` (a fastembed transitive
+# dep) has no wheel for macOS arm64 + Python 3.12 today, so adding macOS
+# to CI would either drop a Python version or fail the macOS+3.12 cell.
+# Revisit when onnxruntime ships the missing wheel.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-flight runs for the same PR / branch when a new push lands —
+# saves CI minutes on rapid iteration without losing any signal.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-unit:
+    name: Lint + unit (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --extra dev --python ${{ matrix.python-version }}
+
+      - name: Lint (ruff check)
+        run: uv run --python ${{ matrix.python-version }} ruff check schemabrain tests
+
+      - name: Format check (ruff format --check)
+        run: uv run --python ${{ matrix.python-version }} ruff format --check schemabrain tests
+
+      - name: Unit tests
+        # No coverage gate here — unit-only runs miss code paths
+        # exercised by integration tests (Postgres connector, profiler).
+        # The 99% line+branch gate runs in the `integration` job, which
+        # sees the full suite. This job is the fast PR-feedback signal.
+        run: uv run --python ${{ matrix.python-version }} pytest -m "not integration"
+
+  integration:
+    name: Integration (Docker / Postgres)
+    runs-on: ubuntu-latest
+    # Run after lint-and-unit so a syntax error doesn't waste 3 min on
+    # container boot. Either lint-and-unit cell green is enough — we don't
+    # need both Python versions to pass before integration starts.
+    needs: lint-and-unit
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --extra dev --python 3.11
+
+      - name: Pre-pull Postgres image (warm testcontainers cache)
+        run: docker pull postgres:16-alpine
+
+      - name: Full suite with coverage gate
+        # Runs BOTH unit and integration tests together so the coverage
+        # report sees every path. The 99% gate is a one-percentage-point
+        # buffer below the project's 100% line+branch target — flags
+        # genuine regressions without thrashing on minor edge cases.
+        run: |
+          uv run --python 3.11 pytest \
+            --cov=schemabrain \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-fail-under=99

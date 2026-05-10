@@ -1,0 +1,12 @@
+# Schema Brain code owners.
+#
+# GitHub uses this file to auto-request review from the listed owners on
+# every PR that touches matching paths. Keep the list small and current —
+# stale owners create noise; missing owners create silent gaps.
+#
+# Today the project is single-maintainer (pre-alpha). When new maintainers
+# join, add them here per-area rather than as a global owner so review
+# load can be shared rather than bottlenecked.
+
+# Catch-all: every PR auto-requests Arun until subject-matter owners exist.
+*    @Arun-kc

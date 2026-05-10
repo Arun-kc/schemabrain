@@ -1,0 +1,7 @@
+# Disable blank issues — every issue must use a structured template so
+# triage gets the info it needs without a back-and-forth round trip.
+blank_issues_enabled: false
+
+# No external contact links yet (no Discord, no community forum). Add
+# them here once they exist; until then, the issue templates are the
+# only entry points.

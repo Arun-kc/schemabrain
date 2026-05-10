@@ -1,0 +1,91 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly.
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. The fields below
+        are required so we can reproduce and triage. Please don't strip
+        them — incomplete reports get closed with a request to re-open.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of what you saw vs what you expected.
+      placeholder: |
+        Ran `schemabrain index $POSTGRES_URL` and got X. Expected Y.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: |
+        Exact commands and inputs we can run to see the bug ourselves.
+        For schema-related bugs, the output of `pg_dump --schema-only`
+        for the affected tables is usually enough. Strip secrets first.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Full traceback (if applicable)
+      description: Paste the full error output, not just the last line.
+      render: shell
+    validations:
+      required: false
+
+  - type: input
+    id: schemabrain-version
+    attributes:
+      label: Schema Brain version
+      description: Output of `pip show schemabrain | grep -i version` or the commit SHA.
+      placeholder: "0.0.0 / commit ee9e357"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: Output of `python --version`.
+      placeholder: "3.11.15"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux x86_64
+        - Linux aarch64
+        - macOS arm64 (Apple Silicon)
+        - macOS x86_64 (Intel)
+        - Windows
+        - Other (specify in "What happened?")
+    validations:
+      required: true
+
+  - type: input
+    id: database
+    attributes:
+      label: Database engine and version
+      description: e.g. `Postgres 16.2`, `SQLite 3.45.0`. Output of `SELECT version();` is fine.
+      placeholder: "Postgres 16.2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Workarounds you tried, related issues, anything that helps triage.
+    validations:
+      required: false
