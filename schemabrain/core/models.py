@@ -63,6 +63,37 @@ class ForeignKey(BaseModel):
         return self
 
 
+class IncomingForeignKey(BaseModel):
+    """A foreign key REFERENCING a column we're inspecting (back-reference).
+
+    `source_qualified_name` is the table doing the referencing (`schema.table`
+    pre-joined for caller convenience). `source_columns` are its columns
+    that hold the foreign-key values; `target_columns` are the columns on
+    the OTHER table — the one being inspected — that those values point at.
+
+    Used by `describe_column` to surface "which other tables join into me
+    on this column?" without forcing the caller to scan every other
+    table's outgoing FKs.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: NonEmptyStr
+    source_qualified_name: NonEmptyStr
+    source_columns: tuple[NonEmptyStr, ...] = Field(..., min_length=1)
+    target_columns: tuple[NonEmptyStr, ...] = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_columns(self) -> IncomingForeignKey:
+        if len(self.source_columns) != len(self.target_columns):
+            raise ValueError("source_columns and target_columns must have the same length")
+        if len(set(self.source_columns)) != len(self.source_columns):
+            raise ValueError("source_columns must not contain duplicates")
+        if len(set(self.target_columns)) != len(self.target_columns):
+            raise ValueError("target_columns must not contain duplicates")
+        return self
+
+
 class Table(BaseModel):
     """A database table with its columns and outgoing foreign keys.
 

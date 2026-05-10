@@ -73,9 +73,9 @@ def server_with_one_table(tmp_path: Path) -> Generator[FastMCP, None, None]:
 
 
 class TestFastMCPIntegration:
-    def test_both_tools_are_registered(self, server_with_one_table) -> None:
+    def test_three_tools_are_registered(self, server_with_one_table) -> None:
         names = {t.name for t in asyncio.run(server_with_one_table.list_tools())}
-        assert names == {"find_relevant_tables", "describe_table"}
+        assert names == {"find_relevant_tables", "describe_table", "describe_column"}
 
     def test_tool_descriptions_are_non_empty(self, server_with_one_table) -> None:
         for tool in asyncio.run(server_with_one_table.list_tools()):
@@ -128,6 +128,39 @@ class TestFastMCPIntegration:
         with pytest.raises(Exception) as exc_info:
             asyncio.run(
                 server_with_one_table.call_tool("describe_table", {"qualified_name": "nodot"})
+            )
+        assert "qualified_name" in str(exc_info.value)
+
+    def test_describe_column_round_trips_via_call_tool(self, server_with_one_table) -> None:
+        _content, structured = asyncio.run(
+            server_with_one_table.call_tool(
+                "describe_column", {"qualified_name": "public.users.email"}
+            )
+        )
+        assert structured["qualified_name"] == "public.users.email"
+        assert structured["schema_name"] == "public"
+        assert structured["table_name"] == "users"
+        assert structured["name"] == "email"
+        assert structured["outgoing_foreign_keys"] == []
+        assert structured["incoming_foreign_keys"] == []
+        assert structured["token_estimate"] > 0
+
+    def test_describe_column_unknown_column_propagates_error(self, server_with_one_table) -> None:
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(
+                server_with_one_table.call_tool(
+                    "describe_column", {"qualified_name": "public.users.nope"}
+                )
+            )
+        # ColumnNotFoundError message format includes the qualified name.
+        assert "public.users.nope" in str(exc_info.value)
+
+    def test_describe_column_malformed_name_propagates_error(self, server_with_one_table) -> None:
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(
+                server_with_one_table.call_tool(
+                    "describe_column", {"qualified_name": "only_two.parts"}
+                )
             )
         assert "qualified_name" in str(exc_info.value)
 

@@ -27,7 +27,7 @@ from pathlib import Path
 
 from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
-from schemabrain.core.models import Column, ForeignKey, Table
+from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
 
 # Bumped to "2" in Slice 4-B when `column_embeddings` was added. Older
 # stores raise SchemaVersionMismatchError; pre-alpha users re-create.
@@ -475,6 +475,55 @@ class SQLiteStore:
                     for col_name, desc in descriptions.items()
                 ],
             )
+
+    def get_foreign_keys_targeting(
+        self,
+        target_schema: str,
+        target_table: str,
+        target_column: str,
+        *,
+        source_connection_id: str,
+    ) -> list[IncomingForeignKey]:
+        """Return all FKs that reference `target_schema.target_table.target_column`.
+
+        Used by `describe_column` to surface back-references — "which
+        other tables join into me here?". Match is on
+        `(target_schema, target_table)` plus membership of
+        `target_column` in the FK's `target_columns` list, so composite
+        FKs match correctly when the column appears in any position.
+
+        A composite FK targeting `(org_id, user_id)` is returned when
+        querying for either column — callers see the full FK row and
+        can inspect `target_columns` to understand the full key shape.
+
+        Filtering on the JSON `target_columns` happens in Python, not
+        SQL, since SQLite's JSON1 extension isn't a guaranteed dep —
+        the per-source FK row count is small (~hundreds even on a
+        large schema), so a Python filter is cheaper than carrying
+        another extension dependency.
+        """
+        conn = self._require_conn()
+        rows = conn.execute(
+            "SELECT name, source_schema, source_table, source_columns, target_columns "
+            "FROM foreign_keys "
+            "WHERE source_connection_id = ? AND target_schema = ? AND target_table = ? "
+            "ORDER BY source_schema, source_table, name",
+            (source_connection_id, target_schema, target_table),
+        ).fetchall()
+        results: list[IncomingForeignKey] = []
+        for row in rows:
+            target_cols = tuple(json.loads(row["target_columns"]))
+            if target_column not in target_cols:
+                continue
+            results.append(
+                IncomingForeignKey(
+                    name=row["name"],
+                    source_qualified_name=f"{row['source_schema']}.{row['source_table']}",
+                    source_columns=tuple(json.loads(row["source_columns"])),
+                    target_columns=target_cols,
+                )
+            )
+        return results
 
     def get_table_embeddings(
         self, schema_name: str, name: str, *, source_connection_id: str

@@ -321,3 +321,44 @@ class TestTable:
                 columns=(self._id_col(),),
                 foreign_keys=(fk,),
             )
+
+
+class TestIncomingForeignKey:
+    """The back-reference shape used by describe_column. Mirrors
+    ForeignKey's column-list validators so a malformed back-reference
+    can't sneak through.
+    """
+
+    def _ifk(
+        self,
+        *,
+        source_columns: tuple[str, ...] = ("user_id",),
+        target_columns: tuple[str, ...] = ("id",),
+    ):
+        from schemabrain.core.models import IncomingForeignKey
+
+        return IncomingForeignKey(
+            name="orders_user_id_fkey",
+            source_qualified_name="public.orders",
+            source_columns=source_columns,
+            target_columns=target_columns,
+        )
+
+    def test_round_trips_basic_fields(self) -> None:
+        ifk = self._ifk()
+        assert ifk.name == "orders_user_id_fkey"
+        assert ifk.source_qualified_name == "public.orders"
+        assert ifk.source_columns == ("user_id",)
+        assert ifk.target_columns == ("id",)
+
+    def test_mismatched_lengths_rejected(self) -> None:
+        with pytest.raises(ValueError, match="same length"):
+            self._ifk(source_columns=("a", "b"), target_columns=("x",))
+
+    def test_duplicate_source_columns_rejected(self) -> None:
+        with pytest.raises(ValueError, match="source_columns must not contain duplicates"):
+            self._ifk(source_columns=("a", "a"), target_columns=("x", "y"))
+
+    def test_duplicate_target_columns_rejected(self) -> None:
+        with pytest.raises(ValueError, match="target_columns must not contain duplicates"):
+            self._ifk(source_columns=("a", "b"), target_columns=("x", "x"))

@@ -16,9 +16,13 @@ from schemabrain.core.embedding import ColumnEmbedding
 from schemabrain.core.models import Column, ForeignKey, Table
 from schemabrain.core.store import SQLiteStore
 from schemabrain.mcp.tools import (
+    ColumnDetail,
+    ColumnNotFoundError,
+    IncomingForeignKeyInfo,
     TableDescription,
     TableHit,
     TableNotFoundError,
+    describe_column_impl,
     describe_table_impl,
     find_relevant_tables_impl,
 )
@@ -626,3 +630,184 @@ class TestCosineHelper:
         from schemabrain.mcp.tools import _cosine
 
         assert _cosine((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)) == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------
+# describe_column_impl
+# ---------------------------------------------------------------------
+
+
+class TestDescribeColumnImpl:
+    def test_returns_typed_detail(self, populated_store: SQLiteStore) -> None:
+        result = describe_column_impl(
+            store=populated_store,
+            source_connection_id=SOURCE_ID,
+            qualified_name="public.users.email",
+        )
+        assert isinstance(result, ColumnDetail)
+        assert result.qualified_name == "public.users.email"
+        assert result.schema_name == "public"
+        assert result.table_name == "users"
+        assert result.name == "email"
+
+    def test_carries_full_column_metadata(self, populated_store: SQLiteStore) -> None:
+        # Mirrors what `describe_table[col]` would have returned, plus
+        # description text from the LLM enrichment.
+        result = describe_column_impl(
+            store=populated_store,
+            source_connection_id=SOURCE_ID,
+            qualified_name="public.users.email",
+        )
+        assert result.data_type == "VARCHAR(255)"
+        assert result.nullable is False
+        assert result.is_primary_key is False
+        assert result.description == "User's contact email address"
+
+    def test_default_value_round_trips(self, populated_store: SQLiteStore) -> None:
+        result = describe_column_impl(
+            store=populated_store,
+            source_connection_id=SOURCE_ID,
+            qualified_name="public.orders.total_cents",
+        )
+        assert result.default == "0"
+
+    def test_outgoing_foreign_key_listed(self, populated_store: SQLiteStore) -> None:
+        # orders.user_id has an outgoing FK to public.users.id.
+        result = describe_column_impl(
+            store=populated_store,
+            source_connection_id=SOURCE_ID,
+            qualified_name="public.orders.user_id",
+        )
+        assert len(result.outgoing_foreign_keys) == 1
+        fk = result.outgoing_foreign_keys[0]
+        assert fk.name == "orders_user_id_fkey"
+        assert fk.target_qualified_name == "public.users"
+        assert fk.target_columns == ["id"]
+        # The column itself MUST be in source_columns of its outgoing FK.
+        assert "user_id" in fk.source_columns
+
+    def test_outgoing_excludes_fks_that_dont_involve_this_column(
+        self, populated_store: SQLiteStore
+    ) -> None:
+        # orders.id is the PK and doesn't own any outgoing FK — even
+        # though orders has an FK on user_id, it must NOT show up here.
+        result = describe_column_impl(
+            store=populated_store,
+            source_connection_id=SOURCE_ID,
+            qualified_name="public.orders.id",
+        )
+        assert result.outgoing_foreign_keys == []
+
+    def test_incoming_foreign_key_listed_on_pk_target(self, populated_store: SQLiteStore) -> None:
+        # users.id is referenced by orders.user_id — the back-reference
+        # must surface here.
+        result = describe_column_impl(
+            store=populated_store,
+            source_connection_id=SOURCE_ID,
+            qualified_name="public.users.id",
+        )
+        assert len(result.incoming_foreign_keys) == 1
+        ifk = result.incoming_foreign_keys[0]
+        assert isinstance(ifk, IncomingForeignKeyInfo)
+        assert ifk.name == "orders_user_id_fkey"
+        assert ifk.source_qualified_name == "public.orders"
+        assert ifk.source_columns == ["user_id"]
+        assert ifk.target_columns == ["id"]
+
+    def test_incoming_empty_when_no_back_references(self, populated_store: SQLiteStore) -> None:
+        # products.id has no FK pointing at it in this fixture.
+        result = describe_column_impl(
+            store=populated_store,
+            source_connection_id=SOURCE_ID,
+            qualified_name="public.products.id",
+        )
+        assert result.incoming_foreign_keys == []
+
+    def test_token_estimate_is_positive(self, populated_store: SQLiteStore) -> None:
+        result = describe_column_impl(
+            store=populated_store,
+            source_connection_id=SOURCE_ID,
+            qualified_name="public.users.email",
+        )
+        assert result.token_estimate > 0
+
+    def test_unknown_table_raises_table_not_found(self, populated_store: SQLiteStore) -> None:
+        with pytest.raises(TableNotFoundError, match=r"public\.does_not_exist"):
+            describe_column_impl(
+                store=populated_store,
+                source_connection_id=SOURCE_ID,
+                qualified_name="public.does_not_exist.anything",
+            )
+
+    def test_unknown_column_in_known_table_raises_column_not_found(
+        self, populated_store: SQLiteStore
+    ) -> None:
+        # The table exists but the column doesn't. Distinct error type
+        # so callers can route the two cases differently if they want.
+        with pytest.raises(ColumnNotFoundError, match=r"public\.users\.does_not_exist"):
+            describe_column_impl(
+                store=populated_store,
+                source_connection_id=SOURCE_ID,
+                qualified_name="public.users.does_not_exist",
+            )
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "nodot",
+            "one.dot",
+            "a.b.c.d",
+            ".empty.schema",
+            "empty.table.",
+            "empty..column",
+        ],
+    )
+    def test_malformed_qualified_name_raises_value_error(
+        self, bad: str, populated_store: SQLiteStore
+    ) -> None:
+        # Must be exactly schema.table.column. Wrong dot count or any
+        # empty part is rejected.
+        with pytest.raises(ValueError, match="qualified_name"):
+            describe_column_impl(
+                store=populated_store,
+                source_connection_id=SOURCE_ID,
+                qualified_name=bad,
+            )
+
+    def test_filters_by_source_connection_id(self, populated_store: SQLiteStore) -> None:
+        with pytest.raises(TableNotFoundError):
+            describe_column_impl(
+                store=populated_store,
+                source_connection_id="DOES-NOT-EXIST",
+                qualified_name="public.users.email",
+            )
+
+    def test_column_with_no_description_returns_empty_string(self, tmp_path: Path) -> None:
+        # --no-enrich path: column row exists but no description was
+        # generated. Tool must not crash.
+        store = SQLiteStore(tmp_path / "s.db")
+        sid = "src1"
+        store.write_table(
+            Table(
+                name="widgets",
+                schema_name="public",
+                columns=(
+                    _column(
+                        "id",
+                        table_name="widgets",
+                        data_type="BIGINT",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                ),
+            ),
+            source_connection_id=sid,
+        )
+        result = describe_column_impl(
+            store=store,
+            source_connection_id=sid,
+            qualified_name="public.widgets.id",
+        )
+        assert result.description == ""
+        store.close()

@@ -774,3 +774,250 @@ class TestColumnEmbeddings:
             model="BAAI/bge-small-en-v1.5",
             dimension=len(vector),
         )
+
+
+class TestForeignKeyBackReferences:
+    """`get_foreign_keys_targeting` finds all FKs that REFERENCE a given
+    column (incoming edges). Used by `describe_column` to surface "which
+    tables join into me here?"
+    """
+
+    def test_returns_empty_when_no_fks_target_the_column(self) -> None:
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        # No other table references public.users.id yet.
+        result = store.get_foreign_keys_targeting(
+            "public", "users", "id", source_connection_id=SOURCE_X
+        )
+        assert result == []
+        store.close()
+
+    def test_finds_single_back_reference(self) -> None:
+        # users + orders, where orders.user_id FK → users.id.
+        store = SQLiteStore(":memory:")
+        sid = SOURCE_X
+        store.write_table(_users_table(), source_connection_id=sid)
+        orders = Table(
+            name="orders",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="orders",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+                Column(
+                    name="user_id",
+                    table_name="orders",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=2,
+                ),
+            ),
+            foreign_keys=(
+                ForeignKey(
+                    name="orders_user_id_fkey",
+                    source_columns=("user_id",),
+                    target_schema="public",
+                    target_table="users",
+                    target_columns=("id",),
+                ),
+            ),
+        )
+        store.write_table(orders, source_connection_id=sid)
+
+        # users.id is referenced by orders.user_id.
+        result = store.get_foreign_keys_targeting("public", "users", "id", source_connection_id=sid)
+        assert len(result) == 1
+        fk = result[0]
+        assert fk.name == "orders_user_id_fkey"
+        assert fk.source_qualified_name == "public.orders"
+        assert fk.source_columns == ("user_id",)
+        assert fk.target_columns == ("id",)
+        store.close()
+
+    def test_does_not_match_columns_with_overlapping_names_in_other_tables(
+        self,
+    ) -> None:
+        # An FK targeting `customers.id` must NOT come back when querying
+        # for `users.id` — column names alone are ambiguous; the join
+        # match is on (target_schema, target_table, target_columns).
+        store = SQLiteStore(":memory:")
+        sid = SOURCE_X
+        store.write_table(_users_table(), source_connection_id=sid)
+
+        customers = Table(
+            name="customers",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="customers",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+            ),
+        )
+        store.write_table(customers, source_connection_id=sid)
+
+        invoices = Table(
+            name="invoices",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="invoices",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+                Column(
+                    name="customer_id",
+                    table_name="invoices",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=2,
+                ),
+            ),
+            foreign_keys=(
+                ForeignKey(
+                    name="invoices_customer_id_fkey",
+                    source_columns=("customer_id",),
+                    target_schema="public",
+                    target_table="customers",
+                    target_columns=("id",),
+                ),
+            ),
+        )
+        store.write_table(invoices, source_connection_id=sid)
+
+        # Querying users.id must NOT find the invoices→customers FK.
+        result = store.get_foreign_keys_targeting("public", "users", "id", source_connection_id=sid)
+        assert result == []
+        # And vice versa — querying customers.id must find ONLY the
+        # invoices FK, not anything pointing at users.
+        result = store.get_foreign_keys_targeting(
+            "public", "customers", "id", source_connection_id=sid
+        )
+        assert len(result) == 1
+        assert result[0].name == "invoices_customer_id_fkey"
+        store.close()
+
+    def test_filters_by_source_connection_id(self) -> None:
+        # FKs in a different source's catalog must not leak in.
+        store = SQLiteStore(":memory:")
+        store.write_table(_users_table(), source_connection_id=SOURCE_X)
+        store.write_table(_users_table(), source_connection_id=SOURCE_Y)
+
+        orders_x = Table(
+            name="orders",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="orders",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+                Column(
+                    name="user_id",
+                    table_name="orders",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=2,
+                ),
+            ),
+            foreign_keys=(
+                ForeignKey(
+                    name="orders_user_id_fkey",
+                    source_columns=("user_id",),
+                    target_schema="public",
+                    target_table="users",
+                    target_columns=("id",),
+                ),
+            ),
+        )
+        store.write_table(orders_x, source_connection_id=SOURCE_X)
+
+        # SOURCE_X sees the FK; SOURCE_Y doesn't (no orders table there).
+        x = store.get_foreign_keys_targeting("public", "users", "id", source_connection_id=SOURCE_X)
+        y = store.get_foreign_keys_targeting("public", "users", "id", source_connection_id=SOURCE_Y)
+        assert len(x) == 1
+        assert y == []
+        store.close()
+
+    def test_composite_fk_with_target_column_in_middle_position_matches(self) -> None:
+        # An FK whose target_columns is ("org_id", "user_id") must come
+        # back when querying either of those columns — composite-key
+        # detection cannot rely on `target_columns[0] == col`.
+        store = SQLiteStore(":memory:")
+        sid = SOURCE_X
+        store.write_table(_members_table(), source_connection_id=sid)
+
+        # Synthetic table with a composite FK targeting org_members
+        # (org_id, user_id).
+        events = Table(
+            name="events",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="events",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+                Column(
+                    name="member_org_id",
+                    table_name="events",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=2,
+                ),
+                Column(
+                    name="member_user_id",
+                    table_name="events",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=3,
+                ),
+            ),
+            foreign_keys=(
+                ForeignKey(
+                    name="events_member_fkey",
+                    source_columns=("member_org_id", "member_user_id"),
+                    target_schema="public",
+                    target_table="org_members",
+                    target_columns=("org_id", "user_id"),
+                ),
+            ),
+        )
+        store.write_table(events, source_connection_id=sid)
+
+        # Should match either column.
+        for col in ("org_id", "user_id"):
+            result = store.get_foreign_keys_targeting(
+                "public", "org_members", col, source_connection_id=sid
+            )
+            assert len(result) == 1, f"composite FK must match on column {col!r}"
+            assert result[0].name == "events_member_fkey"
+        store.close()
