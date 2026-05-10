@@ -1,24 +1,34 @@
-"""Retriever Protocol + a placeholder keyword-overlap implementation.
+"""Retriever Protocol + concrete implementations.
 
-The eval runner programs against the `Retriever` Protocol so the
-implementation can swap from "naive keyword overlap" today to
-"embedding-based ANN retrieval" in Week 4-5 without touching the
-runner, the report, or any golden file.
+The eval runner programs against the `Retriever` Protocol so we can
+add new strategies without touching the runner, report, or golden files.
 
-`KeywordRetriever` is intentionally tiny: it tokenizes the query and
-each table's combined corpus (table name + column names + column
-description text), then ranks tables by overlap count. It exists so
-Week 3 can produce a baseline score that Week 4's real retrieval has
-to beat — not because keyword overlap is a serious retrieval method.
+Concrete implementations:
+  - `KeywordRetriever` — tokenizes query and each table's combined
+    corpus (table name + column names + description text), ranks by
+    overlap count. The Week-3 baseline; cheap, no embedder required.
+  - `EmbeddingRetriever` — embeds the query once, computes cosine
+    similarity against every stored column embedding, aggregates to a
+    per-table score by MAX (a single very-relevant column is strong
+    evidence the table is relevant). Drops zero-score tables. Tables
+    indexed without embeddings are silently skipped.
+
+Per-table-MAX vs per-table-MEAN aggregation: max is the right default
+for "find tables relevant to this query" because schemas frequently
+have one or two highly-relevant columns plus many irrelevant ones —
+mean would dilute the signal. Mean might be revisited if MCP traffic
+shows the opposite pattern.
 """
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from schemabrain.core.store import SQLiteStore
+from schemabrain.enrichment.embeddings import Embedder
 
 # Stopwords to drop before scoring overlap. Kept short on purpose: most
 # database semantics are nouns and verbs, and over-aggressive filtering
@@ -162,4 +172,86 @@ class KeywordRetriever:
         return tokens
 
 
-__all__ = ["KeywordRetriever", "Retriever"]
+def _cosine_similarity(a: tuple[float, ...], b: tuple[float, ...]) -> float:
+    """Cosine similarity between two equal-length vectors.
+
+    Returns 0.0 when either vector has zero norm — degenerate but
+    well-defined: a zero-norm vector has no direction so "alignment with
+    query" is undefined, and "no signal" (0.0) is the safe answer that
+    just drops the table from positive-score results.
+
+    Raises `ValueError` on length mismatch so an embedder-dimension
+    drift between index time and retrieve time fails loudly instead of
+    silently returning garbage cosines.
+    """
+    if len(a) != len(b):
+        raise ValueError(
+            f"cosine: vector dimension mismatch — query has {len(a)}, "
+            f"stored has {len(b)}. The embedder used at retrieval time "
+            f"differs from the one used at index time. Wipe the store "
+            f"and re-index with the new embedder."
+        )
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    # Lengths pre-checked above — no `strict=True` needed (would be dead).
+    for ai, bi in zip(a, b):
+        dot += ai * bi
+        norm_a += ai * ai
+        norm_b += bi * bi
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
+
+
+@dataclass(frozen=True)
+class EmbeddingRetriever:
+    """Cosine-similarity retriever over locally-stored column embeddings.
+
+    Embeds the query once with `embedder`, then computes cosine vs every
+    stored column embedding for the configured source. Per-table score
+    is the MAX cosine across that table's columns; tables with no
+    embeddings are silently skipped (they were indexed with --no-embed,
+    or pre-Slice-4-B, or hit the cap before embedding completed).
+    Zero-score tables are excluded from the result list — they're noise
+    that crowds out actual signal.
+
+    Cost characteristic: ONE embedder call per `retrieve()`. Per-table
+    cosine is pure Python over float tuples — ~1ms for 384-dim vectors
+    across <1000 columns. sqlite-vec / numpy upgrade is a future slice
+    if MCP traffic shows it's needed.
+    """
+
+    store: SQLiteStore
+    source_connection_id: str
+    embedder: Embedder
+
+    def retrieve(self, query: str, *, limit: int) -> list[str]:
+        if limit <= 0:
+            return []
+        # Skip the embedder call entirely on empty/whitespace queries —
+        # otherwise we'd waste an ONNX inference and then have to handle
+        # the zero-norm cosine downstream.
+        if not query.strip():
+            return []
+
+        query_vec = self.embedder.embed(query)
+
+        scored: list[tuple[float, str, str]] = []
+        for schema, table in self.store.list_tables(source_connection_id=self.source_connection_id):
+            embeddings = self.store.get_table_embeddings(
+                schema, table, source_connection_id=self.source_connection_id
+            )
+            if not embeddings:
+                continue
+            best = max(_cosine_similarity(query_vec, e.vector) for e in embeddings.values())
+            if best > 0.0:
+                scored.append((best, schema, table))
+
+        # Sort by descending score, then by qualified name for stable
+        # ordering when scores tie (reproducible test + eval output).
+        scored.sort(key=lambda x: (-x[0], x[1], x[2]))
+        return [f"{s}.{t}" for _, s, t in scored[:limit]]
+
+
+__all__ = ["EmbeddingRetriever", "KeywordRetriever", "Retriever"]

@@ -1,9 +1,15 @@
 """Tests for the eval retriever layer.
 
-`Retriever` is a Protocol; the runner programs against it. Today's
-concrete implementation is `KeywordRetriever`, a deliberately simple
-keyword-overlap scorer that exists so we can produce baseline scores
-before embedding-based retrieval lands in Week 4-5.
+`Retriever` is a Protocol; the runner programs against it. Concrete
+implementations:
+  - `KeywordRetriever` — the Week-3 baseline, keyword-overlap scoring
+    over table/column names + description text. Cheap to compute, no
+    embeddings required.
+  - `EmbeddingRetriever` — Week-4 cosine-similarity scorer over stored
+    `column_embeddings`. Per-table score = max cosine across columns
+    (a single very-relevant column is strong evidence the table is
+    relevant). Requires the store to have been indexed WITH an
+    embedder; tables with no embeddings are silently skipped.
 """
 
 from __future__ import annotations
@@ -13,9 +19,10 @@ from pathlib import Path
 import pytest
 
 from schemabrain.core.description import ColumnDescription
+from schemabrain.core.embedding import ColumnEmbedding
 from schemabrain.core.models import Column, Table
 from schemabrain.core.store import SQLiteStore
-from schemabrain.eval.retriever import KeywordRetriever, Retriever
+from schemabrain.eval.retriever import EmbeddingRetriever, KeywordRetriever, Retriever
 
 
 def _table(name: str, columns: tuple[str, ...]) -> Table:
@@ -97,7 +104,7 @@ class TestRetrieverProtocol:
         # if Protocol structural typing breaks, this catches it.
         store = SQLiteStore(tmp_path / "s.db")
         r: Retriever = KeywordRetriever(store=store, source_connection_id="src1")
-        assert hasattr(r, "retrieve")
+        assert isinstance(r, Retriever)
 
 
 class TestKeywordRetriever:
@@ -235,3 +242,272 @@ class TestKeywordRetriever:
         store.write_table(t, source_connection_id=sid)
         r = KeywordRetriever(store=store, source_connection_id=sid)
         assert r.retrieve("events", limit=10) == ["analytics.events"]
+
+
+# Helpers for EmbeddingRetriever tests.
+# We use 4-dim unit-axis vectors so cosine similarity has meaning we can
+# reason about: parallel = 1.0, orthogonal = 0.0.
+
+_DIM = 4
+
+
+def _unit(idx: int) -> tuple[float, ...]:
+    """One-hot unit vector of length _DIM with the 1 at position `idx`."""
+    return tuple(1.0 if i == idx else 0.0 for i in range(_DIM))
+
+
+def _emb(vector: tuple[float, ...], model: str = "test-emb") -> ColumnEmbedding:
+    return ColumnEmbedding(vector=vector, model=model, dimension=len(vector))
+
+
+class _ScriptedEmbedder:
+    """Test embedder that returns a vector keyed by exact text match.
+
+    Lets tests pre-script which query string maps to which axis vector.
+    Anything not in the script raises so silent test drift fails loudly.
+    """
+
+    model_name = "test-emb"
+    dimension = _DIM
+
+    def __init__(self, script: dict[str, tuple[float, ...]]) -> None:
+        self._script = script
+        self.calls: list[str] = []
+
+    def embed(self, text: str) -> tuple[float, ...]:
+        self.calls.append(text)
+        if text not in self._script:
+            raise KeyError(f"_ScriptedEmbedder has no scripted vector for {text!r}")
+        return self._script[text]
+
+
+@pytest.fixture
+def embedded_store(tmp_path: Path) -> SQLiteStore:
+    """Three tables, each embedded so their MAX-cosine column lands on a
+    distinct unit axis. This lets us pin which table should win for a
+    query embedded onto each axis.
+        users    → axis 0
+        orders   → axis 1
+        products → axis 2
+    """
+    store = SQLiteStore(tmp_path / "store.db")
+    sid = "src1"
+    users = _table("users", ("id", "email", "full_name"))
+    orders = _table("orders", ("id", "user_id", "total_cents"))
+    products = _table("products", ("id", "sku", "name"))
+    for t in (users, orders, products):
+        store.write_table(t, source_connection_id=sid)
+
+    # Each table's "best" column points exactly along one axis.
+    # Other columns are orthogonal so they contribute zero to the score.
+    store.write_table_embeddings(
+        "public",
+        "users",
+        source_connection_id=sid,
+        embeddings={
+            "id": _emb(_unit(3)),
+            "email": _emb(_unit(0)),  # this is the "winning" column
+            "full_name": _emb(_unit(3)),
+        },
+    )
+    store.write_table_embeddings(
+        "public",
+        "orders",
+        source_connection_id=sid,
+        embeddings={
+            "id": _emb(_unit(3)),
+            "user_id": _emb(_unit(1)),  # winning
+            "total_cents": _emb(_unit(3)),
+        },
+    )
+    store.write_table_embeddings(
+        "public",
+        "products",
+        source_connection_id=sid,
+        embeddings={
+            "id": _emb(_unit(3)),
+            "sku": _emb(_unit(2)),  # winning
+            "name": _emb(_unit(3)),
+        },
+    )
+    return store
+
+
+class TestEmbeddingRetrieverProtocol:
+    def test_satisfies_protocol(self, tmp_path: Path) -> None:
+        store = SQLiteStore(tmp_path / "s.db")
+        embedder = _ScriptedEmbedder({})
+        r: Retriever = EmbeddingRetriever(
+            store=store, source_connection_id="src1", embedder=embedder
+        )
+        assert isinstance(r, Retriever)
+
+
+class TestEmbeddingRetriever:
+    def test_returns_empty_when_store_has_no_tables(self, tmp_path: Path) -> None:
+        store = SQLiteStore(tmp_path / "s.db")
+        embedder = _ScriptedEmbedder({"q": _unit(0)})
+        r = EmbeddingRetriever(store=store, source_connection_id="src1", embedder=embedder)
+        assert r.retrieve("q", limit=10) == []
+
+    def test_zero_limit_returns_empty(self, embedded_store: SQLiteStore) -> None:
+        embedder = _ScriptedEmbedder({"q": _unit(0)})
+        r = EmbeddingRetriever(store=embedded_store, source_connection_id="src1", embedder=embedder)
+        assert r.retrieve("q", limit=0) == []
+
+    def test_negative_limit_returns_empty(self, embedded_store: SQLiteStore) -> None:
+        embedder = _ScriptedEmbedder({"q": _unit(0)})
+        r = EmbeddingRetriever(store=embedded_store, source_connection_id="src1", embedder=embedder)
+        assert r.retrieve("q", limit=-1) == []
+
+    def test_empty_query_returns_empty_without_embedding(self, embedded_store: SQLiteStore) -> None:
+        # Important: an empty query must NOT call the embedder. Otherwise
+        # we'd waste an ONNX call AND have to handle the zero-vector
+        # cosine division.
+        embedder = _ScriptedEmbedder({})
+        r = EmbeddingRetriever(store=embedded_store, source_connection_id="src1", embedder=embedder)
+        assert r.retrieve("", limit=10) == []
+        assert r.retrieve("   \n\t  ", limit=10) == []
+        assert embedder.calls == []
+
+    def test_query_on_axis_0_surfaces_users(self, embedded_store: SQLiteStore) -> None:
+        # users.email is the only column whose embedding aligns with axis 0;
+        # max-cosine puts users at the top.
+        embedder = _ScriptedEmbedder({"about user emails": _unit(0)})
+        r = EmbeddingRetriever(store=embedded_store, source_connection_id="src1", embedder=embedder)
+        result = r.retrieve("about user emails", limit=10)
+        assert result[0] == "public.users"
+
+    def test_query_on_axis_1_surfaces_orders(self, embedded_store: SQLiteStore) -> None:
+        embedder = _ScriptedEmbedder({"who placed orders": _unit(1)})
+        r = EmbeddingRetriever(store=embedded_store, source_connection_id="src1", embedder=embedder)
+        result = r.retrieve("who placed orders", limit=10)
+        assert result[0] == "public.orders"
+
+    def test_query_on_axis_2_surfaces_products(self, embedded_store: SQLiteStore) -> None:
+        embedder = _ScriptedEmbedder({"sku codes please": _unit(2)})
+        r = EmbeddingRetriever(store=embedded_store, source_connection_id="src1", embedder=embedder)
+        result = r.retrieve("sku codes please", limit=10)
+        assert result[0] == "public.products"
+
+    def test_returns_only_tables_with_score_above_zero(self, embedded_store: SQLiteStore) -> None:
+        # Query parallel to axis 0 → users score = 1.0, orders + products
+        # score = 0.0. We don't want zero-score tables in the result list:
+        # they're noise that crowds out the signal.
+        embedder = _ScriptedEmbedder({"q": _unit(0)})
+        r = EmbeddingRetriever(store=embedded_store, source_connection_id="src1", embedder=embedder)
+        result = r.retrieve("q", limit=10)
+        assert result == ["public.users"]
+
+    def test_respects_limit(self, embedded_store: SQLiteStore) -> None:
+        # All three axes sum into the query → all three tables score 1.0.
+        # With limit=2, only 2 come back.
+        # Use a vector where each non-noise axis has equal weight.
+        embedder = _ScriptedEmbedder({"all": (1.0, 1.0, 1.0, 0.0)})
+        r = EmbeddingRetriever(store=embedded_store, source_connection_id="src1", embedder=embedder)
+        result = r.retrieve("all", limit=2)
+        assert len(result) == 2
+
+    def test_filters_by_source_connection_id(self, embedded_store: SQLiteStore) -> None:
+        embedder = _ScriptedEmbedder({"q": _unit(0)})
+        r = EmbeddingRetriever(
+            store=embedded_store, source_connection_id="DOES-NOT-EXIST", embedder=embedder
+        )
+        assert r.retrieve("q", limit=10) == []
+
+    def test_skips_table_without_embeddings(self, tmp_path: Path) -> None:
+        # A table indexed without an embedder (or one that hit the cap
+        # before embedding completed) has no rows in column_embeddings.
+        # The retriever must silently skip it rather than crashing.
+        store = SQLiteStore(tmp_path / "s.db")
+        sid = "src1"
+        store.write_table(_table("users", ("id", "email")), source_connection_id=sid)
+        store.write_table(_table("orders", ("id", "user_id")), source_connection_id=sid)
+        # Only embed users.
+        store.write_table_embeddings(
+            "public",
+            "users",
+            source_connection_id=sid,
+            embeddings={"email": _emb(_unit(0))},
+        )
+        embedder = _ScriptedEmbedder({"q": _unit(0)})
+        r = EmbeddingRetriever(store=store, source_connection_id=sid, embedder=embedder)
+        result = r.retrieve("q", limit=10)
+        assert result == ["public.users"]  # orders not crashed, just absent
+
+    def test_deterministic_tiebreak_when_scores_equal(self, embedded_store: SQLiteStore) -> None:
+        # All 3 tables tie at score 1.0; ranking falls back to qualified
+        # name order. orders < products < users alphabetically.
+        embedder = _ScriptedEmbedder({"all": (1.0, 1.0, 1.0, 0.0)})
+        r = EmbeddingRetriever(store=embedded_store, source_connection_id="src1", embedder=embedder)
+        result = r.retrieve("all", limit=10)
+        assert result == ["public.orders", "public.products", "public.users"]
+
+    def test_dimension_mismatch_between_query_and_stored_raises(self, tmp_path: Path) -> None:
+        # If the user re-runs eval with a different embedder dimension
+        # than the one used at index time, cosine is undefined. Surface
+        # it loudly so they know to wipe + re-index.
+        store = SQLiteStore(tmp_path / "s.db")
+        sid = "src1"
+        store.write_table(_table("users", ("email",)), source_connection_id=sid)
+        store.write_table_embeddings(
+            "public",
+            "users",
+            source_connection_id=sid,
+            embeddings={"email": _emb(_unit(0))},  # 4-dim
+        )
+
+        # Embedder produces 8-dim — mismatched.
+        class _BadDimEmbedder:
+            model_name = "bad"
+            dimension = 8
+
+            def embed(self, text: str) -> tuple[float, ...]:
+                return tuple(0.1 for _ in range(8))
+
+        r = EmbeddingRetriever(store=store, source_connection_id=sid, embedder=_BadDimEmbedder())
+        with pytest.raises(ValueError, match="dimension"):
+            r.retrieve("anything", limit=10)
+
+    def test_zero_norm_query_returns_empty(self, embedded_store: SQLiteStore) -> None:
+        # A degenerate zero vector from the embedder makes cosine
+        # undefined (0 / 0). Treat as "no signal" — empty result, no
+        # crash.
+        embedder = _ScriptedEmbedder({"q": (0.0, 0.0, 0.0, 0.0)})
+        r = EmbeddingRetriever(store=embedded_store, source_connection_id="src1", embedder=embedder)
+        assert r.retrieve("q", limit=10) == []
+
+    def test_zero_norm_stored_vector_does_not_crash(self, tmp_path: Path) -> None:
+        # If a stored vector somehow has zero norm (shouldn't happen with
+        # a real embedder, but defense-in-depth), it should score 0 not
+        # crash.
+        store = SQLiteStore(tmp_path / "s.db")
+        sid = "src1"
+        store.write_table(_table("users", ("email",)), source_connection_id=sid)
+        store.write_table(_table("orders", ("id",)), source_connection_id=sid)
+        store.write_table_embeddings(
+            "public",
+            "users",
+            source_connection_id=sid,
+            embeddings={"email": _emb((0.0, 0.0, 0.0, 0.0))},
+        )
+        store.write_table_embeddings(
+            "public",
+            "orders",
+            source_connection_id=sid,
+            embeddings={"id": _emb(_unit(1))},
+        )
+        embedder = _ScriptedEmbedder({"q": _unit(1)})
+        r = EmbeddingRetriever(store=store, source_connection_id=sid, embedder=embedder)
+        result = r.retrieve("q", limit=10)
+        # users (zero-norm) drops out; orders stays.
+        assert result == ["public.orders"]
+
+    def test_query_embedded_only_once(self, embedded_store: SQLiteStore) -> None:
+        # Per-table cosine must NOT re-embed the query each time —
+        # otherwise a 100-table schema would do 100 embedder calls
+        # instead of 1, defeating the local-embedding cost story.
+        embedder = _ScriptedEmbedder({"q": _unit(0)})
+        r = EmbeddingRetriever(store=embedded_store, source_connection_id="src1", embedder=embedder)
+        r.retrieve("q", limit=10)
+        assert embedder.calls == ["q"]

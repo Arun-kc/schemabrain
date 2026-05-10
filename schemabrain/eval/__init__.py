@@ -10,12 +10,12 @@ not because Schema Brain is e-commerce-specific.
 
 Public API:
 - `GoldenQuestion`, `GoldenSet`, `load_golden`, `DEFAULT_GOLDEN_PATH`
-- `Retriever` (Protocol), `KeywordRetriever`
+- `Retriever` (Protocol), `KeywordRetriever`, `EmbeddingRetriever`
 - `QuestionResult`, `EvalReport`, `run_eval`, `format_report`
 
-The retriever is a Protocol so the placeholder `KeywordRetriever`
-shipped in Week 3 can be swapped for an embedding-based retriever in
-Week 4 without touching the runner or the golden set.
+The Protocol exists so future strategies (rerankers, hybrid keyword +
+embedding, sqlite-vec ANN) can drop in without touching the runner or
+golden files.
 """
 
 from schemabrain.eval.golden import (
@@ -24,11 +24,12 @@ from schemabrain.eval.golden import (
     GoldenSet,
     load_golden,
 )
-from schemabrain.eval.retriever import KeywordRetriever, Retriever
+from schemabrain.eval.retriever import EmbeddingRetriever, KeywordRetriever, Retriever
 from schemabrain.eval.runner import EvalReport, QuestionResult, format_report, run_eval
 
 __all__ = [
     "DEFAULT_GOLDEN_PATH",
+    "EmbeddingRetriever",
     "EvalReport",
     "GoldenQuestion",
     "GoldenSet",

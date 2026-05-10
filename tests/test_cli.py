@@ -1008,6 +1008,10 @@ class TestEvalSubcommandIntegration:
                 str(store_path),
                 "--golden",
                 str(golden_path),
+                # Existing seed has descriptions but no embeddings; the
+                # default --retriever embedding would return nothing here.
+                "--retriever",
+                "keyword",
             ]
         )
         assert exit_code == 0
@@ -1042,6 +1046,8 @@ class TestEvalSubcommandIntegration:
                 str(store_path),
                 "--golden",
                 str(golden_path),
+                "--retriever",
+                "keyword",
             ]
         )
         assert exit_code == 0
@@ -1067,9 +1073,108 @@ class TestEvalSubcommandIntegration:
                 "postgresql://fake-host/default-golden-test",
                 "--store-path",
                 str(store_path),
+                "--retriever",
+                "keyword",
             ]
         )
         assert exit_code == 0
         out = capsys.readouterr().out
         # Bundled set has 10 questions per the file in this slice.
         assert "10 questions" in out
+
+    def test_embedding_retriever_against_seeded_embeddings(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # Default --retriever embedding path: seed a store with both
+        # descriptions and pre-computed embeddings, monkeypatch
+        # fastembed_default to a deterministic test embedder, run eval.
+        from schemabrain.cli import _make_source_id
+        from schemabrain.core.embedding import ColumnEmbedding
+        from schemabrain.core.models import Column, Table
+        from schemabrain.core.store import SQLiteStore
+
+        source_url = "postgresql://fake-host/embed-eval"
+        store_path = tmp_path / "store.db"
+        sid = _make_source_id(source_url)
+
+        # 4-dim deterministic vectors. users.email aligns with axis 0.
+        users = Table(
+            name="users",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="email",
+                    table_name="users",
+                    schema_name="public",
+                    data_type="TEXT",
+                    nullable=False,
+                    ordinal_position=1,
+                ),
+            ),
+        )
+        with SQLiteStore(store_path) as s:
+            s.write_table(users, source_connection_id=sid)
+            s.write_table_embeddings(
+                "public",
+                "users",
+                source_connection_id=sid,
+                embeddings={
+                    "email": ColumnEmbedding(
+                        vector=(1.0, 0.0, 0.0, 0.0), model="test-emb", dimension=4
+                    )
+                },
+            )
+
+        class _AxisZeroEmbedder:
+            model_name = "test-emb"
+            dimension = 4
+
+            def embed(self, text: str) -> tuple[float, ...]:
+                return (1.0, 0.0, 0.0, 0.0)
+
+        monkeypatch.setattr("schemabrain.cli.fastembed_default", _AxisZeroEmbedder)
+
+        golden_path = tmp_path / "g.json"
+        golden_path.write_text(
+            '{"version":"1","schema_description":"t",'
+            '"questions":[{"id":"q1","question":"about user emails",'
+            '"expected_tables":["public.users"]}]}'
+        )
+
+        exit_code = main(
+            [
+                "eval",
+                "--source",
+                source_url,
+                "--store-path",
+                str(store_path),
+                "--golden",
+                str(golden_path),
+                # No --retriever flag → default to embedding.
+            ]
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "1.000" in out  # cosine = 1.0 → recall@1 = 1.000
+
+    def test_embedding_retriever_default_choice(self) -> None:
+        # Pin the default for the retriever flag — switching this away
+        # from `embedding` should be a deliberate test change, not
+        # invisible drift.
+        import argparse
+
+        from schemabrain.cli import _build_parser
+
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "eval",
+                "--source",
+                "postgresql://fake/db",
+            ]
+        )
+        assert isinstance(args, argparse.Namespace)
+        assert args.retriever == "embedding"

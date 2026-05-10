@@ -18,8 +18,9 @@ ANTHROPIC_API_KEY must be set in the environment unless `--no-enrich`
 is passed.
 
 `eval` scores a `Retriever` against a hand-curated `GoldenSet` and
-prints recall@1/@3/@10. Today the only retriever is `KeywordRetriever`
-(a placeholder until embedding-based retrieval ships). The harness is
+prints recall@1/@3/@10. Two retrievers are available via `--retriever`:
+`embedding` (default, cosine over stored column embeddings) and
+`keyword` (the Week-3 keyword-overlap baseline). The harness is
 schema-agnostic: pass `--golden /path/to/your-schema.json` for a real
 schema. The bundled default is just one starter example
 (`schemabrain/eval/golden_sets/ecommerce.json`, paired with the
@@ -45,7 +46,7 @@ from schemabrain.enrichment.anthropic_client import (
 from schemabrain.enrichment.embeddings import Embedder, fastembed_default
 from schemabrain.enrichment.pipeline import CostCapExceeded, EnrichmentPipeline
 from schemabrain.eval.golden import DEFAULT_GOLDEN_PATH, load_golden
-from schemabrain.eval.retriever import KeywordRetriever
+from schemabrain.eval.retriever import EmbeddingRetriever, KeywordRetriever, Retriever
 from schemabrain.eval.runner import format_report, run_eval
 from schemabrain.indexer import index
 from schemabrain.profiler.postgres import PostgresProfiler
@@ -88,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
             store_path=args.store_path,
             source_url=args.source,
             limit=args.limit,
+            retriever_kind=args.retriever,
         )
     # argparse `required=True` on subparsers prevents reaching here, but
     # leaving an explicit branch is cheaper than a guarded assertion.
@@ -165,6 +167,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to a golden-set JSON file. The default is one starter "
         "example (synthetic e-commerce); for your own schema, author a "
         f"matching JSON and pass it here. (default: {DEFAULT_GOLDEN_PATH})",
+    )
+    p_eval.add_argument(
+        "--retriever",
+        choices=("embedding", "keyword"),
+        default="embedding",
+        help="Which Retriever implementation to score. `embedding` uses "
+        "stored column embeddings + cosine (requires the store to have "
+        "been indexed without --no-embed). `keyword` uses the Week-3 "
+        "keyword-overlap baseline. Default: embedding.",
     )
     p_eval.add_argument(
         "--limit",
@@ -253,6 +264,7 @@ def _cmd_eval(
     store_path: str,
     source_url: str,
     limit: int,
+    retriever_kind: str,
 ) -> int:
     try:
         source_id = _make_source_id(source_url)
@@ -270,7 +282,19 @@ def _cmd_eval(
         return 2
 
     with SQLiteStore(store_path) as store:
-        retriever = KeywordRetriever(store=store, source_connection_id=source_id)
+        retriever: Retriever
+        if retriever_kind == "embedding":
+            # Construct the same default embedder the indexer uses so
+            # query and stored vectors are dimension-compatible. fastembed
+            # is loaded lazily; the model isn't actually downloaded until
+            # the first .embed() call inside the run.
+            retriever = EmbeddingRetriever(
+                store=store,
+                source_connection_id=source_id,
+                embedder=fastembed_default(),
+            )
+        else:
+            retriever = KeywordRetriever(store=store, source_connection_id=source_id)
         report = run_eval(golden=golden, retriever=retriever, limit=limit)
 
     print(format_report(report))
