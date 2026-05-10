@@ -86,3 +86,83 @@ def seeded_pg_url(pg_url: str) -> str:
     finally:
         engine.dispose()
     return pg_url
+
+
+@pytest.fixture(scope="session")
+def profiling_pg_url(pg_url: str) -> str:
+    """Connection URL for a Postgres seeded with a row-populated profiling schema.
+
+    Schema (single creation, session-wide; isolated from `seeded_pg_url`):
+
+      profiling.empty_table        -- 0 rows
+      profiling.users_profile      -- 6 rows; mixes PII, mixed nulls, all-null,
+                                      long values, repeating shapes, and a
+                                      regression row (id=6) where a credit-card
+                                      number sits inside a 1100-char bio so we
+                                      can exercise the truncation/redaction order.
+      profiling."weird name"       -- 2 rows, identifiers that exercise quoting
+                                      ("select" reserved word, "x;DROP" injection-shaped).
+                                      Uses the 'profiling' schema; if a future
+                                      seeded_pg_url test ever needs that schema
+                                      name, both fixtures must coordinate.
+    """
+    engine = create_engine(pg_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("CREATE SCHEMA profiling;"))
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE profiling.empty_table (
+                        id BIGINT,
+                        name TEXT
+                    );
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE profiling.users_profile (
+                        id BIGINT NOT NULL,
+                        email TEXT NOT NULL,
+                        middle_name TEXT,
+                        phone TEXT,
+                        bio TEXT
+                    );
+                    """
+                )
+            )
+            long_bio = "x" * 200
+            # Regression row for the truncation-then-redaction PII bug: the
+            # CC number sits ~40 chars in, so a naive `value[:50]` then
+            # `redact_pii` would split it and leak the trailing digits.
+            cc_at_position_40 = ("x" * 40) + "4111111111111111" + ("y" * 1100)
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO profiling.users_profile
+                        (id, email, middle_name, phone, bio)
+                    VALUES
+                        (1, 'alice@acme.com', NULL, '555-123-4567', 'short'),
+                        (2, 'bob@acme.com',   NULL, '555-987-6543', :long_bio),
+                        (3, 'carol@acme.com', NULL, NULL,           'medium length bio'),
+                        (4, 'dave@acme.com',  NULL, '555-111-2222', NULL),
+                        (5, 'eve@acme.com',   NULL, NULL,           NULL),
+                        (6, 'frank@acme.com', NULL, NULL,           :cc_bio)
+                    """
+                ),
+                {"long_bio": long_bio, "cc_bio": cc_at_position_40},
+            )
+            conn.execute(
+                text('CREATE TABLE profiling."weird name" ("select" TEXT, "x;DROP" TEXT);')
+            )
+            conn.execute(
+                text(
+                    'INSERT INTO profiling."weird name" ("select", "x;DROP") '
+                    "VALUES ('a', 'b'), ('c', 'd');"
+                )
+            )
+    finally:
+        engine.dispose()
+    return pg_url
