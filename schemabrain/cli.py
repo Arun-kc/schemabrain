@@ -26,6 +26,13 @@ schema. The bundled default is just one starter example
 (`schemabrain/eval/golden_sets/ecommerce.json`, paired with the
 synthetic fixture in `schemabrain/eval/fixtures/ecommerce.sql`) so the
 CLI works out of the box.
+
+`serve` runs the MCP server on stdio against a previously-indexed
+store. Two tools are exposed: `find_relevant_tables` (embedding
+retrieval) and `describe_table` (full structural + semantic detail).
+Wire into Claude Desktop or any MCP client by adding an entry to
+`claude_desktop_config.json` that runs `schemabrain serve --source
+<URL> --store-path <PATH>`.
 """
 
 from __future__ import annotations
@@ -49,6 +56,7 @@ from schemabrain.eval.golden import DEFAULT_GOLDEN_PATH, load_golden
 from schemabrain.eval.retriever import EmbeddingRetriever, KeywordRetriever, Retriever
 from schemabrain.eval.runner import format_report, run_eval
 from schemabrain.indexer import index
+from schemabrain.mcp.server import run_stdio
 from schemabrain.profiler.postgres import PostgresProfiler
 
 _DEFAULT_STORE_PATH = "./schemabrain.db"
@@ -90,6 +98,11 @@ def main(argv: list[str] | None = None) -> int:
             source_url=args.source,
             limit=args.limit,
             retriever_kind=args.retriever,
+        )
+    if args.command == "serve":
+        return _cmd_serve(
+            source_url=args.source,
+            store_path=args.store_path,
         )
     # argparse `required=True` on subparsers prevents reaching here, but
     # leaving an explicit branch is cheaper than a guarded assertion.
@@ -182,6 +195,22 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=_DEFAULT_EVAL_LIMIT,
         help=f"Top-K cap passed to the retriever (default: {_DEFAULT_EVAL_LIMIT})",
+    )
+
+    p_serve = sub.add_parser(
+        "serve",
+        help="Run the MCP server on stdio against the local store",
+    )
+    p_serve.add_argument(
+        "--source",
+        required=True,
+        help="The same source URL passed to `index` — used to resolve which "
+        "tables in the local store the MCP tools operate against.",
+    )
+    p_serve.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
     )
     return parser
 
@@ -298,6 +327,44 @@ def _cmd_eval(
         report = run_eval(golden=golden, retriever=retriever, limit=limit)
 
     print(format_report(report))
+    return 0
+
+
+def _cmd_serve(
+    *,
+    source_url: str,
+    store_path: str,
+) -> int:
+    """Run the MCP server on stdio against the local store.
+
+    Blocks until the client disconnects. The store stays open for the
+    lifetime of the process; SQLiteStore is single-process safe and
+    handles concurrent reads from FastMCP's async tool dispatch. Tools
+    are read-only (no writes occur at MCP call time), so SQLite's
+    single-writer limit is never approached.
+    """
+    try:
+        source_id = _make_source_id(source_url)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    # Construct the same default embedder the indexer used so query and
+    # stored vectors are dimension-compatible. fastembed loads the ONNX
+    # model lazily on first call.
+    try:
+        with SQLiteStore(store_path) as store:
+            run_stdio(
+                store=store,
+                source_connection_id=source_id,
+                embedder=fastembed_default(),
+            )
+    except OSError as e:
+        # Unwritable directory, missing parent, etc. Surface as a
+        # user-friendly message instead of a traceback — Claude Desktop
+        # config issues are the most common case here.
+        print(f"error: could not open store at {store_path!r}: {e}", file=sys.stderr)
+        return 2
     return 0
 
 

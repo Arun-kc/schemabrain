@@ -1178,3 +1178,68 @@ class TestEvalSubcommandIntegration:
         )
         assert isinstance(args, argparse.Namespace)
         assert args.retriever == "embedding"
+
+
+class TestServeSubcommand:
+    """The `serve` subcommand. We don't actually run stdio in tests
+    (would block); we patch the run_stdio entrypoint and verify the CLI
+    plumbing wires source/store correctly into it.
+    """
+
+    def test_serve_requires_source(self) -> None:
+        with pytest.raises(SystemExit) as exc:
+            main(["serve"])
+        assert exc.value.code != 0
+
+    def test_serve_malformed_source_returns_exit_2(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_path = tmp_path / "s.db"
+        SQLiteStore(store_path).close()
+        exit_code = main(
+            [
+                "serve",
+                "--source",
+                "not-a-url",
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        assert exit_code == 2
+        assert "error" in capsys.readouterr().err.lower()
+
+    def test_serve_calls_run_stdio_with_correct_arguments(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Pin the wiring: --source is hashed into the source_connection_id,
+        # --store-path is opened, fastembed_default() is constructed, and
+        # all three flow into run_stdio. Don't actually serve — capture
+        # the call.
+        from schemabrain.cli import _make_source_id
+
+        store_path = tmp_path / "store.db"
+        SQLiteStore(store_path).close()
+
+        captured: dict[str, object] = {}
+
+        def _capture_run_stdio(*, store, source_connection_id, embedder) -> None:
+            captured["store_is_sqlite_store"] = isinstance(store, SQLiteStore)
+            captured["source_connection_id"] = source_connection_id
+            captured["embedder_is_callable"] = hasattr(embedder, "embed")
+
+        monkeypatch.setattr("schemabrain.cli.run_stdio", _capture_run_stdio)
+
+        source_url = "postgresql://fake/serve-test"
+        exit_code = main(
+            [
+                "serve",
+                "--source",
+                source_url,
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        assert exit_code == 0
+        assert captured["store_is_sqlite_store"] is True
+        assert captured["source_connection_id"] == _make_source_id(source_url)
+        assert captured["embedder_is_callable"] is True

@@ -194,8 +194,8 @@ def _cosine_similarity(a: tuple[float, ...], b: tuple[float, ...]) -> float:
     dot = 0.0
     norm_a = 0.0
     norm_b = 0.0
-    # Lengths pre-checked above — no `strict=True` needed (would be dead).
-    for ai, bi in zip(a, b):
+    # Lengths pre-checked above; `strict=False` keeps ruff B905 quiet.
+    for ai, bi in zip(a, b, strict=False):
         dot += ai * bi
         norm_a += ai * ai
         norm_b += bi * bi
