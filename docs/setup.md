@@ -11,8 +11,10 @@ Both share the same indexing step.
 
 ```bash
 # Clone + install
-git clone https://github.com/arunkc/schemabrain && cd schemabrain
+git clone https://github.com/Arun-kc/schemabrain && cd schemabrain
 uv sync --extra dev
+
+# (PyPI publish coming with launch — until then, install from source.)
 
 # Set your Anthropic key (used at index time for column descriptions)
 export ANTHROPIC_API_KEY=sk-ant-...
