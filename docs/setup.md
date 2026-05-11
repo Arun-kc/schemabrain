@@ -10,11 +10,13 @@ Both share the same indexing step.
 ## 0. Install + index
 
 ```bash
-# Clone + install
-git clone https://github.com/Arun-kc/schemabrain && cd schemabrain
-uv sync --extra dev
+# Install (in a venv)
+pip install schemabrain
 
-# (PyPI publish coming with launch — until then, install from source.)
+# Or from source if you want to hack on it:
+#   git clone https://github.com/Arun-kc/schemabrain && cd schemabrain
+#   uv sync --extra dev
+# (source-install users prefix the runtime commands below with `uv run`)
 
 # Set your Anthropic key (used at index time for column descriptions)
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -22,7 +24,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 # Index your database. URL MUST use the postgresql+psycopg:// scheme
 # (Schema Brain uses psycopg v3; the bare postgresql:// scheme fails
 # with ModuleNotFoundError).
-uv run schemabrain index \
+schemabrain index \
     "postgresql+psycopg://user:pass@host:5432/dbname" \
     --store-path ./schemabrain.db
 ```
@@ -67,18 +69,27 @@ Paste (or merge) this block; replace the placeholders:
 
 A copy-paste-ready template lives at `examples/claude_desktop_config.example.json`.
 
-**Important: paths must be absolute.** Claude Desktop runs your config in a different working directory than your shell, so relative paths and `~` won't resolve. Run `realpath ./schemabrain.db` and `which schemabrain` (after `uv sync`, with the project venv activated) to get the absolute paths.
+**Important: paths must be absolute.** Claude Desktop runs your config in a different working directory than your shell, so relative paths and `~` won't resolve. Run `realpath ./schemabrain.db` and `which schemabrain` (with your `pip install`'d venv active, or your source-install venv via `uv sync`) to get the absolute paths.
 
 Restart Claude Desktop. In a new conversation you should see the `schemabrain` MCP server listed in the tool tray. Try a question like "Which tables in my database describe orders?" — Claude will call `find_relevant_tables` and `describe_table` to answer.
 
 ## Path 2 — Anthropic SDK demo (no Claude Desktop required)
 
-The demo script in `examples/anthropic_demo.py` spawns `schemabrain serve` over stdio, drives Claude Haiku via the Anthropic SDK's standard tool-use loop, and prints the conversation transcript:
+The demo script at `examples/anthropic_demo.py` spawns `schemabrain serve` over stdio, drives Claude Haiku via the Anthropic SDK's standard tool-use loop, and prints the conversation transcript.
+
+The example script ships in the source repo but not in the PyPI wheel. If you installed via `pip`, grab the script first:
+
+```bash
+curl -O https://raw.githubusercontent.com/Arun-kc/schemabrain/main/examples/anthropic_demo.py
+pip install anthropic  # also needs the Anthropic SDK
+```
+
+Then run it (source-install users prefix with `uv run`):
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 
-uv run python examples/anthropic_demo.py \
+python anthropic_demo.py \
     --source "postgresql+psycopg://user:pass@host:5432/dbname" \
     --store-path ./schemabrain.db \
     --question "Where do we store customer order totals?"

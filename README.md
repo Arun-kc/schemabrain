@@ -75,22 +75,26 @@ The qualifier — *"at least not in anything Schema Brain has indexed"* — matt
 
 ## Quickstart
 
-Five minutes from `git clone` to a working Claude Desktop integration. Three caveats up front — they tripped real users:
+Five minutes from `pip install` to a working Claude Desktop integration. Three caveats up front — they tripped real users:
 
 | Gotcha | Fix |
 |---|---|
 | `psql` is not on macOS by default | We use `docker exec -i sb-pg psql ...` instead — runs psql inside the postgres container, no host install needed |
-| `uv sync --extra dev` and `schemabrain index` are each silent for ~30–60s on first run | Don't kill them. `uv sync` downloads ~75 wheels; first `index` downloads the ONNX embedding model (~67 MB) and makes 24 LLM calls. Progress bars land in v0. |
+| `pip install schemabrain` and the first `schemabrain index` are each silent for ~30–60s | Don't kill them. `pip` resolves ~75 wheels; the first index downloads the ONNX embedding model (~67 MB) and makes 24 LLM calls. Progress bars land in v0. |
 | `ANTHROPIC_API_KEY` propagation | Run `export ANTHROPIC_API_KEY=sk-ant-...` in the same terminal you'll run `index` from |
 
 ### 1. Install
 
 ```bash
+pip install schemabrain
+```
+
+Or from source if you want to hack on it:
+
+```bash
 git clone git@github.com:Arun-kc/schemabrain.git
 cd schemabrain && uv sync --extra dev
 ```
-
-> PyPI publish is on the launch checklist — until then, install from source.
 
 ### 2. Boot Postgres + apply the bundled fixture (or point at your own DB)
 
