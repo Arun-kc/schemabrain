@@ -261,6 +261,142 @@ class TestTable:
         table = Table(name="users", schema_name="public", columns=(self._email_col(),))
         assert table.primary_key_columns() == ()
 
+    def _make_junction_table(self) -> Table:
+        """Build org_members: composite PK (org_id, user_id), both FK out."""
+        org_id = _column(
+            "org_id",
+            table_name="org_members",
+            data_type="bigint",
+            nullable=False,
+            ordinal_position=1,
+            is_primary_key=True,
+        )
+        user_id = _column(
+            "user_id",
+            table_name="org_members",
+            data_type="bigint",
+            nullable=False,
+            ordinal_position=2,
+            is_primary_key=True,
+        )
+        role = _column(
+            "role", table_name="org_members", data_type="text", nullable=True, ordinal_position=3
+        )
+        return Table(
+            name="org_members",
+            schema_name="public",
+            columns=(org_id, user_id, role),
+            foreign_keys=(
+                ForeignKey(
+                    name="om_org_id_fkey",
+                    source_columns=("org_id",),
+                    target_schema="public",
+                    target_table="orgs",
+                    target_columns=("id",),
+                ),
+                ForeignKey(
+                    name="om_user_id_fkey",
+                    source_columns=("user_id",),
+                    target_schema="public",
+                    target_table="users",
+                    target_columns=("id",),
+                ),
+            ),
+        )
+
+    def test_is_junction_table_true_for_classic_pattern(self):
+        table = self._make_junction_table()
+        assert table.is_junction_table() is True
+
+    def test_is_junction_table_false_for_single_column_pk(self):
+        table = Table(
+            name="users", schema_name="public", columns=(self._id_col(), self._email_col())
+        )
+        assert table.is_junction_table() is False
+
+    def test_is_junction_table_false_when_no_pk(self):
+        table = Table(name="users", schema_name="public", columns=(self._email_col(),))
+        assert table.is_junction_table() is False
+
+    def test_is_junction_table_false_when_pk_not_fk(self):
+        # Composite PK but neither column is a FK — not a junction.
+        col_a = _column(
+            "a",
+            table_name="composite",
+            data_type="bigint",
+            nullable=False,
+            ordinal_position=1,
+            is_primary_key=True,
+        )
+        col_b = _column(
+            "b",
+            table_name="composite",
+            data_type="bigint",
+            nullable=False,
+            ordinal_position=2,
+            is_primary_key=True,
+        )
+        table = Table(name="composite", schema_name="public", columns=(col_a, col_b))
+        assert table.is_junction_table() is False
+
+    def test_is_junction_table_false_when_fks_target_same_table(self):
+        # Self-referential composite-FK is an edge case we deliberately
+        # exclude — both PK columns FK to the same target.
+        parent_id = _column(
+            "parent_id",
+            table_name="user_hierarchy",
+            data_type="bigint",
+            nullable=False,
+            ordinal_position=1,
+            is_primary_key=True,
+        )
+        child_id = _column(
+            "child_id",
+            table_name="user_hierarchy",
+            data_type="bigint",
+            nullable=False,
+            ordinal_position=2,
+            is_primary_key=True,
+        )
+        table = Table(
+            name="user_hierarchy",
+            schema_name="public",
+            columns=(parent_id, child_id),
+            foreign_keys=(
+                ForeignKey(
+                    name="parent_fk",
+                    source_columns=("parent_id",),
+                    target_schema="public",
+                    target_table="users",
+                    target_columns=("id",),
+                ),
+                ForeignKey(
+                    name="child_fk",
+                    source_columns=("child_id",),
+                    target_schema="public",
+                    target_table="users",
+                    target_columns=("id",),
+                ),
+            ),
+        )
+        assert table.is_junction_table() is False
+
+    def test_is_junction_table_true_with_attribute_columns(self):
+        # Junction with a `role` non-PK attribute column still qualifies.
+        table = self._make_junction_table()
+        assert any(not col.is_primary_key for col in table.columns)
+        assert table.is_junction_table() is True
+
+    def test_junction_target_tables_sorted_and_unique(self):
+        table = self._make_junction_table()
+        assert table.junction_target_tables() == ("public.orgs", "public.users")
+
+    def test_junction_target_tables_empty_when_not_junction(self):
+        table = Table(
+            name="users", schema_name="public", columns=(self._id_col(), self._email_col())
+        )
+        assert table.junction_target_tables() == ()
+
     def test_rejects_empty_name(self):
         with pytest.raises(ValidationError):
             Table(name="", schema_name="public")

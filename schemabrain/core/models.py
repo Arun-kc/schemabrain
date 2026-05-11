@@ -154,3 +154,55 @@ class Table(BaseModel):
 
     def primary_key_columns(self) -> tuple[str, ...]:
         return tuple(col.name for col in self.columns if col.is_primary_key)
+
+    def is_junction_table(self) -> bool:
+        """True if this table looks like an M:N association table.
+
+        A junction table represents a many-to-many association between
+        two or more other tables. Joining other tables through it
+        multiplies result rows — a frequent source of double-counting
+        bugs in aggregate queries.
+
+        Heuristic (conservative):
+
+        - Composite primary key of >= 2 columns
+        - Every primary-key column is the source of some outgoing FK
+        - Those FKs target >= 2 distinct tables (qualified names)
+
+        Tables with extra attribute columns on the association (a
+        `role` field, a `created_at`, etc.) still qualify — only the PK
+        coverage matters. Self-referential association tables where
+        both FK columns point at the same target table do NOT qualify
+        under this heuristic; they're a real edge case but uncommon
+        enough to defer.
+        """
+        pk_cols = set(self.primary_key_columns())
+        if len(pk_cols) < 2:
+            return False
+        fk_source_columns: set[str] = set()
+        targets: set[str] = set()
+        for fk in self.foreign_keys:
+            if not any(col in pk_cols for col in fk.source_columns):
+                continue
+            fk_source_columns.update(fk.source_columns)
+            targets.add(f"{fk.target_schema}.{fk.target_table}")
+        if not pk_cols.issubset(fk_source_columns):
+            return False
+        return len(targets) >= 2
+
+    def junction_target_tables(self) -> tuple[str, ...]:
+        """Sorted qualified names of the tables this junction associates.
+
+        Returns an empty tuple if `is_junction_table()` is False. The
+        sort makes the prompt rendering deterministic — same invariant
+        the description-fingerprint cache depends on.
+        """
+        if not self.is_junction_table():
+            return ()
+        pk_cols = set(self.primary_key_columns())
+        targets: set[str] = set()
+        for fk in self.foreign_keys:
+            if not any(col in pk_cols for col in fk.source_columns):
+                continue
+            targets.add(f"{fk.target_schema}.{fk.target_table}")
+        return tuple(sorted(targets))

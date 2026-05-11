@@ -27,7 +27,7 @@ from schemabrain.profiler.stats import ColumnStats
 # date-stamp lets a future debugger reconstruct "what prompt was in use
 # when these cached fingerprints were stamped" without checking out an
 # old commit. Tests treat this as a load-bearing constant.
-PROMPT_VERSION = "2026-05-10-2"
+PROMPT_VERSION = "2026-05-11-1"
 
 SYSTEM_PROMPT = """\
 You are a data engineer documenting columns in a relational database for an AI agent.
@@ -41,6 +41,9 @@ Rules:
 - If the column appears to store PII, describe the field generically. Never repeat
   redacted sample values (`<EMAIL>`, `<SSN>`, `<CC>`) back in the description.
 - If the column is a foreign key, mention what entity it joins to.
+- If the column is in a junction (M:N association) table, additionally note that
+  joining through this table multiplies result rows; downstream aggregates that
+  sum or count across this association will double-count.
 - Avoid hedging language ("probably", "might be"). State your best guess as fact.
 - Output the description ONLY. No preamble, no explanation, no JSON wrapper.\
 """
@@ -87,6 +90,9 @@ def column_description_user_prompt(
         parts.append(f"Default: {column.default}")
     if fk_targets:
         parts.append(f"Foreign key references: {', '.join(fk_targets)}")
+    junction_targets = table.junction_target_tables()
+    if junction_targets:
+        parts.append(f"Junction table associating: {', '.join(junction_targets)}")
     if siblings:
         sibling_summary = ", ".join(f"{c.name} ({c.data_type})" for c in siblings)
         parts.append(f"Sibling columns: {sibling_summary}")

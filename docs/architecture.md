@@ -135,6 +135,8 @@ As of 2026-05-11, against two anchors: the bundled e-commerce fixture
 
 - ✅ Indexes Postgres 16 schema with FK-aware introspection (both anchors)
 - ✅ Partitioned tables are deduplicated; only the parent is enriched
+- ✅ Junction (M:N) tables are detected structurally; descriptions
+  explicitly warn that joining through them multiplies result rows
 - ✅ Generates LLM descriptions via Anthropic Claude (Haiku 4.5 default,
   Sonnet 4.6 for cryptic columns)
 - ✅ Local embeddings via `fastembed` (no second API vendor)
@@ -156,21 +158,45 @@ Not yet validated:
 - Snowflake / BigQuery / MySQL connectors (planned for v1)
 - Long-running serve sessions (no known issues, but no soak test yet)
 
-### Caveat detection is description-quality-dependent
+### M:N caveats are surfaced in junction-table descriptions
 
-On the bundled e-commerce fixture, the agent correctly flagged that summing
-spend per category would double-count products in multiple categories (the
-M:N `product_categories` junction). On Pagila, the agent asked the
-equivalent question for `film_category` and **did not** flag the
-double-counting risk. Same shape of junction table, different outcome.
+Junction (M:N association) tables are detected structurally — composite
+primary key with all PK columns being FK sources to ≥2 distinct target
+tables — and that detection becomes part of the column-enrichment
+prompt. The resulting descriptions explicitly state that joining through
+the junction multiplies result rows, surfacing the double-counting risk
+downstream agents need.
 
-The reason: caveat detection depends on whether the LLM-generated column
-description for the junction table explicitly surfaces its M:N nature. The
-bundled fixture's descriptions happen to. Pagila's, freshly generated,
-didn't lean hard enough into "this is a junction table; joining through it
-multiplies rows" for the downstream agent to act on.
+Example, generated on Pagila's `film_category` (composite PK on
+`(film_id, category_id)` with FKs to `film` and `category`):
 
-**Implication:** "Schema Brain helps agents flag M:N caveats" is true *when
-the descriptions surface them*. It is not an automatic guarantee of every
-indexed schema. Independent SQL validation (per `docs/setup.md`) remains
-the right backstop for production queries.
+> **film_id:** *"Identifier for a film in this junction table that
+> links films to their categories; joining through this table
+> multiplies rows by category count per film"*
+
+> **category_id:** *"Identifies the category assigned to a film in this
+> M:N junction table; joining through multiplies result rows"*
+
+Whether the calling agent surfaces a separate **Caveat:** block in its
+final answer depends on the question:
+
+- **When the user asks about caveats** (*"what should I watch out for"*),
+  Claude Haiku 4.5 reliably writes an explicit M:N caveat as the first
+  numbered item, names the consequence (*"counted in both category
+  totals"*), and suggests `DISTINCT` or business-rule clarification as
+  the fix. This is gold-standard behavior.
+- **When the user just asks for the SQL** with no priming, surfacing
+  varies. Across multiple Haiku runs on identical inputs, sometimes
+  the agent mentions M:N inline as a parenthetical, sometimes it omits
+  it. The variance is downstream of LLM sampling, not Schema Brain.
+
+Either way, the warning is present in every relevant column description
+and is retrievable via `describe_column` / `describe_table`. Agents
+performing serious analysis should be prompted to surface them.
+
+Self-referential association tables (both PK columns FK to the same
+target) do not currently qualify as junctions under this heuristic;
+revisit if real-world schemas ever rely on the pattern.
+
+Independent SQL validation (per `docs/setup.md`) remains the right
+backstop for production queries.

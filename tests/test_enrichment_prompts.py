@@ -9,7 +9,7 @@ other and CI fails.
 
 from __future__ import annotations
 
-from schemabrain.core.models import Column, Table
+from schemabrain.core.models import Column, ForeignKey, Table
 from schemabrain.enrichment.prompts import (
     PROMPT_VERSION,
     SYSTEM_PROMPT,
@@ -78,7 +78,7 @@ class TestPromptVersion:
     def test_locked_value(self) -> None:
         # Changing this string is a deliberate cache-invalidation event.
         # Bumping it must be paired with a prompt change (or vice versa).
-        assert PROMPT_VERSION == "2026-05-10-2"
+        assert PROMPT_VERSION == "2026-05-11-1"
 
     def test_format_is_date_stamped(self) -> None:
         # Format: `YYYY-MM-DD-N`. Locks the convention so future bumps
@@ -96,6 +96,13 @@ class TestSystemPrompt:
 
     def test_mentions_pii_rule(self) -> None:
         assert "pii" in SYSTEM_PROMPT.lower()
+
+    def test_mentions_junction_rule(self) -> None:
+        # Junction-handling rule must be in the system prompt so the LLM
+        # surfaces M:N double-counting risk in junction-column descriptions.
+        body = SYSTEM_PROMPT.lower()
+        assert "junction" in body
+        assert "m:n" in body or "many-to-many" in body or "multiplies" in body
 
     def test_no_trailing_whitespace_per_line(self) -> None:
         # Token-cost discipline: trailing spaces are pure waste in the
@@ -318,3 +325,125 @@ class TestColumnDescriptionUserPrompt:
             "Shape patterns: aaa@aaaa.aa"
         )
         assert rendered == expected
+
+
+def _junction_table() -> Table:
+    """A canonical junction table: composite PK (org_id, user_id), both FK."""
+    org_id = _column(
+        "org_id",
+        table_name="org_members",
+        data_type="BIGINT",
+        nullable=False,
+        ordinal_position=1,
+        is_primary_key=True,
+    )
+    user_id = _column(
+        "user_id",
+        table_name="org_members",
+        data_type="BIGINT",
+        nullable=False,
+        ordinal_position=2,
+        is_primary_key=True,
+    )
+    role = _column(
+        "role", table_name="org_members", data_type="TEXT", nullable=True, ordinal_position=3
+    )
+    return Table(
+        name="org_members",
+        schema_name="public",
+        columns=(org_id, user_id, role),
+        foreign_keys=(
+            ForeignKey(
+                name="om_org_id_fkey",
+                source_columns=("org_id",),
+                target_schema="public",
+                target_table="orgs",
+                target_columns=("id",),
+            ),
+            ForeignKey(
+                name="om_user_id_fkey",
+                source_columns=("user_id",),
+                target_schema="public",
+                target_table="users",
+                target_columns=("id",),
+            ),
+        ),
+    )
+
+
+class TestColumnDescriptionUserPromptJunction:
+    def test_emits_junction_line_for_junction_table(self) -> None:
+        rendered = column_description_user_prompt(
+            table=_junction_table(),
+            column=_column(
+                "org_id",
+                table_name="org_members",
+                data_type="BIGINT",
+                nullable=False,
+                ordinal_position=1,
+                is_primary_key=True,
+            ),
+            stats=None,
+            fk_targets=("public.orgs.id",),
+        )
+        assert "Junction table associating: public.orgs, public.users" in rendered
+
+    def test_omits_junction_line_for_non_junction_table(self) -> None:
+        rendered = column_description_user_prompt(
+            table=_users_table(),
+            column=_column("email"),
+            stats=None,
+            fk_targets=(),
+        )
+        assert "Junction table" not in rendered
+
+    def test_junction_targets_are_sorted_for_determinism(self) -> None:
+        # Same junction table, render twice — output is identical (the
+        # underlying sort guarantees this).
+        first = column_description_user_prompt(
+            table=_junction_table(),
+            column=_column(
+                "user_id",
+                table_name="org_members",
+                data_type="BIGINT",
+                nullable=False,
+                ordinal_position=2,
+                is_primary_key=True,
+            ),
+            stats=None,
+            fk_targets=("public.users.id",),
+        )
+        second = column_description_user_prompt(
+            table=_junction_table(),
+            column=_column(
+                "user_id",
+                table_name="org_members",
+                data_type="BIGINT",
+                nullable=False,
+                ordinal_position=2,
+                is_primary_key=True,
+            ),
+            stats=None,
+            fk_targets=("public.users.id",),
+        )
+        assert first == second
+
+    def test_junction_line_appears_before_siblings(self) -> None:
+        # Order is deliberate: junction context goes with the structural
+        # claims (FK target, table identity), not with the profiler stats.
+        rendered = column_description_user_prompt(
+            table=_junction_table(),
+            column=_column(
+                "org_id",
+                table_name="org_members",
+                data_type="BIGINT",
+                nullable=False,
+                ordinal_position=1,
+                is_primary_key=True,
+            ),
+            stats=None,
+            fk_targets=("public.orgs.id",),
+        )
+        junction_idx = rendered.index("Junction table")
+        siblings_idx = rendered.index("Sibling columns")
+        assert junction_idx < siblings_idx
