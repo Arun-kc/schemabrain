@@ -1,0 +1,94 @@
+# Publishes Schema Brain to TestPyPI or PyPI via Trusted Publishers (OIDC).
+#
+# No long-lived API tokens. PyPI/TestPyPI verify the workflow's OIDC token
+# against a pending-or-existing Trusted Publisher configured on each index.
+#
+# Manual-dispatch only for v0.1.0a1: every publish requires going to the
+# GitHub Actions UI and explicitly picking `testpypi` or `pypi`. No tag
+# push auto-triggers a release. Trade-off: more clicks per release. Why:
+#
+#   1. Free-plan private repos cannot set Required-Reviewer protection on
+#      GitHub Environments, so a tag-triggered chain has no human gate
+#      between TestPyPI and PyPI.
+#   2. First publishes are the highest-risk moment — once a version like
+#      `0.1.0a1` is on PyPI it is immutable forever. Manual dispatch makes
+#      every publish an intentional act.
+#
+# Once the package is established and the pipeline is proven, this can
+# convert to a tag-triggered or release-triggered design.
+
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        required: true
+        type: choice
+        options:
+          - testpypi
+          - pypi
+        default: testpypi
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Show built artifacts
+        run: ls -la dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to ${{ inputs.target }}
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      # Environment binding is what scopes the OIDC token claim that
+      # PyPI/TestPyPI verify against their Trusted Publisher config.
+      # The environment names must match what was registered on each
+      # index: `testpypi` on test.pypi.org, `pypi` on pypi.org.
+      name: ${{ inputs.target }}
+      url: ${{ inputs.target == 'pypi' && 'https://pypi.org/p/schemabrain' || 'https://test.pypi.org/p/schemabrain' }}
+    permissions:
+      id-token: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        if: inputs.target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: inputs.target == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
