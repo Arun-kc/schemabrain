@@ -119,6 +119,93 @@ This is the same path Claude Desktop takes internally (stdio MCP + tool-use loop
 | Agent loop hits `max-turns` cap | Question too broad or store under-indexed | Re-run `index` first; ask a more specific question |
 | Tool returns `isError=True` with "is not in the store" | Store source ID doesn't match `--source` URL | `--source` must match the URL passed to `index` exactly |
 
+## Validating SQL Claude generates
+
+Schema Brain gives Claude rich context, but it doesn't run the SQL. The agent
+produces queries that *should* be correct — but you should still verify before
+trusting the output, especially on real data. A four-step ladder, cheapest to
+most thorough:
+
+### Step 1 — does it execute?
+
+Pipe the SQL through `psql` (or `docker exec -i sb-pg psql ...` if you don't
+have host psql). Any syntax error, wrong column, or wrong qualified name fails
+here in milliseconds:
+
+```bash
+docker exec -i sb-pg psql -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+<paste Claude's SQL here>
+SQL
+```
+
+If it returns rows (or 0 rows cleanly), the schema-level correctness is proven.
+
+### Step 2 — is the query plan sane?
+
+Catches accidental cartesian products, missing indexes, and surprise sequential
+scans on large tables:
+
+```bash
+docker exec -i sb-pg psql -U postgres -d postgres <<'SQL'
+EXPLAIN (ANALYZE, BUFFERS) <Claude's SQL here>;
+SQL
+```
+
+Look for: hash joins or nested loops on small tables (fine), sequential scans
+on tables you expected to use an index (suspicious), and Rows Removed by Filter
+counts that look unreasonable.
+
+### Step 3 — does it produce the expected numbers on a known dataset?
+
+This is the killer check. Construct a tiny dataset where you can hand-compute
+the right answer, then run Claude's query and compare. **Especially valuable
+when the agent flagged a caveat** — a real test makes the caveat empirical.
+
+Worked example with the bundled e-commerce fixture: Claude warned that products
+in N categories would have their spend counted N times. Seed three orders, then
+compare the per-customer total spend computed two ways — through Claude's
+per-category query vs an independent reference that ignores categories:
+
+```bash
+docker exec -i sb-pg psql -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+INSERT INTO public.product_categories (product_id, category_id) VALUES
+    (1, 1), (1, 2), (2, 3) ON CONFLICT DO NOTHING;
+INSERT INTO public.orders (id, user_id, status, total_cents, placed_at) VALUES
+    (1, 1, 'paid',    23998, '2026-05-01'),
+    (2, 2, 'paid',    29998, '2026-05-02'),
+    (3, 3, 'pending',  8999, '2026-05-03') ON CONFLICT DO NOTHING;
+INSERT INTO public.order_items (id, order_id, product_id, quantity, unit_price_cents) VALUES
+    (1, 1, 1, 1,  8999), (2, 1, 2, 1, 14999),
+    (3, 2, 2, 2, 14999), (4, 3, 1, 1,  8999) ON CONFLICT DO NOTHING;
+SQL
+```
+
+Independent reference (no categories) — the actual money each customer paid:
+
+```bash
+docker exec -i sb-pg psql -U postgres -d postgres <<'SQL'
+SELECT u.id, u.full_name,
+       SUM(oi.quantity * oi.unit_price_cents) / 100.0 AS actual_spend
+FROM   public.users u
+JOIN   public.orders o       ON o.user_id   = u.id
+JOIN   public.order_items oi ON oi.order_id = o.id
+GROUP BY u.id, u.full_name ORDER BY u.id;
+SQL
+```
+
+You'll see Alice $239.98, Bob $299.98, Cara $89.99. Now run Claude's
+per-category query (the one from the README) and naively sum its rows per
+customer — Alice will inflate to $329.97 and Cara to $179.98 because their
+shoes are tagged in two categories. **The caveat Claude flagged is the
+mechanical truth of the data.** This is why agents that flag M:N caveats are
+worth more than agents that don't.
+
+### Step 4 — sanity-check against production sample
+
+For NULL handling, deprecated rows, and weird data shapes that only appear in
+production. `LIMIT 100` against prod, eyeball the output. No automated rule
+catches every category of issue this stage does.
+
 ## What's next
 
 - Run `schemabrain eval` to score retrieval quality against the bundled e-commerce golden set (or your own).
