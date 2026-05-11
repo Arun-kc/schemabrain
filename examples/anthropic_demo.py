@@ -46,7 +46,11 @@ _DEFAULT_QUESTION = (
 )
 _DEFAULT_MAX_TURNS = 8
 _HAIKU_MODEL = "claude-haiku-4-5"
-_MAX_OUTPUT_TOKENS = 1024
+# Per-message output cap. 1024 was too tight — verbose answers (multiple
+# SQL skeletons, long explanations) hit the cap mid-response and stopped
+# with `stop_reason="max_tokens"`. 4096 leaves headroom for typical demo
+# answers without being excessive; Haiku 4.5 supports up to 8192.
+_MAX_OUTPUT_TOKENS = 4096
 _SYSTEM_PROMPT = (
     "You are a senior data engineer answering questions about an "
     "unfamiliar database. The user has indexed the database with "

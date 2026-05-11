@@ -360,10 +360,20 @@ def find_relevant_tables_impl(
 def _parse_qualified_name(qualified_name: str) -> tuple[str, str]:
     """Split `"schema.name"` into `(schema, name)`. Raises `ValueError`
     on malformed input — exactly one dot, both parts non-empty.
+
+    The error message includes recovery guidance so an LLM agent that
+    passes a bare table name (`"orders"` instead of `"public.orders"`)
+    learns the right next move from the message itself, rather than
+    having to retry blind. Manual tests showed agents instinctively
+    pass unqualified names; this nudge saves a turn per occurrence.
     """
     parts = qualified_name.split(".")
     if len(parts) != 2 or not parts[0] or not parts[1]:
-        raise ValueError(f"qualified_name must be exactly `schema.name`, got {qualified_name!r}")
+        raise ValueError(
+            f"qualified_name must be exactly `schema.name`, got {qualified_name!r}. "
+            f"If you don't know the schema, call `find_relevant_tables` first to "
+            f"discover the qualified name (e.g. `public.orders`)."
+        )
     return parts[0], parts[1]
 
 
@@ -375,11 +385,16 @@ def _parse_column_qualified_name(qualified_name: str) -> tuple[str, str, str]:
     tricks because Postgres identifiers don't allow embedded dots in
     standard usage; if a future schema needs that, the user will use
     quoting and we'll revisit.
+
+    Same recovery-guidance pattern as `_parse_qualified_name` — the
+    error tells the agent how to find the right qualified name.
     """
     parts = qualified_name.split(".")
     if len(parts) != 3 or not all(parts):
         raise ValueError(
-            f"qualified_name must be exactly `schema.table.column`, got {qualified_name!r}"
+            f"qualified_name must be exactly `schema.table.column`, got {qualified_name!r}. "
+            f"If you don't know the schema or table, call `find_relevant_tables` "
+            f"or `describe_table` first to discover them (e.g. `public.orders.user_id`)."
         )
     return parts[0], parts[1], parts[2]
 

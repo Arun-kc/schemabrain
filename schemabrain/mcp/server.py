@@ -80,10 +80,13 @@ def build_server(
     @app.tool(
         description=(
             "Return the full structural and semantic description of one "
-            "table given its qualified name (`schema.name`). Includes every "
-            "column with its data type, nullability, default, primary-key "
-            "flag, and LLM-generated description, plus all foreign keys "
-            "with their target tables."
+            "table given its qualified name (`schema.name`, e.g. "
+            "`public.orders`). Includes every column with its data type, "
+            "nullability, default, primary-key flag, and LLM-generated "
+            "description, plus all foreign keys with their target tables. "
+            "If you don't know the schema, call `find_relevant_tables` "
+            "first to discover the qualified name — passing a bare table "
+            "name (`orders`) without the schema prefix returns an error."
         )
     )
     def describe_table(qualified_name: str) -> TableDescription:
@@ -96,14 +99,16 @@ def build_server(
     @app.tool(
         description=(
             "Drill into one column given its three-part qualified name "
-            "(`schema.table.column`). Returns the column's structural "
-            "metadata, LLM description, and the join graph it participates "
-            "in: outgoing foreign keys (this column joins to where) AND "
-            "incoming foreign keys (which other tables reference this "
-            "column). Use this after `describe_table` when you need to "
-            "understand a single column's role across the schema, "
-            "especially primary keys whose back-references describe the "
-            "full join surface."
+            "(`schema.table.column`, e.g. `public.orders.user_id`). "
+            "Returns the column's structural metadata, LLM description, "
+            "and the join graph it participates in: outgoing foreign keys "
+            "(this column joins to where) AND incoming foreign keys "
+            "(which other tables reference this column). Use this after "
+            "`describe_table` when you need to understand a single "
+            "column's role across the schema, especially primary keys "
+            "whose back-references describe the full join surface. If you "
+            "don't know the schema or table, call `find_relevant_tables` "
+            "or `describe_table` first to discover them."
         )
     )
     def describe_column(qualified_name: str) -> ColumnDetail:
