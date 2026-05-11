@@ -35,6 +35,37 @@ class TestListTables:
         assert tables == []
 
 
+class TestPartitionFiltering:
+    def test_excludes_partition_children_from_schema_listing(self, seeded_pg_url: str):
+        with PostgresDataSource(seeded_pg_url) as ds:
+            tables = sorted(ds.list_tables(schema="partitioning"))
+        assert tables == [("partitioning", "events_by_region")]
+
+    def test_excludes_partition_children_from_full_listing(self, seeded_pg_url: str):
+        with PostgresDataSource(seeded_pg_url) as ds:
+            tables = ds.list_tables()
+        assert ("partitioning", "events_by_region") in tables
+        assert ("partitioning", "events_us") not in tables
+        assert ("partitioning", "events_eu") not in tables
+
+    def test_get_table_still_returns_partition_child_when_explicitly_requested(
+        self, seeded_pg_url: str
+    ):
+        # list_tables() filters them, but get_table() stays permissive
+        # so callers can still inspect a child directly if they want.
+        with PostgresDataSource(seeded_pg_url) as ds:
+            child = ds.get_table("events_us", schema="partitioning")
+        assert child.name == "events_us"
+        assert child.schema_name == "partitioning"
+
+    def test_get_table_returns_parent_with_inherited_columns(self, seeded_pg_url: str):
+        with PostgresDataSource(seeded_pg_url) as ds:
+            parent = ds.get_table("events_by_region", schema="partitioning")
+        col_names = {c.name for c in parent.columns}
+        assert col_names == {"id", "region", "payload"}
+        assert sorted(parent.primary_key_columns()) == ["id", "region"]
+
+
 class TestGetTable:
     def test_returns_table_with_expected_columns(self, seeded_pg_url: str):
         with PostgresDataSource(seeded_pg_url) as ds:

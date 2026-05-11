@@ -72,20 +72,35 @@ reason about raw scores.
 
 Per `index` run, with the default Haiku 4.5 + local embeddings:
 
-| Schema size | Approximate cost | Approximate time |
-|---|---|---|
-| 6 tables / 24 columns (bundled fixture) | $0.01 | 30–60 sec (incl. one-time ONNX download) |
-| ~50 tables / ~300 columns | $0.10–0.20 | 1–2 min |
-| ~200 tables / ~1500 columns | $0.50–1.00 | 5–10 min |
-| ~500 tables / ~5000 columns | $2.00–5.00 | 20–30 min |
+| Schema size | Cost | Time | Source |
+|---|---|---|---|
+| 6 tables / 24 columns (bundled fixture) | $0.0074 | 38 sec | measured |
+| 15 tables / 87 columns (Pagila, partition children deduplicated) | $0.0299 | 105 sec | measured |
+| ~50 tables / ~300 columns | $0.10–0.15 | 5–8 min | extrapolated |
+| ~200 tables / ~1500 columns | $0.45–0.55 | 30–40 min | extrapolated |
+| ~500 tables / ~5000 columns | $1.50–2.50 | 90–130 min | extrapolated |
+
+Both cost and time scale near-linearly with **column count**, not table
+count: across the two measured anchors, the per-column cost holds at
+~$0.00035 and per-column time falls between 1.2–1.6 seconds. The
+extrapolated rows assume that ratio continues; production-scale anchors
+will tighten or revise it.
 
 Hard cap configurable via `--max-cost` (default $10.00). Per-agent-query
 cost depends on tool calls and turns; in our testing, typical questions
 cost ~$0.005 with Haiku.
 
-The 6-table number is measured. Larger sizes are extrapolated linearly
-from one data point — they should be roughly right but aren't yet
-empirically confirmed.
+### Partitioned tables are deduplicated automatically
+
+Declarative partition children share an identical column structure with
+their parent, so enriching each one separately is purely wasted work. The
+Postgres connector filters them out at `list_tables()` time using
+`pg_class.relispartition`. On Pagila this dropped the index from 22
+tables / 129 columns to 15 tables / 87 columns — a 34% cost reduction
+and a 50% time reduction vs the naive reflection.
+
+`get_table()` stays permissive: if a caller explicitly asks for a
+partition child by name, they still get it. Only bulk listing skips them.
 
 ## Eval
 
@@ -114,23 +129,48 @@ text-to-SQL execution accuracy.
 
 ## What's validated
 
-As of 2026-05-11, against the bundled e-commerce fixture (6 tables /
-24 columns):
+As of 2026-05-11, against two anchors: the bundled e-commerce fixture
+(6 tables / 24 columns) and the Pagila DVD-rental sample (15 tables /
+87 columns after declarative-partition deduplication; 22 / 129 raw):
 
-- ✅ Indexes Postgres 16 schema with FK-aware introspection
+- ✅ Indexes Postgres 16 schema with FK-aware introspection (both anchors)
+- ✅ Partitioned tables are deduplicated; only the parent is enriched
 - ✅ Generates LLM descriptions via Anthropic Claude (Haiku 4.5 default,
   Sonnet 4.6 for cryptic columns)
 - ✅ Local embeddings via `fastembed` (no second API vendor)
-- ✅ All 4 MCP tools tested via Claude Desktop AND headless Anthropic SDK
+- ✅ All 4 MCP tools tested via Claude Desktop AND headless Anthropic SDK,
+  on both anchors
 - ✅ Adversarial questions handled honestly ("not in indexed schema" with
-  explicit qualifier)
+  explicit qualifier) — Pagila negative-question test correctly distinguished
+  internal `payment_id` from external payment-processor transaction IDs
+- ✅ Multi-hop join discovery via `suggest_joins` (Pagila: rental → customer
+  → address path returned correctly)
 - ✅ Cache-aware re-index ($0 on unchanged schemas)
-- ✅ `pip install` + quickstart works from a fresh venv
+- ✅ Fresh-machine quickstart works from a stripped shell
 - ✅ Continuous integration (lint + unit + integration with 99% coverage gate)
 
 Not yet validated:
 
-- Schemas larger than 6 tables (Pagila ~22 tables coming; production-scale
-  ~200 tables to follow)
+- Production-scale schemas (~200+ tables). Extrapolation from the two
+  measured anchors is in the cost-model table above.
 - Snowflake / BigQuery / MySQL connectors (planned for v1)
 - Long-running serve sessions (no known issues, but no soak test yet)
+
+### Caveat detection is description-quality-dependent
+
+On the bundled e-commerce fixture, the agent correctly flagged that summing
+spend per category would double-count products in multiple categories (the
+M:N `product_categories` junction). On Pagila, the agent asked the
+equivalent question for `film_category` and **did not** flag the
+double-counting risk. Same shape of junction table, different outcome.
+
+The reason: caveat detection depends on whether the LLM-generated column
+description for the junction table explicitly surfaces its M:N nature. The
+bundled fixture's descriptions happen to. Pagila's, freshly generated,
+didn't lean hard enough into "this is a junction table; joining through it
+multiplies rows" for the downstream agent to act on.
+
+**Implication:** "Schema Brain helps agents flag M:N caveats" is true *when
+the descriptions surface them*. It is not an automatic guarantee of every
+indexed schema. Independent SQL validation (per `docs/setup.md`) remains
+the right backstop for production queries.

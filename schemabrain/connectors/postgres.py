@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import NoSuchTableError
 
@@ -19,8 +19,13 @@ class PostgresDataSource:
     """Read-only DataSource for PostgreSQL.
 
     Skips system schemas (`pg_*` and `information_schema`) when listing
-    tables across all schemas. Uses one SQLAlchemy `Engine` per instance;
-    `close()` disposes it and is idempotent.
+    tables across all schemas. Also filters out declarative partition
+    children from bulk listing — querying the partitioned parent fans out
+    to all children automatically, so enriching each child duplicates work
+    on identical column structure. `get_table()` remains permissive: if a
+    caller asks for a partition child by name, they still get it. Uses one
+    SQLAlchemy `Engine` per instance; `close()` disposes it and is
+    idempotent.
     """
 
     def __init__(self, url: str) -> None:
@@ -35,15 +40,42 @@ class PostgresDataSource:
     def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
         engine = self._require_engine()
         inspector = inspect(engine)
+        partition_children = self._get_partition_children()
         if schema is not None:
-            return [(schema, name) for name in inspector.get_table_names(schema=schema)]
+            return [
+                (schema, name)
+                for name in inspector.get_table_names(schema=schema)
+                if (schema, name) not in partition_children
+            ]
         result: list[tuple[str, str]] = []
         for sch in inspector.get_schema_names():
             if self._is_system_schema(sch):
                 continue
             for table_name in inspector.get_table_names(schema=sch):
+                if (sch, table_name) in partition_children:
+                    continue
                 result.append((sch, table_name))
         return result
+
+    def _get_partition_children(self) -> frozenset[tuple[str, str]]:
+        """Return ``(schema, name)`` of every declarative partition child.
+
+        Postgres ``pg_class.relispartition`` is ``true`` for partition
+        children of a ``PARTITION BY`` parent, and ``false`` for the parent
+        itself and for ordinary tables. Children share their parent's
+        column structure, so indexing each separately is purely wasted work.
+        """
+        engine = self._require_engine()
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT n.nspname, c.relname "
+                    "FROM pg_class c "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE c.relispartition = true"
+                )
+            ).fetchall()
+        return frozenset((str(row[0]), str(row[1])) for row in rows)
 
     def get_table(self, name: str, schema: str) -> Table:
         engine = self._require_engine()

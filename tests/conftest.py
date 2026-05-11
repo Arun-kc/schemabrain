@@ -35,6 +35,10 @@ def seeded_pg_url(pg_url: str) -> str:
       public.org_members (org_id FK->orgs.id, user_id FK->users.id,
                           role nullable, composite PK on (org_id, user_id))
       audit.events (id PK, payload nullable)
+      partitioning.events_by_region (id BIGINT, region TEXT, composite PK,
+                                     PARTITION BY LIST (region))
+        partitioning.events_us (PARTITION OF events_by_region FOR VALUES IN ('us'))
+        partitioning.events_eu (PARTITION OF events_by_region FOR VALUES IN ('eu'))
     """
     engine = create_engine(pg_url)
     try:
@@ -81,6 +85,31 @@ def seeded_pg_url(pg_url: str) -> str:
                         payload TEXT
                     );
                     """
+                )
+            )
+            conn.execute(text("CREATE SCHEMA partitioning;"))
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE partitioning.events_by_region (
+                        id BIGINT NOT NULL,
+                        region TEXT NOT NULL,
+                        payload TEXT,
+                        PRIMARY KEY (id, region)
+                    ) PARTITION BY LIST (region);
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE TABLE partitioning.events_us "
+                    "PARTITION OF partitioning.events_by_region FOR VALUES IN ('us');"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE TABLE partitioning.events_eu "
+                    "PARTITION OF partitioning.events_by_region FOR VALUES IN ('eu');"
                 )
             )
     finally:
