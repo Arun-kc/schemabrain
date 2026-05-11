@@ -30,6 +30,23 @@ Schema Brain fixes all four and serves the result through a stable MCP tool surf
 
 ---
 
+## How it compares
+
+The open-source landscape thinned in 2026: Vanna's public repo was frozen as the project went commercial, and the reference Postgres MCP server was archived in 2025 with no first-party successor named. The live landscape today:
+
+| Project | License | First-party MCP | Status |
+|---|---|---|---|
+| **Schema Brain** | MIT | ✅ | Active — `0.1.0a1` alpha |
+| [Vanna AI](https://github.com/vanna-ai/vanna) | MIT (repo frozen) | ❌ | OSS archived 2026-03; project moved commercial (Vanna 2.0 / Cloud / Enterprise) |
+| [Reference Postgres MCP](https://github.com/modelcontextprotocol/servers-archived) | MIT | ✅ | Archived 2025-05; no first-party successor named |
+| [Atlan](https://atlan.com) | Closed-source | ✅ | SaaS-only, enterprise pricing |
+| [dbt-mcp](https://github.com/dbt-labs/dbt-mcp) | Apache-2.0 | ✅ | Active — requires a dbt project |
+| [WrenAI](https://github.com/canner/WrenAI) | Apache-2.0 | ❌ (roadmap) | Active — uses MDL modeling layer |
+
+Schema Brain sits where none of these cover cleanly: **OSS + MIT + first-party MCP + no modeling layer required + introspects a live Postgres in one Python process**. Honest gap: query-log awareness — `pg_stat_statements` parsing is scheduled for v0 Week 8.
+
+---
+
 ## What it looks like in practice
 
 Real Claude Desktop session, validated 2026-05-11 against the bundled e-commerce fixture (6 tables, 24 columns, indexed for $0.0074):
@@ -72,6 +89,8 @@ That's senior-engineer-grade output. None of the caveats — M:N double-counting
 The qualifier — *"at least not in anything Schema Brain has indexed"* — matters. Most LLM-over-database tools confidently invent a `payments` table or shoehorn the answer into `orders.total_cents`. Schema Brain doesn't.
 
 ---
+
+> **Cost.** ~$0.0003/column with Claude Haiku 4.5. The bundled 6-table fixture indexes for **$0.0074 in 38s**; the Pagila DVD-rental sample (87 columns after partition deduplication) for **$0.0299 in 105s**. Re-indexing an unchanged schema costs **$0** — content-addressable fingerprinting skips the LLM call entirely.
 
 ## Quickstart
 
@@ -175,6 +194,22 @@ For the headless Anthropic-SDK path, see [`examples/anthropic_demo.py`](examples
 - [`docs/setup.md`](docs/setup.md) — Claude Desktop wiring + Anthropic SDK demo, with troubleshooting
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — dev setup, TDD expectations, conventional commits, architecture invariants
 - [`examples/`](examples/) — copy-paste-ready Claude Desktop config + headless agent loop using the official `mcp` Python SDK
+
+---
+
+## FAQ
+
+**Does my data leave my machine?**
+Only LLM-enriched column descriptions and the redacted sample values that feed them. Three regex passes (email, US SSN, credit-card-shaped digit runs) run on every sample before it leaves the profiler module — see [`schemabrain/profiler/stats.py`](schemabrain/profiler/stats.py). The Anthropic API call sends column metadata + redacted samples + sibling-column context — no raw rows, no full result sets. Embeddings are generated locally via `fastembed` (BAAI/bge-small-en-v1.5, ONNX, ~67 MB).
+
+**What databases work today?**
+Postgres 16+ (primary target) and SQLite (for development and demos). Adding Snowflake / BigQuery / MySQL is mostly a new `DataSource` implementation plus a profiler tweak — on the v1 roadmap.
+
+**Why MCP and not a REST API?**
+The consumer is an agent, not a service. MCP standardizes tool registration, schema description, and request/response transport. Agents (Claude Desktop, the Anthropic SDK, custom ones) discover Schema Brain natively and get four tools — no API wrapper, no SDK to maintain per language.
+
+**Why local embeddings instead of OpenAI / Voyage?**
+One LLM provider (Anthropic) and one local vector model is simpler than two API vendors. Embeddings change rarely, the model is bounded (one short description per column), and ~30 ms per query embed on a laptop is fast enough. Local-first also means you can index a private schema without exposing it to a second vendor.
 
 ---
 
