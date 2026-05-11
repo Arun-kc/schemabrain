@@ -202,6 +202,9 @@ For the headless Anthropic-SDK path, see [`examples/anthropic_demo.py`](examples
 **Does my data leave my machine?**
 Only LLM-enriched column descriptions and the redacted sample values that feed them. Three regex passes (email, US SSN, credit-card-shaped digit runs) run on every sample before it leaves the profiler module — see [`schemabrain/profiler/stats.py`](schemabrain/profiler/stats.py). The Anthropic API call sends column metadata + redacted samples + sibling-column context — no raw rows, no full result sets. Embeddings are generated locally via `fastembed` (BAAI/bge-small-en-v1.5, ONNX, ~67 MB).
 
+**Is this a semantic layer like Cube or dbt Semantic Layer?**
+No — not today. Schema Brain is a **context layer**: LLM-enriched descriptions + retrieval over your physical schema. Agents see `schema.table.column`, not `entity.metric`. A proper semantic layer with first-class entities (`customer` instead of `public.users`), metrics with grain + units (`revenue = sum(orders.total_cents)/100, grain=order`), and canonical joins as versioned definitions is on the **v1 roadmap**. The wedge today is *"no modeling layer required to get started"*; if you already run dbt or Cube, Schema Brain complements them rather than replacing them.
+
 **What databases work today?**
 Postgres 16+ (primary target) and SQLite (for development and demos). Adding Snowflake / BigQuery / MySQL is mostly a new `DataSource` implementation plus a profiler tweak — on the v1 roadmap.
 
