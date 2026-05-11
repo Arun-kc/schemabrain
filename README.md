@@ -6,7 +6,7 @@
 [![Python 3.11 | 3.12](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**Status: Pre-alpha.** Repo is private; preview launch in prep. Feature-complete for Postgres + SQLite.
+**Status: 0.1.0a1 (alpha preview).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the v1 roadmap. APIs may change before v1 — pin the version (`pip install schemabrain==0.1.0a1`) if you need stability.
 
 ---
 
