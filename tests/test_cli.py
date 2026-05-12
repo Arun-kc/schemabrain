@@ -1316,3 +1316,59 @@ class TestServeSubcommand:
         assert captured["store_is_sqlite_store"] is True
         assert captured["source_connection_id"] == _make_source_id(source_url)
         assert captured["embedder_is_callable"] is True
+
+
+class TestFixturePathSubcommand:
+    """`schemabrain fixture-path <name>` prints the absolute path to a
+    bundled fixture (e.g. `ecommerce.sql`) or golden set (e.g.
+    `ecommerce.json`). Designed to be drop-in copy-paste-able inside a
+    shell `$(...)` substitution, so stdout must be paste-clean and
+    stderr must stay empty on success.
+    """
+
+    def test_requires_name(self) -> None:
+        with pytest.raises(SystemExit) as exc:
+            main(["fixture-path"])
+        assert exc.value.code != 0
+
+    def test_prints_absolute_path_for_sql_fixture(self, capsys: pytest.CaptureFixture[str]) -> None:
+        exit_code = main(["fixture-path", "ecommerce.sql"])
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        out = captured.out.strip()
+        path = Path(out)
+        assert path.is_absolute()
+        assert path.is_file()
+        assert path.name == "ecommerce.sql"
+        assert path.parent.name == "fixtures"
+        # Paste-clean: no leading/trailing noise, no stderr.
+        assert captured.err == ""
+
+    def test_prints_absolute_path_for_golden_set(self, capsys: pytest.CaptureFixture[str]) -> None:
+        exit_code = main(["fixture-path", "ecommerce.json"])
+        assert exit_code == 0
+        out = capsys.readouterr().out.strip()
+        path = Path(out)
+        assert path.is_absolute()
+        assert path.is_file()
+        assert path.name == "ecommerce.json"
+        assert path.parent.name == "golden_sets"
+
+    def test_unknown_name_returns_exit_2(self, capsys: pytest.CaptureFixture[str]) -> None:
+        exit_code = main(["fixture-path", "nonexistent.txt"])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "error" in err.lower()
+        # The error message must list what's available, so the user can
+        # correct without grep-ing the source tree.
+        assert "ecommerce.sql" in err
+
+    def test_path_traversal_returns_exit_2(self, capsys: pytest.CaptureFixture[str]) -> None:
+        exit_code = main(["fixture-path", "../etc/passwd"])
+        assert exit_code == 2
+        assert "error" in capsys.readouterr().err.lower()
+
+    def test_empty_name_returns_exit_2(self, capsys: pytest.CaptureFixture[str]) -> None:
+        exit_code = main(["fixture-path", ""])
+        assert exit_code == 2
+        assert "error" in capsys.readouterr().err.lower()

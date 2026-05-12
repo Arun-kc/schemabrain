@@ -121,7 +121,7 @@ cd schemabrain && uv sync --extra dev
 docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=local --name sb-pg postgres:16-alpine
 
 docker exec -i sb-pg psql -U postgres -d postgres \
-  < $(python -c "import schemabrain.eval, pathlib; print(pathlib.Path(schemabrain.eval.__file__).parent / 'fixtures/ecommerce.sql')")
+  < $(schemabrain fixture-path ecommerce.sql)
 ```
 
 For your own database, skip docker and use your real `postgresql+psycopg://` URL.

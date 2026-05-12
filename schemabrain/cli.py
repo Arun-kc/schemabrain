@@ -53,6 +53,7 @@ from schemabrain.enrichment.anthropic_client import (
 )
 from schemabrain.enrichment.embeddings import Embedder, fastembed_default
 from schemabrain.enrichment.pipeline import CostCapExceeded, EnrichmentPipeline
+from schemabrain.eval.bundled import resolve_bundled_path
 from schemabrain.eval.golden import DEFAULT_GOLDEN_PATH, load_golden
 from schemabrain.eval.retriever import EmbeddingRetriever, KeywordRetriever, Retriever
 from schemabrain.eval.runner import format_report, run_eval
@@ -105,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
             source_url=args.source,
             store_path=args.store_path,
         )
+    if args.command == "fixture-path":
+        return _cmd_fixture_path(args.name)
     # argparse `required=True` on subparsers prevents reaching here, but
     # leaving an explicit branch is cheaper than a guarded assertion.
     parser.error(f"unknown command: {args.command}")  # pragma: no cover
@@ -219,6 +222,19 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_DEFAULT_STORE_PATH,
         help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
     )
+
+    p_fixture = sub.add_parser(
+        "fixture-path",
+        help="Print the absolute path to a bundled fixture (e.g. ecommerce.sql)",
+    )
+    p_fixture.add_argument(
+        "name",
+        help="Bundled fixture basename, e.g. `ecommerce.sql` (SQL seed) or "
+        "`ecommerce.json` (golden set). The output is paste-clean for "
+        "shell substitution, e.g. `psql ... < $(schemabrain fixture-path "
+        "ecommerce.sql)`.",
+    )
+
     return parser
 
 
@@ -372,6 +388,22 @@ def _cmd_serve(
         # config issues are the most common case here.
         print(f"error: could not open store at {store_path!r}: {e}", file=sys.stderr)
         return 2
+    return 0
+
+
+def _cmd_fixture_path(name: str) -> int:
+    """Print the absolute path to a bundled fixture, or fail with a
+    helpful message.
+
+    Stdout is paste-clean (no decoration, no trailing diagnostic) so the
+    command can drop into shell substitution.
+    """
+    try:
+        path = resolve_bundled_path(name)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    print(str(path))
     return 0
 
 
