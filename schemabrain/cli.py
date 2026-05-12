@@ -44,6 +44,7 @@ import sys
 import time
 from urllib.parse import urlparse
 
+from schemabrain import __version__
 from schemabrain.connectors.postgres import PostgresDataSource
 from schemabrain.core.store import SQLiteStore
 from schemabrain.enrichment.anthropic_client import (
@@ -113,6 +114,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="schemabrain",
         description="MCP-ready semantic understanding of any production database.",
+    )
+    parser.add_argument(
+        "--version",
+        "-V",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

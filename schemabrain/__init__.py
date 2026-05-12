@@ -1,3 +1,9 @@
 """Schema Brain: an MCP server that gives AI agents deep semantic understanding of any production database."""
 
-__version__ = "0.1.0a1"
+from importlib.metadata import version
+
+# Read directly from the installed package metadata so `pyproject.toml`
+# is the single source of truth for the version literal. Bumping the
+# version in one place (pyproject) automatically propagates to
+# `schemabrain.__version__` and `schemabrain --version`.
+__version__ = version("schemabrain")

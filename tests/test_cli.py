@@ -1,11 +1,84 @@
 """Tests for the schemabrain CLI."""
 
+import tomllib
 from pathlib import Path
 
 import pytest
 
+import schemabrain
 from schemabrain.cli import _canonical_url, _make_source_id, main
 from schemabrain.core.store import SQLiteStore
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _pyproject_version() -> str:
+    """Read `[project].version` directly from pyproject.toml.
+
+    Used as the drift anchor — `pyproject.toml` is the single source of
+    truth, and both `schemabrain.__version__` and `schemabrain --version`
+    must read through to it.
+    """
+    raw = (_REPO_ROOT / "pyproject.toml").read_text()
+    parsed = tomllib.loads(raw)
+    return parsed["project"]["version"]
+
+
+class TestVersionFlag:
+    """`schemabrain --version` and `schemabrain.__version__` must both
+    read from the installed package metadata (which is built from
+    `pyproject.toml`), so the version literal lives in exactly one place.
+    """
+
+    def test_package_version_matches_pyproject(self) -> None:
+        # If this fires, someone bumped pyproject.toml without
+        # reinstalling the package (so importlib.metadata is stale), OR
+        # they accidentally hardcoded a different __version__ back into
+        # __init__.py. Both are drift bugs worth catching in CI.
+        assert schemabrain.__version__ == _pyproject_version()
+
+    def test_version_flag_exits_zero(self) -> None:
+        # argparse's `action="version"` prints to stdout and raises
+        # SystemExit(0). Pin the exit code so we don't accidentally swap
+        # to a custom handler that returns non-zero.
+        with pytest.raises(SystemExit) as exc:
+            main(["--version"])
+        assert exc.value.code == 0
+
+    def test_short_V_flag_also_works(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # `-V` is the conventional short form (python -V, pip -V). We
+        # alias it intentionally so users from those ecosystems get the
+        # expected behavior; this test pins it so a future contributor
+        # doesn't quietly drop the alias.
+        with pytest.raises(SystemExit) as exc:
+            main(["-V"])
+        assert exc.value.code == 0
+        assert schemabrain.__version__ in capsys.readouterr().out
+
+    def test_version_flag_prints_pyproject_version_to_stdout(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Anchor on the pyproject literal (not schemabrain.__version__)
+        # so this is a true end-to-end check: pyproject.toml → installed
+        # metadata → __version__ → CLI output. If any link breaks, the
+        # CLI doesn't print the literal that's in pyproject and this test
+        # fires regardless of where the chain snapped.
+        with pytest.raises(SystemExit):
+            main(["--version"])
+        captured = capsys.readouterr()
+        assert _pyproject_version() in captured.out
+        # `action="version"` writes to stdout, not stderr.
+        assert captured.err == ""
+
+    def test_version_flag_prints_prog_name(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # argparse's default format is `%(prog)s %(version)s` — the
+        # prog name must appear so users running it can verify they
+        # invoked the right binary. (The version literal `0.1.0a1` does
+        # not contain "schemabrain", so this genuinely checks the
+        # %(prog)s substitution rather than passing tautologically.)
+        with pytest.raises(SystemExit):
+            main(["--version"])
+        assert "schemabrain" in capsys.readouterr().out
 
 
 class TestCanonicalUrl:
