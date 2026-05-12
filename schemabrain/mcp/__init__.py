@@ -30,8 +30,11 @@ Public API:
     `describe_*` tools when a name doesn't exist in the store.
 """
 
+from schemabrain.mcp.describe_column import describe_column_impl
+from schemabrain.mcp.describe_table import describe_table_impl
+from schemabrain.mcp.find_relevant_tables import find_relevant_tables_impl
 from schemabrain.mcp.server import build_server
-from schemabrain.mcp.tools import (
+from schemabrain.mcp.shapes import (
     ColumnDetail,
     ColumnInfo,
     ColumnNotFoundError,
@@ -43,11 +46,8 @@ from schemabrain.mcp.tools import (
     TableDescription,
     TableHit,
     TableNotFoundError,
-    describe_column_impl,
-    describe_table_impl,
-    find_relevant_tables_impl,
-    suggest_joins_impl,
 )
+from schemabrain.mcp.suggest_joins import suggest_joins_impl
 
 __all__ = [
     "ColumnDetail",

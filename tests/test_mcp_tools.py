@@ -15,7 +15,10 @@ from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
 from schemabrain.core.models import Column, ForeignKey, Table
 from schemabrain.core.store import SQLiteStore
-from schemabrain.mcp.tools import (
+from schemabrain.mcp.describe_column import describe_column_impl
+from schemabrain.mcp.describe_table import describe_table_impl
+from schemabrain.mcp.find_relevant_tables import find_relevant_tables_impl
+from schemabrain.mcp.shapes import (
     ColumnDetail,
     ColumnNotFoundError,
     IncomingForeignKeyInfo,
@@ -25,11 +28,8 @@ from schemabrain.mcp.tools import (
     TableDescription,
     TableHit,
     TableNotFoundError,
-    describe_column_impl,
-    describe_table_impl,
-    find_relevant_tables_impl,
-    suggest_joins_impl,
 )
+from schemabrain.mcp.suggest_joins import suggest_joins_impl
 
 
 def _column(
@@ -613,25 +613,25 @@ class TestCosineHelper:
     """
 
     def test_dimension_mismatch_raises_value_error(self) -> None:
-        from schemabrain.mcp.tools import _cosine
+        from schemabrain.mcp._helpers import _cosine
 
         with pytest.raises(ValueError, match="dimension mismatch"):
             _cosine((1.0, 0.0), (1.0, 0.0, 0.0))
 
     def test_zero_norm_returns_zero(self) -> None:
-        from schemabrain.mcp.tools import _cosine
+        from schemabrain.mcp._helpers import _cosine
 
         assert _cosine((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)) == 0.0
         assert _cosine((1.0, 0.0, 0.0), (0.0, 0.0, 0.0)) == 0.0
         assert _cosine((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)) == 0.0
 
     def test_parallel_vectors_score_one(self) -> None:
-        from schemabrain.mcp.tools import _cosine
+        from schemabrain.mcp._helpers import _cosine
 
         assert _cosine((1.0, 0.0, 0.0), (1.0, 0.0, 0.0)) == pytest.approx(1.0)
 
     def test_orthogonal_vectors_score_zero(self) -> None:
-        from schemabrain.mcp.tools import _cosine
+        from schemabrain.mcp._helpers import _cosine
 
         assert _cosine((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)) == pytest.approx(0.0)
 

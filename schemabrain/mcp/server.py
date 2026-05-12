@@ -19,16 +19,11 @@ from mcp.server.fastmcp import FastMCP
 
 from schemabrain.core.store import SQLiteStore
 from schemabrain.enrichment.embeddings import Embedder
-from schemabrain.mcp.tools import (
-    ColumnDetail,
-    SuggestJoinsResult,
-    TableDescription,
-    TableHit,
-    describe_column_impl,
-    describe_table_impl,
-    find_relevant_tables_impl,
-    suggest_joins_impl,
-)
+from schemabrain.mcp.describe_column import describe_column_impl
+from schemabrain.mcp.describe_table import describe_table_impl
+from schemabrain.mcp.find_relevant_tables import find_relevant_tables_impl
+from schemabrain.mcp.shapes import ColumnDetail, SuggestJoinsResult, TableDescription, TableHit
+from schemabrain.mcp.suggest_joins import suggest_joins_impl
 
 _DEFAULT_LIMIT = 10
 _DEFAULT_MAX_HOPS = 4
