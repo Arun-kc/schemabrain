@@ -67,7 +67,7 @@ from schemabrain.eval.bundled import resolve_bundled_path
 from schemabrain.eval.golden import DEFAULT_GOLDEN_PATH, load_golden
 from schemabrain.eval.retriever import EmbeddingRetriever, KeywordRetriever, Retriever
 from schemabrain.eval.runner import format_report, run_eval
-from schemabrain.indexer import IndexReporter, NullReporter, index
+from schemabrain.indexer import IndexReporter, NullReporter, dry_run_index, index
 from schemabrain.mcp.server import run_stdio
 from schemabrain.profiler.postgres import PostgresProfiler
 
@@ -103,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
             enable_sonnet=args.enable_sonnet,
             no_embed=args.no_embed,
             quiet=args.quiet,
+            dry_run=args.dry_run,
         )
     if args.command == "eval":
         return _cmd_eval(
@@ -188,6 +189,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "piped to a file. The CLI also auto-detects non-TTY stderr and "
         "disables the live UI without this flag.",
     )
+    p_index.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview what `index` would do without doing it: count "
+        "tables and columns, compute the diff against the cached "
+        "store, and estimate LLM cost from a measured per-column "
+        "average (~$0.0003/col on Haiku 4.5). No DB writes, no LLM "
+        "calls, no embeddings, no fastembed init. ANTHROPIC_API_KEY "
+        "is NOT required. Note: estimate ignores --enable-sonnet "
+        "tier routing and reports Haiku pricing only.",
+    )
 
     p_eval = sub.add_parser(
         "eval",
@@ -267,10 +279,25 @@ def _cmd_index(
     enable_sonnet: bool,
     no_embed: bool,
     quiet: bool = False,
+    dry_run: bool = False,
 ) -> int:
     canonical = _resolve_url(url)
     if canonical is None:
         return 2
+
+    # Dry-run dispatch: short-circuit the pipeline + embedder + profiler
+    # construction (nothing of theirs runs) and call `dry_run_index`,
+    # which walks the same diff loop without side effects and estimates
+    # cost from a measured per-column constant.
+    if dry_run:
+        return _cmd_index_dry_run(
+            url=url,
+            canonical=canonical,
+            store_path=store_path,
+            no_enrich=no_enrich,
+            no_embed=no_embed,
+            quiet=quiet,
+        )
 
     pipeline: EnrichmentPipeline | None = None
     if not no_enrich:
@@ -372,6 +399,70 @@ def _cmd_index(
         print(
             "warning: no tables indexed (empty database, or all tables are in "
             "system schemas that were skipped)",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def _cmd_index_dry_run(
+    *,
+    url: str,
+    canonical: str,
+    store_path: str,
+    no_enrich: bool,
+    no_embed: bool,
+    quiet: bool,
+) -> int:
+    """`schemabrain index --dry-run` — preview without doing.
+
+    Skips API key check, embedder construction, and the real `index()`
+    side-effecting loop. Calls `dry_run_index()` which walks the diff
+    in read-only fashion, emits the same reporter events the live
+    progress UI consumes, and returns an `IndexResult` with an
+    estimated `llm_cost_usd` from a measured per-column constant.
+
+    The store IS opened (read-only by discipline — `dry_run_index`
+    never calls a writing method). Postgres is reached for schema
+    introspection (`list_tables` + `get_table`), so connection errors
+    still surface through the guided-error translators. That's the
+    right behavior: a dry-run that can't reach the source isn't a
+    successful dry-run.
+    """
+    source_id = _make_source_id(url)
+    reporter = _build_index_reporter(quiet=quiet)
+    will_enrich = not no_enrich
+    will_embed = will_enrich and not no_embed
+    started = time.monotonic()
+    try:
+        try:
+            with (
+                PostgresDataSource(url) as source,
+                SQLiteStore(store_path) as store,
+            ):
+                result = dry_run_index(
+                    source=source,
+                    store=store,
+                    source_connection_id=source_id,
+                    will_enrich=will_enrich,
+                    will_embed=will_embed,
+                    reporter=reporter,
+                )
+        finally:
+            reporter.close()
+    except OperationalError as e:
+        _render_guided(postgres_operational_error(e, url_hint=canonical))
+        return 2
+    except OSError as e:
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+    elapsed = time.monotonic() - started
+    print(
+        f"{result.summary(dry_run=True)} | source={canonical} store={store_path} in {elapsed:.1f}s",
+        file=sys.stderr,
+    )
+    if result.tables_seen == 0:
+        print(
+            "warning: source has no user-visible tables — dry-run produced an empty diff",
             file=sys.stderr,
         )
     return 0

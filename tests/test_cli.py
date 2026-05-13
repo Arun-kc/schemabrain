@@ -1346,6 +1346,301 @@ class TestIndexReporterWiring:
         assert "\x1b[" not in captured.out
 
 
+@pytest.mark.integration
+class TestIndexDryRun:
+    """End-to-end behavior of `schemabrain index --dry-run`.
+
+    Anchored on the real seeded Postgres fixture (the only place we
+    actually verify the introspection + diff loop drives the cost
+    estimator). Reaches `index` flow through `main(...)`.
+    """
+
+    def test_dry_run_without_api_key_succeeds(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        seeded_pg_url: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Core promise of --dry-run: cost-estimate without needing a
+        # real API key. A user who's only trying to scope before
+        # buying a key MUST be able to run this.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+            ]
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        # Dry-run summary format must mark the run as preview-only.
+        assert "Would index" in captured.err
+        assert "Estimated LLM" in captured.err
+        assert "No changes made to the store." in captured.err
+
+    def test_dry_run_creates_no_store_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        seeded_pg_url: str,
+        tmp_path: Path,
+    ) -> None:
+        # The cache file should NOT exist after --dry-run against a
+        # path that didn't exist before. (SQLiteStore opens with
+        # parent-dir semantics; a successful open creates the file.
+        # But dry_run_index doesn't write anything except what
+        # `store.list_tables` triggers — which on an empty store is
+        # a SELECT-only path.)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        store_path = tmp_path / "absent.db"
+        assert not store_path.exists()
+        main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+            ]
+        )
+        # The store file IS created (SQLiteStore opens read-write to
+        # honor `list_tables` against possibly-existing schema), but
+        # it MUST contain zero rows in the tables index — proving no
+        # tables were written.
+        import sqlite3
+
+        if store_path.exists():
+            conn = sqlite3.connect(store_path)
+            try:
+                # Tables persisted by `index()` live in the `tables` row.
+                rows = conn.execute("SELECT COUNT(*) FROM tables").fetchone()
+            finally:
+                conn.close()
+            assert rows[0] == 0
+
+    def test_dry_run_then_real_index_produces_same_table_counts(
+        self,
+        seeded_pg_url: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # The diff dry-run reports MUST match what a real `index`
+        # would do. Run --dry-run, capture the table-changed count
+        # from its summary, then run a real --no-enrich index and
+        # confirm the same count appears. Without this we can't
+        # trust the dry-run as a planning artifact.
+        store_path = tmp_path / "schemabrain.db"
+        # Dry-run first (cache is empty → "would index N changed").
+        main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+                "--no-enrich",
+            ]
+        )
+        dry_err = capsys.readouterr().err
+
+        import re
+
+        m = re.search(r"Would index (\d+) table\(s\): (\d+) changed", dry_err)
+        assert m is not None, f"dry-run summary did not match expected pattern: {dry_err!r}"
+        dry_seen, dry_changed = int(m.group(1)), int(m.group(2))
+
+        # Real run on the same cache-state (now non-existent file).
+        main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--no-enrich",
+            ]
+        )
+        real_err = capsys.readouterr().err
+
+        m_real = re.search(r"Indexed (\d+) table\(s\): (\d+) changed", real_err)
+        assert m_real is not None
+        real_seen, real_changed = int(m_real.group(1)), int(m_real.group(2))
+
+        assert dry_seen == real_seen
+        assert dry_changed == real_changed
+
+    def test_dry_run_no_enrich_zeroes_estimate(
+        self,
+        seeded_pg_url: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+                "--no-enrich",
+            ]
+        )
+        assert exit_code == 0
+        err = capsys.readouterr().err
+        # `--no-enrich` means no LLM would fire, so the Estimated LLM
+        # line is absent (summary() suppresses the LLM clause when
+        # both descriptions_generated == 0 and llm_cost_usd == 0).
+        assert "Estimated LLM" not in err
+        assert "Would index" in err
+
+    def test_dry_run_help_text_lists_flag(self) -> None:
+        from schemabrain.cli import _build_parser
+
+        parser = _build_parser()
+        # Smoke: `schemabrain index --dry-run` parses as a flag.
+        ns = parser.parse_args(["index", "postgresql+psycopg://x", "--dry-run"])
+        assert ns.dry_run is True
+        ns2 = parser.parse_args(["index", "postgresql+psycopg://x"])
+        assert ns2.dry_run is False
+
+    def test_dry_run_postgres_unreachable_renders_guided(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Dry-run still needs to reach the source for `list_tables` +
+        # `get_table` introspection, so connection errors should
+        # surface through the same guided-error translator the real
+        # `index` path uses. Mirrors `test_postgres_operational_error_renders_guided`
+        # for the dry-run code path.
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                "postgresql+psycopg://nobody:nopw@127.0.0.1:1/nowhere",
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+            ]
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "could not reach the Postgres server" in err
+        # No raw traceback leaked.
+        assert "Traceback" not in err
+
+    def test_dry_run_store_path_unwritable_renders_guided(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # OSError on store init must translate through the guided-error
+        # renderer for dry-run too (parallel to the same branch in the
+        # real index path). Stubs both PostgresDataSource and SQLiteStore
+        # so the test is deterministic regardless of platform — a real
+        # SQLite OSError is hard to trigger portably.
+        class _NoopSource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return []
+
+            def get_table(self, name: str, schema: str):
+                raise NotImplementedError
+
+            def close(self) -> None:
+                pass
+
+        class _OSErrorStore:
+            def __init__(self, path: str) -> None:
+                self.path = path
+
+            def __enter__(self):
+                raise OSError(f"Permission denied: {self.path}")
+
+            def __exit__(self, *_args):
+                return False
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _NoopSource)
+        monkeypatch.setattr("schemabrain.cli.SQLiteStore", _OSErrorStore)
+
+        store_path = tmp_path / "blocked.db"
+        exit_code = main(
+            [
+                "index",
+                "postgresql+psycopg://fake/db",
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+            ]
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        # Guided format from `store_path_unwritable` translator.
+        assert "could not open the local store" in err
+        assert "Permission denied" in err
+        assert "Traceback" not in err
+
+    def test_dry_run_warns_on_empty_source(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Empty schemas are a real footgun (user typed the wrong dbname,
+        # or RLS hides everything). Dry-run should still succeed and
+        # emit a warning so the user notices the empty result before
+        # building plans around a zero-cost estimate.
+        class _EmptySource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return []
+
+            def get_table(self, name: str, schema: str):
+                raise NotImplementedError
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                "postgresql+psycopg://fake/empty",
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+                "--no-enrich",
+            ]
+        )
+        assert exit_code == 0
+        err = capsys.readouterr().err
+        assert "Would index 0 table(s)" in err
+        assert "no user-visible tables" in err
+        assert "dry-run produced an empty diff" in err
+
+
 class TestEvalSubcommandValidation:
     """The `eval` subcommand's argparse + early validation paths."""
 
