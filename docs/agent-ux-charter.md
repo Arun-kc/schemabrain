@@ -408,6 +408,14 @@ Levels 1 and 2 run in CI and gate every PR. Level 3 is a quality gate at
 phase boundaries, not per-commit — running it on every PR would burn API
 dollars for no compounding benefit between feature batches.
 
+Levels 1 and 2 are implemented as a single script — `scripts/charter_lint.py` —
+wired into the `lint-and-unit` job in `.github/workflows/ci.yml`. The script
+loads the live FastMCP server, applies the four Principle 2 description rules
+above, then round-trips each tool's happy path through `ToolResponse` Pydantic
+validation. Contributors can reproduce the gate locally with
+`python scripts/charter_lint.py`; rule logic lives in pure functions that are
+unit-tested in `tests/test_charter_lint.py`.
+
 ---
 
 ## Anti-pattern style
