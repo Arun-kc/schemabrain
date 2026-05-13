@@ -2,7 +2,7 @@
 
 Two paths from "I have a Postgres database" to "an AI agent can answer questions about it":
 
-1. **Claude Desktop** — for everyday use; click into Claude and ask questions.
+1. **MCP client (Claude Desktop or Cursor)** — for everyday use; click into the chat and ask questions.
 2. **Anthropic SDK demo** — for verifying the install end-to-end without Claude Desktop, and for adapting Schema Brain into your own agent code.
 
 Both share the same indexing step.
@@ -39,7 +39,7 @@ Re-running `index` against an unchanged schema is a **no-op** — 0 LLM calls, 0
 
 For cost-free dry runs (no LLM, no embeddings), pass `--no-enrich`.
 
-## Path 1 — Claude Desktop
+## Path 1 — Claude Desktop (or Cursor)
 
 Add Schema Brain to Claude Desktop's MCP server config:
 
@@ -72,6 +72,8 @@ A copy-paste-ready template lives at `examples/claude_desktop_config.example.jso
 **Important: paths must be absolute.** Claude Desktop runs your config in a different working directory than your shell, so relative paths and `~` won't resolve. Run `realpath ./schemabrain.db` and `which schemabrain` (with your `pip install`'d venv active, or your source-install venv via `uv sync`) to get the absolute paths.
 
 Restart Claude Desktop. In a new conversation you should see the `schemabrain` MCP server listed in the tool tray. Try a question like "Which tables in my database describe orders?" — Claude will call `find_relevant_tables` and `describe_table` to answer.
+
+**Cursor uses a near-identical `mcpServers` block** — with one Cursor-specific addition: a `"type": "stdio"` field on each server entry (required per Cursor's official docs, even though the IDE has historically been lenient about omitting it). Paste the template from `examples/cursor_mcp_config.example.json` into `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` in your project root (project-scoped, takes precedence). Restart Cursor; the `schemabrain` server appears in the MCP tools list. Same absolute-path rule applies — Cursor doesn't run your config in your shell's working directory.
 
 ## Path 2 — Anthropic SDK demo (no Claude Desktop required)
 
