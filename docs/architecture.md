@@ -200,3 +200,36 @@ revisit if real-world schemas ever rely on the pattern.
 
 Independent SQL validation (per `docs/setup.md`) remains the right
 backstop for production queries.
+
+## What's coming in v2 (substrate vs. safety layer)
+
+The headline direction is **SQL-boundary safety for AI agents**: parse what
+the agent is about to ask the database, refuse or rewrite before it runs.
+The schema intelligence shipping in v0–v0.5 and the semantic layer landing
+in v1 are the **substrate** that layer requires — they're not the product,
+they're what makes the product possible.
+
+Concretely, v2 adds:
+
+- **PII tagging** beyond regex redaction — column-level classification
+  (`PII`, `confidential`, `public`) flowing into agent-visible refusal at
+  the tool boundary.
+- **`validate_query`** — agent-emitted SQL parsed and judged against policy
+  (PII intersections, allowlist, injection markers) before any execution.
+- **`execute` with hard caps** — read-only Postgres role enforced at the
+  database layer (not just SQL inspection), statement timeouts, row caps,
+  per-call cost guards.
+- **Sub-query refusal with recovery** — parse the SQL, identify the unsafe
+  fragment, refuse just that fragment with a suggested rewrite or
+  alternative-tool call. As of mid-2026 there's no shipped competitor on
+  this exact shape (Crystal DBA validates and rejects whole queries;
+  Lakera/Check Point operate at the LLM I/O boundary, not the SQL parse
+  boundary).
+- **Append-only `mcp_audit` log** — every tool call records
+  `{call_id, tool, args, entity_ids/metric_ids resolved,`
+  `source_tables touched, latency_ms, timestamp}`. Powers the v3
+  fleet-signature aggregation layer.
+
+Until v2 ships, treating Schema Brain as a safety layer would be
+premature. The v0 surface gives agents better schema context, not better
+SQL safety.

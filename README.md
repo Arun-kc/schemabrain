@@ -1,6 +1,6 @@
 # Schema Brain
 
-> An MCP server that gives AI agents deep semantic understanding of any production database.
+> The SQL-boundary safety layer for AI agents that touch real databases. Schema intelligence and LLM-enriched semantics today; validate-before-execute, PII-tagged refusal, and sub-query rewrite landing in v2.
 
 [![CI](https://github.com/Arun-kc/schemabrain/actions/workflows/ci.yml/badge.svg)](https://github.com/Arun-kc/schemabrain/actions/workflows/ci.yml)
 [![Python 3.11 | 3.12](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
@@ -21,12 +21,30 @@ AI agents fail when querying real production databases:
 
 Schema Brain fixes all four and serves the result through a stable MCP tool surface that any agent (Claude Desktop, Anthropic SDK, custom) can call.
 
+**The bigger problem behind these** — database MCPs running as the credentialed role, prompt injection escalating to SQLi (Anthropic Postgres MCP's published NPM/Docker artifacts shipped an unpatched SQL injection at archival per Datadog Security Labs; Supabase MCP enables data exfil under documented conditions), no PII-aware refusal at the SQL boundary — is what Schema Brain is being built to address at the SQL-boundary safety layer in v2. The schema intelligence shipping today is the substrate that layer needs. See [Where this is going](#where-this-is-going).
+
 ## What it does
 
 - Indexes your database schema, profiles each column, and generates a one-paragraph LLM description per column (Claude Haiku 4.5 by default; Sonnet 4.6 for cryptic abbreviations).
 - Embeds the descriptions locally with `BAAI/bge-small-en-v1.5` via `fastembed` — no second API vendor.
 - Stores everything in a single SQLite file. No Qdrant, no Redis, no ops.
 - Serves four MCP tools: [`find_relevant_tables`, `describe_table`, `describe_column`, `suggest_joins`](docs/mcp-tools.md). Every response includes a token estimate so agents can budget context.
+
+---
+
+## Where this is going
+
+Schema Brain is being built as the **SQL-boundary safety layer for AI agents** — the layer that parses what your agent is about to ask the database and refuses (or rewrites) before it runs.
+
+That layer needs a semantic substrate underneath it. You can't refuse "this query touches PII" without knowing which columns are PII. You can't rewrite "join through this junction" without canonical-join definitions. You can't validate a metric without knowing its grain.
+
+So the engineering order is **schema intelligence → semantic substrate → safety primitives:**
+
+- **v0 — schema intelligence (shipping now):** schema introspection, LLM-enriched column descriptions, embedding retrieval. Query-log mining + 5th MCP tool land in v0.5.
+- **v1 — semantic substrate:** entities, metrics, canonical joins as first-class persisted definitions. LLM-suggested from observed data; user-confirmed in YAML.
+- **v2 — safety wedge:** PII-tagged refusal, `validate_query` before execute, `execute` with row/cost/timeout caps, **sub-query refusal with recovery** (parse agent SQL, refuse just the unsafe fragment with a suggested rewrite). No shipped competitor as of mid-2026.
+
+Today the product is schema intelligence. The safety layer is the trajectory, not a current claim. If you need safety primitives now, this isn't ready yet — track the v2 roadmap.
 
 ---
 
@@ -44,6 +62,8 @@ The open-source landscape thinned in 2026: Vanna's public repo was frozen as the
 | [WrenAI](https://github.com/canner/WrenAI) | Apache-2.0 | ❌ (roadmap) | Active — uses MDL modeling layer |
 
 Schema Brain sits where none of these cover cleanly: **OSS + MIT + first-party MCP + no modeling layer required + introspects a live Postgres in one Python process**. Honest gap: query-log awareness — `pg_stat_statements` parsing is scheduled for v0 Week 8.
+
+The longer-term position is the SQL-boundary safety layer for agents (see [Where this is going](#where-this-is-going)). None of the projects above operate at the parse-agent-SQL-and-judge-against-policy layer; that's the v2 wedge.
 
 ---
 
@@ -171,19 +191,31 @@ For the headless Anthropic-SDK path, see [`examples/anthropic_demo.py`](examples
 
 ## Roadmap
 
-**Next:**
-- Query log mining via `pg_stat_statements` — the differentiator vs schema-only competitors
+**v0.5 — finish schema intelligence:**
+- Agent-UX charter v1.0 retrofit on existing tools + CI enforcement
+- Dev-UX foundations: rich progress UI, guided errors, `--dry-run`
+- Query log mining via `pg_stat_statements`
 - 5th MCP tool: `get_example_queries` — returns real SQL from your query log matching agent intent
-- BIRD Mini-Dev automated eval harness with reproducible CI
-- Drift CLI: `schemabrain reindex --diff`
-- Polished CLI (typer + progress bars)
 
-**Later (v1):**
-- Semantic layer: entities, metrics, canonical joins as first-class persisted definitions
-- LLM-suggested entity definitions from existing column descriptions + FK graph
-- Snowflake / BigQuery / MySQL connectors
-- Hosted SaaS UI
-- Multi-tenant access controls
+**v1 — semantic substrate:**
+- Entities, metrics, canonical joins as first-class persisted definitions
+- LLM-suggested entity/metric definitions from existing column descriptions + FK graph (the wedge: Cube/dbt require multi-week hand-authoring; Schema Brain collapses bootstrap to ~30 min)
+- BIRD Mini-Dev automated eval harness
+- Drift CLI: `schemabrain reindex --diff`
+- One additional engine: Snowflake / BigQuery / MySQL
+- Typer + rich CLI migration
+
+**v2 — SQL-boundary safety wedge:**
+- PII tagging beyond pattern redaction (column-level classification, agent-visible refusal at the tool boundary)
+- `validate_query` — agent-emitted SQL parsed and judged against policy before execution
+- `execute` with hard caps — read-only Postgres role enforced at the database layer (not just SQL string inspection), statement timeouts, row caps, per-call cost guards
+- **Sub-query refusal with recovery** — parse the SQL, identify the unsafe fragment, refuse just that fragment with a suggested rewrite or alternative-tool call
+- Append-only `mcp_audit` log + response provenance on every tool call
+
+**v3 — multi-engine + control plane (commercial, gated on hosted demand):**
+- Remaining engines (BigQuery / Snowflake / Redshift breadth)
+- Learning loop from telemetry and reformulation patterns
+- Hosted control plane with fleet-wide adversarial-signature aggregation (per-deployment refusal patterns propagate across tenants — Cloudflare-WAF model)
 
 ---
 
@@ -203,7 +235,9 @@ For the headless Anthropic-SDK path, see [`examples/anthropic_demo.py`](examples
 Only LLM-enriched column descriptions and the redacted sample values that feed them. Three regex passes (email, US SSN, credit-card-shaped digit runs) run on every sample before it leaves the profiler module — see [`schemabrain/profiler/stats.py`](schemabrain/profiler/stats.py). The Anthropic API call sends column metadata + redacted samples + sibling-column context — no raw rows, no full result sets. Embeddings are generated locally via `fastembed` (BAAI/bge-small-en-v1.5, ONNX, ~67 MB).
 
 **Is this a semantic layer like Cube or dbt Semantic Layer?**
-No — not today. Schema Brain is a **context layer**: LLM-enriched descriptions + retrieval over your physical schema. Agents see `schema.table.column`, not `entity.metric`. A proper semantic layer with first-class entities (`customer` instead of `public.users`), metrics with grain + units (`revenue = sum(orders.total_cents)/100, grain=order`), and canonical joins as versioned definitions is on the **v1 roadmap**. The wedge today is *"no modeling layer required to get started"*; if you already run dbt or Cube, Schema Brain complements them rather than replacing them.
+Today, no — Schema Brain is schema intelligence (LLM-enriched descriptions + retrieval over your physical schema). Agents see `schema.table.column`, not `entity.metric`.
+
+The semantic substrate (first-class entities like `customer` instead of `public.users`, metrics with grain + units, canonical joins as versioned definitions) lands in v1. But the semantic layer is the **substrate**, not the headline — it's what makes the v2 SQL-boundary safety primitives possible (refuse-by-PII-tag, validate-before-execute, sub-query refusal). If you already run dbt or Cube, Schema Brain will complement them at the safety layer rather than replace them at the semantic layer; if you don't, the v1 substrate is generated for you (LLM-suggested, user-confirmed).
 
 **What databases work today?**
 Postgres 16+ (primary target) and SQLite (for development and demos). Adding Snowflake / BigQuery / MySQL is mostly a new `DataSource` implementation plus a profiler tweak — on the v1 roadmap.
