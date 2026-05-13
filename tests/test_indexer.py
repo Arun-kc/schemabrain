@@ -14,7 +14,7 @@ import pytest
 from schemabrain.connectors.base import DataSource
 from schemabrain.core.models import Column, ForeignKey, Table
 from schemabrain.core.store import SQLiteStore
-from schemabrain.indexer import IndexResult, index
+from schemabrain.indexer import IndexReporter, IndexResult, NullReporter, index
 from schemabrain.profiler.base import Profiler
 from schemabrain.profiler.stats import ColumnStats
 
@@ -932,3 +932,305 @@ class TestIndexResultSummary:
         )
         summary = result.summary()
         assert "Embeddings: 2" in summary
+
+
+class RecordingReporter:
+    """Captures every reporter event for ordering + payload assertions."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def on_start(self, *, total_tables: int) -> None:
+        self.events.append(("start", {"total_tables": total_tables}))
+
+    def on_tables_removed(self, *, removed: int) -> None:
+        self.events.append(("tables_removed", {"removed": removed}))
+
+    def on_table_unchanged(self, *, schema: str, name: str) -> None:
+        self.events.append(("table_unchanged", {"schema": schema, "name": name}))
+
+    def on_table_start(self, *, schema: str, name: str, columns_to_enrich: int) -> None:
+        self.events.append(
+            (
+                "table_start",
+                {
+                    "schema": schema,
+                    "name": name,
+                    "columns_to_enrich": columns_to_enrich,
+                },
+            )
+        )
+
+    def on_column_enriched(self, *, schema: str, name: str, column: str, spent_usd: float) -> None:
+        self.events.append(
+            (
+                "column_enriched",
+                {
+                    "schema": schema,
+                    "name": name,
+                    "column": column,
+                    "spent_usd": spent_usd,
+                },
+            )
+        )
+
+    def on_table_done(self, *, schema: str, name: str) -> None:
+        self.events.append(("table_done", {"schema": schema, "name": name}))
+
+    def on_finish(self, *, result: IndexResult) -> None:
+        self.events.append(("finish", {"result": result}))
+
+    def close(self) -> None:
+        self.events.append(("close", {}))
+
+
+class TestReporter:
+    """Reporter callbacks fire in the documented order with correct payloads."""
+
+    def _pipeline(self):
+        from schemabrain.enrichment.llm import FakeLLMClient
+        from schemabrain.enrichment.pipeline import EnrichmentPipeline
+
+        client = FakeLLMClient(text_provider=lambda system, user: "fake description")
+        return EnrichmentPipeline(client=client, max_cost_usd=10.0)
+
+    def test_default_reporter_is_no_op_and_does_not_crash(self) -> None:
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        # `reporter=None` (omitted) must be safe — the default path.
+        index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+        )
+        store.close()
+
+    def test_null_reporter_satisfies_protocol_and_is_no_op(self) -> None:
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        reporter: IndexReporter = NullReporter()
+        result = index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            reporter=reporter,
+        )
+        # If the call returned, NullReporter doesn't break the contract.
+        assert result.tables_seen == 1
+        store.close()
+
+    def test_fresh_run_emits_start_then_table_start_then_done_then_finish(
+        self,
+    ) -> None:
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        reporter = RecordingReporter()
+
+        index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            reporter=reporter,
+        )
+
+        kinds = [kind for kind, _ in reporter.events]
+        assert kinds == [
+            "start",
+            "tables_removed",
+            "table_start",
+            "table_done",
+            "finish",
+        ]
+        assert reporter.events[0][1]["total_tables"] == 1
+        assert reporter.events[1][1]["removed"] == 0
+        assert reporter.events[2][1] == {
+            "schema": "public",
+            "name": "users",
+            "columns_to_enrich": 0,  # no pipeline
+        }
+        store.close()
+
+    def test_unchanged_table_emits_table_unchanged_event(self) -> None:
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+
+        index(source=source, profiler=profiler, store=store, source_connection_id=SOURCE_ID)
+
+        reporter = RecordingReporter()
+        index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            reporter=reporter,
+        )
+
+        kinds = [kind for kind, _ in reporter.events]
+        assert "table_unchanged" in kinds
+        assert "table_start" not in kinds
+        assert "table_done" not in kinds
+        store.close()
+
+    def test_removed_table_emits_tables_removed_with_count(self) -> None:
+        source = FakeDataSource([_users_table(), _orders_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+
+        index(source=source, profiler=profiler, store=store, source_connection_id=SOURCE_ID)
+
+        # Drop orders from the source — next pass should report 1 removal.
+        source.set_tables([_users_table()])
+        reporter = RecordingReporter()
+        index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            reporter=reporter,
+        )
+
+        removed_events = [e for kind, e in reporter.events if kind == "tables_removed"]
+        assert len(removed_events) == 1
+        assert removed_events[0]["removed"] == 1
+        store.close()
+
+    def test_pipeline_emits_one_column_enriched_per_column_with_rising_cost(
+        self,
+    ) -> None:
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        pipeline = self._pipeline()
+        reporter = RecordingReporter()
+
+        index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            pipeline=pipeline,
+            reporter=reporter,
+        )
+
+        column_events = [payload for kind, payload in reporter.events if kind == "column_enriched"]
+        # users has 2 columns → 2 column_enriched events.
+        assert len(column_events) == 2
+        # spent_usd must be monotonically non-decreasing across events.
+        spends = [e["spent_usd"] for e in column_events]
+        assert spends == sorted(spends)
+        # And every reported spend must match the final pipeline tally
+        # at-or-before that point — last event equals final cost.
+        assert spends[-1] == pytest.approx(pipeline.spent_usd)
+
+        # table_start announces 2 columns to enrich.
+        table_start = next(e for kind, e in reporter.events if kind == "table_start")
+        assert table_start["columns_to_enrich"] == 2
+        store.close()
+
+    def test_finish_event_carries_final_result(self) -> None:
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        reporter = RecordingReporter()
+
+        returned = index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            reporter=reporter,
+        )
+
+        finish_event = next(payload for kind, payload in reporter.events if kind == "finish")
+        # Same IndexResult that's returned to the caller.
+        assert finish_event["result"] is returned
+
+    def test_cost_cap_aborts_run_without_emitting_on_finish(self) -> None:
+        # When `CostCapExceeded` propagates out of `index()`, the
+        # reporter never sees `on_finish` — that's the contract the CLI
+        # relies on to call `reporter.close()` in its `finally` block.
+        # If a future refactor accidentally swallows the exception and
+        # calls `on_finish` anyway, the CLI would print "done." on top
+        # of an error message. Pin the no-on_finish invariant here.
+        from schemabrain.enrichment.llm import FakeLLMClient
+        from schemabrain.enrichment.pipeline import CostCapExceeded, EnrichmentPipeline
+
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        # max_cost_usd=0 trips the cap on the very first call.
+        client = FakeLLMClient(text_provider=lambda system, user: "fake")
+        pipeline = EnrichmentPipeline(client=client, max_cost_usd=0.0)
+        reporter = RecordingReporter()
+
+        with pytest.raises(CostCapExceeded):
+            index(
+                source=source,
+                profiler=profiler,
+                store=store,
+                source_connection_id=SOURCE_ID,
+                pipeline=pipeline,
+                reporter=reporter,
+            )
+
+        kinds = [kind for kind, _ in reporter.events]
+        assert "start" in kinds
+        assert "finish" not in kinds
+        # Caller is responsible for the teardown (CLI does this via the
+        # `finally reporter.close()` block); the indexer itself never
+        # calls close.
+        assert "close" not in kinds
+        store.close()
+
+    def test_reporter_raising_propagates_and_does_not_call_on_finish(self) -> None:
+        # The Protocol docstring says reporters MUST NOT raise; this
+        # test pins the behavior when that contract is violated, so a
+        # future caller knows the indexer offers NO transactional
+        # rollback. The store may be partially written (the table row
+        # is persisted at line ~325, BEFORE on_table_done at line ~333).
+        # That asymmetry is acceptable, but it should be deliberate, not
+        # accidental — this test is the place to revisit if we ever
+        # decide to wrap reporter calls in try/except.
+        class BrokenOnTableDone(RecordingReporter):
+            def on_table_done(self, *, schema: str, name: str) -> None:
+                super().on_table_done(schema=schema, name=name)
+                raise RuntimeError("reporter blew up")
+
+        source = FakeDataSource([_users_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+        reporter = BrokenOnTableDone()
+
+        with pytest.raises(RuntimeError, match="reporter blew up"):
+            index(
+                source=source,
+                profiler=profiler,
+                store=store,
+                source_connection_id=SOURCE_ID,
+                reporter=reporter,
+            )
+
+        kinds = [kind for kind, _ in reporter.events]
+        assert "table_done" in kinds  # the raising call still ran
+        assert "finish" not in kinds  # but we never reached finish
+        # Documenting current behavior: store HAS been written, since
+        # store.write_table runs before on_table_done. If this assertion
+        # ever changes, the docstring on `IndexReporter` needs a matching
+        # update.
+        assert store.list_tables(source_connection_id=SOURCE_ID) == [("public", "users")]
+        store.close()
+
+    def test_null_reporter_has_close_method(self) -> None:
+        # close() is part of the Protocol surface; the CLI calls it
+        # unconditionally in `finally`. A NullReporter missing this
+        # method would crash every `--quiet` or non-TTY run.
+        reporter = NullReporter()
+        reporter.close()
+        reporter.close()  # idempotent
