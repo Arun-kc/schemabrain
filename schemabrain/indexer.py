@@ -57,6 +57,7 @@ needs the same plumbing.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 from schemabrain.connectors.base import DataSource
 from schemabrain.core.description import ColumnDescription
@@ -117,6 +118,69 @@ class IndexResult:
         return base
 
 
+class IndexReporter(Protocol):
+    """Observer hook into `index()` execution for progress UIs.
+
+    Implementations receive lifecycle callbacks in this order:
+      on_start → on_tables_removed → (per table: on_table_unchanged
+      OR on_table_start → 0..N on_column_enriched → on_table_done)
+      → on_finish.
+
+    `close()` is the unconditional teardown hook. The CLI calls it in a
+    `finally` after `index()` regardless of whether the run finished
+    cleanly, raised `CostCapExceeded`, was interrupted by Ctrl-C, or
+    failed for any other reason. Implementations MUST treat `close()`
+    as idempotent — repeated calls are a no-op — and MUST tolerate
+    being called when `on_start` was never reached (e.g. a connection
+    error before `index()` got that far).
+
+    Reporters MUST be cheap — they're called on the hot path. They MUST
+    NOT raise; an exception from a reporter aborts the entire indexing
+    run. They should also be safe to drop on the floor: any reporter
+    must remain compatible with `index()` calls that skip some
+    callbacks (e.g. no `on_column_enriched` when `pipeline is None`).
+    """
+
+    def on_start(self, *, total_tables: int) -> None: ...
+    def on_tables_removed(self, *, removed: int) -> None: ...
+    def on_table_unchanged(self, *, schema: str, name: str) -> None: ...
+    def on_table_start(self, *, schema: str, name: str, columns_to_enrich: int) -> None: ...
+    def on_column_enriched(
+        self, *, schema: str, name: str, column: str, spent_usd: float
+    ) -> None: ...
+    def on_table_done(self, *, schema: str, name: str) -> None: ...
+    def on_finish(self, *, result: IndexResult) -> None: ...
+    def close(self) -> None: ...
+
+
+class NullReporter:
+    """No-op IndexReporter. Default when no UI is wired up."""
+
+    def on_start(self, *, total_tables: int) -> None:
+        pass
+
+    def on_tables_removed(self, *, removed: int) -> None:
+        pass
+
+    def on_table_unchanged(self, *, schema: str, name: str) -> None:
+        pass
+
+    def on_table_start(self, *, schema: str, name: str, columns_to_enrich: int) -> None:
+        pass
+
+    def on_column_enriched(self, *, schema: str, name: str, column: str, spent_usd: float) -> None:
+        pass
+
+    def on_table_done(self, *, schema: str, name: str) -> None:
+        pass
+
+    def on_finish(self, *, result: IndexResult) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
 def index(
     *,
     source: DataSource,
@@ -125,6 +189,7 @@ def index(
     source_connection_id: str,
     pipeline: EnrichmentPipeline | None = None,
     embedder: Embedder | None = None,
+    reporter: IndexReporter | None = None,
 ) -> IndexResult:
     """Perform one cache-aware indexing pass and return the diff summary.
 
@@ -139,9 +204,17 @@ def index(
     `pipeline` is a no-op for embeddings (there are no descriptions to
     embed) — backfill of embeddings for previously-enriched columns is a
     future slice.
+
+    If `reporter` is supplied, lifecycle callbacks are emitted as
+    indexing progresses; see `IndexReporter`. Default is a no-op.
     """
+    if reporter is None:
+        reporter = NullReporter()
+
     current_tables = source.list_tables()
     cached_tables = store.list_tables(source_connection_id=source_connection_id)
+
+    reporter.on_start(total_tables=len(current_tables))
 
     # Tables present in cache but absent from source: drop them. The
     # cascade on `tables` removes their columns, FKs, fingerprints, AND
@@ -149,6 +222,7 @@ def index(
     removed_tables = set(cached_tables) - set(current_tables)
     for schema, name in removed_tables:
         store.delete_table(schema, name, source_connection_id=source_connection_id)
+    reporter.on_tables_removed(removed=len(removed_tables))
 
     tables_changed = 0
     tables_unchanged = 0
@@ -181,7 +255,11 @@ def index(
 
         if not (col_added or col_removed or col_changed):
             tables_unchanged += 1
+            reporter.on_table_unchanged(schema=schema, name=name)
             continue
+
+        columns_to_enrich = len(table.columns) if pipeline is not None else 0
+        reporter.on_table_start(schema=schema, name=name, columns_to_enrich=columns_to_enrich)
 
         # Something changed — re-profile the WHOLE table. Per-column
         # profile granularity is a possible future optimization; for v0
@@ -204,6 +282,12 @@ def index(
                 )
                 descriptions[col.name] = desc
                 descriptions_generated += 1
+                reporter.on_column_enriched(
+                    schema=schema,
+                    name=name,
+                    column=col.name,
+                    spent_usd=pipeline.spent_usd,
+                )
 
         # Embed AFTER all descriptions for the table are in hand. Done in
         # this order so a partial failure inside enrichment never leaves
@@ -258,8 +342,9 @@ def index(
         columns_added += len(col_added)
         columns_changed += len(col_changed)
         columns_removed += len(col_removed)
+        reporter.on_table_done(schema=schema, name=name)
 
-    return IndexResult(
+    result = IndexResult(
         tables_seen=len(current_tables),
         tables_changed=tables_changed,
         tables_unchanged=tables_unchanged,
@@ -271,3 +356,5 @@ def index(
         llm_cost_usd=pipeline.spent_usd if pipeline is not None else 0.0,
         embeddings_generated=embeddings_generated,
     )
+    reporter.on_finish(result=result)
+    return result

@@ -57,7 +57,7 @@ from schemabrain.eval.bundled import resolve_bundled_path
 from schemabrain.eval.golden import DEFAULT_GOLDEN_PATH, load_golden
 from schemabrain.eval.retriever import EmbeddingRetriever, KeywordRetriever, Retriever
 from schemabrain.eval.runner import format_report, run_eval
-from schemabrain.indexer import index
+from schemabrain.indexer import IndexReporter, NullReporter, index
 from schemabrain.mcp.server import run_stdio
 from schemabrain.profiler.postgres import PostgresProfiler
 
@@ -92,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
             max_cost_usd=args.max_cost,
             enable_sonnet=args.enable_sonnet,
             no_embed=args.no_embed,
+            quiet=args.quiet,
         )
     if args.command == "eval":
         return _cmd_eval(
@@ -167,6 +168,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "skipping them saves ~10ms per column at index time but disables "
         "semantic retrieval. Default off (embeddings ON). Implied when "
         "--no-enrich is set, since there are no descriptions to embed.",
+    )
+    p_index.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        help="Suppress the live progress UI. The final one-line summary "
+        "still prints to stderr. Useful for CI logs and when stderr is "
+        "piped to a file. The CLI also auto-detects non-TTY stderr and "
+        "disables the live UI without this flag.",
     )
 
     p_eval = sub.add_parser(
@@ -246,6 +256,7 @@ def _cmd_index(
     max_cost_usd: float,
     enable_sonnet: bool,
     no_embed: bool,
+    quiet: bool = False,
 ) -> int:
     try:
         canonical = _canonical_url(url)
@@ -278,21 +289,37 @@ def _cmd_index(
         embedder = fastembed_default()
 
     source_id = _make_source_id(url)
+    reporter = _build_index_reporter(quiet=quiet)
     started = time.monotonic()
+    # The inner `finally reporter.close()` is load-bearing AND order
+    # sensitive: rich's live render thread can paint a stale bar over
+    # any error message printed while it's still running. We must
+    # stop the reporter BEFORE the `except CostCapExceeded` block
+    # writes "error: ..." to stderr — otherwise the bar's last frame
+    # lands underneath the error and confuses the user. Same logic
+    # for KeyboardInterrupt and any other unhandled exception: close
+    # the bar first, then let the exception (or error print) surface.
+    # `close()` is idempotent — the happy path's on_finish already
+    # tore down the widget inside `index()`, so this second call is
+    # a no-op there.
     try:
-        with (
-            PostgresDataSource(url) as source,
-            PostgresProfiler(url) as profiler,
-            SQLiteStore(store_path) as store,
-        ):
-            result = index(
-                source=source,
-                profiler=profiler,
-                store=store,
-                source_connection_id=source_id,
-                pipeline=pipeline,
-                embedder=embedder,
-            )
+        try:
+            with (
+                PostgresDataSource(url) as source,
+                PostgresProfiler(url) as profiler,
+                SQLiteStore(store_path) as store,
+            ):
+                result = index(
+                    source=source,
+                    profiler=profiler,
+                    store=store,
+                    source_connection_id=source_id,
+                    pipeline=pipeline,
+                    embedder=embedder,
+                    reporter=reporter,
+                )
+        finally:
+            reporter.close()
     except CostCapExceeded as e:
         print(f"error: {e}", file=sys.stderr)
         return 3
@@ -405,6 +432,25 @@ def _cmd_fixture_path(name: str) -> int:
         return 2
     print(str(path))
     return 0
+
+
+def _build_index_reporter(*, quiet: bool) -> IndexReporter:
+    """Pick a reporter for `schemabrain index`.
+
+    `--quiet` always returns the no-op reporter. Otherwise we use the
+    rich-powered reporter only when stderr is a real terminal; piping
+    to a log file falls back to no-op so we don't flood the output
+    with cursor-control escape sequences. The final summary line is
+    printed by `_cmd_index` regardless.
+    """
+    if quiet or not sys.stderr.isatty():
+        return NullReporter()
+    # Lazy import: keeps `rich` off the import path for `serve`, `eval`,
+    # and `fixture-path`, and gives a clearer error if rich is missing
+    # at runtime (rather than failing every CLI invocation).
+    from schemabrain.cli_ui import RichReporter
+
+    return RichReporter()
 
 
 def _canonical_url(url: str) -> str:

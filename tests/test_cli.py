@@ -6,8 +6,9 @@ from pathlib import Path
 import pytest
 
 import schemabrain
-from schemabrain.cli import _canonical_url, _make_source_id, main
+from schemabrain.cli import _build_index_reporter, _canonical_url, _make_source_id, main
 from schemabrain.core.store import SQLiteStore
+from schemabrain.indexer import NullReporter
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -841,6 +842,150 @@ class TestEnrichmentCliFlags:
         assert exit_code == 3
         assert "cap" in capsys.readouterr().err.lower()
 
+    def test_cost_cap_closes_reporter_before_printing_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # Ordering regression test: when CostCapExceeded fires, the live
+        # progress widget MUST be torn down BEFORE the "error: ..." line
+        # prints to stderr. Otherwise rich's live render thread can
+        # repaint a stale bar over the error message (observed during
+        # manual testing as: "error:..." line followed by a final bar
+        # frame). The fix lives in cli._cmd_index's nested try/finally
+        # — reporter.close() runs inside the inner finally, BEFORE the
+        # outer except CostCapExceeded handler prints anything.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+
+        from schemabrain.core.models import Column, Table
+        from schemabrain.enrichment.llm import LLMResponse, LLMUsage
+
+        # Two columns so the second `enrich_column` call trips the cap
+        # check that runs BEFORE each call. With one column, the cap
+        # check sees zero spend at call-time and the only call goes
+        # through cleanly — no CostCapExceeded raised.
+        users = Table(
+            name="users",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="users",
+                    schema_name="public",
+                    data_type="BIGINT",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+                Column(
+                    name="email",
+                    table_name="users",
+                    schema_name="public",
+                    data_type="TEXT",
+                    nullable=False,
+                    ordinal_position=2,
+                ),
+            ),
+        )
+
+        class _OneTableSource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return [("public", "users")]
+
+            def get_table(self, name: str, schema: str):
+                return users
+
+            def close(self) -> None:
+                pass
+
+        class _StubProfiler:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def profile_table(self, table):
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        class _ExpensiveClient:
+            def __init__(self, *, api_key: str | None = None) -> None:
+                self.model = "claude-haiku-4-5"
+
+            def complete(self, *, system: str, user: str) -> LLMResponse:
+                return LLMResponse(
+                    text="x",
+                    model=self.model,
+                    usage=LLMUsage(
+                        input_tokens=1_000_000, cached_input_tokens=0, output_tokens=100
+                    ),
+                )
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _OneTableSource)
+        monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
+        monkeypatch.setattr(
+            "schemabrain.cli.anthropic_haiku_45_client",
+            lambda *, api_key=None: _ExpensiveClient(api_key=api_key),
+        )
+
+        # Record whether close() fired before "error:" hit stderr. We
+        # use sys.stderr directly rather than capsys.readouterr() inside
+        # close() because readouterr resets the capture buffer, which
+        # would hide the subsequent error line from the outer assertion.
+        import sys as _sys
+
+        events: list[str] = []
+
+        class _OrderingReporter(NullReporter):
+            def close(self) -> None:
+                # Inspect the underlying capture stream that capsys is
+                # buffering into. If "error:" is in there at this
+                # moment, close() ran AFTER the print — bug.
+                buf = getattr(_sys.stderr, "getvalue", lambda: "")()
+                events.append("close: error_in_stderr=" + str("error:" in buf))
+
+        # Force the CLI to pick OUR reporter regardless of TTY state.
+        monkeypatch.setattr(
+            "schemabrain.cli._build_index_reporter",
+            lambda *, quiet: _OrderingReporter(),
+        )
+
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                "postgresql://fake/db",
+                "--store-path",
+                str(store_path),
+                "--max-cost",
+                "0.01",
+            ]
+        )
+        assert exit_code == 3
+        # When close() ran, stderr should NOT have contained "error:"
+        # yet — that's the whole point of the ordering fix.
+        assert events == ["close: error_in_stderr=False"], (
+            f"reporter.close() ran AFTER the error message was printed; events={events}"
+        )
+        # And the error line did eventually appear in captured stderr.
+        assert "cap" in capsys.readouterr().err.lower()
+
 
 @pytest.mark.integration
 class TestIndexEndToEnd:
@@ -925,6 +1070,86 @@ class TestIndexEndToEnd:
         captured = capsys.readouterr()
         assert "Indexed" in captured.err
         assert "table" in captured.err
+
+
+class TestIndexReporterWiring:
+    """Reporter selection by `_build_index_reporter` for `index`."""
+
+    def test_quiet_returns_null_reporter_regardless_of_tty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Even on a real terminal, --quiet must collapse to NullReporter.
+        monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+        reporter = _build_index_reporter(quiet=True)
+        assert isinstance(reporter, NullReporter)
+
+    def test_non_tty_falls_back_to_null_reporter(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Piping stderr to a file: live progress would flood the log
+        # with cursor escapes, so default to no-op.
+        monkeypatch.setattr("sys.stderr.isatty", lambda: False)
+        reporter = _build_index_reporter(quiet=False)
+        assert isinstance(reporter, NullReporter)
+
+    def test_tty_without_quiet_returns_rich_reporter(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The happy path — a real terminal with no --quiet → live UI.
+        from schemabrain.cli_ui import RichReporter
+
+        monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+        reporter = _build_index_reporter(quiet=False)
+        assert isinstance(reporter, RichReporter)
+
+    def test_quiet_flag_runs_index_without_crashing(
+        self, seeded_pg_url: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # End-to-end smoke: --quiet works against a real Postgres seed,
+        # the final summary is still emitted, and no progress chrome
+        # appears in the captured output.
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--no-enrich",
+                "--quiet",
+            ]
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "Indexed" in captured.err
+
+    def test_quiet_flag_emits_no_ansi_chrome_even_on_tty(
+        self,
+        seeded_pg_url: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Negative test: with stderr.isatty()==True, --quiet must still
+        # collapse to NullReporter — no progress chrome. A regression
+        # that swapped the branch order in `_build_index_reporter` would
+        # render rich's Live to the captured stream, leaving ANSI CSI
+        # bytes (\x1b[) in the output. This is what the existing
+        # "Indexed in stderr" assertion misses.
+        monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+        store_path = tmp_path / "schemabrain.db"
+        main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--no-enrich",
+                "--quiet",
+            ]
+        )
+        captured = capsys.readouterr()
+        # The ESC-[ pair is the CSI introducer for every rich color /
+        # cursor-control sequence. Its absence is proof rich's Live
+        # never ran.
+        assert "\x1b[" not in captured.err
+        assert "\x1b[" not in captured.out
 
 
 class TestEvalSubcommandValidation:
