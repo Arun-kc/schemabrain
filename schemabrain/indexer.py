@@ -103,18 +103,33 @@ class IndexResult:
     llm_cost_usd: float = 0.0
     embeddings_generated: int = 0
 
-    def summary(self) -> str:
+    def summary(self, *, dry_run: bool = False) -> str:
+        """Render a one-line human summary of the run.
+
+        `dry_run=True` rewrites the verb tense and prefixes "Estimated"
+        on the LLM/embeddings sub-clauses so the reader can't confuse a
+        preview with a real run. Counts and dollar amounts are the same
+        — only the framing changes.
+        """
+        verb = "Would index" if dry_run else "Indexed"
         base = (
-            f"Indexed {self.tables_seen} table(s): "
+            f"{verb} {self.tables_seen} table(s): "
             f"{self.tables_changed} changed, "
             f"{self.tables_unchanged} unchanged, "
             f"{self.tables_removed} removed. "
             f"Columns: +{self.columns_added}/~{self.columns_changed}/-{self.columns_removed}"
         )
         if self.descriptions_generated > 0 or self.llm_cost_usd > 0:
-            base += f". LLM: {self.descriptions_generated} descriptions (${self.llm_cost_usd:.4f})"
+            llm_label = "Estimated LLM" if dry_run else "LLM"
+            base += (
+                f". {llm_label}: {self.descriptions_generated} descriptions "
+                f"(${self.llm_cost_usd:.4f})"
+            )
         if self.embeddings_generated > 0:
-            base += f". Embeddings: {self.embeddings_generated}"
+            embed_label = "Estimated embeddings" if dry_run else "Embeddings"
+            base += f". {embed_label}: {self.embeddings_generated}"
+        if dry_run:
+            base += ". No changes made to the store."
         return base
 
 
@@ -355,6 +370,145 @@ def index(
         descriptions_generated=descriptions_generated,
         llm_cost_usd=pipeline.spent_usd if pipeline is not None else 0.0,
         embeddings_generated=embeddings_generated,
+    )
+    reporter.on_finish(result=result)
+    return result
+
+
+# Measured anchor for per-column LLM cost on Haiku 4.5 with the current
+# enrichment prompt (PROMPT_VERSION 2026-05-11-1). Two real-world
+# samples produced near-identical per-column costs:
+#   - ecommerce fixture: $0.0074 / 24 cols = $0.000308/col
+#   - Pagila (partition-filtered): $0.0299 / 87 cols = $0.000344/col
+# Rounded to one significant figure both for honest "approximate"
+# framing and so a minor prompt tweak doesn't immediately invalidate
+# the constant. If `--enable-sonnet` is on, real cost will exceed this
+# (Sonnet is ~5x Haiku) — dry-run currently ignores tier routing and
+# reports the Haiku estimate. Documented as a known under-estimate
+# in the CLI help for `--dry-run`.
+_AVG_COST_PER_COLUMN_USD = 0.0003
+
+
+def dry_run_index(
+    *,
+    source: DataSource,
+    store: SQLiteStore,
+    source_connection_id: str,
+    will_enrich: bool,
+    will_embed: bool,
+    reporter: IndexReporter | None = None,
+    avg_cost_per_column_usd: float = _AVG_COST_PER_COLUMN_USD,
+) -> IndexResult:
+    """Compute what `index()` would do, without doing it.
+
+    Walks the same diff loop as `index()` — introspects the source,
+    reads cached fingerprints, computes per-column structural deltas —
+    but skips every side effect:
+      - no `profiler.profile_table` (no sample queries against source)
+      - no `pipeline.enrich_column` (no LLM calls, no cost incurred)
+      - no embedder (no fastembed ONNX init)
+      - no `store.write_table*` and no `store.delete_table` (the store
+        is read-only by discipline during dry-run; callers don't need
+        to swap to a read-only handle)
+
+    Reporter lifecycle callbacks fire exactly as they would in a real
+    run, so the same `RichReporter` renders progress. `on_column_enriched`
+    fires with a CUMULATIVE estimated cost (descriptions_so_far * rate),
+    matching the shape the cost ticker expects in real runs.
+
+    Returns an `IndexResult` with `descriptions_generated` and
+    `embeddings_generated` populated as if `index()` had run, and
+    `llm_cost_usd` populated from the measured per-column constant.
+    Caller renders with `result.summary(dry_run=True)` to make the
+    estimated-not-actual framing explicit.
+
+    `will_enrich` / `will_embed` are the real-run flags — caller
+    derives them from `--no-enrich` / `--no-embed` in the CLI. They
+    drive the cost estimate (will_enrich=False → 0 cost) and the
+    reported description / embedding counts.
+    """
+    if reporter is None:
+        reporter = NullReporter()
+
+    current_tables = source.list_tables()
+    cached_tables = store.list_tables(source_connection_id=source_connection_id)
+
+    reporter.on_start(total_tables=len(current_tables))
+
+    # Count tables that WOULD be removed — but don't actually delete.
+    # The diff logic mirrors `index()`'s removed_tables computation so
+    # the reported count matches what a real run would do.
+    removed_tables = set(cached_tables) - set(current_tables)
+    reporter.on_tables_removed(removed=len(removed_tables))
+
+    tables_changed = 0
+    tables_unchanged = 0
+    columns_added = 0
+    columns_changed = 0
+    columns_removed = 0
+    descriptions_would_generate = 0
+    embeddings_would_generate = 0
+
+    for schema, name in current_tables:
+        table = source.get_table(name, schema)
+        cached_fps = store.get_table_fingerprints(
+            schema, name, source_connection_id=source_connection_id
+        )
+        cached_structural = {col_name: fps[0] for col_name, fps in cached_fps.items()}
+
+        new_structural = {
+            col.name: column_structural_fingerprint(col, fk_targets_for_column(table, col.name))
+            for col in table.columns
+        }
+
+        col_added = set(new_structural) - set(cached_structural)
+        col_removed = set(cached_structural) - set(new_structural)
+        col_changed = {
+            col_name
+            for col_name in new_structural
+            if col_name in cached_structural
+            and new_structural[col_name] != cached_structural[col_name]
+        }
+
+        if not (col_added or col_removed or col_changed):
+            tables_unchanged += 1
+            reporter.on_table_unchanged(schema=schema, name=name)
+            continue
+
+        columns_to_enrich = len(table.columns) if will_enrich else 0
+        reporter.on_table_start(schema=schema, name=name, columns_to_enrich=columns_to_enrich)
+
+        if will_enrich:
+            for col in table.columns:
+                descriptions_would_generate += 1
+                estimated_spent = descriptions_would_generate * avg_cost_per_column_usd
+                reporter.on_column_enriched(
+                    schema=schema,
+                    name=name,
+                    column=col.name,
+                    spent_usd=estimated_spent,
+                )
+
+        if will_enrich and will_embed:
+            embeddings_would_generate += len(table.columns)
+
+        tables_changed += 1
+        columns_added += len(col_added)
+        columns_changed += len(col_changed)
+        columns_removed += len(col_removed)
+        reporter.on_table_done(schema=schema, name=name)
+
+    result = IndexResult(
+        tables_seen=len(current_tables),
+        tables_changed=tables_changed,
+        tables_unchanged=tables_unchanged,
+        tables_removed=len(removed_tables),
+        columns_added=columns_added,
+        columns_changed=columns_changed,
+        columns_removed=columns_removed,
+        descriptions_generated=descriptions_would_generate,
+        llm_cost_usd=descriptions_would_generate * avg_cost_per_column_usd,
+        embeddings_generated=embeddings_would_generate,
     )
     reporter.on_finish(result=result)
     return result

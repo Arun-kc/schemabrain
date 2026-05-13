@@ -14,7 +14,7 @@ import pytest
 from schemabrain.connectors.base import DataSource
 from schemabrain.core.models import Column, ForeignKey, Table
 from schemabrain.core.store import SQLiteStore
-from schemabrain.indexer import IndexReporter, IndexResult, NullReporter, index
+from schemabrain.indexer import IndexReporter, IndexResult, NullReporter, dry_run_index, index
 from schemabrain.profiler.base import Profiler
 from schemabrain.profiler.stats import ColumnStats
 
@@ -933,6 +933,51 @@ class TestIndexResultSummary:
         summary = result.summary()
         assert "Embeddings: 2" in summary
 
+    def test_summary_dry_run_flips_verb_and_labels(self) -> None:
+        # Same counts, different framing — the dry_run flag MUST NOT
+        # produce a string a reader could confuse with a real run.
+        result = IndexResult(
+            tables_seen=5,
+            tables_changed=2,
+            tables_unchanged=2,
+            tables_removed=1,
+            columns_added=3,
+            columns_changed=1,
+            columns_removed=0,
+            descriptions_generated=4,
+            llm_cost_usd=0.0012,
+            embeddings_generated=4,
+        )
+        summary = result.summary(dry_run=True)
+        assert summary.startswith("Would index 5 table(s)")
+        assert "Estimated LLM" in summary
+        assert "Estimated embeddings" in summary
+        assert "No changes made to the store." in summary
+        # The verbatim "Indexed N table(s)" string MUST NOT appear —
+        # otherwise CI log grepping for real runs would pick this up.
+        assert "Indexed 5 table(s)" not in summary
+
+    def test_summary_default_is_unchanged_real_run(self) -> None:
+        # Sibling of the dry-run test — confirm `dry_run=False` (the
+        # default) keeps the existing format byte-for-byte.
+        result = IndexResult(
+            tables_seen=1,
+            tables_changed=1,
+            tables_unchanged=0,
+            tables_removed=0,
+            columns_added=2,
+            columns_changed=0,
+            columns_removed=0,
+            descriptions_generated=2,
+            llm_cost_usd=0.001,
+            embeddings_generated=2,
+        )
+        summary = result.summary()
+        assert summary.startswith("Indexed 1 table(s)")
+        assert "Would index" not in summary
+        assert "Estimated" not in summary
+        assert "No changes made" not in summary
+
 
 class RecordingReporter:
     """Captures every reporter event for ordering + payload assertions."""
@@ -1234,3 +1279,242 @@ class TestReporter:
         reporter = NullReporter()
         reporter.close()
         reporter.close()  # idempotent
+
+
+class TestDryRunIndex:
+    """Contract for `dry_run_index`: same diff as `index()`, zero side
+    effects, reporter events fire as if a real run were happening.
+
+    The cost-estimate constant is part of the user-facing contract — a
+    change that moves it would change every `--dry-run` invocation's
+    output, so we pin both shape (descriptions x rate) and the rate
+    itself indirectly via integer-column tests.
+    """
+
+    def test_fresh_run_against_empty_cache_estimates_full_enrichment(self) -> None:
+        source = FakeDataSource([_users_table(), _orders_table()])
+        store = SQLiteStore(":memory:")
+
+        result = dry_run_index(
+            source=source,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            will_enrich=True,
+            will_embed=True,
+        )
+
+        # 2 tables, 4 columns total (users has 2, orders has 2).
+        assert result.tables_seen == 2
+        assert result.tables_changed == 2
+        assert result.tables_unchanged == 0
+        assert result.tables_removed == 0
+        assert result.columns_added == 4
+        assert result.descriptions_generated == 4
+        assert result.embeddings_generated == 4
+        # Cost = 4 cols x $0.0003/col = $0.0012
+        assert result.llm_cost_usd == pytest.approx(4 * 0.0003)
+        store.close()
+
+    def test_writes_nothing_to_store(self) -> None:
+        # The central invariant — dry_run MUST NOT touch the store.
+        source = FakeDataSource([_users_table()])
+        store = SQLiteStore(":memory:")
+
+        dry_run_index(
+            source=source,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            will_enrich=True,
+            will_embed=True,
+        )
+
+        # No tables persisted.
+        assert store.list_tables(source_connection_id=SOURCE_ID) == []
+        store.close()
+
+    def test_does_not_call_profiler_or_enrich_or_embed(self) -> None:
+        # A real `index()` would profile + enrich + embed the changed
+        # table. dry_run takes NONE of those collaborators — confirming
+        # the function signature alone forces the no-side-effects
+        # discipline. This test pins the surface contract.
+        import inspect
+
+        sig = inspect.signature(dry_run_index)
+        params = set(sig.parameters)
+        assert "profiler" not in params
+        assert "pipeline" not in params
+        assert "embedder" not in params
+
+    def test_unchanged_table_after_real_run_reports_zero_changes(self) -> None:
+        # End-to-end: real index → dry_run. The dry-run sees no diff
+        # so reports 0 changed / N unchanged / 0 cost.
+        source = FakeDataSource([_users_table(), _orders_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+
+        # Seed the cache with a real run (no enrichment, just fingerprints).
+        index(source=source, profiler=profiler, store=store, source_connection_id=SOURCE_ID)
+
+        # Dry-run on the same schema: every table is cached.
+        result = dry_run_index(
+            source=source,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            will_enrich=True,
+            will_embed=True,
+        )
+        assert result.tables_changed == 0
+        assert result.tables_unchanged == 2
+        assert result.descriptions_generated == 0
+        assert result.llm_cost_usd == 0.0
+        store.close()
+
+    def test_will_enrich_false_zeroes_cost(self) -> None:
+        source = FakeDataSource([_users_table()])
+        store = SQLiteStore(":memory:")
+
+        result = dry_run_index(
+            source=source,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            will_enrich=False,
+            will_embed=False,
+        )
+        # Table is "changed" (fresh cache) but no enrichment would happen
+        # → no descriptions, no cost, no embeddings.
+        assert result.tables_changed == 1
+        assert result.descriptions_generated == 0
+        assert result.llm_cost_usd == 0.0
+        assert result.embeddings_generated == 0
+        store.close()
+
+    def test_will_enrich_true_but_will_embed_false_counts_descriptions_only(self) -> None:
+        # `--no-embed` without `--no-enrich`: LLM call would still
+        # happen, but the result wouldn't be embedded. Costs are
+        # description-only; embedding count stays at 0.
+        source = FakeDataSource([_users_table()])
+        store = SQLiteStore(":memory:")
+
+        result = dry_run_index(
+            source=source,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            will_enrich=True,
+            will_embed=False,
+        )
+        assert result.descriptions_generated == 2  # users has 2 columns
+        assert result.llm_cost_usd == pytest.approx(2 * 0.0003)
+        assert result.embeddings_generated == 0
+        store.close()
+
+    def test_removed_tables_counted_but_not_deleted(self) -> None:
+        # Seed cache with [users, orders], then "drop" orders from
+        # source. Real index() would delete orders; dry_run reports
+        # the removal count but the cache row stays.
+        source = FakeDataSource([_users_table(), _orders_table()])
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+
+        index(source=source, profiler=profiler, store=store, source_connection_id=SOURCE_ID)
+        assert ("public", "orders") in store.list_tables(source_connection_id=SOURCE_ID)
+
+        source.set_tables([_users_table()])
+        result = dry_run_index(
+            source=source,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            will_enrich=False,
+            will_embed=False,
+        )
+
+        assert result.tables_removed == 1
+        # The cache STILL has the orders row — dry_run is read-only.
+        assert ("public", "orders") in store.list_tables(source_connection_id=SOURCE_ID)
+        store.close()
+
+    def test_emits_reporter_lifecycle_events_in_order(self) -> None:
+        source = FakeDataSource([_users_table()])
+        store = SQLiteStore(":memory:")
+        reporter = RecordingReporter()
+
+        dry_run_index(
+            source=source,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            will_enrich=True,
+            will_embed=True,
+            reporter=reporter,
+        )
+
+        kinds = [kind for kind, _ in reporter.events]
+        # Same sequence as a real fresh run: start → tables_removed
+        # → table_start → 2xcolumn_enriched (users has 2 cols)
+        # → table_done → finish.
+        assert kinds == [
+            "start",
+            "tables_removed",
+            "table_start",
+            "column_enriched",
+            "column_enriched",
+            "table_done",
+            "finish",
+        ]
+        store.close()
+
+    def test_column_enriched_events_carry_monotonic_estimated_cost(self) -> None:
+        source = FakeDataSource([_users_table(), _orders_table()])
+        store = SQLiteStore(":memory:")
+        reporter = RecordingReporter()
+
+        dry_run_index(
+            source=source,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            will_enrich=True,
+            will_embed=True,
+            reporter=reporter,
+        )
+
+        column_events = [payload for kind, payload in reporter.events if kind == "column_enriched"]
+        # 4 cols total across 2 tables.
+        assert len(column_events) == 4
+        spends = [e["spent_usd"] for e in column_events]
+        # Cumulative + monotonic, matching the real-run convention.
+        assert spends == sorted(spends)
+        # Final estimate equals 4 x $0.0003 = $0.0012.
+        assert spends[-1] == pytest.approx(4 * 0.0003)
+        store.close()
+
+    def test_custom_cost_constant_overrides_default(self) -> None:
+        # The `avg_cost_per_column_usd` argument lets a caller substitute
+        # their own measurement (e.g. for Sonnet routing, or a future
+        # prompt with different costs) without monkeypatching.
+        source = FakeDataSource([_users_table()])
+        store = SQLiteStore(":memory:")
+
+        result = dry_run_index(
+            source=source,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            will_enrich=True,
+            will_embed=True,
+            avg_cost_per_column_usd=0.005,
+        )
+        assert result.llm_cost_usd == pytest.approx(2 * 0.005)
+        store.close()
+
+    def test_default_reporter_is_no_op_and_does_not_crash(self) -> None:
+        # Sibling of the same test for `index()` — reporter=None must
+        # default to NullReporter without raising.
+        source = FakeDataSource([_users_table()])
+        store = SQLiteStore(":memory:")
+
+        result = dry_run_index(
+            source=source,
+            store=store,
+            source_connection_id=SOURCE_ID,
+            will_enrich=False,
+            will_embed=False,
+        )
+        assert result.tables_seen == 1
+        store.close()
