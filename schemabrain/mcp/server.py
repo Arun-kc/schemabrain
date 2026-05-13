@@ -407,6 +407,20 @@ def run_stdio(
 
     Blocks until the client disconnects. Used by the `schemabrain serve`
     CLI subcommand.
+
+    Defensively configures stderr-only logging if no caller has done so
+    already — stdout is the JSON-RPC wire here, and a stray log byte
+    would corrupt the MCP frame. Skipped entirely when the CLI (or any
+    other caller) already attached our named handler, so the caller's
+    chosen verbosity is respected.
     """
+    import logging as _logging
+
+    from schemabrain.logging_config import _HANDLER_NAME, configure_logging
+
+    pkg_logger = _logging.getLogger("schemabrain")
+    already_configured = any(getattr(h, "name", None) == _HANDLER_NAME for h in pkg_logger.handlers)
+    if not already_configured:
+        configure_logging()
     app = build_server(store=store, source_connection_id=source_connection_id, embedder=embedder)
     app.run(transport="stdio")

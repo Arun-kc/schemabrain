@@ -68,6 +68,7 @@ from schemabrain.eval.golden import DEFAULT_GOLDEN_PATH, load_golden
 from schemabrain.eval.retriever import EmbeddingRetriever, KeywordRetriever, Retriever
 from schemabrain.eval.runner import format_report, run_eval
 from schemabrain.indexer import IndexReporter, NullReporter, dry_run_index, index
+from schemabrain.logging_config import configure_logging
 from schemabrain.mcp.server import run_stdio
 from schemabrain.profiler.postgres import PostgresProfiler
 
@@ -94,6 +95,10 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns process exit code."""
     parser = _build_parser()
     args = parser.parse_args(argv)
+    # Configure stderr-only logging before any subcommand runs. Reads
+    # `-v`/`-vv` from the parsed args; falls back to the
+    # `SCHEMABRAIN_LOG_LEVEL` env var when no flag is passed.
+    configure_logging(verbosity=args.verbose)
     if args.command == "index":
         return _cmd_index(
             args.url,
@@ -135,6 +140,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "-V",
         action="version",
         version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="count",
+        default=0,
+        help="Increase logging verbosity (stderr only). -v shows INFO, "
+        "-vv shows DEBUG. Default is WARNING. For `serve` under Claude "
+        "Desktop where CLI flags aren't available, set the "
+        "SCHEMABRAIN_LOG_LEVEL environment variable instead.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

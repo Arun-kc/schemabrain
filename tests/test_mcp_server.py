@@ -525,6 +525,61 @@ class TestRunStdio:
         assert captured["app_name"] == "schemabrain"
         store.close()
 
+    def test_run_stdio_skips_logging_config_when_already_configured(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Operator path: caller has already called configure_logging
+        # (or main() did). run_stdio must NOT reconfigure — it would
+        # silently reset the caller's verbosity to WARNING.
+        #
+        # Behavioral check rather than a call-count spy: stash a sentinel
+        # level the caller chose (DEBUG), invoke run_stdio, then assert
+        # the level survived. A reconfigure would have reset to WARNING.
+        import logging as _logging
+
+        from schemabrain.logging_config import _HANDLER_NAME, configure_logging
+        from schemabrain.mcp.server import run_stdio
+
+        configure_logging(verbosity=2)
+        pkg = _logging.getLogger("schemabrain")
+        assert pkg.level == _logging.DEBUG
+
+        monkeypatch.setattr(FastMCP, "run", lambda *a, **k: None)
+        store = SQLiteStore(tmp_path / "s.db")
+        run_stdio(store=store, source_connection_id="src1", embedder=_StubEmbedder())
+
+        assert pkg.level == _logging.DEBUG, "run_stdio should not reset caller's verbosity"
+        # Cleanup so other tests aren't affected.
+        for h in list(pkg.handlers):
+            if getattr(h, "name", None) == _HANDLER_NAME:
+                pkg.removeHandler(h)
+        store.close()
+
+    def test_run_stdio_configures_logging_when_not_yet_configured(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Library path: nobody has called configure_logging before us.
+        # run_stdio MUST configure it so logs go to stderr — stdout is
+        # the JSON-RPC wire.
+        import logging as _logging
+
+        from schemabrain.logging_config import _HANDLER_NAME
+        from schemabrain.mcp.server import run_stdio
+
+        pkg = _logging.getLogger("schemabrain")
+        # Strip our handler if a prior test left it attached.
+        for h in list(pkg.handlers):
+            if getattr(h, "name", None) == _HANDLER_NAME:
+                pkg.removeHandler(h)
+
+        monkeypatch.setattr(FastMCP, "run", lambda *a, **k: None)
+
+        store = SQLiteStore(tmp_path / "s.db")
+        run_stdio(store=store, source_connection_id="src1", embedder=_StubEmbedder())
+
+        assert any(getattr(h, "name", None) == _HANDLER_NAME for h in pkg.handlers)
+        store.close()
+
 
 class TestConfidenceBucketing:
     """Pin Charter Principle 4 thresholds: ≥0.8 HIGH, ≥0.5 MEDIUM, else LOW.
@@ -632,94 +687,106 @@ class TestInternalErrorCatchAll:
     agent should not retry. Logged for repair." We verify both halves:
       - the envelope's user-facing message is sanitized (no `str(exc)`
         leak — server paths or internal state could leak otherwise),
-      - the full exception IS logged on the server side so an operator
+      - the full exception IS surfaced on stderr where an operator
         can act on it.
+
+    Stderr (via `capsys`) is the channel we assert against rather than
+    `caplog`: the product contract is "logs go to stderr" (see
+    `schemabrain/logging_config.py`), and `caplog` relies on
+    propagation to the root logger which our config intentionally
+    disables.
     """
 
     _SANITIZED_FRAGMENT = "unexpected internal error"
+
+    @pytest.fixture(autouse=True)
+    def _ensure_logging_configured(self) -> None:
+        """Ensure the stderr handler is attached. `configure_logging`
+        is idempotent and the handler resolves `sys.stderr` per emit,
+        so this works regardless of when (or if) the CLI configured
+        logging earlier in the suite.
+        """
+        from schemabrain.logging_config import configure_logging
+
+        configure_logging()
 
     def test_find_relevant_tables_internal_error(
         self,
         monkeypatch: pytest.MonkeyPatch,
         server_with_one_table,
-        caplog: pytest.LogCaptureFixture,
+        capfd: pytest.CaptureFixture[str],
     ) -> None:
         def _boom(**_: object) -> list:
             raise RuntimeError("retrieval went sideways")
 
         monkeypatch.setattr("schemabrain.mcp.server.find_relevant_tables_impl", _boom)
-        with caplog.at_level("ERROR", logger="schemabrain.mcp.server"):
-            _content, structured = asyncio.run(
-                server_with_one_table.call_tool(
-                    "find_relevant_tables", {"query": "x", "limit": 5}
-                )
-            )
+        _content, structured = asyncio.run(
+            server_with_one_table.call_tool("find_relevant_tables", {"query": "x", "limit": 5})
+        )
         assert structured["status"] == "error"
         assert structured["error"]["kind"] == "internal_error"
         # Sanitized message: no `str(exc)` leak.
         assert self._SANITIZED_FRAGMENT in structured["error"]["message"].lower()
         assert "retrieval went sideways" not in structured["error"]["message"]
-        # Traceback IS in the server log where the operator can find it.
-        assert any(
-            "retrieval went sideways" in (rec.exc_text or "") for rec in caplog.records
-        )
+        # Traceback IS on stderr where the operator can find it.
+        err = capfd.readouterr().err
+        assert "retrieval went sideways" in err
+        assert "Traceback" in err
 
     def test_describe_table_internal_error(
         self,
         monkeypatch: pytest.MonkeyPatch,
         server_with_one_table,
-        caplog: pytest.LogCaptureFixture,
+        capfd: pytest.CaptureFixture[str],
     ) -> None:
         def _boom(**_: object) -> object:
             raise RuntimeError("store exploded")
 
         monkeypatch.setattr("schemabrain.mcp.server.describe_table_impl", _boom)
-        with caplog.at_level("ERROR", logger="schemabrain.mcp.server"):
-            _content, structured = asyncio.run(
-                server_with_one_table.call_tool(
-                    "describe_table", {"qualified_name": "public.users"}
-                )
-            )
+        _content, structured = asyncio.run(
+            server_with_one_table.call_tool("describe_table", {"qualified_name": "public.users"})
+        )
         assert structured["status"] == "error"
         assert structured["error"]["kind"] == "internal_error"
         assert "store exploded" not in structured["error"]["message"]
+        assert "store exploded" in capfd.readouterr().err
 
     def test_describe_column_internal_error(
         self,
         monkeypatch: pytest.MonkeyPatch,
         server_with_one_table,
-        caplog: pytest.LogCaptureFixture,
+        capfd: pytest.CaptureFixture[str],
     ) -> None:
         def _boom(**_: object) -> object:
             raise RuntimeError("column store exploded")
 
         monkeypatch.setattr("schemabrain.mcp.server.describe_column_impl", _boom)
-        with caplog.at_level("ERROR", logger="schemabrain.mcp.server"):
-            _content, structured = asyncio.run(
-                server_with_one_table.call_tool(
-                    "describe_column", {"qualified_name": "public.users.email"}
-                )
+        _content, structured = asyncio.run(
+            server_with_one_table.call_tool(
+                "describe_column", {"qualified_name": "public.users.email"}
             )
+        )
         assert structured["status"] == "error"
         assert structured["error"]["kind"] == "internal_error"
         assert "column store exploded" not in structured["error"]["message"]
+        assert "column store exploded" in capfd.readouterr().err
 
     def test_suggest_joins_internal_error(
         self,
         monkeypatch: pytest.MonkeyPatch,
         server_with_fk_pair,
-        caplog: pytest.LogCaptureFixture,
+        capfd: pytest.CaptureFixture[str],
     ) -> None:
         def _boom(**_: object) -> object:
             raise RuntimeError("bfs exploded")
 
         monkeypatch.setattr("schemabrain.mcp.server.suggest_joins_impl", _boom)
-        with caplog.at_level("ERROR", logger="schemabrain.mcp.server"):
-            _content, structured = asyncio.run(
-                server_with_fk_pair.call_tool(
-                    "suggest_joins", {"tables": ["public.orders", "public.users"]}
-                )
+        _content, structured = asyncio.run(
+            server_with_fk_pair.call_tool(
+                "suggest_joins", {"tables": ["public.orders", "public.users"]}
             )
+        )
         assert structured["status"] == "error"
         assert structured["error"]["kind"] == "internal_error"
         assert "bfs exploded" not in structured["error"]["message"]
+        assert "bfs exploded" in capfd.readouterr().err

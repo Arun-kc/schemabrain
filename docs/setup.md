@@ -123,6 +123,54 @@ This is the same path Claude Desktop takes internally (stdio MCP + tool-use loop
 - Smoke-test Schema Brain in CI.
 - Crib the agent loop into your own application.
 
+## Logs
+
+Schema Brain writes logs to **stderr only**, never stdout. The MCP-stdio
+transport uses stdout for JSON-RPC frames — any byte on stdout would
+corrupt the protocol, so all diagnostic output is on stderr by design.
+The CLI's user-facing output (progress bar, summary lines, guided
+errors) also goes to stderr but through Rich's Console; logs and UI
+coexist without garbling.
+
+**Default level is WARNING.** Most healthy runs are silent on stderr
+apart from the progress bar and summary. Internal errors caught at the
+MCP boundary write a full traceback at ERROR with the client receiving
+a sanitized envelope (no `str(exc)` leak).
+
+**Raising verbosity** for any CLI command:
+
+```bash
+schemabrain -v  index <url>     # INFO and above
+schemabrain -vv index <url>     # DEBUG and above
+```
+
+**For `schemabrain serve` under Claude Desktop** (where you can't pass
+CLI flags), set `SCHEMABRAIN_LOG_LEVEL` in the `env` block of your
+`claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "schemabrain": {
+      "command": "/usr/local/bin/schemabrain",
+      "args": ["serve", "--source", "...", "--store-path", "..."],
+      "env": {
+        "ANTHROPIC_API_KEY": "sk-ant-...",
+        "SCHEMABRAIN_LOG_LEVEL": "INFO"
+      }
+    }
+  }
+}
+```
+
+Accepted values: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`
+(case-insensitive). Invalid values fall back to `WARNING`.
+
+Claude Desktop captures the stderr of MCP servers it spawns; you can
+read it at `~/Library/Logs/Claude/mcp-server-schemabrain.log` on macOS.
+Third-party libraries (`mcp`, `anyio`, `httpx`, `fastembed`) are pinned
+at WARNING even when our level drops to DEBUG so `-vv` stays readable.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
