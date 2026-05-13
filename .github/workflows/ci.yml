@@ -57,10 +57,16 @@ jobs:
         run: uv sync --extra dev --python ${{ matrix.python-version }}
 
       - name: Lint (ruff check)
-        run: uv run --python ${{ matrix.python-version }} ruff check schemabrain tests
+        run: uv run --python ${{ matrix.python-version }} ruff check schemabrain tests scripts
 
       - name: Format check (ruff format --check)
-        run: uv run --python ${{ matrix.python-version }} ruff format --check schemabrain tests
+        run: uv run --python ${{ matrix.python-version }} ruff format --check schemabrain tests scripts
+
+      - name: Charter lint (Levels 1 + 2)
+        # PR-gate enforcement of the MCP charter (Principle 2 description
+        # rules + Pydantic envelope round-trip). Runs before the unit
+        # suite so a description drift fails fast on cheap signal.
+        run: uv run --python ${{ matrix.python-version }} python scripts/charter_lint.py
 
       - name: Unit tests
         # No coverage gate here — unit-only runs miss code paths
