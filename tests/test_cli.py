@@ -1533,6 +1533,113 @@ class TestIndexDryRun:
         # No raw traceback leaked.
         assert "Traceback" not in err
 
+    def test_dry_run_store_path_unwritable_renders_guided(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # OSError on store init must translate through the guided-error
+        # renderer for dry-run too (parallel to the same branch in the
+        # real index path). Stubs both PostgresDataSource and SQLiteStore
+        # so the test is deterministic regardless of platform — a real
+        # SQLite OSError is hard to trigger portably.
+        class _NoopSource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return []
+
+            def get_table(self, name: str, schema: str):
+                raise NotImplementedError
+
+            def close(self) -> None:
+                pass
+
+        class _OSErrorStore:
+            def __init__(self, path: str) -> None:
+                self.path = path
+
+            def __enter__(self):
+                raise OSError(f"Permission denied: {self.path}")
+
+            def __exit__(self, *_args):
+                return False
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _NoopSource)
+        monkeypatch.setattr("schemabrain.cli.SQLiteStore", _OSErrorStore)
+
+        store_path = tmp_path / "blocked.db"
+        exit_code = main(
+            [
+                "index",
+                "postgresql+psycopg://fake/db",
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+            ]
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        # Guided format from `store_path_unwritable` translator.
+        assert "could not open the local store" in err
+        assert "Permission denied" in err
+        assert "Traceback" not in err
+
+    def test_dry_run_warns_on_empty_source(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Empty schemas are a real footgun (user typed the wrong dbname,
+        # or RLS hides everything). Dry-run should still succeed and
+        # emit a warning so the user notices the empty result before
+        # building plans around a zero-cost estimate.
+        class _EmptySource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return []
+
+            def get_table(self, name: str, schema: str):
+                raise NotImplementedError
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                "postgresql+psycopg://fake/empty",
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+                "--no-enrich",
+            ]
+        )
+        assert exit_code == 0
+        err = capsys.readouterr().err
+        assert "Would index 0 table(s)" in err
+        assert "no user-visible tables" in err
+        assert "dry-run produced an empty diff" in err
+
 
 class TestEvalSubcommandValidation:
     """The `eval` subcommand's argparse + early validation paths."""
