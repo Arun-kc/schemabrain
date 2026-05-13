@@ -5,8 +5,13 @@ Python SDK. The shared system prompt (which never varies between
 column-description calls in a single index run) is marked with ephemeral
 `cache_control` so Anthropic caches it for 5 minutes — every call after
 the first in a run pays the much cheaper cached input rate for the
-system prefix, when the prefix is large enough to qualify (≥2048 tokens
-for Haiku, ≥1024 for Sonnet).
+system prefix, when the prefix is large enough to qualify (≥4096 tokens
+for Haiku 4.5, ≥2048 for Sonnet 4.6 per the Anthropic prompt-caching
+docs, verified 2026-05-13). Below threshold, `cache_control` is
+silently no-op'd — no error, both `cache_creation_input_tokens` and
+`cache_read_input_tokens` come back as 0. Our SYSTEM_PROMPT is far
+under either threshold today, so the marker is a no-op until the
+prefix grows (e.g. sibling context, examples).
 
 The class is model-agnostic: pass any Anthropic model name and the
 matching `max_output_tokens`. For ergonomics, prefer the factory
