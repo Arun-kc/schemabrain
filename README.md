@@ -185,6 +185,8 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
 
 Both paths must be absolute. Quit Claude Desktop fully (Cmd+Q) and relaunch. The 🔌 tools panel should now show "schemabrain" with 4 tools.
 
+**Or for Cursor:** drop the same `mcpServers` block into `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project-scoped). Template at [`examples/cursor_mcp_config.example.json`](examples/cursor_mcp_config.example.json). Restart Cursor.
+
 For the headless Anthropic-SDK path, see [`examples/anthropic_demo.py`](examples/anthropic_demo.py) and [`docs/setup.md`](docs/setup.md).
 
 ---
