@@ -125,37 +125,60 @@ This is the same path Claude Desktop takes internally (stdio MCP + tool-use loop
 
 ## Logs
 
-Schema Brain writes logs to **stderr only**, never stdout. The MCP-stdio
-transport uses stdout for JSON-RPC frames — any byte on stdout would
-corrupt the protocol, so all diagnostic output is on stderr by design.
-The CLI's user-facing output (progress bar, summary lines, guided
-errors) also goes to stderr but through Rich's Console; logs and UI
-coexist without garbling.
+Schema Brain has a single, deliberately simple logging system: **one stream,
+stderr.** No log files, no rotation, no JSON output. The default level is
+`WARNING`, so healthy runs are essentially silent. Raise the level when you
+need to debug; lower it when the noise gets in the way.
 
-**Default level is WARNING.** Most healthy runs are silent on stderr
-apart from the progress bar and summary. Internal errors caught at the
-MCP boundary write a full traceback at ERROR with the client receiving
-a sanitized envelope (no `str(exc)` leak).
+How you raise the level depends on **how** Schema Brain is running.
 
-**Raising verbosity** for any CLI command:
+### When you're running `schemabrain` in a terminal
+
+Pass `-v` flags. Counted — more `v`s, more output:
 
 ```bash
-schemabrain -v  index <url>     # INFO and above
-schemabrain -vv index <url>     # DEBUG and above
+schemabrain      index <url>     # WARNING (default, near-silent)
+schemabrain -v   index <url>     # INFO and above
+schemabrain -vv  index <url>     # DEBUG and above
 ```
 
-**For `schemabrain serve` under Claude Desktop** (where you can't pass
-CLI flags), set `SCHEMABRAIN_LOG_LEVEL` in the `env` block of your
-`claude_desktop_config.json`:
+The lines appear on your terminal's stderr, interleaved with the progress
+bar and the summary line. The Rich progress bar and the log lines coexist
+on the same stream without garbling.
+
+To capture for later:
+
+```bash
+schemabrain -v index <url> 2> schemabrain.log
+```
+
+### When Claude Desktop is launching `schemabrain serve` for you
+
+You **don't have a terminal**. Claude Desktop spawns the server in the
+background, so `-v` is not an option — there's no command line you control.
+
+Instead, you set an environment variable in **Claude Desktop's** config
+file (not Schema Brain's — Schema Brain has no config file). On macOS that
+file lives at:
+
+```
+~/Library/Application Support/Claude/claude_desktop_config.json
+```
+
+A working entry looks like this:
 
 ```json
 {
   "mcpServers": {
     "schemabrain": {
       "command": "/usr/local/bin/schemabrain",
-      "args": ["serve", "--source", "...", "--store-path", "..."],
+      "args": [
+        "serve",
+        "--source", "postgresql+psycopg://postgres:local@localhost:5432/postgres",
+        "--store-path", "/Users/you/.schemabrain.db"
+      ],
       "env": {
-        "ANTHROPIC_API_KEY": "sk-ant-...",
+        "ANTHROPIC_API_KEY": "sk-ant-…",
         "SCHEMABRAIN_LOG_LEVEL": "INFO"
       }
     }
@@ -163,13 +186,42 @@ CLI flags), set `SCHEMABRAIN_LOG_LEVEL` in the `env` block of your
 }
 ```
 
-Accepted values: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`
-(case-insensitive). Invalid values fall back to `WARNING`.
+What each block does:
 
-Claude Desktop captures the stderr of MCP servers it spawns; you can
-read it at `~/Library/Logs/Claude/mcp-server-schemabrain.log` on macOS.
-Third-party libraries (`mcp`, `anyio`, `httpx`, `fastembed`) are pinned
-at WARNING even when our level drops to DEBUG so `-vv` stays readable.
+| Field | What it does |
+|---|---|
+| `command` | The `schemabrain` binary to launch. Find your path with `which schemabrain`. |
+| `args` | Command-line arguments — same as if you typed them in a terminal. |
+| `env` | Environment variables for the spawned process. `SCHEMABRAIN_LOG_LEVEL` is the only logging-relevant one. |
+
+`SCHEMABRAIN_LOG_LEVEL` accepts `DEBUG`, `INFO`, `WARNING`, `ERROR`,
+`CRITICAL` (case-insensitive). Unrecognized values fall back to `WARNING`
+and emit a one-line warning to stderr so you know there was a typo.
+
+**Where the lines actually appear:** Claude Desktop captures the stderr of
+every MCP server it spawns. On macOS, read it with:
+
+```bash
+tail -f ~/Library/Logs/Claude/mcp-server-schemabrain.log
+```
+
+That's the file to watch when something goes wrong inside `serve` — you'll
+see the traceback there even though no terminal was ever open.
+
+### Precedence
+
+If you happen to set both a `-v` flag and `SCHEMABRAIN_LOG_LEVEL`, the
+**flag wins.** The env var is a fallback for the case where you can't pass
+flags (i.e. Claude Desktop). In a terminal, prefer the flag.
+
+### What's deliberately not there
+
+| Not implemented | Why |
+|---|---|
+| Log files | One stream is simpler. Use shell redirection if you need persistence. |
+| JSON / structured logging | Only one call site exists today (the MCP boundary catch). Will revisit if more land. |
+| Per-module level overrides | Schema Brain has one namespace. Third-party loggers (`mcp`, `anyio`, `httpx`, `httpcore`, `fastembed`) are pinned at WARNING regardless of our level so `-vv` doesn't drown you in SDK chatter. |
+| Log rotation | Not our concern. Claude Desktop manages rotation of `mcp-server-schemabrain.log` on its side; for terminal runs, your shell redirect manages the file. |
 
 ## Troubleshooting
 
