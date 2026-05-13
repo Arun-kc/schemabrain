@@ -44,6 +44,8 @@ import sys
 import time
 from urllib.parse import urlparse
 
+from sqlalchemy.exc import OperationalError
+
 from schemabrain import __version__
 from schemabrain.connectors.postgres import PostgresDataSource
 from schemabrain.core.store import SQLiteStore
@@ -53,6 +55,14 @@ from schemabrain.enrichment.anthropic_client import (
 )
 from schemabrain.enrichment.embeddings import Embedder, fastembed_default
 from schemabrain.enrichment.pipeline import CostCapExceeded, EnrichmentPipeline
+from schemabrain.errors import (
+    GuidedError,
+    anthropic_auth_failed,
+    postgres_operational_error,
+    render_error,
+    store_path_unwritable,
+    url_wrong_driver,
+)
 from schemabrain.eval.bundled import resolve_bundled_path
 from schemabrain.eval.golden import DEFAULT_GOLDEN_PATH, load_golden
 from schemabrain.eval.retriever import EmbeddingRetriever, KeywordRetriever, Retriever
@@ -258,20 +268,22 @@ def _cmd_index(
     no_embed: bool,
     quiet: bool = False,
 ) -> int:
-    try:
-        canonical = _canonical_url(url)
-    except ValueError as e:
-        print(f"error: {e}", file=sys.stderr)
+    canonical = _resolve_url(url)
+    if canonical is None:
         return 2
 
     pipeline: EnrichmentPipeline | None = None
     if not no_enrich:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
-            print(
-                "error: ANTHROPIC_API_KEY not set. Either set it in the "
-                "environment or re-run with --no-enrich.",
-                file=sys.stderr,
+            _render_guided(
+                GuidedError(
+                    kind="anthropic_api_key_missing",
+                    message="ANTHROPIC_API_KEY is not set",
+                    why="enrichment uses Claude (Haiku 4.5) to generate column descriptions; the SDK needs a key",
+                    fix="export ANTHROPIC_API_KEY=sk-ant-... and re-run, OR re-run with --no-enrich",
+                    next_step="get a key at https://console.anthropic.com/settings/keys",
+                )
             )
             return 2
         cryptic_client = anthropic_sonnet_46_client(api_key=api_key) if enable_sonnet else None
@@ -302,6 +314,15 @@ def _cmd_index(
     # `close()` is idempotent — the happy path's on_finish already
     # tore down the widget inside `index()`, so this second call is
     # a no-op there.
+    # Lazy import: anthropic SDK ships a chunky dependency tree; only
+    # load when we actually need to translate one of its errors.
+    try:
+        import anthropic
+    except ImportError:  # pragma: no cover — anthropic is a hard dep
+        anthropic = None  # type: ignore[assignment]
+    # psycopg + sqlalchemy variants of "could not connect": catch the
+    # SQLAlchemy wrapper at the outer boundary so it fires for both
+    # PostgresDataSource and PostgresProfiler context-manager entry.
     try:
         try:
             with (
@@ -321,8 +342,27 @@ def _cmd_index(
         finally:
             reporter.close()
     except CostCapExceeded as e:
-        print(f"error: {e}", file=sys.stderr)
+        _render_guided(
+            GuidedError(
+                kind="cost_cap_exceeded",
+                message=str(e),
+                why="the --max-cost ceiling is a deliberate safety stop on LLM spend",
+                fix=f"re-run with a higher --max-cost (current: ${max_cost_usd:.4f})",
+                next_step="or re-run with --no-enrich to index structure without LLM calls",
+            )
+        )
         return 3
+    except OperationalError as e:
+        _render_guided(postgres_operational_error(e, url_hint=canonical))
+        return 2
+    except OSError as e:
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+    except Exception as e:
+        if anthropic is not None and isinstance(e, anthropic.AuthenticationError):
+            _render_guided(anthropic_auth_failed(e))
+            return 2
+        raise
     elapsed = time.monotonic() - started
     print(
         f"{result.summary()} | source={canonical} store={store_path} in {elapsed:.1f}s",
@@ -345,19 +385,33 @@ def _cmd_eval(
     limit: int,
     retriever_kind: str,
 ) -> int:
-    try:
-        source_id = _make_source_id(source_url)
-    except ValueError as e:
-        print(f"error: {e}", file=sys.stderr)
+    if _resolve_url(source_url) is None:
         return 2
+    source_id = _make_source_id(source_url)
 
     try:
         golden = load_golden(golden_path)
     except FileNotFoundError:
-        print(f"error: golden file not found: {golden_path}", file=sys.stderr)
+        _render_guided(
+            GuidedError(
+                kind="eval_golden_file_missing",
+                message=f"golden file not found: {golden_path}",
+                why="--golden must point at a JSON file describing the eval questions + expected tables",
+                fix="check the path is correct, or omit --golden to use the bundled ecommerce starter",
+                next_step="see schemabrain/eval/golden_sets/ecommerce.json for the expected shape",
+            )
+        )
         return 2
     except ValueError as e:
-        print(f"error: invalid golden file: {e}", file=sys.stderr)
+        _render_guided(
+            GuidedError(
+                kind="eval_golden_file_invalid",
+                message=f"invalid golden file: {e}",
+                why="the golden JSON must match the GoldenSet schema",
+                fix="compare your file against schemabrain/eval/golden_sets/ecommerce.json",
+                next_step=None,
+            )
+        )
         return 2
 
     with SQLiteStore(store_path) as store:
@@ -393,11 +447,9 @@ def _cmd_serve(
     are read-only (no writes occur at MCP call time), so SQLite's
     single-writer limit is never approached.
     """
-    try:
-        source_id = _make_source_id(source_url)
-    except ValueError as e:
-        print(f"error: {e}", file=sys.stderr)
+    if _resolve_url(source_url) is None:
         return 2
+    source_id = _make_source_id(source_url)
 
     # Construct the same default embedder the indexer used so query and
     # stored vectors are dimension-compatible. fastembed loads the ONNX
@@ -411,9 +463,9 @@ def _cmd_serve(
             )
     except OSError as e:
         # Unwritable directory, missing parent, etc. Surface as a
-        # user-friendly message instead of a traceback — Claude Desktop
-        # config issues are the most common case here.
-        print(f"error: could not open store at {store_path!r}: {e}", file=sys.stderr)
+        # guided block instead of a traceback — Claude Desktop config
+        # issues are the most common case here.
+        _render_guided(store_path_unwritable(store_path, e))
         return 2
     return 0
 
@@ -428,7 +480,15 @@ def _cmd_fixture_path(name: str) -> int:
     try:
         path = resolve_bundled_path(name)
     except (FileNotFoundError, ValueError) as e:
-        print(f"error: {e}", file=sys.stderr)
+        _render_guided(
+            GuidedError(
+                kind="fixture_not_found",
+                message=str(e),
+                why="`fixture-path` resolves bundled assets shipped inside the wheel",
+                fix="see `schemabrain fixture-path --help` for the recognized names",
+                next_step="bundled today: `ecommerce.sql` (SQL seed), `ecommerce.json` (golden set)",
+            )
+        )
         return 2
     print(str(path))
     return 0
@@ -451,6 +511,69 @@ def _build_index_reporter(*, quiet: bool) -> IndexReporter:
     from schemabrain.cli_ui import RichReporter
 
     return RichReporter()
+
+
+def _stderr_console():
+    """Build a rich Console targeting stderr for guided-error rendering.
+
+    Lazy-imported so subcommands that never error (e.g. `fixture-path`
+    on a happy path) don't pay the rich import cost. TTY detection is
+    delegated to rich — non-TTY destinations get plain text (markup
+    stripped) automatically.
+    """
+    from rich.console import Console
+
+    return Console(stderr=True)
+
+
+def _render_guided(err: GuidedError) -> None:
+    """Render a `GuidedError` to stderr via a fresh rich Console.
+
+    The only place in the CLI that writes guided errors. Direct
+    `print("error: ...")` calls are reserved for cases without a
+    translator yet (argparse output, raw-string CostCapExceeded
+    fallback).
+    """
+    render_error(err, console=_stderr_console())
+
+
+def _resolve_url(url: str) -> str | None:
+    """Validate + canonicalize a connection URL, rendering on failure.
+
+    Returns the canonical (credential-free) URL on success, or `None`
+    after rendering a guided error to stderr. CLI commands collapse
+    the URL handshake into:
+
+        canonical = _resolve_url(url)
+        if canonical is None:
+            return 2
+
+    Two failure modes are translated:
+      1. Wrong driver scheme (bare `postgresql://`, psycopg2, asyncpg)
+         — caught BEFORE `_canonical_url` so the user sees a guided
+         "use postgresql+psycopg://..." instead of a downstream
+         `ModuleNotFoundError: psycopg2` at SQLAlchemy time.
+      2. No-scheme / unsupported-scheme — `_canonical_url`'s
+         ValueError is wrapped into a `url_invalid` guided error.
+    """
+    parsed = urlparse(url)
+    wrong = url_wrong_driver(parsed.scheme, url)
+    if wrong is not None:
+        _render_guided(wrong)
+        return None
+    try:
+        return _canonical_url(url)
+    except ValueError as e:
+        _render_guided(
+            GuidedError(
+                kind="url_invalid",
+                message=str(e),
+                why="Schema Brain needs a Postgres URL to connect to your source database",
+                fix="use the form postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME",
+                next_step="see docs/setup.md for the canonical URL format",
+            )
+        )
+        return None
 
 
 def _canonical_url(url: str) -> str:

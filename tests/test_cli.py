@@ -182,7 +182,10 @@ class TestIndexCommandValidation:
         store_path = tmp_path / "schemabrain.db"
         exit_code = main(["index", "not-a-url", "--store-path", str(store_path)])
         assert exit_code == 2
-        assert "error" in capsys.readouterr().err.lower()
+        err = capsys.readouterr().err
+        # Guided-error format: "error: ..." headline + "why:" / "fix:".
+        assert "error:" in err
+        assert "fix:" in err
 
     def test_unsupported_scheme_returns_nonzero_exit_code(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -190,7 +193,47 @@ class TestIndexCommandValidation:
         store_path = tmp_path / "schemabrain.db"
         exit_code = main(["index", "mysql://db/test", "--store-path", str(store_path)])
         assert exit_code == 2
-        assert "Unsupported scheme" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "Unsupported scheme" in err
+        assert "fix:" in err
+
+    def test_bare_postgresql_scheme_rejected_with_guided_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        # The papercut from slice 2.1 manual testing: bare
+        # `postgresql://` resolves to psycopg2 in SQLAlchemy but we
+        # ship only psycopg v3, producing a confusing
+        # `ModuleNotFoundError: psycopg2` traceback at create_engine
+        # time. Slice 2.2 catches this at the URL boundary with a
+        # guided error pointing at the correct scheme.
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(["index", "postgresql://user:pw@host/db", "--store-path", str(store_path)])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "psycopg v3" in err
+        # The fix line must include the EXACT corrected URL — the
+        # user shouldn't have to figure out the rewrite themselves.
+        assert "postgresql+psycopg://user:pw@host/db" in err
+
+    def test_psycopg2_explicit_scheme_rejected_with_guided_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            ["index", "postgresql+psycopg2://host/db", "--store-path", str(store_path)]
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "psycopg+psycopg2" in err or "psycopg v3" in err
+
+    def test_asyncpg_scheme_rejected_with_guided_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(["index", "postgresql+asyncpg://host/db", "--store-path", str(store_path)])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "asyncpg" in err
 
     def test_warns_when_no_tables_indexed(
         self,
@@ -246,8 +289,8 @@ class TestIndexCommandValidation:
         from schemabrain.connectors.base import DataSource
         from schemabrain.profiler.base import Profiler
 
-        assert isinstance(_EmptySource("postgresql://fake/db"), DataSource)
-        assert isinstance(_StubProfiler("postgresql://fake/db"), Profiler)
+        assert isinstance(_EmptySource("postgresql+psycopg://fake/db"), DataSource)
+        assert isinstance(_StubProfiler("postgresql+psycopg://fake/db"), Profiler)
 
         monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
         monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
@@ -256,7 +299,7 @@ class TestIndexCommandValidation:
         exit_code = main(
             [
                 "index",
-                "postgresql://fake/db",
+                "postgresql+psycopg://fake/db",
                 "--store-path",
                 str(store_path),
                 "--no-enrich",
@@ -277,9 +320,14 @@ class TestEnrichmentCliFlags:
         # refuse to run rather than silently fall back to a no-LLM mode.
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         store_path = tmp_path / "schemabrain.db"
-        exit_code = main(["index", "postgresql://fake/db", "--store-path", str(store_path)])
+        exit_code = main(["index", "postgresql+psycopg://fake/db", "--store-path", str(store_path)])
         assert exit_code == 2
-        assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "ANTHROPIC_API_KEY" in err
+        # Guided-error format with a remediation pointer to --no-enrich
+        # so the user can unblock themselves without first fetching a key.
+        assert "--no-enrich" in err
+        assert "fix:" in err
 
     def test_no_enrich_skips_api_key_requirement(
         self,
@@ -330,7 +378,7 @@ class TestEnrichmentCliFlags:
         exit_code = main(
             [
                 "index",
-                "postgresql://fake/db",
+                "postgresql+psycopg://fake/db",
                 "--store-path",
                 str(store_path),
                 "--no-enrich",
@@ -401,7 +449,7 @@ class TestEnrichmentCliFlags:
         monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
         monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
         store_path = tmp_path / "schemabrain.db"
-        exit_code = main(["index", "postgresql://fake/db", "--store-path", str(store_path)])
+        exit_code = main(["index", "postgresql+psycopg://fake/db", "--store-path", str(store_path)])
         assert exit_code == 0
         assert sonnet_calls == []
 
@@ -483,7 +531,7 @@ class TestEnrichmentCliFlags:
         exit_code = main(
             [
                 "index",
-                "postgresql://fake/db",
+                "postgresql+psycopg://fake/db",
                 "--store-path",
                 str(store_path),
                 "--enable-sonnet",
@@ -558,7 +606,7 @@ class TestEnrichmentCliFlags:
         monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
         monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
         store_path = tmp_path / "schemabrain.db"
-        exit_code = main(["index", "postgresql://fake/db", "--store-path", str(store_path)])
+        exit_code = main(["index", "postgresql+psycopg://fake/db", "--store-path", str(store_path)])
         assert exit_code == 0
         assert len(embedder_calls) == 1
 
@@ -614,7 +662,7 @@ class TestEnrichmentCliFlags:
         monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
         store_path = tmp_path / "schemabrain.db"
         exit_code = main(
-            ["index", "postgresql://fake/db", "--store-path", str(store_path), "--no-embed"]
+            ["index", "postgresql+psycopg://fake/db", "--store-path", str(store_path), "--no-embed"]
         )
         assert exit_code == 0
 
@@ -669,7 +717,13 @@ class TestEnrichmentCliFlags:
         monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
         store_path = tmp_path / "schemabrain.db"
         exit_code = main(
-            ["index", "postgresql://fake/db", "--store-path", str(store_path), "--no-enrich"]
+            [
+                "index",
+                "postgresql+psycopg://fake/db",
+                "--store-path",
+                str(store_path),
+                "--no-enrich",
+            ]
         )
         assert exit_code == 0
 
@@ -726,7 +780,7 @@ class TestEnrichmentCliFlags:
 
         store_path = tmp_path / "schemabrain.db"
         # No --no-enrich → exercises the pipeline construction path.
-        exit_code = main(["index", "postgresql://fake/db", "--store-path", str(store_path)])
+        exit_code = main(["index", "postgresql+psycopg://fake/db", "--store-path", str(store_path)])
         assert exit_code == 0
 
     def test_cost_cap_exceeded_returns_exit_3(
@@ -832,7 +886,7 @@ class TestEnrichmentCliFlags:
         exit_code = main(
             [
                 "index",
-                "postgresql://fake/db",
+                "postgresql+psycopg://fake/db",
                 "--store-path",
                 str(store_path),
                 "--max-cost",
@@ -970,7 +1024,7 @@ class TestEnrichmentCliFlags:
         exit_code = main(
             [
                 "index",
-                "postgresql://fake/db",
+                "postgresql+psycopg://fake/db",
                 "--store-path",
                 str(store_path),
                 "--max-cost",
@@ -985,6 +1039,146 @@ class TestEnrichmentCliFlags:
         )
         # And the error line did eventually appear in captured stderr.
         assert "cap" in capsys.readouterr().err.lower()
+
+    def test_anthropic_auth_error_renders_guided(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # Stub everything so we reach the enrichment loop, then have
+        # the fake LLM client raise `anthropic.AuthenticationError`.
+        # Without slice 2.2 this would surface as a raw 401 traceback
+        # spanning httpx → anthropic SDK → indexer; slice 2.2 catches
+        # the typed exception and renders a guided block pointing at
+        # the console.anthropic.com key page + the --no-enrich escape
+        # hatch.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+
+        import anthropic
+        import httpx
+
+        from schemabrain.core.models import Column, Table
+
+        users = Table(
+            name="users",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="users",
+                    schema_name="public",
+                    data_type="BIGINT",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+            ),
+        )
+
+        class _OneTableSource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return [("public", "users")]
+
+            def get_table(self, name: str, schema: str):
+                return users
+
+            def close(self) -> None:
+                pass
+
+        class _StubProfiler:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def profile_table(self, table):
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        class _AuthFailingClient:
+            def __init__(self, *, api_key: str | None = None) -> None:
+                self.model = "claude-haiku-4-5"
+
+            def complete(self, *, system: str, user: str):
+                # Construct a real anthropic.AuthenticationError so the
+                # isinstance check in cli.py matches.
+                request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+                response = httpx.Response(401, request=request)
+                raise anthropic.AuthenticationError(
+                    "invalid x-api-key", response=response, body={"error": "unauthorized"}
+                )
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _OneTableSource)
+        monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
+        monkeypatch.setattr(
+            "schemabrain.cli.anthropic_haiku_45_client",
+            lambda *, api_key=None: _AuthFailingClient(api_key=api_key),
+        )
+
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                "postgresql+psycopg://fake/db",
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        # Translator output.
+        assert "Anthropic API rejected the key" in err
+        assert "console.anthropic.com" in err
+        assert "--no-enrich" in err
+        # Raw traceback must not escape.
+        assert "Traceback" not in err
+
+    def test_postgres_operational_error_renders_guided(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # Connect to a port nothing is listening on. SQLAlchemy raises
+        # `OperationalError` wrapping psycopg's connection-refused
+        # error, which `postgres_operational_error` translates into a
+        # `postgres_connection_refused` GuidedError. Without slice 2.2
+        # this would surface as a raw traceback.
+        store_path = tmp_path / "schemabrain.db"
+        # Port 1 is reserved and never accepts connections; tcpip
+        # connect() will return ECONNREFUSED before any auth roundtrip,
+        # so the test is deterministic regardless of CI environment.
+        exit_code = main(
+            [
+                "index",
+                "postgresql+psycopg://nobody:nopw@127.0.0.1:1/nowhere",
+                "--store-path",
+                str(store_path),
+                "--no-enrich",
+            ]
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        # Connection-refused branch text from the translator.
+        assert "could not reach the Postgres server" in err
+        assert "fix:" in err
+        # No raw traceback escaped.
+        assert "Traceback" not in err
 
 
 @pytest.mark.integration
@@ -1184,7 +1378,7 @@ class TestEvalSubcommandValidation:
             [
                 "eval",
                 "--source",
-                "postgresql://fake/db",
+                "postgresql+psycopg://fake/db",
                 "--store-path",
                 str(store_path),
                 "--golden",
@@ -1204,7 +1398,7 @@ class TestEvalSubcommandValidation:
             [
                 "eval",
                 "--source",
-                "postgresql://fake/db",
+                "postgresql+psycopg://fake/db",
                 "--store-path",
                 str(store_path),
                 "--golden",
@@ -1285,7 +1479,7 @@ class TestEvalSubcommandIntegration:
     ):
         from schemabrain.cli import _make_source_id
 
-        source_url = "postgresql://fake-host/eval-test"
+        source_url = "postgresql+psycopg://fake-host/eval-test"
         store_path = tmp_path / "store.db"
         self._seed_store(store_path, _make_source_id(source_url))
 
@@ -1339,7 +1533,7 @@ class TestEvalSubcommandIntegration:
             [
                 "eval",
                 "--source",
-                "postgresql://fake-host/empty",
+                "postgresql+psycopg://fake-host/empty",
                 "--store-path",
                 str(store_path),
                 "--golden",
@@ -1368,7 +1562,7 @@ class TestEvalSubcommandIntegration:
             [
                 "eval",
                 "--source",
-                "postgresql://fake-host/default-golden-test",
+                "postgresql+psycopg://fake-host/default-golden-test",
                 "--store-path",
                 str(store_path),
                 "--retriever",
@@ -1394,7 +1588,7 @@ class TestEvalSubcommandIntegration:
         from schemabrain.core.models import Column, Table
         from schemabrain.core.store import SQLiteStore
 
-        source_url = "postgresql://fake-host/embed-eval"
+        source_url = "postgresql+psycopg://fake-host/embed-eval"
         store_path = tmp_path / "store.db"
         sid = _make_source_id(source_url)
 
@@ -1471,7 +1665,7 @@ class TestEvalSubcommandIntegration:
             [
                 "eval",
                 "--source",
-                "postgresql://fake/db",
+                "postgresql+psycopg://fake/db",
             ]
         )
         assert isinstance(args, argparse.Namespace)
@@ -1527,7 +1721,7 @@ class TestServeSubcommand:
 
         monkeypatch.setattr("schemabrain.cli.run_stdio", _capture_run_stdio)
 
-        source_url = "postgresql://fake/serve-test"
+        source_url = "postgresql+psycopg://fake/serve-test"
         exit_code = main(
             [
                 "serve",
