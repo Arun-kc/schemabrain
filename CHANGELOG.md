@@ -82,6 +82,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default would have allowed a hung dep / container to burn 6 hours of
   CI minutes per run.
 
+### Changed (docs)
+- `SECURITY.md` SLA language softened from "We commit to" to "we aim
+  to" / "we target", with a note that any slip will be published on
+  the advisory thread. Solo, part-time maintenance makes hard
+  commitments risky to put in public policy. The day-counts are
+  unchanged.
+- `SECURITY.md` "In Scope" no longer claims "fingerprint integrity
+  guarantees" — that's a v2 feature not shipped at `0.1.0a1`. Now
+  reads "PII redaction in sample values written to the local SQLite
+  store", which is what actually ships today.
+- `SECURITY.md` "Out of Scope" adds an explicit clause excluding
+  build-time-only dependency compromise that doesn't materially
+  affect the published PyPI wheel. Closes a wording gap that could
+  have been read as inviting reports on every Dependabot-quiet
+  week.
+
 ### Changed
 - `schemabrain.__version__` is now read dynamically from package
   metadata. The literal was previously hardcoded in `__init__.py`.

@@ -38,16 +38,19 @@ A useful report includes:
 
 ## Response Expectations
 
-Schema Brain is currently maintained by one person on a part-time basis.
-We commit to:
+Schema Brain is currently maintained by one person on a part-time basis,
+which shapes the response targets below. These are *targets* — we'll
+publish a status update on the advisory thread if real life delays
+any of them.
 
-- Acknowledge receipt within **7 calendar days**.
-- Provide an initial assessment (in scope / out of scope, severity) within
-  **14 calendar days**.
-- Ship a fix or a publicly tracked workaround within **90 calendar days**
-  for confirmed, in-scope vulnerabilities. Critical-severity issues
-  (authentication bypass, RCE, data-exfiltration through the MCP surface)
-  will be prioritized over the 90-day window.
+- We aim to acknowledge receipt within **7 calendar days**.
+- We aim to provide an initial assessment (in scope / out of scope,
+  severity) within **14 calendar days**.
+- For confirmed, in-scope vulnerabilities, we target a fix or a
+  publicly tracked workaround within **90 calendar days** of
+  acknowledgement. Critical-severity issues (authentication bypass,
+  RCE, data-exfiltration through the MCP surface) get priority over
+  the 90-day target.
 
 If you do not hear back within 7 days, please escalate by re-sending via
 the other channel.
@@ -67,8 +70,7 @@ not currently offer a bug bounty.
   tools
 - The `schemabrain index`, `schemabrain eval`, and `schemabrain fixture-path`
   CLI commands
-- The local SQLite store layout, including PII redaction and
-  fingerprint integrity guarantees
+- PII redaction in sample values written to the local SQLite store
 - The bundled example configs and demo script under `examples/`
 
 ## Out of Scope
@@ -79,6 +81,11 @@ not currently offer a bug bounty.
   Brain dep-bump PRs automatically. If you believe an upstream CVE
   has a Schema-Brain-specific exploit path that the upstream patch
   alone won't close, please report it here.
+- Supply-chain compromise of a build-time-only dep (e.g. a test
+  framework, a CI tool) that does not materially affect the published
+  PyPI wheel. Schema Brain's distributable artifacts are gated by
+  `pip-audit` and the deps declared in `pyproject.toml`'s `dev` extra
+  do not ship to end users.
 - Self-hosted deployments of Schema Brain where the operator has
   intentionally exposed it to untrusted networks. Schema Brain is
   designed for local-only use today; hardened multi-tenant operation is
