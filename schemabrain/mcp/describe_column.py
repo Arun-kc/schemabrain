@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from schemabrain.core.store import SQLiteStore
+from schemabrain.core.store_protocol import Store
 from schemabrain.mcp._helpers import _parse_column_qualified_name, _with_token_estimate
 from schemabrain.mcp.shapes import (
     ColumnDetail,
@@ -15,7 +15,7 @@ from schemabrain.mcp.shapes import (
 
 def describe_column_impl(
     *,
-    store: SQLiteStore,
+    store: Store,
     source_connection_id: str,
     qualified_name: str,
 ) -> ColumnDetail:

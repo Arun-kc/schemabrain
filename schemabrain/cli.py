@@ -85,6 +85,17 @@ _DEFAULT_STORE_PATH = "./schemabrain.db"
 _DEFAULT_MAX_COST_USD = 10.0
 _DEFAULT_EVAL_LIMIT = 10
 
+# Per-tier concurrency for the async enrichment pipeline.
+# Module-level constants rather than locals so test
+# fixtures can monkeypatch them to `1` for deterministic cap
+# enforcement — under default concurrency, the per-task cap check
+# races and a cap-trip test would need >= 9 columns to land
+# deterministically. A future `--concurrency` CLI flag can plumb
+# user-facing tuning through these constants without further
+# CLI-wiring churn.
+_PIPELINE_DEFAULT_CONCURRENCY = 8
+_PIPELINE_CRYPTIC_CONCURRENCY = 4
+
 # 16 hex chars = 64 bits of SHA-256. For a single user's plausible set of
 # databases (<1000), birthday-collision probability is ~10^-14. If we ever
 # share these IDs across users (multi-tenant), bump this.
@@ -216,8 +227,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-embed",
         action="store_true",
         help="Skip generating local sentence embeddings for column "
-        "descriptions. Embeddings power Slice 4-C's EmbeddingRetriever; "
-        "skipping them saves ~10ms per column at index time but disables "
+        "descriptions. Embeddings power semantic retrieval via "
+        "`EmbeddingRetriever`; skipping them saves ~10ms per column "
+        "at index time but disables "
         "semantic retrieval. Default off (embeddings ON). Implied when "
         "--no-enrich is set, since there are no descriptions to embed.",
     )
@@ -385,6 +397,8 @@ def _cmd_index(
             client=anthropic_haiku_45_client(api_key=api_key),
             cryptic_client=cryptic_client,
             max_cost_usd=max_cost_usd,
+            default_concurrency=_PIPELINE_DEFAULT_CONCURRENCY,
+            cryptic_concurrency=_PIPELINE_CRYPTIC_CONCURRENCY,
         )
 
     # Build the embedder only if both enrichment AND embedding are

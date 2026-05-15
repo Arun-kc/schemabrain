@@ -5,7 +5,7 @@ implementation used by `schemabrain index`. Kept in its own module so
 the core `indexer.py` library stays free of any UI dependency — only
 the CLI imports this file, and only when stderr is a terminal.
 
-Design intent (slice 2.1, charter dev-UX foundations):
+Design intent:
 
 - Long-running indexing must never look silent. The progress bar is
   load-bearing for trust: a user piping `index` to a cold warehouse
@@ -17,8 +17,8 @@ Design intent (slice 2.1, charter dev-UX foundations):
   unchanged or after `on_table_done`).
 - Cost ticker reads `pipeline.spent_usd` via `on_column_enriched`. It
   stays stale during the 1-2s window of an in-flight LLM call, which
-  is acceptable for v0 — the column count moves between updates and
-  the spinner shows liveness.
+  is acceptable — the column count moves between updates and the
+  spinner shows liveness.
 """
 
 from __future__ import annotations

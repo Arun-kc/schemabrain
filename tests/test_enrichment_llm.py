@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import math
 
-import pytest
-
 from schemabrain.enrichment.llm import (
     FakeLLMClient,
     LLMClient,
     LLMResponse,
     LLMUsage,
-    cost_usd_for,
     haiku_45_cost_usd,
     sonnet_46_cost_usd,
 )
@@ -148,57 +145,16 @@ class TestSonnetCost:
         assert sonnet_46_cost_usd(usage) > haiku_45_cost_usd(usage)
 
 
-class TestCostDispatch:
-    """`cost_usd_for(model, usage)` picks the right per-model function
-    using the model name returned by the API (which carries a date
-    suffix like `claude-haiku-4-5-20251001`)."""
-
-    def test_haiku_alias_resolves(self) -> None:
-        usage = LLMUsage(input_tokens=1_000_000, cached_input_tokens=0, output_tokens=0)
-        assert math.isclose(cost_usd_for("claude-haiku-4-5", usage), 0.80, rel_tol=1e-9)
-
-    def test_haiku_with_date_suffix_resolves(self) -> None:
-        # The real API stamps the model with a date — the dispatch must
-        # handle that, not just the bare alias.
-        usage = LLMUsage(input_tokens=1_000_000, cached_input_tokens=0, output_tokens=0)
-        assert math.isclose(cost_usd_for("claude-haiku-4-5-20251001", usage), 0.80, rel_tol=1e-9)
-
-    def test_sonnet_alias_resolves(self) -> None:
-        usage = LLMUsage(input_tokens=1_000_000, cached_input_tokens=0, output_tokens=0)
-        assert math.isclose(cost_usd_for("claude-sonnet-4-6", usage), 3.00, rel_tol=1e-9)
-
-    def test_sonnet_with_date_suffix_resolves(self) -> None:
-        usage = LLMUsage(input_tokens=1_000_000, cached_input_tokens=0, output_tokens=0)
-        assert math.isclose(cost_usd_for("claude-sonnet-4-6-20260301", usage), 3.00, rel_tol=1e-9)
-
-    def test_unknown_model_raises_value_error(self) -> None:
-        usage = LLMUsage(input_tokens=1, cached_input_tokens=0, output_tokens=1)
-        with pytest.raises(ValueError, match="unknown"):
-            cost_usd_for("claude-opus-4-5", usage)
-
-    def test_empty_model_string_raises(self) -> None:
-        usage = LLMUsage(input_tokens=1, cached_input_tokens=0, output_tokens=1)
-        with pytest.raises(ValueError):
-            cost_usd_for("", usage)
-
-    def test_numeric_extension_does_not_false_positive_haiku(self) -> None:
-        # `claude-haiku-4-50` would naively match `"haiku-4-5" in model`
-        # and route to Haiku 4.5 pricing, silently mis-billing the
-        # hypothetical successor. Anchored regex must reject it.
-        usage = LLMUsage(input_tokens=1, cached_input_tokens=0, output_tokens=1)
-        with pytest.raises(ValueError, match="unknown"):
-            cost_usd_for("claude-haiku-4-50", usage)
-
-    def test_numeric_extension_does_not_false_positive_sonnet(self) -> None:
-        usage = LLMUsage(input_tokens=1, cached_input_tokens=0, output_tokens=1)
-        with pytest.raises(ValueError, match="unknown"):
-            cost_usd_for("claude-sonnet-4-60", usage)
-
-    def test_substring_with_no_dash_does_not_false_positive(self) -> None:
-        # `claude-haiku-4-5xyz` (no dash separator) is also rejected.
-        usage = LLMUsage(input_tokens=1, cached_input_tokens=0, output_tokens=1)
-        with pytest.raises(ValueError, match="unknown"):
-            cost_usd_for("claude-haiku-4-5xyz", usage)
+# The previous `TestCostDispatch` class (8 tests against the now-removed
+# module-level `cost_usd_for(model, usage)` central dispatch) is gone.
+# The same invariants — Haiku/Sonnet routing, date-suffix tolerance,
+# false-positive guards against `claude-haiku-4-50` / `claude-haiku-4-5xyz` —
+# are now pinned in `tests/test_seams.py::TestAnthropicClientCostUsd` and
+# `tests/test_seams.py::TestAnthropicClientConstructionValidation`. The
+# new shape validates at the adapter's CONSTRUCTOR rather than at the
+# response-time central function, so a misrouted model fails before any
+# API call burns money. See `schemabrain/enrichment/llm.py` module
+# docstring for the seam rationale.
 
 
 class TestLLMResponse:

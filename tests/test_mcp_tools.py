@@ -429,6 +429,144 @@ class TestFindRelevantTablesImpl:
         assert [h.qualified_name for h in result] == ["public.users"]
         store.close()
 
+    def test_keeps_highest_scoring_column_when_multiple_positive(self, tmp_path: Path) -> None:
+        # A table with TWO positive-score columns. The aggregation must
+        # keep the highest-scoring column as `best_column` and not
+        # overwrite it with the second one. Exercises the
+        # `(schema, table) not in best_per_table` short-circuit when
+        # the table has already won — second/third columns for that
+        # table are skipped, not allowed to clobber.
+        store = SQLiteStore(tmp_path / "s.db")
+        sid = "src1"
+        store.write_table(
+            Table(
+                name="users",
+                schema_name="public",
+                columns=(
+                    _column("email", table_name="users", ordinal_position=1),
+                    _column("name", table_name="users", ordinal_position=2),
+                ),
+            ),
+            source_connection_id=sid,
+        )
+        # email aligned with axis 0 → cosine 1.0.
+        # name at 45-deg (axis 0+1) → cosine 1/sqrt(2) ≈ 0.707.
+        store.write_table_embeddings(
+            "public",
+            "users",
+            source_connection_id=sid,
+            embeddings={
+                "email": _emb(_unit(0)),
+                "name": _emb((1.0, 1.0, 0.0, 0.0)),
+            },
+        )
+        store.write_table_descriptions(
+            "public",
+            "users",
+            source_connection_id=sid,
+            descriptions={
+                "email": ColumnDescription(
+                    text="email of user",
+                    model="m",
+                    prompt_version="v",
+                    input_tokens=1,
+                    cached_input_tokens=0,
+                    output_tokens=1,
+                    cost_usd=0.0001,
+                ),
+                "name": ColumnDescription(
+                    text="name of user",
+                    model="m",
+                    prompt_version="v",
+                    input_tokens=1,
+                    cached_input_tokens=0,
+                    output_tokens=1,
+                    cost_usd=0.0001,
+                ),
+            },
+        )
+        embedder = _AxisEmbedder({"q": _unit(0)})
+        result = find_relevant_tables_impl(
+            store=store, source_connection_id=sid, embedder=embedder, query="q", limit=10
+        )
+        assert len(result) == 1
+        assert result[0].best_column == "email"  # higher score wins
+        assert result[0].score == pytest.approx(1.0)
+        store.close()
+
+    def test_per_table_score_is_max_not_sum_or_mean(self, tmp_path: Path) -> None:
+        # The docstring promises per-table score = MAX cosine across
+        # columns (sparse-relevance heuristic). Pin that explicitly:
+        # one table with two positive-scoring columns at distinct
+        # magnitudes (0.8 and 0.6). The result MUST surface the MAX
+        # (0.8), not the SUM (1.4), the MEAN (0.7), or anything else.
+        # The other multiple-positive-columns test can't distinguish
+        # MAX from accidentally-correct alternatives because the
+        # winning column scores exactly 1.0.
+        store = SQLiteStore(tmp_path / "s.db")
+        sid = "src1"
+        store.write_table(
+            Table(
+                name="users",
+                schema_name="public",
+                columns=(
+                    _column("colA", table_name="users", ordinal_position=1),
+                    _column("colB", table_name="users", ordinal_position=2),
+                ),
+            ),
+            source_connection_id=sid,
+        )
+        # Stored vectors that produce specific dot-products against
+        # a unit-axis-0 query. With normalized vectors aligned at
+        # angles `acos(0.8)` and `acos(0.6)` to axis 0:
+        #   v_A = (0.8, sqrt(1 - 0.64), 0, 0) → cosine == 0.8
+        #   v_B = (0.6, sqrt(1 - 0.36), 0, 0) → cosine == 0.6
+        import math as _math
+
+        v_a = (0.8, _math.sqrt(1 - 0.64), 0.0, 0.0)
+        v_b = (0.6, _math.sqrt(1 - 0.36), 0.0, 0.0)
+        store.write_table_embeddings(
+            "public",
+            "users",
+            source_connection_id=sid,
+            embeddings={
+                "colA": _emb(v_a),
+                "colB": _emb(v_b),
+            },
+        )
+        store.write_table_descriptions(
+            "public",
+            "users",
+            source_connection_id=sid,
+            descriptions={"colA": _desc("a"), "colB": _desc("b")},
+        )
+        embedder = _AxisEmbedder({"q": _unit(0)})
+        result = find_relevant_tables_impl(
+            store=store, source_connection_id=sid, embedder=embedder, query="q", limit=10
+        )
+        assert len(result) == 1
+        assert result[0].best_column == "colA"
+        # MAX = 0.8 (NOT SUM 1.4, NOT MEAN 0.7).
+        assert result[0].score == pytest.approx(0.8, abs=1e-5)
+        store.close()
+
+    def test_zero_norm_query_returns_empty_without_storing_error(
+        self, populated_store: SQLiteStore
+    ) -> None:
+        # Defensive parity with EmbeddingRetriever: a degenerate
+        # zero-norm vector from the embedder must NOT propagate the
+        # Store's ValueError to the MCP caller. Translate to [] at
+        # this layer.
+        embedder = _AxisEmbedder({"q": (0.0, 0.0, 0.0, 0.0)})
+        result = find_relevant_tables_impl(
+            store=populated_store,
+            source_connection_id=SOURCE_ID,
+            embedder=embedder,
+            query="q",
+            limit=10,
+        )
+        assert result == []
+
     def test_best_column_description_empty_when_no_description_for_winning_column(
         self, tmp_path: Path
     ) -> None:
@@ -605,35 +743,6 @@ class TestDescribeTableImpl:
             qualified_name="public.products",
         )
         assert result.foreign_keys == []
-
-
-class TestCosineHelper:
-    """The MCP tools have their own copy of cosine (small duplication
-    vs polluting the eval Retriever Protocol). Pin its edge cases here.
-    """
-
-    def test_dimension_mismatch_raises_value_error(self) -> None:
-        from schemabrain.mcp._helpers import _cosine
-
-        with pytest.raises(ValueError, match="dimension mismatch"):
-            _cosine((1.0, 0.0), (1.0, 0.0, 0.0))
-
-    def test_zero_norm_returns_zero(self) -> None:
-        from schemabrain.mcp._helpers import _cosine
-
-        assert _cosine((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)) == 0.0
-        assert _cosine((1.0, 0.0, 0.0), (0.0, 0.0, 0.0)) == 0.0
-        assert _cosine((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)) == 0.0
-
-    def test_parallel_vectors_score_one(self) -> None:
-        from schemabrain.mcp._helpers import _cosine
-
-        assert _cosine((1.0, 0.0, 0.0), (1.0, 0.0, 0.0)) == pytest.approx(1.0)
-
-    def test_orthogonal_vectors_score_zero(self) -> None:
-        from schemabrain.mcp._helpers import _cosine
-
-        assert _cosine((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)) == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------

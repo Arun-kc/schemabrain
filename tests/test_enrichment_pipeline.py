@@ -220,6 +220,14 @@ class TestCostReporting:
                     usage=LLMUsage(input_tokens=1000, cached_input_tokens=900, output_tokens=20),
                 )
 
+            def cost_usd(self, usage: LLMUsage) -> float:
+                # Match `LLMClient` Protocol: per-client cost dispatch.
+                # Haiku rate so the test's spent_usd assertions stay
+                # consistent with the rest of the suite.
+                from schemabrain.enrichment.llm import haiku_45_cost_usd
+
+                return haiku_45_cost_usd(usage)
+
         pipeline = EnrichmentPipeline(client=_CachingClient())
         table = _users_table()
         desc = pipeline.enrich_column(
@@ -347,33 +355,24 @@ class TestTwoTierRouting:
         assert len(sonnet.calls) == 0, "sonnet must not be called after cap"
 
 
-class TestUnknownModelRejected:
-    """If the response model has no pricing entry, the pipeline raises
-    immediately rather than silently free-riding past the cost cap."""
+class TestUnknownModelRejectedAtConstruction:
+    """An unknown model is now rejected at adapter CONSTRUCTION, not at
+    response time. The previous shape (FakeLLMClient with an unknown
+    model could be built, blew up only after a successful API call) was
+    replaced in the seams commit: each client validates its pricing
+    family at `__post_init__` / `__init__` via
+    `anthropic_cost_fn_for_model`. A misrouted model now fails before
+    any LLM call runs — no money is burned.
 
-    def test_unknown_model_in_response_raises(self) -> None:
-        client = FakeLLMClient(text_provider=lambda s, u: "x", model="claude-opus-4-5")
-        pipeline = EnrichmentPipeline(client=client)
-        table = _users_table()
-        with pytest.raises(ValueError, match="unknown"):
-            pipeline.enrich_column(table=table, column=table.columns[0], stats=None, fk_targets=())
+    The runtime-error-during-cost-computation invariant moved to
+    `tests/test_seams.py::TestPipelineUsesClientCostUsd::test_client_cost_raises_propagates`,
+    which exercises the case where a hypothetical provider's `cost_usd`
+    raises for a runtime reason (malformed usage payload) AFTER a
+    successful call.
+    """
 
-    def test_unknown_model_does_not_record_spend(self) -> None:
-        # Document the current behavior: when `cost_usd_for` raises
-        # AFTER the LLM call succeeded, that single call's cost escapes
-        # the cap counter. This is acceptable in practice because:
-        #   (1) reaching this branch requires a programming error
-        #       (a routed-to model has no pricing entry in llm.py),
-        #   (2) the exception propagates and tanks the run, so no
-        #       further calls happen,
-        #   (3) the un-recorded cost is bounded by `max_output_tokens`.
-        # If this behavior ever needs to change (e.g. add a worst-case
-        # fallback charge), this test will catch the silent change.
-        client = FakeLLMClient(text_provider=lambda s, u: "x", model="claude-opus-4-5")
-        pipeline = EnrichmentPipeline(client=client)
-        table = _users_table()
-        with pytest.raises(ValueError):
-            pipeline.enrich_column(table=table, column=table.columns[0], stats=None, fk_targets=())
-        assert pipeline.spent_usd == 0.0
-        # The LLM call DID happen — only the cost-recording failed.
-        assert len(client.calls) == 1
+    def test_unknown_model_rejected_when_constructing_fake_client(self) -> None:
+        # The check that USED TO live on the pipeline now lives on the
+        # client constructor. Build-time failure, not call-time.
+        with pytest.raises(ValueError, match=r"unknown|pricing"):
+            FakeLLMClient(text_provider=lambda s, u: "x", model="claude-opus-4-5")

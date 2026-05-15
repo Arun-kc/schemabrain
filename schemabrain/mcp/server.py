@@ -15,7 +15,7 @@ concerns live here:
      right `kind` + `recovery` hint.
   2. Tool metadata — per-tool `ToolAnnotations` (canonical MCP hints
      for spec-compliant clients) and "Use this when…" descriptions
-     (Principle 2). Slice 1.3 will lint both in CI.
+     (Principle 2). Both are CI-lintable.
 
 `run_stdio()` is a convenience that builds the server and runs it on
 stdio (the transport Claude Desktop and most local-MCP clients use).
@@ -28,7 +28,7 @@ import logging
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from schemabrain.core.store import SQLiteStore
+from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
 from schemabrain.mcp.describe_column import describe_column_impl
 from schemabrain.mcp.describe_table import describe_table_impl
@@ -72,8 +72,7 @@ _CONFIDENCE_MEDIUM_FLOOR = 0.5
 
 # Canonical MCP hints shared by every v1.0 tool. All four are read-only,
 # idempotent, and touch an open world (the indexed source's data may
-# change between calls). Slice 1.3's lint will verify this against a
-# per-tool manifest.
+# change between calls). Verified in CI against a per-tool manifest.
 _READ_ONLY_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=True,
     destructiveHint=False,
@@ -108,7 +107,7 @@ def _safe_table_part(qualified_name: str) -> str | None:
 
 def build_server(
     *,
-    store: SQLiteStore,
+    store: Store,
     source_connection_id: str,
     embedder: Embedder,
 ) -> FastMCP:
@@ -399,7 +398,7 @@ def _parent_table_qualified_name(column_qualified_name: str) -> str | None:
 
 def run_stdio(
     *,
-    store: SQLiteStore,
+    store: Store,
     source_connection_id: str,
     embedder: Embedder,
 ) -> None:

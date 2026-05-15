@@ -1,9 +1,10 @@
 """Cache-aware indexing workflow.
 
 `index()` is the single function that ties together a `DataSource`, a
-`Profiler`, an optional `EnrichmentPipeline`, and a `SQLiteStore` to
-introspect a database, diff against cached fingerprints, profile +
-enrich only what changed, and persist the new state.
+`Profiler`, an optional `EnrichmentPipeline`, and a `Store` (the
+Protocol; `SQLiteStore` is the v1 concrete) to introspect a database,
+diff against cached fingerprints, profile + enrich only what changed,
+and persist the new state.
 
 The central invariant: re-running `index()` on a schema that hasn't
 changed performs zero profile queries AND zero LLM calls. The profiler
@@ -56,6 +57,7 @@ needs the same plumbing.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -67,7 +69,7 @@ from schemabrain.core.fingerprint import (
     column_structural_fingerprint,
     fk_targets_for_column,
 )
-from schemabrain.core.store import SQLiteStore
+from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder, embedding_for
 from schemabrain.enrichment.pipeline import EnrichmentPipeline
 from schemabrain.enrichment.prompts import PROMPT_VERSION
@@ -200,7 +202,7 @@ def index(
     *,
     source: DataSource,
     profiler: Profiler,
-    store: SQLiteStore,
+    store: Store,
     source_connection_id: str,
     pipeline: EnrichmentPipeline | None = None,
     embedder: Embedder | None = None,
@@ -281,28 +283,44 @@ def index(
         # the table-level cost is acceptable and the code stays simple.
         stats = profiler.profile_table(table)
 
-        # Enrich BEFORE writing fingerprints. If `enrich_column` raises
+        # Enrich BEFORE writing fingerprints. If enrichment raises
         # (CostCapExceeded, network error, etc.) we want the cache to
         # remain in its pre-table state so the next run's diff still
         # marks this table as changed and retries. Profiling the source
         # again is cheap; losing the description-cache invariant is not.
+        #
+        # Async batch via `enrich_columns_async`: all columns for this
+        # table run concurrently (bounded by the pipeline's per-tier
+        # semaphores). For a 30-column table at ~600ms per LLM call,
+        # this turns ~18s of serial latency into ~3s wall-clock under
+        # default Haiku concurrency=8. `asyncio.run` opens and closes
+        # a fresh event loop per table — fine here because tables are
+        # processed sequentially in the outer loop, and a per-table
+        # loop scope is the cleanest place to cancel pending tasks if
+        # one column raises.
         descriptions: dict[str, ColumnDescription] = {}
         if pipeline is not None:
-            for col in table.columns:
-                desc = pipeline.enrich_column(
+            stats_by_col = dict(stats)
+            fk_targets_by_col = {
+                col.name: fk_targets_for_column(table, col.name) for col in table.columns
+            }
+            descriptions = asyncio.run(
+                pipeline.enrich_columns_async(
                     table=table,
-                    column=col,
-                    stats=stats.get(col.name),
-                    fk_targets=fk_targets_for_column(table, col.name),
+                    columns=list(table.columns),
+                    stats_by_col=stats_by_col,
+                    fk_targets_by_col=fk_targets_by_col,
                 )
-                descriptions[col.name] = desc
-                descriptions_generated += 1
-                reporter.on_column_enriched(
-                    schema=schema,
-                    name=name,
-                    column=col.name,
-                    spent_usd=pipeline.spent_usd,
-                )
+            )
+            descriptions_generated += len(descriptions)
+            for col in table.columns:
+                if col.name in descriptions:
+                    reporter.on_column_enriched(
+                        schema=schema,
+                        name=name,
+                        column=col.name,
+                        spent_usd=pipeline.spent_usd,
+                    )
 
         # Embed AFTER all descriptions for the table are in hand. Done in
         # this order so a partial failure inside enrichment never leaves
@@ -392,7 +410,7 @@ _AVG_COST_PER_COLUMN_USD = 0.0003
 def dry_run_index(
     *,
     source: DataSource,
-    store: SQLiteStore,
+    store: Store,
     source_connection_id: str,
     will_enrich: bool,
     will_embed: bool,
