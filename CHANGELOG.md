@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   journald). New scripts should prefer `--url-env` over the positional
   URL form. Closes the HIGH-severity finding from the 2026-05-11
   security audit.
+- `SECURITY.md` at the repo root: vulnerability disclosure policy,
+  acknowledgement SLA, scope, and coordinated-disclosure window.
+  GitHub Private Vulnerability Reporting is the preferred channel; email
+  is the fallback.
 
 ### Changed
 - `schemabrain.__version__` is now read dynamically from package
