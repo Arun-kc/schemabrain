@@ -150,10 +150,15 @@ For your own database, skip docker and use your real `postgresql+psycopg://` URL
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
+export DATABASE_URL="postgresql+psycopg://postgres:local@localhost:5432/postgres"
 
-schemabrain index "postgresql+psycopg://postgres:local@localhost:5432/postgres" \
-  --store-path ./schemabrain.db
+schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db
 ```
+
+`--url-env` keeps the password out of `ps`, shell history, and journald.
+The older `schemabrain index "<url>"` form still works for backwards
+compatibility, but emits a deprecation warning when the URL contains a
+password.
 
 Expect ~30–60 seconds of silence on the first run, then:
 
@@ -173,11 +178,14 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
       "command": "/ABSOLUTE/PATH/TO/.venv/bin/schemabrain",
       "args": [
         "serve",
-        "--source",
-        "postgresql+psycopg://postgres:local@localhost:5432/postgres",
+        "--url-env",
+        "DATABASE_URL",
         "--store-path",
         "/ABSOLUTE/PATH/TO/schemabrain.db"
-      ]
+      ],
+      "env": {
+        "DATABASE_URL": "postgresql+psycopg://postgres:local@localhost:5432/postgres"
+      }
     }
   }
 }

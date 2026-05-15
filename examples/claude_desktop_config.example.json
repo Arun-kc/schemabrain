@@ -4,11 +4,14 @@
       "command": "/ABSOLUTE/PATH/TO/.venv/bin/schemabrain",
       "args": [
         "serve",
-        "--source",
-        "postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME",
+        "--url-env",
+        "DATABASE_URL",
         "--store-path",
         "/ABSOLUTE/PATH/TO/schemabrain.db"
-      ]
+      ],
+      "env": {
+        "DATABASE_URL": "postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME"
+      }
     }
   }
 }

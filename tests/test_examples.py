@@ -55,20 +55,40 @@ class TestMcpConfigExamples:
         assert server["command"].rstrip("/").endswith("schemabrain")
         assert server["args"][0] == "serve"
 
-    def test_args_include_source_and_store_path_flags(self, config_filename: str) -> None:
-        # These two flags are required by `schemabrain serve` — if either
-        # template forgets either, users get an argparse error on first launch.
+    def test_args_include_url_env_and_store_path_flags(self, config_filename: str) -> None:
+        # `schemabrain serve` needs a way to find the source URL and a
+        # store path. We pin `--url-env` (not `--source`) here because
+        # Q1 moved credentials out of argv — the template must lead with
+        # the safe path or users copy-paste the leaky form.
         args = self._load(config_filename)["mcpServers"]["schemabrain"]["args"]
-        assert "--source" in args
+        assert "--url-env" in args
         assert "--store-path" in args
 
     def test_source_url_uses_psycopg_v3_scheme(self, config_filename: str) -> None:
         # The bare `postgresql://` scheme fails with ModuleNotFoundError
-        # because we depend on psycopg v3. The example must use the
-        # `postgresql+psycopg://` form so users don't fall into that pit.
+        # because we depend on psycopg v3. The example must put a
+        # psycopg+psycopg URL in the env block so users don't fall into
+        # that pit when they substitute their own.
+        server = self._load(config_filename)["mcpServers"]["schemabrain"]
+        args = server["args"]
+        env = server.get("env", {})
+        url_env_idx = args.index("--url-env") + 1
+        var_name = args[url_env_idx]
+        # The named env var must exist in the example's `env` block AND
+        # carry a psycopg v3 URL — otherwise the template is a footgun.
+        assert var_name in env, f"--url-env {var_name} but {var_name!r} not in env block"
+        assert env[var_name].startswith("postgresql+psycopg://")
+
+    def test_url_not_in_argv(self, config_filename: str) -> None:
+        # The whole point of Q1: the password must never sit in argv.
+        # If a future edit accidentally puts a URL back into `args`
+        # (where it'd show up in `ps`, journald, and process supervisor
+        # logs), this test fires.
         args = self._load(config_filename)["mcpServers"]["schemabrain"]["args"]
-        source_idx = args.index("--source") + 1
-        assert args[source_idx].startswith("postgresql+psycopg://")
+        for arg in args:
+            assert "postgresql" not in arg, (
+                f"URL must be passed via env (not argv) — found {arg!r} in args"
+            )
 
 
 class TestCursorConfigSpecifics:

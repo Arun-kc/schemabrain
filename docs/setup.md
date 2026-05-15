@@ -21,13 +21,20 @@ pip install schemabrain
 # Set your Anthropic key (used at index time for column descriptions)
 export ANTHROPIC_API_KEY=sk-ant-...
 
-# Index your database. URL MUST use the postgresql+psycopg:// scheme
-# (Schema Brain uses psycopg v3; the bare postgresql:// scheme fails
-# with ModuleNotFoundError).
+# Put the connection string in an env var so the password never lands
+# in shell history, `ps`, or journald. Schema Brain reads it via
+# --url-env. URL MUST use the postgresql+psycopg:// scheme (psycopg v3;
+# the bare postgresql:// scheme fails with ModuleNotFoundError).
+export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"
+
 schemabrain index \
-    "postgresql+psycopg://user:pass@host:5432/dbname" \
+    --url-env DATABASE_URL \
     --store-path ./schemabrain.db
 ```
+
+> **Legacy path:** the older `schemabrain index "postgresql+psycopg://..."` form
+> still works for backwards compatibility, but emits a deprecation warning when
+> the URL contains a password. New scripts should use `--url-env`.
 
 The index step:
 - Reflects every user-visible table.
@@ -57,15 +64,20 @@ Paste (or merge) this block; replace the placeholders:
       "command": "/ABSOLUTE/PATH/TO/.venv/bin/schemabrain",
       "args": [
         "serve",
-        "--source",
-        "postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME",
+        "--url-env",
+        "DATABASE_URL",
         "--store-path",
         "/ABSOLUTE/PATH/TO/schemabrain.db"
-      ]
+      ],
+      "env": {
+        "DATABASE_URL": "postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME"
+      }
     }
   }
 }
 ```
+
+Putting the URL in `env` (instead of an argv string) keeps the password out of `ps` output and any logs that capture process command lines. The legacy `"--source", "<url>"` form still works but emits a deprecation warning when the URL contains a password.
 
 A copy-paste-ready template lives at `examples/claude_desktop_config.example.json`.
 
@@ -91,8 +103,10 @@ Then run it (source-install users prefix with `uv run`):
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 
+export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"
+
 python anthropic_demo.py \
-    --source "postgresql+psycopg://user:pass@host:5432/dbname" \
+    --source "$DATABASE_URL" \
     --store-path ./schemabrain.db \
     --question "Where do we store customer order totals?"
 ```
@@ -174,10 +188,11 @@ A working entry looks like this:
       "command": "/usr/local/bin/schemabrain",
       "args": [
         "serve",
-        "--source", "postgresql+psycopg://postgres:local@localhost:5432/postgres",
+        "--url-env", "DATABASE_URL",
         "--store-path", "/Users/you/.schemabrain.db"
       ],
       "env": {
+        "DATABASE_URL": "postgresql+psycopg://postgres:local@localhost:5432/postgres",
         "ANTHROPIC_API_KEY": "sk-ant-…",
         "SCHEMABRAIN_LOG_LEVEL": "INFO"
       }
