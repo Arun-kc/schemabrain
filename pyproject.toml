@@ -41,6 +41,10 @@ dev = [
     # contract durable: a future upstream drop can't silently skip the
     # structural pins on the Dependabot config.
     "pyyaml>=6.0,<7.0",
+    # `pip-audit` runs in the `security` CI job to fail any PR that
+    # introduces a known-CVE dep. Pinning here (rather than uvx) lets
+    # Dependabot manage upgrades and reproducibility lives in uv.lock.
+    "pip-audit>=2.7,<3.0",
 ]
 
 [project.urls]

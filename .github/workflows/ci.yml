@@ -75,6 +75,41 @@ jobs:
         # sees the full suite. This job is the fast PR-feedback signal.
         run: uv run --python ${{ matrix.python-version }} pytest -m "not integration"
 
+  security:
+    name: Security scans (pip-audit)
+    runs-on: ubuntu-latest
+    # Independent of lint-and-unit so a ruff failure doesn't hide a
+    # CVE in deps, and a CVE in deps doesn't hide a ruff failure.
+    # Both run in parallel; both block merge.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --extra dev --python 3.11
+
+      - name: pip-audit (known-CVE deps)
+        # Strict mode: any unsuppressed vulnerability fails the build.
+        # CVE-2025-71176 is suppressed: pytest 8.4.2 local-DoS via
+        # /tmp/pytest-of-{user} directory naming. Pytest is dev-only —
+        # never shipped to Schema Brain users — and the exploit requires
+        # an already-present local attacker on the dev/CI host. The
+        # proper fix is pytest>=9.0.3; Dependabot will land that as
+        # its own focused PR. Remove this --ignore-vuln when the bump
+        # merges, so a regression to <9.0.3 re-fails the gate.
+        run: |
+          uv run --python 3.11 pip-audit \
+            --strict \
+            --ignore-vuln CVE-2025-71176
+
   integration:
     name: Integration (Docker / Postgres)
     runs-on: ubuntu-latest

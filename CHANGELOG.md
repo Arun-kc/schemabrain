@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   group so CVE patches don't get held back by version-bump batching.
 - PyYAML pinned as a direct dev dependency (used by the new dependabot
   config structural tests).
+- `pip-audit` runs on every PR via a new `security` CI job. Strict
+  mode fails the build on any known-CVE dep. One transient suppression:
+  CVE-2025-71176 (pytest local-DoS, dev-only, fix in 9.0.3 — Dependabot
+  will ship the bump as its own PR).
 
 ### Changed
 - `schemabrain.__version__` is now read dynamically from package
