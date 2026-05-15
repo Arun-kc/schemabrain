@@ -216,12 +216,36 @@ class Store(Protocol):
 
     # ----- Example queries -----------------------------------------
     #
-    # Storage primitive behind tool #5 `get_example_queries`. v0.5
-    # ships read-only; the writer (`pg_stat_statements` mining +
-    # `sqlglot`) lands in the next PR. An empty result is the right
-    # answer when a table has no recorded examples — the MCP tool
-    # layer maps that to a charter-compliant `status="empty"`
-    # envelope.
+    # Storage primitive behind tool #5 `get_example_queries`. The
+    # writer is exposed so any miner (today: `schemabrain.mining`
+    # against `pg_stat_statements`; later: alternative pipelines) can
+    # populate the table without subclassing. An empty `list_example_
+    # queries` result is the right answer when a table has no
+    # recorded examples — the MCP tool layer maps that to a
+    # charter-compliant `status="empty"` envelope.
+
+    def write_example_queries(
+        self,
+        rows: list[ExampleQuery],
+        *,
+        source_connection_id: str,
+    ) -> int:
+        """UPSERT a batch of `example_queries` rows.
+
+        Conflict target is `(source_connection_id, schema_name,
+        table_name, sql_text)`. Implementations MUST:
+          - Preserve `first_seen_at` across re-writes of the same
+            tuple; only the FIRST insert's value is durable.
+          - Update `observation_count`, `last_seen_at`, `sensitivity`,
+            and `pii_categories` to the values in the latest call.
+          - Treat the batch atomically — partial application on a
+            mid-batch failure (FK / CHECK / unique violation) is
+            forbidden; callers see all-or-nothing.
+
+        Returns the number of rows in the input batch (equal to the
+        number of write operations attempted). Empty input returns 0.
+        """
+        ...
 
     def list_example_queries(
         self,

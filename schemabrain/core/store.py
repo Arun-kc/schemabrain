@@ -55,8 +55,16 @@ from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Tabl
 #         comma-separated string with `''` for the empty set, mirroring
 #         the storage shape adopted for downstream PII bookkeeping.
 #         Empty on v0.5; populated when query log mining lands.
+#   "7" → added `idx_example_queries_unique` UNIQUE INDEX on
+#         `(source_connection_id, schema_name, table_name, sql_text)`.
+#         Load-bearing for `write_example_queries`'s UPSERT: ON CONFLICT
+#         needs a unique target. Re-mining the same pg_stat_statements
+#         row updates `observation_count`, `last_seen_at`,
+#         `sensitivity`, and `pii_categories` while preserving
+#         `first_seen_at` so the original observation timestamp
+#         survives.
 # Older stores raise SchemaVersionMismatchError; pre-alpha users re-create.
-_SCHEMA_VERSION = "6"
+_SCHEMA_VERSION = "7"
 _MEMORY_PATH = ":memory:"
 
 # 1 USD = 1_000_000 micros. Storing the ledger as INTEGER micros avoids
@@ -268,6 +276,22 @@ _DDL_STATEMENTS: tuple[str, ...] = (
             id ASC
         )
     """,
+    # UNIQUE index that defines the UPSERT conflict target for
+    # `write_example_queries`. Mining writes the same (source, schema,
+    # table, sql_text) tuple every run; ON CONFLICT lifts the existing
+    # row's `first_seen_at` while updating count/recency/PII fields.
+    # Storage cost is modest at v0.5 scale (pg_stat_statements caps at
+    # ~5000 entries by default; the sql_text values average a few
+    # hundred chars).
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_example_queries_unique
+        ON example_queries (
+            source_connection_id,
+            schema_name,
+            table_name,
+            sql_text
+        )
+    """,
 )
 
 
@@ -315,6 +339,20 @@ def _decode_pii_categories(stored: str) -> frozenset[str]:
     if not stored:
         return frozenset()
     return frozenset(stored.split(","))
+
+
+def _encode_pii_categories(categories: frozenset[str]) -> str:
+    """Inverse of `_decode_pii_categories` — frozenset → sorted CSV.
+
+    Canonicalising to sorted order makes the storage shape
+    deterministic across callers: two mining runs that produce the
+    same conceptual category set always write the same byte string,
+    so the UPSERT's idempotency claim holds regardless of how the
+    caller computed the set.
+    """
+    if not categories:
+        return ""
+    return ",".join(sorted(categories))
 
 
 class SQLiteStore:
@@ -1104,6 +1142,71 @@ class SQLiteStore:
         ]
         indexed.sort(key=lambda r: (-r[3], r[0], r[1], r[2]))
         return indexed[:k]
+
+    def write_example_queries(
+        self,
+        rows: list[ExampleQuery],
+        *,
+        source_connection_id: str,
+    ) -> int:
+        """UPSERT a batch of `example_queries` rows under one source.
+
+        Conflict target is `(source_connection_id, schema_name,
+        table_name, sql_text)` — the UNIQUE index added at schema v7.
+        On conflict, `observation_count`, `last_seen_at`,
+        `sensitivity`, and `pii_categories` are updated; `first_seen_at`
+        is preserved so the original observation timestamp survives
+        re-mining.
+
+        Atomic across the batch: any insert/update that fails (FK
+        violation, CHECK violation) rolls back every row in the call —
+        callers see either the full batch landed or nothing did.
+
+        Returns the number of `executemany` row writes — equal to
+        `len(rows)` on the happy path. Empty input returns 0 without
+        opening a transaction.
+        """
+        if not rows:
+            return 0
+        conn = self._require_conn()
+        payload = [
+            (
+                source_connection_id,
+                row.schema_name,
+                row.table_name,
+                row.sql_text,
+                row.observation_count,
+                row.first_seen_at,
+                row.last_seen_at,
+                row.source,
+                row.sensitivity,
+                _encode_pii_categories(row.pii_categories),
+            )
+            for row in rows
+        ]
+        with conn:
+            conn.executemany(
+                "INSERT INTO example_queries "
+                "(source_connection_id, schema_name, table_name, sql_text, "
+                "observation_count, first_seen_at, last_seen_at, source, "
+                "sensitivity, pii_categories) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (source_connection_id, schema_name, table_name, sql_text) "
+                "DO UPDATE SET "
+                # MAX(...) preserves the higher of the two counts so a
+                # `pg_stat_statements_reset()` between mining runs (the
+                # source counter is cumulative since last reset) cannot
+                # silently overwrite a higher historical count with a
+                # smaller post-reset value. The observation count is
+                # advisory ("how often have we seen this pattern?") and
+                # taking the max is the honest answer for that question.
+                "observation_count = MAX(excluded.observation_count, example_queries.observation_count), "
+                "last_seen_at = excluded.last_seen_at, "
+                "sensitivity = excluded.sensitivity, "
+                "pii_categories = excluded.pii_categories",
+                payload,
+            )
+        return len(rows)
 
     def list_example_queries(
         self,

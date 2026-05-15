@@ -448,6 +448,14 @@ class TestStoreProtocolSeamUsable:
             ) -> list[tuple[str, str, str, float]]:
                 return []
 
+            def write_example_queries(
+                self,
+                rows: list[ExampleQuery],
+                *,
+                source_connection_id: str,
+            ) -> int:
+                return len(rows)
+
             def list_example_queries(
                 self,
                 schema: str,

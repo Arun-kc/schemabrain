@@ -116,6 +116,25 @@ Schema Brain currently:
   that's the cache.)
 - Runs `pip-audit`, `bandit`, and `semgrep` on every PR via CI
 
+### Trust boundaries you should know about
+
+Two operator-side trust assumptions are load-bearing for the current
+release:
+
+- **LLM enrichment with `--enable-sonnet`.** Column identifiers and
+  default expressions from the source database flow into LLM prompts
+  verbatim. A DBA with write access to the source schema can name a
+  column in a way that constitutes prompt injection. Do not index
+  schemas you don't control with LLM enrichment enabled.
+- **Query log mining with `schemabrain mine-queries`.** Statements
+  observed in `pg_stat_statements` are stored verbatim and surfaced
+  to the agent through `get_example_queries`. A DBA with write
+  access to a tracked database can craft a statement body (for
+  example, a comment block containing instructions framed as a
+  system message) that constitutes prompt injection when an agent
+  later reads the mined examples. Mine only from Postgres sources
+  whose workload you trust.
+
 Hardening on the roadmap (not yet shipped): host allowlisting for
 SSRF, exception sanitization, federated authentication for any future
 HTTP transport, and SBOM publishing.

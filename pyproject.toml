@@ -33,6 +33,13 @@ dependencies = [
     # durable: a future fastembed major can't silently drop it without
     # us catching the regression.
     "numpy>=1.26,<3.0",
+    # sqlglot is the SQL parser behind query log mining. v0.5 uses it
+    # to extract the set of tables a `pg_stat_statements` row touches
+    # and to filter DDL/transaction-control statements out of the
+    # example_queries write set. Pinned at the 25.x major; sqlglot
+    # bumps the parser semantics across majors, so widening the range
+    # is a deliberate review.
+    "sqlglot>=25.0,<27.0",
 ]
 
 [project.optional-dependencies]

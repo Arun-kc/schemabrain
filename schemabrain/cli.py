@@ -79,6 +79,7 @@ from schemabrain.eval.runner import format_report, run_eval
 from schemabrain.indexer import IndexReporter, NullReporter, dry_run_index, index
 from schemabrain.logging_config import configure_logging
 from schemabrain.mcp.server import run_stdio
+from schemabrain.mining.pipeline import mine_queries
 from schemabrain.profiler.postgres import PostgresProfiler
 
 _DEFAULT_STORE_PATH = "./schemabrain.db"
@@ -148,6 +149,12 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "fixture-path":
         return _cmd_fixture_path(args.name)
+    if args.command == "mine-queries":
+        return _cmd_mine_queries(
+            positional_url=args.source,
+            url_env=args.url_env,
+            store_path=args.store_path,
+        )
     # argparse `required=True` on subparsers prevents reaching here, but
     # leaving an explicit branch is cheaper than a guarded assertion.
     parser.error(f"unknown command: {args.command}")  # pragma: no cover
@@ -325,6 +332,33 @@ def _build_parser() -> argparse.ArgumentParser:
         "never appear in argv. Mutually exclusive with --source.",
     )
     p_serve.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+
+    p_mine = sub.add_parser(
+        "mine-queries",
+        help="Harvest observed SQL from `pg_stat_statements` into the local store",
+    )
+    p_mine.add_argument(
+        "--source",
+        default=None,
+        help="The same source URL passed to `index` — used to resolve which "
+        "tables in the local store the mined SQL should attach to. "
+        "DEPRECATED when the URL contains a password; prefer --url-env. "
+        "One of --source / --url-env is required.",
+    )
+    p_mine.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL "
+        "(e.g. --url-env DATABASE_URL). Preferred over --source so credentials "
+        "never appear in argv. Mutually exclusive with --source.",
+    )
+    p_mine.add_argument(
         "--store-path",
         default=_DEFAULT_STORE_PATH,
         help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
@@ -647,6 +681,98 @@ def _cmd_serve(
         # issues are the most common case here.
         _render_guided(store_path_unwritable(store_path, e))
         return 2
+    return 0
+
+
+def _cmd_mine_queries(
+    *,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+) -> int:
+    """Harvest `pg_stat_statements` into the local `example_queries` table.
+
+    Source-side requirements (operator's job):
+      - `pg_stat_statements` listed in `shared_preload_libraries` so
+        the view is populated.
+      - `CREATE EXTENSION pg_stat_statements` in the target database.
+      - The connecting role can `SELECT` from the view (default for
+        superusers; non-super roles need `pg_read_all_stats` grant).
+
+    When the view isn't readable the pipeline soft-skips: the handler
+    prints an actionable message and exits 0 (this is operator config,
+    not a Schema Brain bug).
+
+    The engine is built with `default_transaction_read_only=on` —
+    mining is strictly a read operation and the session-level
+    enforcement prevents any future regression that accidentally
+    issues a write to the source.
+    """
+    from sqlalchemy import create_engine
+
+    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if source_url is None:
+        return 2
+    if _resolve_url(source_url) is None:
+        return 2
+    source_id = _make_source_id(source_url)
+
+    import sqlite3
+
+    engine = create_engine(
+        source_url,
+        connect_args={"options": "-c default_transaction_read_only=on"},
+    )
+    try:
+        with SQLiteStore(store_path) as store:
+            report = mine_queries(
+                engine=engine,
+                store=store,
+                source_connection_id=source_id,
+            )
+    except OSError as exc:
+        _render_guided(store_path_unwritable(store_path, exc))
+        return 2
+    except sqlite3.DatabaseError as exc:
+        # CHECK / FK / UNIQUE / IntegrityError from the store-side
+        # batch UPSERT. The mining pipeline filters to indexed tables
+        # before writing, so an IntegrityError here is structural —
+        # either schema drift mid-run (operator did something to the
+        # store file in another process) or a programming error.
+        # Surface as a guided message instead of an unhandled
+        # traceback.
+        print(
+            "mine-queries: store write failed.\n"
+            f"  why: {exc}\n"
+            "  fix: re-run `schemabrain index` to rebuild the store "
+            "from scratch; if the error persists, file an issue with "
+            "the message above.",
+            file=sys.stderr,
+        )
+        return 2
+    finally:
+        engine.dispose()
+
+    if report.skipped_unavailable:
+        print(
+            "mine-queries: pg_stat_statements unavailable on the source "
+            "database; no rows written.\n"
+            "  why: the extension isn't installed/loaded, or the role "
+            "lacks read access.\n"
+            "  fix: add `pg_stat_statements` to `shared_preload_libraries` "
+            "(requires a Postgres restart), then run "
+            "`CREATE EXTENSION pg_stat_statements;` in the target database.\n"
+            "  re-run `schemabrain mine-queries` once the view is "
+            "readable.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"mine-queries: scanned {report.statements_read} statements, "
+            f"used {report.statements_used}, wrote {report.rows_written} "
+            f"example_queries rows.",
+            file=sys.stderr,
+        )
     return 0
 
 
