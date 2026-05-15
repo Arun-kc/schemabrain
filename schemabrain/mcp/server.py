@@ -24,9 +24,11 @@ stdio (the transport Claude Desktop and most local-MCP clients use).
 from __future__ import annotations
 
 import logging
+from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
@@ -142,7 +144,28 @@ def build_server(
         annotations=_READ_ONLY_ANNOTATIONS,
     )
     def find_relevant_tables(
-        query: str, limit: int = _DEFAULT_LIMIT
+        query: Annotated[
+            str,
+            Field(
+                description=(
+                    "Natural-language description of the table or data the "
+                    "user is asking about (e.g. 'customer orders', 'where "
+                    "we store payments'). Embedded with the same model used "
+                    "to index column descriptions, then ranked by cosine "
+                    "similarity against per-column descriptions."
+                ),
+            ),
+        ],
+        limit: Annotated[
+            int,
+            Field(
+                description=(
+                    "Maximum number of ranked hits to return. Default 10. "
+                    "Use a small value (3-5) for narrow exploratory queries; "
+                    "use 10-20 when surveying an unfamiliar schema."
+                ),
+            ),
+        ] = _DEFAULT_LIMIT,
     ) -> ToolResponse[list[TableHit]]:
         try:
             hits = find_relevant_tables_impl(
@@ -185,7 +208,18 @@ def build_server(
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
-    def describe_table(qualified_name: str) -> ToolResponse[TableDescription]:
+    def describe_table(
+        qualified_name: Annotated[
+            str,
+            Field(
+                description=(
+                    "Postgres `schema.table` qualified name "
+                    "(e.g. `public.orders`). Call `find_relevant_tables` "
+                    "first if you don't know the schema."
+                ),
+            ),
+        ],
+    ) -> ToolResponse[TableDescription]:
         try:
             table = describe_table_impl(
                 store=store,
@@ -225,7 +259,19 @@ def build_server(
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
-    def describe_column(qualified_name: str) -> ToolResponse[ColumnDetail]:
+    def describe_column(
+        qualified_name: Annotated[
+            str,
+            Field(
+                description=(
+                    "Postgres `schema.table.column` qualified name "
+                    "(e.g. `public.orders.user_id`). Three dot-separated "
+                    "parts. Call `describe_table` first if you only know "
+                    "the table and need to discover its columns."
+                ),
+            ),
+        ],
+    ) -> ToolResponse[ColumnDetail]:
         try:
             column = describe_column_impl(
                 store=store,
@@ -285,7 +331,21 @@ def build_server(
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
-    def get_example_queries(qualified_name: str) -> ToolResponse[ExampleQueriesResult]:
+    def get_example_queries(
+        qualified_name: Annotated[
+            str,
+            Field(
+                description=(
+                    "Postgres `schema.table` qualified name "
+                    "(e.g. `public.orders`). Returns SQL agents (or humans) "
+                    "have actually run against this table, sourced from "
+                    "`pg_stat_statements`. Run `schemabrain mine-queries` "
+                    "first to populate the cache; until then this tool "
+                    "returns `status: empty`."
+                ),
+            ),
+        ],
+    ) -> ToolResponse[ExampleQueriesResult]:
         try:
             result = get_example_queries_impl(
                 store=store,
@@ -338,7 +398,29 @@ def build_server(
         annotations=_READ_ONLY_ANNOTATIONS,
     )
     def suggest_joins(
-        tables: list[str], max_hops: int = _DEFAULT_MAX_HOPS
+        tables: Annotated[
+            list[str],
+            Field(
+                description=(
+                    "List of `schema.table` qualified names (minimum 2) "
+                    "to find join paths between. The tool returns one "
+                    "shortest FK path per unordered pair, plus an "
+                    "`unreachable_pairs` list for pairs with no path "
+                    "within `max_hops`."
+                ),
+            ),
+        ],
+        max_hops: Annotated[
+            int,
+            Field(
+                description=(
+                    "Maximum number of FK-graph hops to traverse when "
+                    "searching for join paths. Default 4. Increase only "
+                    "for deeply junction-tabled schemas; higher values "
+                    "make the search non-trivially slower."
+                ),
+            ),
+        ] = _DEFAULT_MAX_HOPS,
     ) -> ToolResponse[SuggestJoinsResult]:
         try:
             result = suggest_joins_impl(
