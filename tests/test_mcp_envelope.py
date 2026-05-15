@@ -1,4 +1,4 @@
-"""MCP response envelope (Charter v1.0) shape tests.
+"""MCP response envelope (Charter v1.1) shape tests.
 
 The envelope is the public contract every MCP tool returns. The tool
 *logic* tests in `test_mcp_tools.py` cover what each tool computes;
@@ -7,6 +7,11 @@ recovery shape, and the data/error invariants.
 
 Wiring-level tests (where envelopes are produced from `*_impl` results
 and propagated through FastMCP) live in `test_mcp_server.py`.
+
+Tests for v1.1-specific additions (new ErrorKinds, reserved `refused`
+status, `SuggestedRewrite` / `WideningHint` on `Recovery`) live in the
+test classes at the bottom of this file, grouped under the comment
+"Charter v1.1 additions".
 """
 
 from __future__ import annotations
@@ -105,9 +110,9 @@ class TestToolError:
         assert err.message.startswith("Table 'user'")
         assert err.recovery.suggested_tool == "find_relevant_tables"
 
-    def test_all_seven_v1_error_kinds_accepted(self) -> None:
-        # The charter v1.0 ships with exactly these seven kinds.
-        # Additions are minor bumps.
+    def test_all_v10_error_kinds_accepted(self) -> None:
+        """The charter v1.0 ships with these seven kinds; v1.1 adds
+        three more (covered separately below)."""
         kinds = [
             "unknown_name",
             "malformed_name",
@@ -349,3 +354,298 @@ class TestToolResponseSerialization:
         resp = ToolResponse[_Payload](status="success", data=_Payload(text="x"))
         dumped = resp.model_dump()
         assert dumped["charter_version"] == CHARTER_VERSION
+
+
+# --- Charter v1.1 additions (additive minor bump) ----------------------------
+
+# v1.1 is an additive minor bump per the Versioning section of the charter.
+# Three additions:
+#   1. New ErrorKinds: `pii_blocked`, `policy_blocked`, `allowlist_violation`
+#   2. Reserved `refused` status — present in the Status literal but not
+#      emitted by any current tool. v2's `execute` / `validate_query` will
+#      be the first producers.
+#   3. New optional Recovery fields: `suggested_rewrite` (SuggestedRewrite),
+#      `widening_hint` (WideningHint).
+#
+# The wire `charter_version` field bumps from "1.0" to "1.1". MCP clients
+# that pin `"1.0"` continue to deserialize cleanly — the additions are
+# backward-compatible.
+
+
+class TestCharterV11WireVersion:
+    def test_charter_version_is_eleven(self) -> None:
+        assert CHARTER_VERSION == "1.1"
+
+
+class TestStatusV11Refused:
+    """`refused` joins the Status literal but no current tool emits it.
+    Reserved so v2 refuse-before-execute primitives ship the type
+    contract on day one, not retrofitted later."""
+
+    def test_refused_status_in_literal(self) -> None:
+        """A ToolResponse with status='refused' must construct without
+        ValidationError on the Status literal itself. The status / data
+        invariant is tested separately below.
+        """
+        from schemabrain.mcp.envelope import ToolError
+
+        resp = ToolResponse[_Payload](
+            status="refused",
+            data=None,
+            error=ToolError(
+                kind="pii_blocked",
+                message="Query touches `pii:contact` columns not in allowlist.",
+                recovery=Recovery(),
+            ),
+        )
+        assert resp.status == "refused"
+
+    def test_refused_requires_error_populated(self) -> None:
+        """`refused` behaves like `error` for the structural invariant:
+        the agent must always see WHY the refusal happened."""
+        with pytest.raises(ValidationError) as exc_info:
+            ToolResponse[_Payload](status="refused", data=None, error=None)
+        assert "refused" in str(exc_info.value).lower() or "error" in str(exc_info.value).lower()
+
+    def test_refused_forbids_non_none_data(self) -> None:
+        """A refused response must not leak partial data through `data`.
+        If the executor was able to compute a safe partial, it should
+        return `status='partial'` with a populated `data` instead."""
+        from schemabrain.mcp.envelope import ToolError
+
+        with pytest.raises(ValidationError) as exc_info:
+            ToolResponse[_Payload](
+                status="refused",
+                data=_Payload(text="partial"),  # NOT allowed under refused
+                error=ToolError(
+                    kind="pii_blocked",
+                    message="Refused.",
+                    recovery=Recovery(),
+                ),
+            )
+        assert "data" in str(exc_info.value).lower() or "refused" in str(exc_info.value).lower()
+
+
+class TestErrorKindV11Additions:
+    """Three new ErrorKinds land in v1.1. They cover v2's refuse-
+    before-execute taxonomy: PII surface, generic policy, and
+    allowlist scope."""
+
+    @pytest.mark.parametrize(
+        "kind",
+        ["pii_blocked", "policy_blocked", "allowlist_violation"],
+    )
+    def test_new_kind_accepted(self, kind: str) -> None:
+        err = ToolError(kind=kind, message="x", recovery=Recovery())  # type: ignore[arg-type]
+        assert err.kind == kind
+
+    def test_all_ten_v11_kinds_round_trip(self) -> None:
+        """Sanity: enumerate the full v1.1 kind registry and verify each
+        constructs. Pins the registry — a typo or accidental removal of
+        an existing kind during the v1.1 minor bump is caught here."""
+        all_kinds = [
+            # v1.0
+            "unknown_name",
+            "malformed_name",
+            "missing_credential",
+            "index_not_ready",
+            "schema_drift",
+            "cost_cap_exceeded",
+            "internal_error",
+            # v1.1 additions
+            "pii_blocked",
+            "policy_blocked",
+            "allowlist_violation",
+        ]
+        for k in all_kinds:
+            err = ToolError(kind=k, message="x", recovery=Recovery())  # type: ignore[arg-type]
+            assert err.kind == k
+
+
+class TestSuggestedRewrite:
+    """`SuggestedRewrite` rides on `Recovery` and tells the agent how
+    to retry after a refusal. Used by v2's sub-query refusal path:
+    "this column was PII-blocked, here's the same query without it."
+    """
+
+    def test_construct_and_round_trip(self) -> None:
+        from schemabrain.mcp.envelope import SuggestedRewrite
+
+        rewrite = SuggestedRewrite(
+            rewritten="SELECT id, total FROM orders WHERE created_at > '2025-01-01'",
+            reason="`email` column was PII-blocked; dropped from SELECT list.",
+        )
+        assert rewrite.rewritten.startswith("SELECT id, total")
+        assert "PII" in rewrite.reason or "pii" in rewrite.reason
+
+    def test_suggested_rewrite_is_frozen(self) -> None:
+        from schemabrain.mcp.envelope import SuggestedRewrite
+
+        rewrite = SuggestedRewrite(rewritten="SELECT 1", reason="trivial")
+        with pytest.raises((ValidationError, TypeError, FrozenInstanceError)):
+            rewrite.rewritten = "SELECT 2"  # type: ignore[misc]
+
+
+class TestWideningHint:
+    """`WideningHint` rides on `Recovery` after an `allowlist_violation`
+    refusal. It tells the agent (or operator) what scope to request to
+    unblock the original call.
+    """
+
+    def test_construct_with_unblock_true(self) -> None:
+        from schemabrain.mcp.envelope import WideningHint
+
+        hint = WideningHint(
+            scope_requested="pii:contact",
+            would_unblock=True,
+            reason="Granting `pii:contact` allowlist would let this SELECT through unchanged.",
+        )
+        assert hint.scope_requested == "pii:contact"
+        assert hint.would_unblock is True
+
+    def test_construct_with_unblock_false(self) -> None:
+        from schemabrain.mcp.envelope import WideningHint
+
+        hint = WideningHint(
+            scope_requested="pii:contact",
+            would_unblock=False,
+            reason="Query also touches `pii:government_id` which requires a separate grant.",
+        )
+        assert hint.would_unblock is False
+
+    def test_widening_hint_is_frozen(self) -> None:
+        from schemabrain.mcp.envelope import WideningHint
+
+        hint = WideningHint(scope_requested="x", would_unblock=True, reason="y")
+        with pytest.raises((ValidationError, TypeError, FrozenInstanceError)):
+            hint.scope_requested = "z"  # type: ignore[misc]
+
+
+class TestRecoveryV11Extensions:
+    """`Recovery` gains two optional fields in v1.1. Existing call
+    sites (which don't pass these) construct unchanged."""
+
+    def test_existing_recovery_shape_unchanged(self) -> None:
+        """Backward compatibility: a v1.0-shaped Recovery construction
+        path must still work."""
+        rec = Recovery(suggested_tool="find_relevant_tables")
+        assert rec.suggested_tool == "find_relevant_tables"
+        # New fields default to None.
+        assert rec.suggested_rewrite is None
+        assert rec.widening_hint is None
+
+    def test_recovery_carries_suggested_rewrite(self) -> None:
+        from schemabrain.mcp.envelope import SuggestedRewrite
+
+        rewrite = SuggestedRewrite(rewritten="SELECT 1", reason="trivial")
+        rec = Recovery(suggested_rewrite=rewrite)
+        assert rec.suggested_rewrite is rewrite
+
+    def test_recovery_carries_widening_hint(self) -> None:
+        from schemabrain.mcp.envelope import WideningHint
+
+        hint = WideningHint(
+            scope_requested="pii:contact",
+            would_unblock=True,
+            reason="grant unblocks the call",
+        )
+        rec = Recovery(widening_hint=hint)
+        assert rec.widening_hint is hint
+
+    def test_both_new_fields_simultaneously(self) -> None:
+        """A refused query might offer both a rewrite AND a widening
+        hint ("you could retry without the PII column OR request the
+        scope"). Both fields populated at once must be valid."""
+        from schemabrain.mcp.envelope import SuggestedRewrite, WideningHint
+
+        rewrite = SuggestedRewrite(rewritten="SELECT 1", reason="r")
+        hint = WideningHint(scope_requested="pii:contact", would_unblock=True, reason="h")
+        rec = Recovery(suggested_rewrite=rewrite, widening_hint=hint)
+        assert rec.suggested_rewrite is rewrite
+        assert rec.widening_hint is hint
+
+
+class TestRecoveryKindCoupling:
+    """v1.1 invariant: `suggested_rewrite` / `widening_hint` are only
+    valid on `ToolError`s whose `kind` is in `REFUSAL_KINDS`. Catching
+    misuse at construction prevents producers from leaking these
+    fields onto unrelated error kinds (e.g. `unknown_name`)."""
+
+    def test_suggested_rewrite_on_unknown_name_rejected(self) -> None:
+        from schemabrain.mcp.envelope import SuggestedRewrite
+
+        rewrite = SuggestedRewrite(rewritten="SELECT 1", reason="r")
+        with pytest.raises(ValidationError) as exc_info:
+            ToolError(
+                kind="unknown_name",
+                message="Table not found.",
+                recovery=Recovery(suggested_rewrite=rewrite),
+            )
+        assert "suggested_rewrite" in str(exc_info.value)
+
+    def test_widening_hint_on_unknown_name_rejected(self) -> None:
+        from schemabrain.mcp.envelope import WideningHint
+
+        hint = WideningHint(scope_requested="pii:contact", would_unblock=True, reason="r")
+        with pytest.raises(ValidationError) as exc_info:
+            ToolError(
+                kind="unknown_name",
+                message="Table not found.",
+                recovery=Recovery(widening_hint=hint),
+            )
+        assert "widening_hint" in str(exc_info.value)
+
+    @pytest.mark.parametrize("kind", ["pii_blocked", "policy_blocked", "allowlist_violation"])
+    def test_suggested_rewrite_accepted_on_refusal_kinds(self, kind: str) -> None:
+        from schemabrain.mcp.envelope import SuggestedRewrite
+
+        rewrite = SuggestedRewrite(rewritten="SELECT 1", reason="r")
+        err = ToolError(
+            kind=kind,  # type: ignore[arg-type]
+            message="Refused.",
+            recovery=Recovery(suggested_rewrite=rewrite),
+        )
+        assert err.recovery.suggested_rewrite is rewrite
+
+    @pytest.mark.parametrize("kind", ["pii_blocked", "policy_blocked", "allowlist_violation"])
+    def test_widening_hint_accepted_on_refusal_kinds(self, kind: str) -> None:
+        from schemabrain.mcp.envelope import WideningHint
+
+        hint = WideningHint(scope_requested="pii:contact", would_unblock=True, reason="r")
+        err = ToolError(
+            kind=kind,  # type: ignore[arg-type]
+            message="Refused.",
+            recovery=Recovery(widening_hint=hint),
+        )
+        assert err.recovery.widening_hint is hint
+
+
+class TestMinLengthGuards:
+    """v1.1 constructor guards: `SuggestedRewrite` and `WideningHint`
+    required string fields reject empty input. Empty strings would
+    look like structurally valid recovery hints but be semantically
+    useless to the agent — better to fail at the construction site."""
+
+    def test_suggested_rewrite_rejects_empty_rewritten(self) -> None:
+        from schemabrain.mcp.envelope import SuggestedRewrite
+
+        with pytest.raises(ValidationError):
+            SuggestedRewrite(rewritten="", reason="ok")
+
+    def test_suggested_rewrite_rejects_empty_reason(self) -> None:
+        from schemabrain.mcp.envelope import SuggestedRewrite
+
+        with pytest.raises(ValidationError):
+            SuggestedRewrite(rewritten="SELECT 1", reason="")
+
+    def test_widening_hint_rejects_empty_scope(self) -> None:
+        from schemabrain.mcp.envelope import WideningHint
+
+        with pytest.raises(ValidationError):
+            WideningHint(scope_requested="", would_unblock=True, reason="ok")
+
+    def test_widening_hint_rejects_empty_reason(self) -> None:
+        from schemabrain.mcp.envelope import WideningHint
+
+        with pytest.raises(ValidationError):
+            WideningHint(scope_requested="pii:contact", would_unblock=False, reason="")

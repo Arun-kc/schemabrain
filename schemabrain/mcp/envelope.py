@@ -1,15 +1,15 @@
-"""MCP response envelope (Charter v1.0).
+"""MCP response envelope (Charter v1.1).
 
 Every MCP tool wraps its return value in a `ToolResponse[T]`:
 
     {
-      "status": "success" | "empty" | "partial" | "degraded" | "error",
+      "status": "success" | "empty" | "partial" | "degraded" | "error" | "refused",
       "data": <T | None>,
       "error": <ToolError | None>,
       "confidence": "HIGH" | "MEDIUM" | "LOW" | None,
       "provenance": <Provenance | None>,
       "follow_up_hints": [<tool_name>, ...] | None,
-      "charter_version": "1.0"
+      "charter_version": "1.1"
     }
 
 The envelope is the public contract for Schema Brain's MCP surface. See
@@ -19,24 +19,58 @@ This module is intentionally free of FastMCP / transport concerns —
 envelope construction must work in any context (tests, alternative
 transports, in-process clients). The FastMCP wiring lives in
 `server.py`.
+
+Versioning: this module pins `CHARTER_VERSION = "1.1"` as an additive
+minor bump over the v1.0 contract. Changes in 1.1 (all backward-
+compatible with 1.0):
+
+  - New ErrorKinds: `pii_blocked`, `policy_blocked`, `allowlist_violation`.
+  - Reserved `refused` status — present in the Status literal so v2's
+    refuse-before-execute primitives ship the type contract on day
+    one. No current tool emits this status (charter_lint asserts).
+  - New optional `Recovery` fields: `suggested_rewrite` and
+    `widening_hint`, populated by v2's refuse-with-rewrite path.
 """
 
 from __future__ import annotations
 
 from typing import Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Pinned charter version. Bumped per the Versioning section of the
 # charter; minor bumps are additive (new optional fields, new error
-# kinds), major bumps remove or rename fields.
-CHARTER_VERSION = "1.0"
+# kinds), major bumps remove or rename fields. v1.0 -> v1.1 adds
+# `refused` status, 3 new ErrorKinds, and 2 new optional Recovery
+# fields — all backward-compatible.
+CHARTER_VERSION = "1.1"
 
-Status = Literal["success", "empty", "partial", "degraded", "error"]
+Status = Literal[
+    "success",
+    "empty",
+    "partial",
+    "degraded",
+    "error",
+    # Reserved in v1.1: no v0/v0.5/v1 tool emits `refused`. v2's
+    # `execute` / `validate_query` are the first producers, refusing
+    # queries that touch PII or violate allowlist scope before
+    # execution. Surfaces `error` populated with a v1.1 ErrorKind
+    # (`pii_blocked` / `policy_blocked` / `allowlist_violation`) and
+    # optionally `Recovery.suggested_rewrite` or `widening_hint`.
+    #
+    # TODO(v2): when v2 ships, consider splitting into
+    # `ProducerStatus` (without `refused`, for v0/v0.5/v1 tools) and
+    # the full `Status` (for envelope deserialisation). The split
+    # lets the type checker enforce the lint rule rather than relying
+    # on the runtime check in `scripts/charter_lint.py`.
+    "refused",
+]
 Confidence = Literal["HIGH", "MEDIUM", "LOW"]
 ProvenanceSource = Literal["schema", "llm", "inferred"]
-# v1.0 ships with seven kinds. Additions are minor-version bumps.
+# v1.0 shipped 7 kinds. v1.1 adds 3 for the refuse-before-execute
+# taxonomy. Additions are minor-version bumps.
 ErrorKind = Literal[
+    # v1.0 kinds:
     "unknown_name",
     "malformed_name",
     "missing_credential",
@@ -44,7 +78,18 @@ ErrorKind = Literal[
     "schema_drift",
     "cost_cap_exceeded",
     "internal_error",
+    # v1.1 additions — refuse-before-execute:
+    "pii_blocked",
+    "policy_blocked",
+    "allowlist_violation",
 ]
+
+# The subset of ErrorKinds that semantically support v1.1 Recovery
+# additions (`suggested_rewrite` / `widening_hint`). A `ToolError` with
+# `kind` outside this set may not carry either v1.1 Recovery field;
+# setting one on (e.g.) an `unknown_name` error is a programming
+# mistake the constructor rejects.
+REFUSAL_KINDS: frozenset[str] = frozenset({"pii_blocked", "policy_blocked", "allowlist_violation"})
 
 T = TypeVar("T")
 
@@ -66,15 +111,82 @@ class Provenance(BaseModel):
     observed_in: dict[str, Any] | None = None
 
 
+class SuggestedRewrite(BaseModel):
+    """A suggested rewrite the agent can adopt after a refusal (v1.1).
+
+    Used by the future refuse-before-execute path: when an agent's
+    query is partially safe and partially refused, the executor can
+    construct a safe version that strips or substitutes the unsafe
+    fragment, and ship that rewrite through this shape so the agent
+    can retry without round-tripping back to a human.
+
+    `rewritten` is typically a SQL fragment but the shape doesn't pin
+    that — it could be a tool-call args dict serialised as a string,
+    an alternative SQL, or any other "here's what you can call instead"
+    payload.
+
+    TODO(v2): when the first `execute` producer lands and the rewrite
+    vocabulary stabilises, consider promoting to a discriminated union
+    `rewritten: str | dict[str, Any]` with a `kind: Literal["sql","args"]`
+    discriminator so consumers can branch without parsing the string.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    # `min_length=1` rejects empty strings at construction; a v2
+    # producer that accidentally hands the agent a blank rewrite
+    # would otherwise look like a structurally valid recovery hint.
+    rewritten: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+class WideningHint(BaseModel):
+    """A scope-widening hint after an `allowlist_violation` refusal (v1.1).
+
+    Used when the executor's refusal could be unblocked by widening
+    the caller's allowlist. The hint names the scope to request
+    (e.g., `pii:contact` or `table:public.users`) and whether
+    granting it would let the original tool call succeed unchanged.
+
+    `would_unblock=False` means there's more than one barrier —
+    granting the named scope is necessary but not sufficient.
+
+    TODO(v2): when v2 allowlist scopes are designed, consider pinning
+    `scope_requested` to a regex-validated `Annotated[str, Field(pattern=...)]`
+    so malformed scope identifiers fail at construction rather than
+    silently downstream.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    scope_requested: str = Field(min_length=1)
+    would_unblock: bool
+    reason: str = Field(min_length=1)
+
+
 class Recovery(BaseModel):
-    """Recovery hints — the agent's next move after an error.
+    """Recovery hints — the agent's next move after an error or refusal.
 
     `suggested_tool` is the tool name to call next; `suggested_args` is
     the args dict to call it with. `fuzzy_matches` is a tuple of plausible
     alternatives — typically used for `unknown_name` errors where the
-    caller's input was close to an existing entity. Stored as a tuple
-    rather than a list so the frozen invariant survives caller-side
-    in-place mutation attempts; JSON serialization is identical.
+    caller's input was close to an existing entity.
+
+    v1.1 additions:
+
+    - `suggested_rewrite` (`SuggestedRewrite | None`) — populated by
+      v2's refuse-with-rewrite path; offers a safe version of the
+      original query the agent can retry.
+    - `widening_hint` (`WideningHint | None`) — populated by v2's
+      `allowlist_violation` path; names the scope that would unblock
+      the original call.
+
+    Both new fields are optional; v1.0 call sites that don't set them
+    continue to construct unchanged.
+
+    Stored as a tuple rather than a list for `fuzzy_matches` so the
+    frozen invariant survives caller-side in-place mutation attempts;
+    JSON serialization is identical.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -82,15 +194,26 @@ class Recovery(BaseModel):
     suggested_tool: str | None = None
     suggested_args: dict[str, Any] | None = None
     fuzzy_matches: tuple[str, ...] = ()
+    suggested_rewrite: SuggestedRewrite | None = None
+    widening_hint: WideningHint | None = None
 
 
 class ToolError(BaseModel):
-    """Structured error returned inside a `ToolResponse` with status='error'.
+    """Structured error returned inside a `ToolResponse` with status='error'
+    or status='refused' (v1.1).
 
-    `kind` is one of the seven registered kinds (charter v1.0). `message`
-    is a single human-readable sentence. `recovery` carries the agent's
-    next-move hint — never empty in practice, though `Recovery()` with
-    no fields is structurally valid for kinds where no recovery exists.
+    `kind` is one of the ten registered kinds (charter v1.1: 7 from v1.0
+    + 3 new). `message` is a single human-readable sentence. `recovery`
+    carries the agent's next-move hint — never empty in practice, though
+    `Recovery()` with no fields is structurally valid for kinds where no
+    recovery exists.
+
+    Kind / Recovery coupling: the v1.1 fields `Recovery.suggested_rewrite`
+    and `Recovery.widening_hint` are semantically tied to the three
+    refusal kinds (`pii_blocked` / `policy_blocked` / `allowlist_violation`
+    — see `REFUSAL_KINDS`). Setting either on a non-refusal kind
+    (e.g. `unknown_name`) is a programming mistake: the rewrite/widening
+    contract requires a refusal context. Enforced at construction.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -99,6 +222,21 @@ class ToolError(BaseModel):
     message: str
     recovery: Recovery
 
+    @model_validator(mode="after")
+    def _validate_recovery_fields_match_kind(self) -> ToolError:
+        if self.kind not in REFUSAL_KINDS:
+            if self.recovery.suggested_rewrite is not None:
+                raise ValueError(
+                    f"Recovery.suggested_rewrite is only valid for refusal "
+                    f"kinds ({sorted(REFUSAL_KINDS)}); got kind={self.kind!r}"
+                )
+            if self.recovery.widening_hint is not None:
+                raise ValueError(
+                    f"Recovery.widening_hint is only valid for refusal "
+                    f"kinds ({sorted(REFUSAL_KINDS)}); got kind={self.kind!r}"
+                )
+        return self
+
 
 class ToolResponse(BaseModel, Generic[T]):
     """The envelope every Schema Brain MCP tool returns.
@@ -106,6 +244,10 @@ class ToolResponse(BaseModel, Generic[T]):
     Invariants enforced by `_validate_status_data_invariant`:
 
     - `status="error"` requires `data is None` and a populated `error`.
+    - `status="refused"` (v1.1) behaves identically to `"error"` for
+      the structural invariant: `data is None` and `error` populated.
+      Semantically distinct (tool ran cleanly and chose to refuse vs
+      tool failed) but the shape contract is the same.
     - Any other status requires `error is None`. `data` must be
       populated for `success`, may be an empty container for `empty`.
     """
@@ -126,13 +268,13 @@ class ToolResponse(BaseModel, Generic[T]):
 
     @model_validator(mode="after")
     def _validate_status_data_invariant(self) -> ToolResponse[T]:
-        if self.status == "error":
+        if self.status in ("error", "refused"):
             if self.error is None:
-                raise ValueError("status='error' requires an `error` object")
+                raise ValueError(f"status={self.status!r} requires an `error` object")
             if self.data is not None:
-                raise ValueError("status='error' forbids non-None `data`")
+                raise ValueError(f"status={self.status!r} forbids non-None `data`")
             return self
-        # Non-error path
+        # Non-error / non-refused path
         if self.error is not None:
             raise ValueError(f"status={self.status!r} forbids non-None `error`")
         if self.status == "success" and self.data is None:
@@ -142,12 +284,15 @@ class ToolResponse(BaseModel, Generic[T]):
 
 __all__ = [
     "CHARTER_VERSION",
+    "REFUSAL_KINDS",
     "Confidence",
     "ErrorKind",
     "Provenance",
     "ProvenanceSource",
     "Recovery",
     "Status",
+    "SuggestedRewrite",
     "ToolError",
     "ToolResponse",
+    "WideningHint",
 ]
