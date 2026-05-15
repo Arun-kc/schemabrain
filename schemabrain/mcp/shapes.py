@@ -10,6 +10,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from schemabrain.core.example_query import ExampleQuerySource
+from schemabrain.pii.categories import Sensitivity
+
 
 class TableNotFoundError(LookupError):
     """Raised by `describe_table_impl` when the qualified name has no
@@ -220,4 +223,58 @@ class TableHit(BaseModel):
     score: float
     best_column: str
     best_column_description: str
+    token_estimate: int
+
+
+class ExampleQueryItem(BaseModel):
+    """One observed example SQL pattern surfaced through
+    `get_example_queries`. `sql_text` is the literal SQL as observed
+    (mining-side normalisation happens before write; this layer is
+    pass-through). `observation_count` describes how often the same
+    pattern was seen. `source` is `pg_stat_statements` for mined rows
+    or `curated` for operator-seeded rows; `sensitivity` and
+    `pii_categories` carry the Phase B ADR's 2-layer taxonomy.
+
+    Cross-layer invariant (`sensitivity == "pii"` requires at least
+    one category; non-pii sensitivity must carry an empty category
+    list) is enforced by the model validator — same rule the store-
+    side `ExampleQuery.__post_init__` enforces, so an envelope that
+    round-trips through this shape preserves the contract.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    sql_text: str
+    observation_count: int
+    source: ExampleQuerySource
+    sensitivity: Sensitivity
+    # Sorted alphabetically — stable order so an agent's downstream
+    # comparison logic doesn't have to deal with frozenset/set ordering
+    # nondeterminism.
+    pii_categories: list[str]
+
+    @model_validator(mode="after")
+    def _validate_pii_consistency(self) -> ExampleQueryItem:
+        if self.sensitivity == "pii" and not self.pii_categories:
+            raise ValueError("sensitivity='pii' requires at least one pii_category")
+        if self.sensitivity != "pii" and self.pii_categories:
+            raise ValueError(
+                f"sensitivity={self.sensitivity!r} cannot carry pii_categories "
+                f"(got {self.pii_categories!r})"
+            )
+        return self
+
+
+class ExampleQueriesResult(BaseModel):
+    """Return shape for `get_example_queries`. v0.5: `queries` is
+    populated only for tables that already have rows written by the
+    upcoming `pg_stat_statements` mining feature. Until mining lands,
+    every table returns `queries=[]` and the MCP tool wraps the result
+    in a `status="empty"` envelope.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    qualified_name: str
+    queries: list[ExampleQueryItem]
     token_estimate: int

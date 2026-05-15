@@ -118,13 +118,14 @@ def server_with_one_table_zero_embedder(tmp_path: Path) -> Generator[FastMCP, No
 
 
 class TestToolRegistry:
-    def test_four_tools_are_registered(self, server_with_one_table) -> None:
+    def test_all_tools_are_registered(self, server_with_one_table) -> None:
         names = {t.name for t in asyncio.run(server_with_one_table.list_tools())}
         assert names == {
             "find_relevant_tables",
             "describe_table",
             "describe_column",
             "suggest_joins",
+            "get_example_queries",
         }
 
     def test_descriptions_lead_with_use_this_when(self, server_with_one_table) -> None:
@@ -147,6 +148,7 @@ class TestToolRegistry:
             "describe_table",
             "describe_column",
             "suggest_joins",
+            "get_example_queries",
         }
         for tool in asyncio.run(server_with_one_table.list_tools()):
             other_names = all_tool_names - {tool.name}

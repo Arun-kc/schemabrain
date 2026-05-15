@@ -39,9 +39,11 @@ from schemabrain.mcp.envelope import (
     ToolResponse,
 )
 from schemabrain.mcp.find_relevant_tables import find_relevant_tables_impl
+from schemabrain.mcp.get_example_queries import get_example_queries_impl
 from schemabrain.mcp.shapes import (
     ColumnDetail,
     ColumnNotFoundError,
+    ExampleQueriesResult,
     SuggestJoinsResult,
     TableDescription,
     TableHit,
@@ -258,6 +260,58 @@ def build_server(
         return ToolResponse[ColumnDetail](
             status="success",
             data=column,
+            confidence="HIGH",
+            follow_up_hints=["describe_table"],
+        )
+
+    @app.tool(
+        description=(
+            "Use this when you need real example SQL for an indexed "
+            "table to learn how it's actually used. Each item carries "
+            "the SQL text, observation count, source, and PII "
+            "categories touched. Returns `status: empty` when the "
+            "table has no recorded examples yet (query log mining "
+            "ships next). Use `describe_table` instead when you want "
+            "the table's structural shape rather than usage patterns. "
+            "Common composition: chain `find_relevant_tables` to "
+            "`get_example_queries`."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
+    def get_example_queries(qualified_name: str) -> ToolResponse[ExampleQueriesResult]:
+        try:
+            result = get_example_queries_impl(
+                store=store,
+                source_connection_id=source_connection_id,
+                qualified_name=qualified_name,
+            )
+        except ValueError as exc:
+            return _malformed_name_response(
+                exc,
+                suggested_tool="find_relevant_tables",
+            )
+        except TableNotFoundError as exc:
+            return _unknown_name_response(
+                exc,
+                suggested_tool="find_relevant_tables",
+                suggested_args=_maybe_query_arg(qualified_name),
+            )
+        except Exception as exc:
+            return _wrap_internal_error(exc)
+        if not result.queries:
+            # Charter Principle 1: empty examples is `empty`, not
+            # `success` with an empty list. Recovery hint points the
+            # agent at `describe_table` so it has an actionable next
+            # step when usage data isn't yet available.
+            return ToolResponse[ExampleQueriesResult](
+                status="empty",
+                data=result,
+                confidence=None,
+                follow_up_hints=["describe_table"],
+            )
+        return ToolResponse[ExampleQueriesResult](
+            status="success",
+            data=result,
             confidence="HIGH",
             follow_up_hints=["describe_table"],
         )

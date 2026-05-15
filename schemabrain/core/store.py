@@ -31,6 +31,7 @@ import numpy as np
 
 from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
+from schemabrain.core.example_query import ExampleQuery
 from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
 
 # Bump the schema version when the on-disk DDL set changes.
@@ -46,8 +47,16 @@ from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Tabl
 #         AND table=? AND source_connection_id=?` predicate misses the
 #         PK tail. The sibling index reorders so the predicate is
 #         a true point seek.
+#   "6" → added `example_queries` table for tool #5 `get_example_queries`,
+#         the v0.5 read primitive behind real-SQL surfacing per
+#         `docs/adr/0001-audit-row-and-pii-taxonomy.md`. SQL-layer
+#         CHECK constraints enforce the closed `source` and
+#         `sensitivity` enums; `pii_categories` is stored as a sorted
+#         comma-separated string with `''` for the empty set, mirroring
+#         the storage shape adopted for downstream PII bookkeeping.
+#         Empty on v0.5; populated when query log mining lands.
 # Older stores raise SchemaVersionMismatchError; pre-alpha users re-create.
-_SCHEMA_VERSION = "5"
+_SCHEMA_VERSION = "6"
 _MEMORY_PATH = ":memory:"
 
 # 1 USD = 1_000_000 micros. Storing the ledger as INTEGER micros avoids
@@ -213,6 +222,52 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         ON column_descriptions
             (source_connection_id, schema_name, table_name, column_name)
     """,
+    # Tool #5 `get_example_queries` storage. SQL-layer CHECK
+    # constraints enforce the closed `source` and `sensitivity` enums
+    # — Phase B ADR §1. `pii_categories` is a sorted comma-separated
+    # frozenset; default `''` means no PII categories. FK CASCADE on
+    # `tables` so a `delete_table` sweeps out the example rows along
+    # with everything else for that table.
+    """
+    CREATE TABLE IF NOT EXISTS example_queries (
+        id INTEGER PRIMARY KEY,
+        source_connection_id TEXT NOT NULL,
+        schema_name TEXT NOT NULL,
+        table_name TEXT NOT NULL,
+        sql_text TEXT NOT NULL,
+        observation_count INTEGER NOT NULL DEFAULT 1,
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        source TEXT NOT NULL
+            CHECK (source IN ('pg_stat_statements', 'curated')),
+        sensitivity TEXT NOT NULL DEFAULT 'public'
+            CHECK (sensitivity IN ('public', 'internal', 'confidential', 'pii')),
+        pii_categories TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY (schema_name, table_name, source_connection_id)
+            REFERENCES tables (schema_name, name, source_connection_id)
+            ON DELETE CASCADE
+    )
+    """,
+    # Covering index for `list_example_queries`. Leads with the three
+    # equality predicates `(source_connection_id, schema_name,
+    # table_name)` so a typical lookup is a point seek, then carries
+    # the ORDER BY columns so the LIMIT result comes straight out of
+    # the index without a filesort. Including the ORDER BY columns is
+    # the cheap move at v0.5 (the table is empty for most stores);
+    # once mining writes rows, retrofitting them would require DROP +
+    # CREATE plus a schema bump, so we pay the small index width now.
+    # SQLite supports descending index columns since 3.25 (2018).
+    """
+    CREATE INDEX IF NOT EXISTS idx_example_queries_table_src
+        ON example_queries (
+            source_connection_id,
+            schema_name,
+            table_name,
+            observation_count DESC,
+            last_seen_at DESC,
+            id ASC
+        )
+    """,
 )
 
 
@@ -241,6 +296,25 @@ def _unpack_vector(blob: bytes, dimension: int) -> tuple[float, ...]:
             f"{expected_bytes} bytes for dimension {dimension}"
         )
     return struct.unpack(f"<{dimension}f", blob)
+
+
+def _decode_pii_categories(stored: str) -> frozenset[str]:
+    """Inverse of the storage shape for `example_queries.pii_categories`.
+
+    Storage is a sorted comma-separated string with `''` meaning the
+    empty set. Splitting `''` on `','` yields `['']` (one empty
+    element), which would be a category named "" — wrong. Short-
+    circuit the empty case explicitly.
+
+    Returns `frozenset[str]` rather than `frozenset[PIICategory]`
+    because the typing is informational at this layer — the closed
+    enumeration is enforced at the SQL CHECK layer (for the
+    `sensitivity` column) and by mining-side validation (for the
+    multi-value `pii_categories` column when mining lands).
+    """
+    if not stored:
+        return frozenset()
+    return frozenset(stored.split(","))
 
 
 class SQLiteStore:
@@ -435,8 +509,8 @@ class SQLiteStore:
     def delete_table(self, schema_name: str, name: str, *, source_connection_id: str) -> None:
         """Idempotent: delete the table row and cascade to all child
         tables — `columns`, `foreign_keys`, `column_fingerprints`,
-        `column_descriptions`, and `column_embeddings`. No-op if the
-        row is absent.
+        `column_descriptions`, `column_embeddings`, and
+        `example_queries`. No-op if the row is absent.
         """
         conn = self._require_conn()
         with conn:
@@ -1030,6 +1104,62 @@ class SQLiteStore:
         ]
         indexed.sort(key=lambda r: (-r[3], r[0], r[1], r[2]))
         return indexed[:k]
+
+    def list_example_queries(
+        self,
+        schema: str,
+        table: str,
+        *,
+        source_connection_id: str,
+        limit: int,
+    ) -> list[ExampleQuery]:
+        """Return observed example SQL for `(schema, table)` under
+        `source_connection_id`, most-popular first.
+
+        Ranking (descending):
+          1. `observation_count` — how many times the same SQL pattern
+             was observed.
+          2. `last_seen_at` — recency tiebreak for equally-popular
+             patterns.
+          3. `id` ascending — deterministic last tiebreak so two rows
+             tied on count + recency rank by insertion order.
+
+        Empty result is the right answer when the table has no
+        recorded examples — a caller (the MCP tool) translates that
+        into a charter-compliant `status="empty"` envelope rather than
+        an error.
+
+        Raises `ValueError` if `limit < 1`; mirrors the `k` contract
+        on `search_embeddings_topk`.
+        """
+        if limit < 1:
+            raise ValueError(f"limit must be >= 1, got {limit}")
+        conn = self._require_conn()
+        rows = conn.execute(
+            "SELECT schema_name, table_name, sql_text, observation_count, "
+            "first_seen_at, last_seen_at, source, sensitivity, pii_categories "
+            "FROM example_queries "
+            "WHERE source_connection_id = ? "
+            "AND schema_name = ? "
+            "AND table_name = ? "
+            "ORDER BY observation_count DESC, last_seen_at DESC, id ASC "
+            "LIMIT ?",
+            (source_connection_id, schema, table, limit),
+        ).fetchall()
+        return [
+            ExampleQuery(
+                schema_name=row["schema_name"],
+                table_name=row["table_name"],
+                sql_text=row["sql_text"],
+                observation_count=row["observation_count"],
+                first_seen_at=row["first_seen_at"],
+                last_seen_at=row["last_seen_at"],
+                source=row["source"],
+                sensitivity=row["sensitivity"],
+                pii_categories=_decode_pii_categories(row["pii_categories"]),
+            )
+            for row in rows
+        ]
 
     def list_tables(self, *, source_connection_id: str | None = None) -> list[tuple[str, str]]:
         conn = self._require_conn()
