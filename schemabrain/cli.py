@@ -56,6 +56,7 @@ from urllib.parse import urlparse
 from sqlalchemy.exc import OperationalError
 
 from schemabrain import __version__
+from schemabrain.connectors._url import safe_engine_url
 from schemabrain.connectors.postgres import PostgresDataSource
 from schemabrain.core.store import SQLiteStore
 from schemabrain.enrichment.anthropic_client import (
@@ -110,7 +111,6 @@ _POSTGRES_SCHEMES: dict[str, int] = {
     "postgresql+psycopg2": 5432,
     "postgresql+asyncpg": 5432,
 }
-
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns process exit code."""
@@ -465,6 +465,8 @@ def _cmd_index(
     # psycopg + sqlalchemy variants of "could not connect": catch the
     # SQLAlchemy wrapper at the outer boundary so it fires for both
     # PostgresDataSource and PostgresProfiler context-manager entry.
+    # `PostgresDataSource` / `PostgresProfiler` constructors apply
+    # `safe_engine_url` internally — no CLI-side filter call needed.
     try:
         try:
             with (
@@ -708,7 +710,8 @@ def _cmd_mine_queries(
     enforcement prevents any future regression that accidentally
     issues a write to the source.
     """
-    from sqlalchemy import create_engine
+    import sqlalchemy
+    from sqlalchemy.pool import NullPool
 
     source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
     if source_url is None:
@@ -719,8 +722,15 @@ def _cmd_mine_queries(
 
     import sqlite3
 
-    engine = create_engine(
-        source_url,
+    # `NullPool` eliminates the latent pool-state escape surface the
+    # moment any future mining feature touches a shared connection.
+    # `safe_engine_url` strips smuggled session-config from the URL
+    # query string. The raw `source_url` still seeds `_make_source_id`
+    # above so source identity stays stable regardless of smuggle
+    # attempts.
+    engine = sqlalchemy.create_engine(
+        safe_engine_url(source_url),
+        poolclass=NullPool,
         connect_args={"options": "-c default_transaction_read_only=on"},
     )
     try:
@@ -730,6 +740,12 @@ def _cmd_mine_queries(
                 store=store,
                 source_connection_id=source_id,
             )
+    except OperationalError as exc:
+        # Connection failures (wrong host, auth failure, timeout)
+        # surface here just like every other Postgres-touching
+        # subcommand — guided message, not a raw traceback.
+        _render_guided(postgres_operational_error(exc, url_hint=source_url))
+        return 2
     except OSError as exc:
         _render_guided(store_path_unwritable(store_path, exc))
         return 2
