@@ -966,6 +966,60 @@ class TestIndexResultSummary:
         # otherwise CI log grepping for real runs would pick this up.
         assert "Indexed 5 table(s)" not in summary
 
+    def test_summary_surfaces_anomalous_spend_without_descriptions(self) -> None:
+        """If LLM calls billed but no descriptions landed, the summary
+        must say so — the user has unaccounted spend and needs a
+        breadcrumb pointing at the logs. The trigger is `tables_changed
+        > 0` (enrichment was attempted) AND `llm_cost_usd > 0` AND
+        `descriptions_generated == 0`. The clean cache-hit case
+        (tables_changed == 0) stays silent — covered by the sibling
+        test below.
+        """
+        result = IndexResult(
+            tables_seen=1,
+            tables_changed=1,  # enrichment was attempted on this run
+            tables_unchanged=0,
+            tables_removed=0,
+            columns_added=2,
+            columns_changed=0,
+            columns_removed=0,
+            descriptions_generated=0,
+            llm_cost_usd=0.0012,  # billed but no usable output
+            embeddings_generated=0,
+        )
+        summary = result.summary()
+        assert "LLM: 0 descriptions generated" in summary
+        assert "$0.0012" in summary
+        assert "check logs" in summary
+
+    def test_summary_omits_llm_section_on_cache_hit_reindex(self) -> None:
+        """On a cache-hit re-index, the enrichment pipeline carries the
+        cumulative ledger spend through to `IndexResult.llm_cost_usd`
+        even though no new descriptions were generated this run.
+
+        Showing `LLM: 0 descriptions ($0.0095)` in that case
+        misleadingly attributes the cumulative ledger total to the
+        current run — readers see a dollar figure and assume they
+        just spent it. The summary must omit the LLM clause when no
+        descriptions were generated; cumulative spend lives in the
+        persistent ledger and is auditable separately.
+        """
+        result = IndexResult(
+            tables_seen=6,
+            tables_changed=0,
+            tables_unchanged=6,
+            tables_removed=0,
+            columns_added=0,
+            columns_changed=0,
+            columns_removed=0,
+            descriptions_generated=0,
+            llm_cost_usd=0.0095,  # cumulative ledger carry-over from prior runs
+            embeddings_generated=0,
+        )
+        summary = result.summary()
+        assert "LLM:" not in summary
+        assert "$0.0095" not in summary
+
     def test_summary_default_is_unchanged_real_run(self) -> None:
         # Sibling of the dry-run test — confirm `dry_run=False` (the
         # default) keeps the existing format byte-for-byte.

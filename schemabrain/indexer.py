@@ -121,12 +121,29 @@ class IndexResult:
             f"{self.tables_removed} removed. "
             f"Columns: +{self.columns_added}/~{self.columns_changed}/-{self.columns_removed}"
         )
-        if self.descriptions_generated > 0 or self.llm_cost_usd > 0:
+        if self.descriptions_generated > 0:
+            # Happy path: descriptions generated this run. Show the
+            # cost and count. NOTE: `llm_cost_usd` carries the
+            # cumulative ledger total (pipeline initialises it from
+            # the persistent ledger), so on a partial run this
+            # number is run-cumulative — not run-delta. That's
+            # acceptable when descriptions > 0 because the user
+            # actively spent some of it this run.
             llm_label = "Estimated LLM" if dry_run else "LLM"
             base += (
                 f". {llm_label}: {self.descriptions_generated} descriptions "
                 f"(${self.llm_cost_usd:.4f})"
             )
+        elif not dry_run and self.llm_cost_usd > 0 and self.tables_changed > 0:
+            # Anomaly: tables changed (so enrichment was attempted)
+            # AND spend is non-zero AND no descriptions landed. The
+            # cache-hit case is excluded by the `tables_changed > 0`
+            # guard — a clean re-index has tables_changed == 0 and
+            # stays silent on the LLM line. What's left is the rare
+            # path where LLM calls billed but the pipeline didn't
+            # produce a usable description; the operator needs a
+            # breadcrumb to investigate, not silent success.
+            base += f". LLM: 0 descriptions generated (spend ${self.llm_cost_usd:.4f} — check logs)"
         if self.embeddings_generated > 0:
             embed_label = "Estimated embeddings" if dry_run else "Embeddings"
             base += f". {embed_label}: {self.embeddings_generated}"
