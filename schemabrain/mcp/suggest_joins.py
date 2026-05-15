@@ -15,10 +15,15 @@ from schemabrain.mcp.shapes import JoinEdge, JoinPath, SuggestJoinsResult, Table
 # will land below 1.0; keeping the constant lets the formula compose cleanly.
 _FK_CONFIDENCE = 1.0
 _VIA_FK = "foreign_key"
-# Default cap on BFS depth. ~4 covers typical 3NF schemas (e.g.
-# user → org → org_member → role) without runaway exploration on
-# wide graphs. Override per call if the caller needs more.
-_DEFAULT_MAX_HOPS = 4
+# Default cap on BFS depth. 6 comfortably covers schemas with M:N
+# junction tables — e.g. the bundled e-commerce fixture's
+# `users → orders → order_items → products → product_categories →
+# categories` path is 5 hops; an earlier default of 4 reported it
+# as unreachable, which surprised demo users. 6 gives one hop of
+# headroom over that case while staying well below the threshold
+# where BFS exploration becomes expensive on wide FK graphs.
+# Override per call if a deeper schema needs more.
+_DEFAULT_MAX_HOPS = 6
 
 
 class FrozenJoinEdgeSeed(BaseModel):
