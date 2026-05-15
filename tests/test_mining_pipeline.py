@@ -241,6 +241,79 @@ class TestFilteringOutNonDml:
             assert report.rows_written == 0
 
 
+class TestFilteringOutSchemaBrainProfilerQueries:
+    """When a user runs `mine-queries` against a Postgres that they
+    also ran `schemabrain index` against, `pg_stat_statements`
+    surfaces Schema Brain's own profiler SELECTs alongside their real
+    workload. Without filtering, those land in `example_queries` and
+    `get_example_queries` returns Schema Brain's indexing chatter to
+    agents asking for example SQL — directly undermining the
+    "real SQL agents have run" pitch.
+
+    The two profiler shapes are detected by `is_profiler_query`; the
+    pipeline drops any statement that matches before resolving table
+    references.
+    """
+
+    def test_profiler_counts_query_is_dropped(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "s.db") as store:
+            _seed_table(store, source_id="src", schema="public", table="categories")
+            counts_sql = (
+                'SELECT COUNT(*) AS total, COUNT("id") AS nn_0, '
+                'COUNT(DISTINCT "id") AS d_0 FROM "public"."categories"'
+            )
+            report = mine_queries(
+                engine=None,
+                store=store,
+                source_connection_id="src",
+                fetch_statements=_fake_fetch([PgStatRow(query=counts_sql, calls=1)]),
+            )
+            assert report.statements_read == 1
+            assert report.statements_used == 0
+            assert report.rows_written == 0
+
+    def test_profiler_sampler_query_is_dropped(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "s.db") as store:
+            _seed_table(store, source_id="src", schema="public", table="categories")
+            sampler_sql = (
+                'SELECT DISTINCT "name"::text AS v FROM "public"."categories" '
+                'WHERE "name" IS NOT NULL ORDER BY $1 LIMIT $2'
+            )
+            report = mine_queries(
+                engine=None,
+                store=store,
+                source_connection_id="src",
+                fetch_statements=_fake_fetch([PgStatRow(query=sampler_sql, calls=1)]),
+            )
+            assert report.statements_read == 1
+            assert report.statements_used == 0
+            assert report.rows_written == 0
+
+    def test_profiler_dropped_real_user_query_kept_in_same_batch(self, tmp_path: Path) -> None:
+        """Mixed batch: real user SELECT lands, profiler SELECT dropped."""
+        with SQLiteStore(tmp_path / "s.db") as store:
+            _seed_table(store, source_id="src", schema="public", table="orders")
+            profiler_sql = (
+                'SELECT COUNT(*) AS total, COUNT("id") AS nn_0, '
+                'COUNT(DISTINCT "id") AS d_0 FROM "public"."orders"'
+            )
+            user_sql = "SELECT id, status FROM public.orders WHERE status = $1"
+            report = mine_queries(
+                engine=None,
+                store=store,
+                source_connection_id="src",
+                fetch_statements=_fake_fetch(
+                    [
+                        PgStatRow(query=profiler_sql, calls=42),
+                        PgStatRow(query=user_sql, calls=7),
+                    ]
+                ),
+            )
+            assert report.statements_read == 2
+            assert report.statements_used == 1
+            assert report.rows_written == 1
+
+
 class TestParseFailureIsolation:
     def test_one_unparseable_statement_does_not_blow_up_batch(self, tmp_path: Path) -> None:
         # A single garbage row from pg_stat_statements must not fail
