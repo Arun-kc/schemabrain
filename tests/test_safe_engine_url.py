@@ -33,10 +33,7 @@ class TestStripsKnownSmugglingAttacks:
     """The Datadog-style attacks the function is built to neutralise."""
 
     def test_strips_options_param(self) -> None:
-        attack = (
-            "postgresql+psycopg://user:pw@host:5432/db"
-            "?options=-c statement_timeout=1"
-        )
+        attack = "postgresql+psycopg://user:pw@host:5432/db?options=-c statement_timeout=1"
         safe = _safe_engine_url(attack)
         assert "options" not in parse_qs(urlparse(safe).query)
 
@@ -72,10 +69,7 @@ class TestPreservesAllowlistedParams:
         assert parse_qs(urlparse(safe).query)["application_name"] == ["schemabrain"]
 
     def test_preserves_multiple_allowlisted_params(self) -> None:
-        url = (
-            "postgresql+psycopg://user:pw@host/db"
-            "?sslmode=require&application_name=schemabrain"
-        )
+        url = "postgresql+psycopg://user:pw@host/db?sslmode=require&application_name=schemabrain"
         safe = _safe_engine_url(url)
         parsed_q = parse_qs(urlparse(safe).query)
         assert parsed_q["sslmode"] == ["require"]

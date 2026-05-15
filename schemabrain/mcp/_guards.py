@@ -112,13 +112,10 @@ def forbid_sql(s: str) -> None:
     """
     for substring, name in _FORBIDDEN_SUBSTRINGS:
         if substring in s:  # DEFENSE-IN-DEPTH ONLY — never the primary control
-            raise ForbiddenSQLError(
-                f"input contains forbidden construct ({name}): {_bounded(s)}"
-            )
+            raise ForbiddenSQLError(f"input contains forbidden construct ({name}): {_bounded(s)}")
     # DEFENSE-IN-DEPTH ONLY — never the primary control
     keyword_match = _KEYWORD_REGEX.search(s)
     if keyword_match:
         raise ForbiddenSQLError(
-            f"input contains forbidden keyword "
-            f"({keyword_match.group(1).upper()}): {_bounded(s)}"
+            f"input contains forbidden keyword ({keyword_match.group(1).upper()}): {_bounded(s)}"
         )

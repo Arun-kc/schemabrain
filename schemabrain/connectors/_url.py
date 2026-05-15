@@ -65,8 +65,6 @@ def safe_engine_url(url: str) -> SafeEngineUrl:
     safe_pairs = [(k, v) for (k, v) in pairs if k in URL_QUERY_PARAM_ALLOWLIST]
     dropped = sorted({k for (k, _) in pairs} - URL_QUERY_PARAM_ALLOWLIST)
     if dropped:
-        _logger.debug(
-            "dropped non-allowlisted URL query params: %s", ",".join(dropped)
-        )
+        _logger.debug("dropped non-allowlisted URL query params: %s", ",".join(dropped))
     safe_query = urlencode(safe_pairs)
     return SafeEngineUrl(urlunparse(parsed._replace(query=safe_query)))

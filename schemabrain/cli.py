@@ -112,6 +112,7 @@ _POSTGRES_SCHEMES: dict[str, int] = {
     "postgresql+asyncpg": 5432,
 }
 
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns process exit code."""
     parser = _build_parser()

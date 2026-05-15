@@ -99,13 +99,10 @@ def _validate_ident(part: str, *, role: IdentRole) -> None:
         raise ValueError(f"{role} must not be empty")
     if len(part) > _MAX_IDENT_LEN:
         raise ValueError(
-            f"{role} too long: {len(part)} chars (max {_MAX_IDENT_LEN}); "
-            f"got {_bounded_repr(part)}"
+            f"{role} too long: {len(part)} chars (max {_MAX_IDENT_LEN}); got {_bounded_repr(part)}"
         )
     if not _IDENT_REGEX.match(part):
-        raise ValueError(
-            f"{role} must match [A-Za-z_][A-Za-z0-9_$]*, got {_bounded_repr(part)}"
-        )
+        raise ValueError(f"{role} must match [A-Za-z_][A-Za-z0-9_$]*, got {_bounded_repr(part)}")
 
 
 def _parse_qualified_name(qualified_name: str) -> tuple[str, str]:
