@@ -233,7 +233,7 @@ For the headless Anthropic-SDK path, see [`examples/anthropic_demo.py`](examples
 ## Documentation
 
 - [`docs/architecture.md`](docs/architecture.md) — pipeline, retrieval contract, cache logic, cost model, eval, what's validated
-- [`docs/mcp-tools.md`](docs/mcp-tools.md) — full reference for the 4 MCP tools with example responses
+- [`docs/mcp-tools.md`](docs/mcp-tools.md) — full reference for the 5 MCP tools with example responses
 - [`docs/setup.md`](docs/setup.md) — Claude Desktop wiring + Anthropic SDK demo, with troubleshooting
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — dev setup, TDD expectations, conventional commits, architecture invariants
 - [`examples/`](examples/) — copy-paste-ready Claude Desktop config + headless agent loop using the official `mcp` Python SDK
