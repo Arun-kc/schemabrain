@@ -92,7 +92,14 @@ jobs:
         # exercised by integration tests (Postgres connector, profiler).
         # The 99% line+branch gate runs in the `integration` job, which
         # sees the full suite. This job is the fast PR-feedback signal.
-        run: uv run --python ${{ matrix.python-version }} pytest -m "not integration"
+        #
+        # `not slow` deselects the pytest-benchmark perf gate (10k-column
+        # retrieval p95). The benchmark's thresholds are tuned for
+        # local development hardware; shared GitHub-hosted x86_64
+        # runners are 2-3x slower on SQLite I/O and produce false
+        # positives. Run the perf gate locally with `pytest -m slow`
+        # before merging perf-sensitive changes.
+        run: uv run --python ${{ matrix.python-version }} pytest -m "not integration and not slow"
 
   security:
     name: Security scans (pip-audit + bandit + semgrep)
