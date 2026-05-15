@@ -76,7 +76,7 @@ jobs:
         run: uv run --python ${{ matrix.python-version }} pytest -m "not integration"
 
   security:
-    name: Security scans (pip-audit)
+    name: Security scans (pip-audit + bandit)
     runs-on: ubuntu-latest
     # Independent of lint-and-unit so a ruff failure doesn't hide a
     # CVE in deps, and a CVE in deps doesn't hide a ruff failure.
@@ -109,6 +109,20 @@ jobs:
           uv run --python 3.11 pip-audit \
             --strict \
             --ignore-vuln CVE-2025-71176
+
+      - name: bandit (Python SAST)
+        # Reads `[tool.bandit]` from pyproject.toml so the test/scripts
+        # exclusions and any future suppressions live in one place.
+        # `-ll` raises confidence + severity threshold to "low" — i.e.,
+        # we fail on Low/Medium/High of either, which is the strictest
+        # mode bandit ships. Inline `# nosec B608` comments justify the
+        # two known-safe identifier-only f-strings in
+        # `profiler/postgres.py`; any other finding fails the build.
+        run: |
+          uv run --python 3.11 bandit \
+            -c pyproject.toml \
+            -r schemabrain/ \
+            -ll
 
   integration:
     name: Integration (Docker / Postgres)

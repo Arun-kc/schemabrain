@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mode fails the build on any known-CVE dep. One transient suppression:
   CVE-2025-71176 (pytest local-DoS, dev-only, fix in 9.0.3 — Dependabot
   will ship the bump as its own PR).
+- `bandit` runs on every PR via the same `security` job (strictest
+  `-ll` threshold). Two `# nosec B608` suppressions on the two
+  identifier-only f-string SQL assemblies in `profiler/postgres.py`
+  — both audit-verified safe (all interpolated values come from
+  SQLAlchemy's `IdentifierPreparer.quote()`; no user input enters
+  the SQL string). Configuration lives in `[tool.bandit]` in
+  `pyproject.toml` and excludes tests/scripts where intentional
+  `assert` and fake-URL usage would generate noise.
 
 ### Changed
 - `schemabrain.__version__` is now read dynamically from package
