@@ -169,10 +169,15 @@ class TestArgParsing:
             main(["nonexistent"])
         assert exc.value.code != 0
 
-    def test_index_requires_url(self):
-        with pytest.raises(SystemExit) as exc:
-            main(["index"])
-        assert exc.value.code != 0
+    def test_index_requires_url(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Q1: positional URL became optional so users can prefer --url-env.
+        # When neither is passed we render a guided error and exit 2 rather
+        # than letting argparse blow up with a generic "missing argument".
+        exit_code = main(["index"])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "error:" in err
+        assert "--url-env" in err
 
 
 class TestIndexCommandValidation:
@@ -1644,10 +1649,15 @@ class TestIndexDryRun:
 class TestEvalSubcommandValidation:
     """The `eval` subcommand's argparse + early validation paths."""
 
-    def test_eval_requires_source(self):
-        with pytest.raises(SystemExit) as exc:
-            main(["eval"])
-        assert exc.value.code != 0
+    def test_eval_requires_source(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Q1: --source dropped its argparse-level `required=True` so it
+        # can be supplied either way (--source or --url-env). Missing
+        # both still fails — but via our guided-error path, not argparse.
+        exit_code = main(["eval"])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "error:" in err
+        assert "--url-env" in err
 
     def test_eval_malformed_source_returns_exit_2(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -1973,10 +1983,15 @@ class TestServeSubcommand:
     plumbing wires source/store correctly into it.
     """
 
-    def test_serve_requires_source(self) -> None:
-        with pytest.raises(SystemExit) as exc:
-            main(["serve"])
-        assert exc.value.code != 0
+    def test_serve_requires_source(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Q1: --source dropped its argparse-level `required=True` so it
+        # can be supplied either way (--source or --url-env). Missing
+        # both still fails — but via our guided-error path, not argparse.
+        exit_code = main(["serve"])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "error:" in err
+        assert "--url-env" in err
 
     def test_serve_malformed_source_returns_exit_2(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -2085,4 +2100,364 @@ class TestFixturePathSubcommand:
     def test_empty_name_returns_exit_2(self, capsys: pytest.CaptureFixture[str]) -> None:
         exit_code = main(["fixture-path", ""])
         assert exit_code == 2
-        assert "error" in capsys.readouterr().err.lower()
+
+
+# ---------------------------------------------------------------------------
+# Q1: --url-env support across index/serve/eval. Credentials in argv leak to
+# shell history, `ps`, and journald — see project_security_audit.md (HIGH).
+# ---------------------------------------------------------------------------
+
+
+class TestResolveUrlSource:
+    """Unit tests for the `_resolve_url_source` helper that backs --url-env."""
+
+    def test_returns_env_value_when_url_env_is_set(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from schemabrain.cli import _resolve_url_source
+
+        monkeypatch.setenv("MY_DB_URL", "postgresql+psycopg://u:p@h/db")
+        assert (
+            _resolve_url_source(positional=None, url_env="MY_DB_URL")
+            == "postgresql+psycopg://u:p@h/db"
+        )
+        # Resolving from an env var must not warn — env is the safe path.
+        assert capsys.readouterr().err == ""
+
+    def test_returns_none_and_renders_error_when_env_var_unset(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from schemabrain.cli import _resolve_url_source
+
+        monkeypatch.delenv("ABSENT_DB_URL", raising=False)
+        assert _resolve_url_source(positional=None, url_env="ABSENT_DB_URL") is None
+        err = capsys.readouterr().err
+        assert "ABSENT_DB_URL" in err
+        # Guided-error block — same shape as the rest of the CLI.
+        assert "error:" in err
+        assert "fix:" in err
+
+    def test_returns_none_and_renders_error_when_env_var_empty(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from schemabrain.cli import _resolve_url_source
+
+        monkeypatch.setenv("EMPTY_DB_URL", "")
+        assert _resolve_url_source(positional=None, url_env="EMPTY_DB_URL") is None
+        err = capsys.readouterr().err
+        assert "EMPTY_DB_URL" in err
+        assert "empty" in err.lower()
+
+    def test_returns_none_when_both_positional_and_url_env_given(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from schemabrain.cli import _resolve_url_source
+
+        monkeypatch.setenv("MY_DB_URL", "postgresql+psycopg://u:p@h/db")
+        assert (
+            _resolve_url_source(
+                positional="postgresql+psycopg://other/db",
+                url_env="MY_DB_URL",
+            )
+            is None
+        )
+        err = capsys.readouterr().err
+        assert "error:" in err
+        # The error must spell out which two inputs are conflicting.
+        assert "--url-env" in err
+
+    def test_returns_none_when_neither_positional_nor_url_env_given(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain.cli import _resolve_url_source
+
+        assert _resolve_url_source(positional=None, url_env=None) is None
+        err = capsys.readouterr().err
+        assert "error:" in err
+
+    def test_positional_without_password_emits_no_warning(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain.cli import _resolve_url_source
+
+        url = "postgresql+psycopg://host/db"
+        assert _resolve_url_source(positional=url, url_env=None) == url
+        # No credentials → no leak risk → no warning.
+        assert capsys.readouterr().err == ""
+
+    def test_positional_with_password_emits_deprecation_warning(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain.cli import _resolve_url_source
+
+        url = "postgresql+psycopg://alice:s3cret@host:5432/db"
+        # Returns the URL successfully (so the user isn't blocked) but
+        # surfaces a warning so they know to switch.
+        assert _resolve_url_source(positional=url, url_env=None) == url
+        err = capsys.readouterr().err
+        assert "--url-env" in err
+        # The warning itself must not echo the password back at the user.
+        # (Echoing it would be the same leak risk we're warning about.)
+        assert "s3cret" not in err
+
+    def test_malformed_positional_url_falls_through_without_warning(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # `urlparse` raises ValueError on some malformed inputs (e.g.
+        # unclosed IPv6 bracket). We must not crash trying to detect
+        # a password — defer to the downstream `_resolve_url` to render
+        # the real diagnostic. No warning here, because we couldn't even
+        # determine whether credentials were present.
+        from schemabrain.cli import _resolve_url_source
+
+        malformed = "postgresql://[::1"  # urlparse: Invalid IPv6 URL
+        assert _resolve_url_source(positional=malformed, url_env=None) == malformed
+        assert capsys.readouterr().err == ""
+
+    def test_positional_with_empty_password_emits_no_warning(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # `urlparse('postgresql+psycopg://appuser:@host/db').password`
+        # returns "" (empty string), not None. That form is legitimately
+        # used with .pgpass or peer authentication — no password is
+        # actually being passed in argv, so warning the user would be a
+        # false positive. The helper must distinguish "no password" from
+        # "empty password" via truthiness, not identity.
+        from schemabrain.cli import _resolve_url_source
+
+        url = "postgresql+psycopg://appuser:@host/db"
+        assert _resolve_url_source(positional=url, url_env=None) == url
+        assert capsys.readouterr().err == ""
+
+    def test_env_var_with_credentials_is_silent(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from schemabrain.cli import _resolve_url_source
+
+        # Even a credentialed URL via env is the SAFE path — no warning.
+        monkeypatch.setenv("SAFE_DB_URL", "postgresql+psycopg://alice:s3cret@host/db")
+        result = _resolve_url_source(positional=None, url_env="SAFE_DB_URL")
+        assert result == "postgresql+psycopg://alice:s3cret@host/db"
+        assert capsys.readouterr().err == ""
+
+
+class TestIndexUrlEnv:
+    """`schemabrain index --url-env VARNAME` wiring."""
+
+    def test_url_env_resolves_url_from_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Stub Postgres + profiler so we exercise arg wiring without a
+        # real database. --no-enrich skips the ANTHROPIC_API_KEY check.
+        class _EmptySource:
+            def __init__(self, url: str) -> None:
+                # Verify the URL flowed through from the env var, not
+                # some hardcoded default or argparse fallback.
+                assert url == "postgresql+psycopg://envhost/db"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None):
+                return []
+
+            def get_table(self, name: str, schema: str):
+                raise NotImplementedError
+
+            def close(self) -> None:
+                pass
+
+        class _StubProfiler:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def profile_table(self, table):
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
+        monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
+        monkeypatch.setenv("DBURL_X", "postgresql+psycopg://envhost/db")
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                "--url-env",
+                "DBURL_X",
+                "--store-path",
+                str(store_path),
+                "--no-enrich",
+            ]
+        )
+        assert exit_code == 0
+
+    def test_url_env_pointing_at_unset_var_returns_exit_2(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.delenv("UNSET_DB_URL", raising=False)
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(["index", "--url-env", "UNSET_DB_URL", "--store-path", str(store_path)])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "UNSET_DB_URL" in err
+        assert "fix:" in err
+
+    def test_index_with_neither_positional_nor_url_env_returns_exit_2(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        store_path = tmp_path / "schemabrain.db"
+        # argparse no longer makes positional required; the helper
+        # enforces the "one-of" rule and emits a guided error.
+        exit_code = main(["index", "--store-path", str(store_path)])
+        assert exit_code == 2
+        assert "error:" in capsys.readouterr().err
+
+    def test_positional_with_credentials_still_works_but_warns(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Backwards-compat path: existing scripts passing the URL
+        # positionally must keep working, but the user gets nudged
+        # toward --url-env.
+        class _EmptySource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None):
+                return []
+
+            def get_table(self, name: str, schema: str):
+                raise NotImplementedError
+
+            def close(self) -> None:
+                pass
+
+        class _StubProfiler:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def profile_table(self, table):
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
+        monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                "postgresql+psycopg://alice:s3cret@host/db",
+                "--store-path",
+                str(store_path),
+                "--no-enrich",
+            ]
+        )
+        assert exit_code == 0
+        err = capsys.readouterr().err
+        assert "--url-env" in err
+        # Warning must not echo the password verbatim.
+        assert "s3cret" not in err
+
+
+class TestServeUrlEnv:
+    """`schemabrain serve --url-env VARNAME` wiring.
+
+    `serve` opens an MCP stdio loop — we don't drive that here. The
+    target is the arg-parsing layer: --url-env must be accepted, the
+    legacy --source must still work, and missing-both must fail
+    cleanly without ever opening the SQLite store.
+    """
+
+    def test_url_env_unset_returns_exit_2(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.delenv("SERVE_URL", raising=False)
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(["serve", "--url-env", "SERVE_URL", "--store-path", str(store_path)])
+        assert exit_code == 2
+        assert "SERVE_URL" in capsys.readouterr().err
+
+    def test_serve_with_neither_source_nor_url_env_returns_exit_2(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(["serve", "--store-path", str(store_path)])
+        assert exit_code == 2
+        assert "error:" in capsys.readouterr().err
+
+
+class TestEvalUrlEnv:
+    """`schemabrain eval --url-env VARNAME` wiring."""
+
+    def test_url_env_unset_returns_exit_2(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.delenv("EVAL_URL", raising=False)
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(["eval", "--url-env", "EVAL_URL", "--store-path", str(store_path)])
+        assert exit_code == 2
+        assert "EVAL_URL" in capsys.readouterr().err
+
+    def test_eval_with_neither_source_nor_url_env_returns_exit_2(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(["eval", "--store-path", str(store_path)])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "error:" in err

@@ -8,6 +8,14 @@ run, generates LLM descriptions for changed columns (unless
 `--no-enrich`), and writes structural metadata, fingerprints, and
 descriptions to a local SQLite store.
 
+URL sourcing: every subcommand that needs a connection URL
+(`index`, `serve`, `eval`) accepts `--url-env VARNAME` to read the
+URL from a named environment variable. This keeps credentials out of
+argv (visible to `ps`, shell history, and journald). The legacy
+positional / `--source <url>` form still works for backwards
+compatibility but emits a deprecation warning when the URL contains
+a password.
+
 Re-running `index` against an unchanged source is a no-op: the
 fingerprint cache lets us skip introspection writes, profiler queries,
 AND LLM calls.
@@ -31,8 +39,9 @@ CLI works out of the box.
 store. Two tools are exposed: `find_relevant_tables` (embedding
 retrieval) and `describe_table` (full structural + semantic detail).
 Wire into Claude Desktop or any MCP client by adding an entry to
-`claude_desktop_config.json` that runs `schemabrain serve --source
-<URL> --store-path <PATH>`.
+`claude_desktop_config.json` that runs
+`schemabrain serve --url-env DATABASE_URL --store-path <PATH>` with
+`DATABASE_URL` set in the config's `env` block.
 """
 
 from __future__ import annotations
@@ -101,8 +110,9 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(verbosity=args.verbose)
     if args.command == "index":
         return _cmd_index(
-            args.url,
-            args.store_path,
+            positional_url=args.url,
+            url_env=args.url_env,
+            store_path=args.store_path,
             no_enrich=args.no_enrich,
             max_cost_usd=args.max_cost,
             enable_sonnet=args.enable_sonnet,
@@ -114,13 +124,15 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_eval(
             golden_path=args.golden,
             store_path=args.store_path,
-            source_url=args.source,
+            positional_url=args.source,
+            url_env=args.url_env,
             limit=args.limit,
             retriever_kind=args.retriever,
         )
     if args.command == "serve":
         return _cmd_serve(
-            source_url=args.source,
+            positional_url=args.source,
+            url_env=args.url_env,
             store_path=args.store_path,
         )
     if args.command == "fixture-path":
@@ -156,7 +168,21 @@ def _build_parser() -> argparse.ArgumentParser:
     p_index = sub.add_parser("index", help="Index a database into the local SQLite store")
     p_index.add_argument(
         "url",
-        help="Source database connection URL (e.g. postgresql://user:pass@host:5432/db)",
+        nargs="?",
+        default=None,
+        help="DEPRECATED: source database URL passed as a positional argument. "
+        "Embeds credentials in argv (visible to `ps`, shell history, journald) — "
+        "use --url-env instead. The positional form still works for backwards "
+        "compatibility but will emit a warning when the URL contains a password.",
+    )
+    p_index.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source database URL "
+        "(e.g. --url-env DATABASE_URL). Preferred over the positional form because "
+        "the URL — and any embedded password — never appears in argv.",
     )
     p_index.add_argument(
         "--store-path",
@@ -222,9 +248,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_eval.add_argument(
         "--source",
-        required=True,
+        default=None,
         help="The same source URL passed to `index` — used to resolve which "
-        "tables in the local store to score against.",
+        "tables in the local store to score against. DEPRECATED when the URL "
+        "contains a password; prefer --url-env. One of --source / --url-env "
+        "is required.",
+    )
+    p_eval.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL "
+        "(e.g. --url-env DATABASE_URL). Preferred over --source so credentials "
+        "never appear in argv. Mutually exclusive with --source.",
     )
     p_eval.add_argument(
         "--store-path",
@@ -260,9 +297,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_serve.add_argument(
         "--source",
-        required=True,
+        default=None,
         help="The same source URL passed to `index` — used to resolve which "
-        "tables in the local store the MCP tools operate against.",
+        "tables in the local store the MCP tools operate against. DEPRECATED "
+        "when the URL contains a password; prefer --url-env. One of --source / "
+        "--url-env is required.",
+    )
+    p_serve.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL "
+        "(e.g. --url-env DATABASE_URL). Preferred over --source so credentials "
+        "never appear in argv. Mutually exclusive with --source.",
     )
     p_serve.add_argument(
         "--store-path",
@@ -286,9 +334,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_index(
-    url: str,
-    store_path: str,
     *,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
     no_enrich: bool,
     max_cost_usd: float,
     enable_sonnet: bool,
@@ -296,6 +345,9 @@ def _cmd_index(
     quiet: bool = False,
     dry_run: bool = False,
 ) -> int:
+    url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if url is None:
+        return 2
     canonical = _resolve_url(url)
     if canonical is None:
         return 2
@@ -487,10 +539,14 @@ def _cmd_eval(
     *,
     golden_path: str,
     store_path: str,
-    source_url: str,
+    positional_url: str | None,
+    url_env: str | None,
     limit: int,
     retriever_kind: str,
 ) -> int:
+    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if source_url is None:
+        return 2
     if _resolve_url(source_url) is None:
         return 2
     source_id = _make_source_id(source_url)
@@ -542,7 +598,8 @@ def _cmd_eval(
 
 def _cmd_serve(
     *,
-    source_url: str,
+    positional_url: str | None,
+    url_env: str | None,
     store_path: str,
 ) -> int:
     """Run the MCP server on stdio against the local store.
@@ -553,6 +610,9 @@ def _cmd_serve(
     are read-only (no writes occur at MCP call time), so SQLite's
     single-writer limit is never approached.
     """
+    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if source_url is None:
+        return 2
     if _resolve_url(source_url) is None:
         return 2
     source_id = _make_source_id(source_url)
@@ -641,6 +701,100 @@ def _render_guided(err: GuidedError) -> None:
     fallback).
     """
     render_error(err, console=_stderr_console())
+
+
+def _resolve_url_source(
+    *,
+    positional: str | None,
+    url_env: str | None,
+) -> str | None:
+    """Resolve a connection URL from either a positional arg or a named env var.
+
+    Returns the raw URL string on success, or `None` after rendering a
+    guided error to stderr. Emits a single-line deprecation warning to
+    stderr when `positional` is used AND contains an embedded password,
+    nudging the user toward `--url-env`. Env-var resolution is always
+    silent — env is the safe path we're nudging users toward.
+
+    Rules:
+      - exactly one of {positional, url_env} must be provided
+      - `url_env` names an env var; the var must exist and be non-empty
+      - the warning does NOT echo the password back at the user (which
+        would defeat the point — the warning would itself become a leak
+        on a shared terminal or screen-recording)
+    """
+    if positional is not None and url_env is not None:
+        _render_guided(
+            GuidedError(
+                kind="url_source_conflict",
+                message="both a positional URL and --url-env were given",
+                why="only one source for the connection URL is allowed per run",
+                fix="pass either the positional URL or --url-env VARNAME, not both",
+                next_step="prefer --url-env so credentials never appear in argv",
+            )
+        )
+        return None
+    if positional is None and url_env is None:
+        _render_guided(
+            GuidedError(
+                kind="url_source_missing",
+                message="no connection URL provided",
+                why="schemabrain needs a Postgres URL to reach your source database",
+                fix="re-run with --url-env VARNAME (where VARNAME holds the URL), "
+                "OR pass the URL positionally (less safe — leaks creds to argv)",
+                next_step="see docs/setup.md for the canonical URL format",
+            )
+        )
+        return None
+    if url_env is not None:
+        value = os.environ.get(url_env)
+        if value is None:
+            _render_guided(
+                GuidedError(
+                    kind="url_env_unset",
+                    message=f"environment variable {url_env!r} is not set",
+                    why="--url-env names an env var that must hold the connection URL",
+                    fix=f"export {url_env}=postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME",
+                    next_step="see docs/setup.md for the canonical URL format",
+                )
+            )
+            return None
+        if value == "":
+            _render_guided(
+                GuidedError(
+                    kind="url_env_empty",
+                    message=f"environment variable {url_env!r} is set but empty",
+                    why="--url-env names an env var that must hold the connection URL",
+                    fix=f"export {url_env}=postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME",
+                    next_step="see docs/setup.md for the canonical URL format",
+                )
+            )
+            return None
+        return value
+    # Positional path. We accept it for backwards compatibility, but if
+    # it embeds a non-empty password we warn — that's the exact leak the
+    # audit flagged HIGH (argv visible to ps, shell history, journald).
+    # We deliberately do NOT echo the password in the warning.
+    # Truthiness (not `is not None`) is intentional: `urlparse` returns
+    # an empty string for `user:@host`, a valid no-password form used
+    # by .pgpass / peer-auth setups. An empty password isn't a leak.
+    # By this branch, `positional` is guaranteed non-None (the earlier
+    # both-None guard would have returned).
+    parsed_password: str | None = None
+    try:
+        parsed_password = urlparse(positional).password
+    except ValueError:
+        # Malformed URL — let downstream _resolve_url surface the real
+        # error rather than guessing here.
+        parsed_password = None
+    if parsed_password:
+        print(
+            "warning: passing a credentialed URL on the command line leaks the "
+            "password into shell history, `ps`, and process logs. Use "
+            "--url-env VARNAME to read the URL from an environment variable.",
+            file=sys.stderr,
+        )
+    return positional
 
 
 def _resolve_url(url: str) -> str | None:

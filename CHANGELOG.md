@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to a bundled fixture (`ecommerce.sql`) or golden set
   (`ecommerce.json`). Designed for shell substitution in the README
   quickstart. Rejects path separators, `.`, `..`, and symlink escapes.
+- `--url-env VARNAME` flag on `schemabrain index`, `serve`, and `eval`.
+  Reads the connection URL from a named environment variable so the
+  password never appears in argv (visible to `ps`, shell history, and
+  journald). New scripts should prefer `--url-env` over the positional
+  URL form. Closes the HIGH-severity finding from the 2026-05-11
+  security audit.
 
 ### Changed
 - `schemabrain.__version__` is now read dynamically from package
@@ -22,6 +28,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README quickstart uses `$(schemabrain fixture-path ecommerce.sql)`
   for the seed step instead of an inline Python path-resolution
   expression.
+- README, `docs/setup.md`, and the Claude Desktop / Cursor example
+  configs now lead with `--url-env DATABASE_URL` and an `env:` block
+  for the URL. The legacy positional / `--source <url>` form still
+  works for backwards compatibility but emits a one-line stderr
+  deprecation warning when the URL contains a password.
+- `schemabrain index` no longer requires the positional URL at the
+  argparse layer (`nargs="?"`). Either `--url-env` or the positional
+  URL is now required, and the missing-both case renders a guided
+  error instead of an argparse usage dump.
+- `schemabrain serve --source` and `schemabrain eval --source` are no
+  longer marked `required=True` at the argparse layer. Either flag
+  (`--source` or `--url-env`) satisfies the requirement; passing both
+  is a guided error.
 
 ## [0.1.0a1] - 2026-05-11
 
