@@ -30,6 +30,7 @@ from mcp.types import ToolAnnotations
 
 from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
+from schemabrain.mcp._helpers import _MAX_IDENT_LEN
 from schemabrain.mcp.describe_column import describe_column_impl
 from schemabrain.mcp.describe_table import describe_table_impl
 from schemabrain.mcp.envelope import (
@@ -98,12 +99,18 @@ def _safe_table_part(qualified_name: str) -> str | None:
     Returns `None` if the input isn't shaped like a two-part qualified
     name. Used to populate `suggested_args.query` when an `unknown_name`
     error points the agent back to `find_relevant_tables`.
+
+    Length-bounded defensively: even though every current caller runs
+    through `_parse_qualified_name` first (so parts are at most
+    `_MAX_IDENT_LEN`), this function should be safe at any callsite
+    in case a future code path skips parse validation.
     """
     parts = qualified_name.split(".")
-    if len(parts) == 2 and all(parts):
-        return parts[1]
-    if len(parts) == 3 and all(parts):
-        return parts[1]
+    if len(parts) in (2, 3) and all(parts):
+        candidate = parts[1]
+        if len(candidate) > _MAX_IDENT_LEN:
+            return None
+        return candidate
     return None
 
 

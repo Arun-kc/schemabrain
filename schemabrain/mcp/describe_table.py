@@ -24,8 +24,11 @@ def describe_table_impl(
 
     table = store.get_table(schema, name, source_connection_id=source_connection_id)
     if table is None:
+        # Reconstruct from validated parts rather than echoing the raw
+        # user input — consistent with the bounded-echo discipline on
+        # `_parse_qualified_name`'s error path.
         raise TableNotFoundError(
-            f"{qualified_name} is not in the store for source "
+            f"{schema}.{name} is not in the store for source "
             f"{source_connection_id!r}. Run `schemabrain index` against the "
             f"source database first."
         )

@@ -160,3 +160,40 @@ class TestSourceIdResolution:
         # Pipeline call gets the right source_id.
         kwargs = fake_mine.call_args.kwargs
         assert kwargs["source_connection_id"] == expected_source_id
+
+
+class TestOperationalErrorSurfacesAsGuidedMessage:
+    """A connection-side failure (wrong host, auth failure, timeout)
+    must produce a guided message, not a raw SQLAlchemy traceback —
+    consistent with every other Postgres-touching subcommand.
+    """
+
+    def test_operational_error_returns_two_with_guided_message(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from sqlalchemy.exc import OperationalError
+
+        store_path = tmp_path / "schemabrain.db"
+
+        def _raise_operational(*_args: object, **_kwargs: object) -> None:
+            raise OperationalError("connection refused", {}, Exception())
+
+        monkeypatch.setattr("schemabrain.cli.mine_queries", _raise_operational)
+
+        exit_code = main(
+            [
+                "mine-queries",
+                "--source",
+                "postgresql+psycopg://user:pw@unreachable:5432/db",
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        # Guided message text, not a Python traceback marker.
+        assert "Traceback" not in err
+        assert "connection" in err.lower() or "operational" in err.lower()

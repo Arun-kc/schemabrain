@@ -20,8 +20,10 @@ from __future__ import annotations
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.pool import NullPool
 from sqlalchemy.sql.compiler import IdentifierPreparer
 
+from schemabrain.connectors._url import safe_engine_url
 from schemabrain.connectors.errors import TableNotFoundError
 from schemabrain.core.models import Table
 from schemabrain.profiler.stats import (
@@ -55,9 +57,13 @@ class PostgresProfiler:
         # enforcement of read-only access on the source database. The
         # profiler only ever issues SELECT, but a defense-in-depth flag
         # at session level prevents a future regression from silently
-        # mutating customer data.
+        # mutating customer data. `NullPool` eliminates the latent
+        # pool-state-pollution surface that would otherwise become live
+        # the moment any future feature issues a `SET` on a pooled
+        # connection.
         self._engine: Engine | None = create_engine(
-            url,
+            safe_engine_url(url),
+            poolclass=NullPool,
             connect_args={"options": "-c default_transaction_read_only=on"},
         )
 

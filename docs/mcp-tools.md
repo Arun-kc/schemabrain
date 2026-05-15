@@ -1,6 +1,6 @@
 # MCP tool reference
 
-All four tools return Pydantic-typed structured output. Every response
+All five tools return Pydantic-typed structured output. Every response
 includes a `token_estimate` so agents can budget context.
 
 ## `find_relevant_tables(query: str, limit: int = 10) -> list[TableHit]`
@@ -85,4 +85,38 @@ within `max_hops` land in `unreachable_pairs`.
 ```
 
 `confidence` is `1.0` for declared FKs at v0; query-log-inferred edges
-(planned for v0) will land below 1.0.
+(planned for v1) will land below 1.0.
+
+## `get_example_queries(qualified_name: str) -> ExampleQueriesResult`
+
+Returns SQL statements that have actually been observed running against a
+table, sourced from `pg_stat_statements`. Each example carries an
+observation count, first/last seen timestamps, and a sensitivity tag
++ PII category set.
+
+Run `schemabrain mine-queries --source $DATABASE_URL --store-path ./schemabrain.db`
+once (or on a schedule) to populate the example-queries cache from
+`pg_stat_statements`. Until then, this tool returns `status: empty` with a
+recovery hint.
+
+```json
+{
+  "qualified_name": "public.orders",
+  "items": [
+    {
+      "sql_text": "SELECT id, user_id, total_cents FROM public.orders WHERE created_at >= $1",
+      "observation_count": 1247,
+      "first_seen_at": 1736064000,
+      "last_seen_at": 1736150400,
+      "source": "pg_stat_statements",
+      "sensitivity": "public",
+      "pii_categories": []
+    }
+  ],
+  "token_estimate": 132
+}
+```
+
+Pass `qualified_name` as `schema.name` — same shape as `describe_table`.
+Tables with no observed queries (or before `mine-queries` has run) return
+an empty result with a follow-up hint.

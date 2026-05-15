@@ -46,6 +46,34 @@ Re-running `index` against an unchanged schema is a **no-op** — 0 LLM calls, 0
 
 For cost-free dry runs (no LLM, no embeddings), pass `--no-enrich`.
 
+## 0.5. (Optional) Mine observed queries
+
+`get_example_queries` returns SQL agents (and humans) have actually
+run against your tables. To populate it, run `mine-queries` once
+(or on a schedule):
+
+```bash
+schemabrain mine-queries \
+    --url-env DATABASE_URL \
+    --store-path ./schemabrain.db
+```
+
+Requires the `pg_stat_statements` extension on the source database:
+
+```sql
+-- One-time, as a superuser, in postgresql.conf:
+--   shared_preload_libraries = 'pg_stat_statements'
+-- then restart Postgres.
+CREATE EXTENSION pg_stat_statements;
+```
+
+The mining role needs read access to the `pg_stat_statements` view
+(superusers always have it; non-super roles need `pg_read_all_stats`).
+If the extension or grant is missing, `mine-queries` exits cleanly
+with an actionable message — no row is written, the store stays
+intact, and `get_example_queries` keeps returning `status: empty`
+with a recovery hint pointed at this section.
+
 ## Path 1 — Claude Desktop (or Cursor)
 
 Add Schema Brain to Claude Desktop's MCP server config:

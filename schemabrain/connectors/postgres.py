@@ -7,7 +7,9 @@ from typing import Any
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import NoSuchTableError
+from sqlalchemy.pool import NullPool
 
+from schemabrain.connectors._url import safe_engine_url
 from schemabrain.connectors.errors import TableNotFoundError
 from schemabrain.core.models import Column, ForeignKey, Table
 
@@ -37,8 +39,20 @@ class PostgresDataSource:
         # A future profiler PR that accidentally issues a write would
         # fail with a clear Postgres error rather than silently mutating
         # a customer's production database.
+        #
+        # `NullPool` opens a fresh connection per request and discards it
+        # on close. This eliminates the pool-state-pollution attack
+        # surface that would otherwise become live the moment any future
+        # feature issues a `SET` or `SET LOCAL` on a pooled connection.
+        # Cost: a few ms per call; `index`/`serve` are short-running per
+        # process so connection reuse buys nothing observable here.
+        # `safe_engine_url` filters smuggled session-config params out of
+        # the URL query string before SQLAlchemy sees them; library
+        # callers get the filter automatically without remembering to
+        # call a CLI-side helper.
         self._engine: Engine | None = create_engine(
-            url,
+            safe_engine_url(url),
+            poolclass=NullPool,
             connect_args={"options": "-c default_transaction_read_only=on"},
         )
 
