@@ -19,7 +19,9 @@ independently — that can corrupt the DB.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import math
 import sqlite3
 import struct
 import time
@@ -29,10 +31,17 @@ from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
 from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
 
-# Bumped to "2" in Slice 4-B when `column_embeddings` was added. Older
-# stores raise SchemaVersionMismatchError; pre-alpha users re-create.
-_SCHEMA_VERSION = "2"
+# "2" → Slice 4-B added `column_embeddings`. "3" → Phase A Commit 2
+# adds `cost_ledger` for cross-process spend persistence. Older stores
+# raise SchemaVersionMismatchError; pre-alpha users re-create.
+_SCHEMA_VERSION = "3"
 _MEMORY_PATH = ":memory:"
+
+# 1 USD = 1_000_000 micros. Storing the ledger as INTEGER micros avoids
+# float accumulation drift over many small adds (1000 x $0.001 must
+# equal exactly $1.00). Sub-micro precision (<$0.000001) is rounded
+# away at the add boundary — well below any per-call LLM cost today.
+_MICROS_PER_USD = 1_000_000
 
 # float32 = 4 bytes per dim. BLOBs are little-endian packed via struct.
 _FLOAT32_FORMAT = "<f"
@@ -146,6 +155,19 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         FOREIGN KEY (schema_name, table_name, source_connection_id)
             REFERENCES tables (schema_name, name, source_connection_id)
             ON DELETE CASCADE
+    )
+    """,
+    # Cost ledger: cumulative USD spent per `source_connection_id`.
+    # Lives outside the `tables` FK graph because spend persists across
+    # delete_table operations — a user who deletes a table and re-runs
+    # `index` has STILL paid for the prior enrichment.
+    # `spent_usd_micros` is an INTEGER (1 USD = 1_000_000 micros); see
+    # `_MICROS_PER_USD` for rationale.
+    """
+    CREATE TABLE IF NOT EXISTS cost_ledger (
+        source_connection_id TEXT PRIMARY KEY,
+        spent_usd_micros INTEGER NOT NULL DEFAULT 0,
+        last_updated INTEGER NOT NULL
     )
     """,
 )
@@ -667,6 +689,146 @@ class SQLiteStore:
                     for col_name, emb in embeddings.items()
                 ],
             )
+
+    # ----- Cost ledger ---------------------------------------------
+    #
+    # Phase A Commit 2 surface. Persists cumulative USD spent per
+    # `source_connection_id` so a re-run after a crash sees the prior
+    # total and refuses the next call if it has already breached the
+    # cap. Without this layer, a crash mid-enrichment would let the
+    # next run start from $0 — the user has already been billed.
+    #
+    # Storage is INTEGER micros (1 USD = 1_000_000 micros) to avoid
+    # float accumulation drift. Sub-micro precision is rounded away at
+    # the `add_spend_usd` boundary — well below any per-call LLM cost
+    # today.
+    #
+    # Atomicity: `add_spend_usd`'s SELECT-then-INSERT-OR-REPLACE is
+    # wrapped in `BEGIN IMMEDIATE` when `writer_lock=True` so two
+    # processes operating on the same DB file cannot lose updates. In
+    # the single-process case, sqlite3's connection-level serialisation
+    # is enough.
+
+    def get_spend_usd(self, *, source_connection_id: str) -> float:
+        """Return cumulative USD spent on `source_connection_id`.
+
+        Returns `0.0` when no row exists for the source — callers do
+        not need to special-case "first call." Returning `None` would
+        force every consumer into `(get_spend(...) or 0.0)` boilerplate
+        forever.
+        """
+        conn = self._require_conn()
+        row = conn.execute(
+            "SELECT spent_usd_micros FROM cost_ledger WHERE source_connection_id = ?",
+            (source_connection_id,),
+        ).fetchone()
+        if row is None:
+            return 0.0
+        return row["spent_usd_micros"] / _MICROS_PER_USD
+
+    def add_spend_usd(self, *, source_connection_id: str, amount_usd: float) -> float:
+        """Atomically add `amount_usd` to the ledger; return the new total.
+
+        Validates `amount_usd >= 0` and `math.isfinite(amount_usd)` —
+        defence-in-depth against a buggy adapter or a direct caller
+        bypassing the pipeline's runtime guard.
+
+        When `writer_lock=True`, the SELECT-then-INSERT-OR-REPLACE is
+        wrapped in `BEGIN IMMEDIATE` so a concurrent process cannot
+        slip a write between the read and the write. Without
+        `writer_lock`, the implicit transaction model is sufficient
+        for single-process concurrency (sqlite3 serialises writes on
+        one connection via the GIL).
+        """
+        if not math.isfinite(amount_usd):
+            raise ValueError(
+                f"amount_usd must be finite, got {amount_usd!r}. "
+                "Cost values must be finite real numbers; pipeline's "
+                "runtime guard catches this earlier — this check is "
+                "defence-in-depth for direct ledger callers."
+            )
+        if amount_usd < 0:
+            raise ValueError(
+                f"amount_usd must be non-negative, got {amount_usd!r}. "
+                "The ledger is a monotonic increment counter; refunds "
+                "or reversals are out of scope (use reset semantics in "
+                "a future commit if needed)."
+            )
+        # Round to nearest micro. `round()` ties-to-even is fine — any
+        # per-call cost above ~$0.000001 (1 micro) is preserved exactly;
+        # anything below that is rounded which is the expected loss.
+        # `round(x)` returns `int` when called with no second arg — no
+        # explicit cast needed.
+        scaled = amount_usd * _MICROS_PER_USD
+        if not math.isfinite(scaled):
+            # `amount_usd` was finite per the guard above, but the
+            # multiplication by 1e6 can overflow to `inf` for finite
+            # inputs above ~1.8e302. `round(inf)` raises OverflowError
+            # which would surface as an undocumented exception type.
+            # Reject the input cleanly via the same ValueError shape
+            # the rest of the validators use. Per security-reviewer
+            # audit 2026-05-15.
+            raise ValueError(
+                f"amount_usd * {_MICROS_PER_USD} overflows to non-finite: "
+                f"{amount_usd!r}. No legitimate per-call LLM cost is this large; "
+                f"reject as a likely buggy-adapter signal."
+            )
+        amount_micros = round(scaled)
+        conn = self._require_conn()
+        # Toggle isolation_level to manage the transaction explicitly.
+        # The default (`""` = deferred BEGIN) auto-starts a transaction
+        # on the first write statement, but doesn't let us issue an
+        # explicit `BEGIN IMMEDIATE` before the SELECT — which is the
+        # whole point of writer_lock. Restoring isolation_level in the
+        # `finally` block keeps the rest of the store's `with conn:`
+        # paths working as before.
+        #
+        # **Thread safety:** This toggle is NOT thread-safe. Two
+        # threads calling `add_spend_usd` on the same `SQLiteStore`
+        # instance would race on the save/restore — Thread B's save
+        # captures Thread A's `None`, then Thread A's `finally`
+        # restores the original, then Thread B's `finally` restores
+        # `None` — leaving the connection in autocommit mode
+        # permanently. The module docstring's "callers MUST serialise
+        # writes themselves" contract covers this; current call sites
+        # (asyncio Lock in `EnrichmentPipeline._record_spend`,
+        # single-threaded indexer) all serialise.
+        saved_isolation = conn.isolation_level
+        conn.isolation_level = None
+        try:
+            begin_stmt = "BEGIN IMMEDIATE" if self.writer_lock else "BEGIN"
+            conn.execute(begin_stmt)
+            try:
+                row = conn.execute(
+                    "SELECT spent_usd_micros FROM cost_ledger WHERE source_connection_id = ?",
+                    (source_connection_id,),
+                ).fetchone()
+                current_micros = row["spent_usd_micros"] if row is not None else 0
+                new_micros = current_micros + amount_micros
+                conn.execute(
+                    "INSERT OR REPLACE INTO cost_ledger "
+                    "(source_connection_id, spent_usd_micros, last_updated) "
+                    "VALUES (?, ?, ?)",
+                    (source_connection_id, new_micros, int(time.time())),
+                )
+                conn.execute("COMMIT")
+                return new_micros / _MICROS_PER_USD
+            except BaseException:
+                # Rollback might itself fail if no transaction is
+                # active (e.g., BEGIN IMMEDIATE raised on a held lock)
+                # or the connection is in a degraded state
+                # (ProgrammingError on closed conn, InterfaceError on
+                # binding mismatch). Suppress the WHOLE
+                # `sqlite3.DatabaseError` family so the original
+                # exception — the load-bearing signal — is preserved.
+                # Narrower `OperationalError` would let
+                # `ProgrammingError` replace the root cause. Per
+                # silent-failure-hunter audit 2026-05-15.
+                with contextlib.suppress(sqlite3.DatabaseError):
+                    conn.execute("ROLLBACK")
+                raise
+        finally:
+            conn.isolation_level = saved_isolation
 
     def search_embeddings_topk(
         self,

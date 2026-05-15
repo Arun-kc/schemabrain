@@ -893,6 +893,14 @@ class TestEnrichmentCliFlags:
             "schemabrain.cli.anthropic_haiku_45_client",
             lambda *, api_key=None: _ExpensiveClient(api_key=api_key),
         )
+        # `concurrency=1` makes the per-task cap check strict so the
+        # second call after a cap-breaching first is refused
+        # deterministically. Under default concurrency=8, all in-flight
+        # tasks complete before any cap check sees the breach — fine
+        # for production but not for this regression test. Per Phase A
+        # Commit 2.
+        monkeypatch.setattr("schemabrain.cli._PIPELINE_DEFAULT_CONCURRENCY", 1)
+        monkeypatch.setattr("schemabrain.cli._PIPELINE_CRYPTIC_CONCURRENCY", 1)
 
         store_path = tmp_path / "schemabrain.db"
         exit_code = main(
@@ -1014,6 +1022,10 @@ class TestEnrichmentCliFlags:
             "schemabrain.cli.anthropic_haiku_45_client",
             lambda *, api_key=None: _ExpensiveClient(api_key=api_key),
         )
+        # `concurrency=1` for deterministic cap-trip ordering — see
+        # the cap-test rationale on `test_cost_cap_exceeded_returns_exit_3`.
+        monkeypatch.setattr("schemabrain.cli._PIPELINE_DEFAULT_CONCURRENCY", 1)
+        monkeypatch.setattr("schemabrain.cli._PIPELINE_CRYPTIC_CONCURRENCY", 1)
 
         # Record whether close() fired before "error:" hit stderr. We
         # use sys.stderr directly rather than capsys.readouterr() inside

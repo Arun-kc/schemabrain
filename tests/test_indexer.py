@@ -590,9 +590,15 @@ class TestEnrichmentIntegration:
         store = SQLiteStore(":memory:")
         # Cap that allows the first call but trips on the second.
         # Each huge response costs ~$5; cap of $2 lets call 1 through
-        # and triggers the cap on entry to call 2.
+        # and triggers the cap on entry to call 2. `default_concurrency=1`
+        # makes the per-task cap check strict (cap trips deterministically
+        # after the first call completes; the second is refused). Under
+        # default concurrency=8 the pre-call check races, all in-flight
+        # tasks complete, and the cap is approximately enforced — fine
+        # for production but not for this regression test which pins
+        # exact ordering. Per Commit 2 (Phase A async enrichment).
         client = FakeLLMClient(text_provider=lambda s, u: "x" * 5_000_000)
-        pipeline = EnrichmentPipeline(client=client, max_cost_usd=2.0)
+        pipeline = EnrichmentPipeline(client=client, max_cost_usd=2.0, default_concurrency=1)
 
         with pytest.raises(CostCapExceeded):
             index(
@@ -621,7 +627,8 @@ class TestEnrichmentIntegration:
         from schemabrain.enrichment.pipeline import EnrichmentPipeline
 
         client = FakeLLMClient(text_provider=lambda s, u: "x" * 5_000_000)
-        pipeline = EnrichmentPipeline(client=client, max_cost_usd=0.5)
+        # `default_concurrency=1` — see cap-test rationale above.
+        pipeline = EnrichmentPipeline(client=client, max_cost_usd=0.5, default_concurrency=1)
 
         with pytest.raises(CostCapExceeded):
             index(
@@ -856,7 +863,9 @@ class TestEmbeddingIntegration:
         profiler = CountingProfiler()
         store = SQLiteStore(":memory:")
         client = FakeLLMClient(text_provider=lambda s, u: "x" * 5_000_000)
-        pipeline = EnrichmentPipeline(client=client, max_cost_usd=2.0)
+        # `default_concurrency=1` — see cap-test rationale in the
+        # description-side cost-cap test.
+        pipeline = EnrichmentPipeline(client=client, max_cost_usd=2.0, default_concurrency=1)
         embedder = self._embedder()
 
         with pytest.raises(CostCapExceeded):

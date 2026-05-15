@@ -133,6 +133,34 @@ class Store(Protocol):
         embeddings: dict[str, ColumnEmbedding],
     ) -> None: ...
 
+    # ----- Cost ledger (Phase A Commit 2) ---------------------------
+    #
+    # Persists cumulative USD spent per `source_connection_id` so that
+    # a process crash mid-enrichment doesn't let the next run start
+    # from $0. Future store backends MUST implement these — the cost
+    # cap depends on them.
+
+    def get_spend_usd(self, *, source_connection_id: str) -> float:
+        """Return cumulative USD spent on `source_connection_id`. 0.0 if absent."""
+        ...
+
+    def add_spend_usd(self, *, source_connection_id: str, amount_usd: float) -> float:
+        """Atomically add `amount_usd` to the ledger; return new total.
+
+        Implementations MUST:
+        - Validate `amount_usd` is finite and non-negative; raise
+          `ValueError` if not.
+        - Guarantee atomic read-modify-write under concurrent access —
+          a concurrent caller cannot slip a write between this call's
+          read and write, producing a lost-update. `SQLiteStore` honours
+          this via `BEGIN IMMEDIATE` when `writer_lock=True`; other
+          backends pick their own primitive (Redis WATCH/MULTI/EXEC,
+          DynamoDB conditional update, etc.).
+        - Persist the new total durably before returning so a crash
+          immediately after the return doesn't lose the write.
+        """
+        ...
+
     # ----- Embedding retrieval (filled in Phase A Commit 3) ---------
     #
     # New seam introduced in Phase A. v1 retrieval today loads

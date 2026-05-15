@@ -448,6 +448,12 @@ class TestStoreProtocolSeamUsable:
             ) -> list[tuple[str, str, str, float]]:
                 return []
 
+            def get_spend_usd(self, *, source_connection_id: str) -> float:
+                return 0.0
+
+            def add_spend_usd(self, *, source_connection_id: str, amount_usd: float) -> float:
+                return amount_usd
+
         store = _InMemoryStore()
         assert isinstance(store, Store), (
             "A minimal in-memory Store impl must satisfy the Protocol "

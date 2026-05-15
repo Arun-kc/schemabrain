@@ -57,6 +57,7 @@ needs the same plumbing.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -282,28 +283,44 @@ def index(
         # the table-level cost is acceptable and the code stays simple.
         stats = profiler.profile_table(table)
 
-        # Enrich BEFORE writing fingerprints. If `enrich_column` raises
+        # Enrich BEFORE writing fingerprints. If enrichment raises
         # (CostCapExceeded, network error, etc.) we want the cache to
         # remain in its pre-table state so the next run's diff still
         # marks this table as changed and retries. Profiling the source
         # again is cheap; losing the description-cache invariant is not.
+        #
+        # Async batch via `enrich_columns_async`: all columns for this
+        # table run concurrently (bounded by the pipeline's per-tier
+        # semaphores). For a 30-column table at ~600ms per LLM call,
+        # this turns ~18s of serial latency into ~3s wall-clock under
+        # default Haiku concurrency=8. `asyncio.run` opens and closes
+        # a fresh event loop per table — fine here because tables are
+        # processed sequentially in the outer loop, and a per-table
+        # loop scope is the cleanest place to cancel pending tasks if
+        # one column raises.
         descriptions: dict[str, ColumnDescription] = {}
         if pipeline is not None:
-            for col in table.columns:
-                desc = pipeline.enrich_column(
+            stats_by_col = dict(stats)
+            fk_targets_by_col = {
+                col.name: fk_targets_for_column(table, col.name) for col in table.columns
+            }
+            descriptions = asyncio.run(
+                pipeline.enrich_columns_async(
                     table=table,
-                    column=col,
-                    stats=stats.get(col.name),
-                    fk_targets=fk_targets_for_column(table, col.name),
+                    columns=list(table.columns),
+                    stats_by_col=stats_by_col,
+                    fk_targets_by_col=fk_targets_by_col,
                 )
-                descriptions[col.name] = desc
-                descriptions_generated += 1
-                reporter.on_column_enriched(
-                    schema=schema,
-                    name=name,
-                    column=col.name,
-                    spent_usd=pipeline.spent_usd,
-                )
+            )
+            descriptions_generated += len(descriptions)
+            for col in table.columns:
+                if col.name in descriptions:
+                    reporter.on_column_enriched(
+                        schema=schema,
+                        name=name,
+                        column=col.name,
+                        spent_usd=pipeline.spent_usd,
+                    )
 
         # Embed AFTER all descriptions for the table are in hand. Done in
         # this order so a partial failure inside enrichment never leaves
