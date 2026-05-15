@@ -42,6 +42,7 @@ from schemabrain.enrichment.llm import (
     LLMClient,
     LLMResponse,
     LLMUsage,
+    anthropic_cost_fn_for_model,
     haiku_45_cost_usd,
     sonnet_46_cost_usd,
 )
@@ -454,6 +455,65 @@ class TestStoreProtocolSeamUsable:
             "any contributor can swap in a new backend by satisfying "
             "the same surface."
         )
+
+
+class TestAnthropicResolverWhitespaceTolerance:
+    """`anthropic_cost_fn_for_model` strips whitespace from model strings.
+
+    Anthropic API responses have been observed returning model names with
+    formatting artifacts (leading or trailing whitespace). Without
+    stripping, a benign whitespace artifact would raise `ValueError` at
+    adapter construction — silently breaking production while passing
+    every test that uses literal-string model names. Per type-design
+    audit 2026-05-15 (HIGH).
+    """
+
+    def test_strips_leading_whitespace(self) -> None:
+        cost_fn = anthropic_cost_fn_for_model("  claude-haiku-4-5")
+        usage = LLMUsage(input_tokens=1_000_000, cached_input_tokens=0, output_tokens=0)
+        assert math.isclose(cost_fn(usage), 0.80, rel_tol=1e-9)
+
+    def test_strips_trailing_whitespace(self) -> None:
+        cost_fn = anthropic_cost_fn_for_model("claude-sonnet-4-6  ")
+        usage = LLMUsage(input_tokens=1_000_000, cached_input_tokens=0, output_tokens=0)
+        assert math.isclose(cost_fn(usage), 3.00, rel_tol=1e-9)
+
+    def test_strips_both_ends_with_date_suffix(self) -> None:
+        # Real-world shape: API stamps a date AND wraps in whitespace.
+        cost_fn = anthropic_cost_fn_for_model("  claude-haiku-4-5-20251001  ")
+        usage = LLMUsage(input_tokens=1_000_000, cached_input_tokens=0, output_tokens=0)
+        assert math.isclose(cost_fn(usage), 0.80, rel_tol=1e-9)
+
+
+class TestFakeLLMClientReadOnlyModel:
+    """`FakeLLMClient.model` is read-only.
+
+    Changing `model` after construction would leave `_cost_fn` stale and
+    silently mis-price subsequent calls. `AnthropicClient` already solves
+    this with a read-only `@property` backed by `self._model`. The test
+    double must match — otherwise tests that pass with the fake would
+    fail with the real client. Per type-design audit 2026-05-15 (MEDIUM).
+    """
+
+    def test_model_setter_raises_attribute_error(self) -> None:
+        client = FakeLLMClient(text_provider=lambda s, u: "x")
+        with pytest.raises(AttributeError):
+            client.model = "claude-sonnet-4-6"  # type: ignore[misc]
+
+    def test_model_remains_value_passed_at_construction(self) -> None:
+        client = FakeLLMClient(text_provider=lambda s, u: "x", model="claude-sonnet-4-6")
+        assert client.model == "claude-sonnet-4-6"
+
+    def test_cost_usd_uses_construction_time_model(self) -> None:
+        # Belt-and-braces: even if a future contributor adds a setter,
+        # `cost_usd` must reflect the construction-time pricing — not a
+        # post-construction mutation. This pins the invariant from the
+        # other side.
+        client = FakeLLMClient(text_provider=lambda s, u: "x", model="claude-sonnet-4-6")
+        usage = LLMUsage(input_tokens=1_000_000, cached_input_tokens=0, output_tokens=0)
+        # Sonnet rate at 1M tokens = $3.00 — proves the Sonnet
+        # cost function was bound, not Haiku's.
+        assert math.isclose(client.cost_usd(usage), 3.00, rel_tol=1e-9)
 
 
 class TestUsageCostFunctionsRemainExported:

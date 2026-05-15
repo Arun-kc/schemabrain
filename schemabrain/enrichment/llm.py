@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 CostFn = Callable[["LLMUsage"], float]
@@ -147,11 +147,21 @@ def anthropic_cost_fn_for_model(model: str) -> CostFn:
        indirection on the stashed reference — no per-call regex match,
        no central dispatch table to update for a new provider.
 
+    Whitespace tolerance: leading/trailing whitespace is stripped before
+    matching. Anthropic API responses have been observed returning model
+    names with formatting artifacts; without this tolerance a benign
+    whitespace artifact in `response.model` would silently raise
+    `ValueError` when a future caller passes that string back through —
+    breaking production while every test with literal model names passes.
+    Per type-design audit 2026-05-15.
+
     Raises:
         ValueError: if `model` does not match any Anthropic family this
-            module has pricing for. A new family lands by adding a
-            regex + cost function above and a branch here.
+            module has pricing for (after whitespace strip). A new
+            family lands by adding a regex + cost function above and a
+            branch here.
     """
+    model = model.strip()
     if _HAIKU_4_5_MODEL_RE.match(model):
         return haiku_45_cost_usd
     if _SONNET_4_6_MODEL_RE.match(model):
@@ -183,19 +193,35 @@ class LLMClient(Protocol):
         other end — it just calls `cost_usd` on the same client object
         it called `complete` on. Tests can substitute clients with
         arbitrary pricing without touching the pipeline.
+
+        Returns:
+            A non-negative, finite USD cost. Implementations MUST NOT
+            return negative values, `math.inf`, or `nan` — the pipeline
+            adds this directly to its cumulative spend counter and a
+            non-finite value would corrupt the cost-cap invariant
+            silently. If the underlying provider returns malformed
+            usage data, raise `RuntimeError` (or a more specific
+            exception) instead — that propagates cleanly through
+            `EnrichmentPipeline.enrich_column`. Per type-design audit
+            2026-05-15.
         """
         ...
 
 
-@dataclass
 class FakeLLMClient:
     """Test double for `LLMClient`. Records every call.
 
     The `model` default uses the Haiku 4.5 alias so `cost_usd` resolves
     to Haiku pricing in tests. Tests that need a different tier
     override `model=` explicitly. Unknown models raise at construction
-    (`__post_init__`) — same fail-fast shape as `AnthropicClient`, so a
-    test passing on the fake won't fail on a real client.
+    — same fail-fast shape as `AnthropicClient`, so a test passing on
+    the fake won't fail on a real client.
+
+    **`model` is read-only after construction.** Mutating it post-ctor
+    would leave `_cost_fn` stale and silently mis-price subsequent
+    calls. To switch tiers, construct a new `FakeLLMClient` with the
+    desired model. This matches `AnthropicClient`'s shape. Per
+    type-design audit 2026-05-15.
 
     **Scope: Anthropic-priced models only.** The model name is resolved
     via `anthropic_cost_fn_for_model`, so this fake validates against
@@ -206,26 +232,41 @@ class FakeLLMClient:
     so future providers don't have to extend `FakeLLMClient`.
     """
 
-    text_provider: Callable[[str, str], str]
-    model: str = "claude-haiku-4-5"
-    calls: list[tuple[str, str]] = field(default_factory=list)
-    _cost_fn: CostFn = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        text_provider: Callable[[str, str], str],
+        model: str = "claude-haiku-4-5",
+        calls: list[tuple[str, str]] | None = None,
+    ) -> None:
         # Resolve pricing once at construction — same shape as
         # AnthropicClient. A test that constructs the fake with an
         # unknown model tripping ValueError here is by design: the
         # production adapter would have done the same.
-        self._cost_fn = anthropic_cost_fn_for_model(self.model)
+        self._cost_fn: CostFn = anthropic_cost_fn_for_model(model)
+        self._text_provider = text_provider
+        self._model = model
+        # `calls` is a public, mutable recorder of each `complete` call.
+        # Tests inspect it to assert call counts and arguments. A fresh
+        # list per instance (NOT a class-level mutable default) avoids
+        # cross-test bleed.
+        self.calls: list[tuple[str, str]] = calls if calls is not None else []
+
+    @property
+    def model(self) -> str:
+        """The model name this client targets. Read-only by design — see
+        the class docstring for the rationale.
+        """
+        return self._model
 
     def complete(self, *, system: str, user: str) -> LLMResponse:
         self.calls.append((system, user))
-        text = self.text_provider(system, user)
+        text = self._text_provider(system, user)
         # Approximate token counts (≈4 chars per token) so pipeline cost
         # tests get realistic non-zero numbers without an actual tokenizer.
         return LLMResponse(
             text=text,
-            model=self.model,
+            model=self._model,
             usage=LLMUsage(
                 input_tokens=max(1, len(system) // 4 + len(user) // 4),
                 cached_input_tokens=0,
