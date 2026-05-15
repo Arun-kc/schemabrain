@@ -7,11 +7,14 @@ Concrete implementations:
   - `KeywordRetriever` — tokenizes query and each table's combined
     corpus (table name + column names + description text), ranks by
     overlap count. The Week-3 baseline; cheap, no embedder required.
-  - `EmbeddingRetriever` — embeds the query once, computes cosine
-    similarity against every stored column embedding, aggregates to a
-    per-table score by MAX (a single very-relevant column is strong
-    evidence the table is relevant). Drops zero-score tables. Tables
-    indexed without embeddings are silently skipped.
+  - `EmbeddingRetriever` — embeds the query once, then delegates to
+    `Store.search_embeddings_topk` for a single bulk-fetch + NumPy
+    matmul cosine across all stored column embeddings under the
+    configured source. Aggregates the column-level scores to a
+    per-table MAX (a single very-relevant column is strong evidence the
+    table is relevant). Drops zero-score tables. Tables indexed without
+    embeddings are silently skipped — they simply don't appear in the
+    bulk-fetch rows.
 
 Per-table-MAX vs per-table-MEAN aggregation: max is the right default
 for "find tables relevant to this query" because schemas frequently
@@ -22,13 +25,25 @@ shows the opposite pattern.
 
 from __future__ import annotations
 
-import math
 import re
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+import numpy as np
+
 from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
+
+# Bulk-fetch cap for the column-level top-k pulled from the store. Big
+# enough that any v1-scale source (< 10k embedded columns total) is
+# fully covered in a single round trip; small enough that an unexpected
+# 100k-column outlier doesn't burn memory unbounded. When the store has
+# fewer rows than the cap, `search_embeddings_topk` returns all of them
+# (no padding) — so this constant is an upper bound, not a floor.
+# Revisit when MCP traffic shows we routinely cross 10k columns: at that
+# scale the right move is column-side ANN (sqlite-vec or hnswlib), not
+# raising this constant.
+_BULK_FETCH_COLUMN_K = 10_000
 
 # Stopwords to drop before scoring overlap. Kept short on purpose: most
 # database semantics are nouns and verbs, and over-aggressive filtering
@@ -172,54 +187,23 @@ class KeywordRetriever:
         return tokens
 
 
-def _cosine_similarity(a: tuple[float, ...], b: tuple[float, ...]) -> float:
-    """Cosine similarity between two equal-length vectors.
-
-    Returns 0.0 when either vector has zero norm — degenerate but
-    well-defined: a zero-norm vector has no direction so "alignment with
-    query" is undefined, and "no signal" (0.0) is the safe answer that
-    just drops the table from positive-score results.
-
-    Raises `ValueError` on length mismatch so an embedder-dimension
-    drift between index time and retrieve time fails loudly instead of
-    silently returning garbage cosines.
-    """
-    if len(a) != len(b):
-        raise ValueError(
-            f"cosine: vector dimension mismatch — query has {len(a)}, "
-            f"stored has {len(b)}. The embedder used at retrieval time "
-            f"differs from the one used at index time. Wipe the store "
-            f"and re-index with the new embedder."
-        )
-    dot = 0.0
-    norm_a = 0.0
-    norm_b = 0.0
-    # Lengths pre-checked above; `strict=False` keeps ruff B905 quiet.
-    for ai, bi in zip(a, b, strict=False):
-        dot += ai * bi
-        norm_a += ai * ai
-        norm_b += bi * bi
-    if norm_a == 0.0 or norm_b == 0.0:
-        return 0.0
-    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
-
-
 @dataclass(frozen=True)
 class EmbeddingRetriever:
     """Cosine-similarity retriever over locally-stored column embeddings.
 
-    Embeds the query once with `embedder`, then computes cosine vs every
-    stored column embedding for the configured source. Per-table score
-    is the MAX cosine across that table's columns; tables with no
-    embeddings are silently skipped (they were indexed with --no-embed,
-    or pre-Slice-4-B, or hit the cap before embedding completed).
-    Zero-score tables are excluded from the result list — they're noise
-    that crowds out actual signal.
+    Embeds the query once with `embedder`, then delegates to
+    `Store.search_embeddings_topk` for a single bulk-fetch + NumPy
+    matmul cosine across every stored column embedding under the
+    configured source. Aggregates the column-level scores to per-table
+    MAX; tables with no embeddings are silently skipped (the bulk-fetch
+    simply has no rows for them). Zero-score tables are excluded —
+    they're noise that crowds out the actual signal.
 
-    Cost characteristic: ONE embedder call per `retrieve()`. Per-table
-    cosine is pure Python over float tuples — ~1ms for 384-dim vectors
-    across <1000 columns. sqlite-vec / numpy upgrade is a future slice
-    if MCP traffic shows it's needed.
+    Cost characteristic: ONE embedder call per `retrieve()`, ONE SQL
+    SELECT (no per-table N+1), one NumPy matmul. Was per-table Python-
+    loop cosine through Slice 4-B; Phase A Commit 3 swapped it for the
+    bulk path. The Charter target (p95 < 100ms at 10k columns) is gated
+    by Commit 4's pytest-benchmark suite.
     """
 
     store: Store
@@ -230,26 +214,46 @@ class EmbeddingRetriever:
         if limit <= 0:
             return []
         # Skip the embedder call entirely on empty/whitespace queries —
-        # otherwise we'd waste an ONNX inference and then have to handle
-        # the zero-norm cosine downstream.
+        # otherwise we'd waste an ONNX inference and the store would
+        # then refuse the zero-norm vector with a ValueError, which is
+        # the right behavior at its layer but the wrong UX at this one.
         if not query.strip():
             return []
 
         query_vec = self.embedder.embed(query)
 
-        scored: list[tuple[float, str, str]] = []
-        for schema, table in self.store.list_tables(source_connection_id=self.source_connection_id):
-            embeddings = self.store.get_table_embeddings(
-                schema, table, source_connection_id=self.source_connection_id
-            )
-            if not embeddings:
-                continue
-            best = max(_cosine_similarity(query_vec, e.vector) for e in embeddings.values())
-            if best > 0.0:
-                scored.append((best, schema, table))
+        # Zero-norm query → no direction → no signal. The Store would
+        # raise ValueError if we forwarded this; the retriever's
+        # contract is "treat embedder degeneracy as empty result, don't
+        # crash the CLI". Pre-check using the SAME float32 norm the
+        # Store uses, so a vector with subnormal entries that round
+        # to zero in float32 (but not in Python float64) doesn't slip
+        # past this check and trip the Store's ValueError. Per
+        # silent-failure-hunter audit 2026-05-15 (HIGH).
+        if float(np.linalg.norm(np.asarray(query_vec, dtype=np.float32))) == 0.0:
+            return []
 
-        # Sort by descending score, then by qualified name for stable
-        # ordering when scores tie (reproducible test + eval output).
+        # `search_embeddings_topk` returns at most k rows but never pads,
+        # so over-asking is safe — when the store holds fewer rows we
+        # get all of them. The store raises ValueError on dimension
+        # mismatch; the eval CLI surfaces that to the user as
+        # "embedder swapped — wipe and re-index".
+        col_rows = self.store.search_embeddings_topk(
+            list(query_vec),
+            source_connection_id=self.source_connection_id,
+            k=_BULK_FETCH_COLUMN_K,
+        )
+
+        # Aggregate column scores to per-table MAX.
+        by_table: dict[tuple[str, str], float] = {}
+        for schema, table, _col, score in col_rows:
+            if score <= 0.0:
+                continue
+            prev = by_table.get((schema, table))
+            if prev is None or score > prev:
+                by_table[(schema, table)] = score
+
+        scored = [(score, schema, table) for (schema, table), score in by_table.items()]
         scored.sort(key=lambda x: (-x[0], x[1], x[2]))
         return [f"{s}.{t}" for _, s, t in scored[:limit]]
 

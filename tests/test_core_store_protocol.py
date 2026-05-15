@@ -18,8 +18,9 @@ Three responsibility lines covered here:
    async enrichment will turn it on for the cost-ledger CAS path; today
    we just pin the on/off behaviour.
 
-Plus a guard that `SQLiteStore.search_embeddings_topk` exists (Protocol
-contract) but is `NotImplementedError`-stubbed until Commit 3 fills it.
+Plus a guard that `SQLiteStore.search_embeddings_topk` exists on the
+Protocol — the body itself is exercised by
+`tests/test_core_store_search_embeddings_topk.py` (Phase A Commit 3).
 """
 
 from __future__ import annotations
@@ -217,26 +218,13 @@ class TestWriterLock:
             store_b.close()
 
 
-class TestSearchEmbeddingsTopKStub:
-    """`search_embeddings_topk` exists on the Protocol from Commit 1.
+class TestSearchEmbeddingsTopKProtocolSlot:
+    """`search_embeddings_topk` exists on the Protocol.
 
-    The SQLiteStore body is filled in Phase A Commit 3 (NumPy bulk-fetch
-    matmul cosine). Until then it raises `NotImplementedError` so any
-    accidental call from outside the planned wiring fails loudly.
+    Body coverage lives in `test_core_store_search_embeddings_topk.py`.
+    This class only pins the Protocol slot itself so a rename here
+    surfaces independently from the body tests.
     """
 
-    def test_search_embeddings_topk_raises_until_commit_3(self, tmp_path: Path) -> None:
-        with (
-            SQLiteStore(tmp_path / "sb.db") as store,
-            pytest.raises(NotImplementedError, match="Commit 3"),
-        ):
-            store.search_embeddings_topk(
-                query_vector=[0.0, 1.0, 0.0],
-                source_connection_id="sid",
-                k=10,
-            )
-
     def test_search_embeddings_topk_in_protocol(self) -> None:
-        # The slot must be on the Protocol from Commit 1 so Commit 3
-        # is a pure body fill, not a Protocol-plus-callers refactor.
         assert hasattr(Store, "search_embeddings_topk")

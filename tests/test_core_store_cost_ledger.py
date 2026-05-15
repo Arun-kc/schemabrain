@@ -127,6 +127,19 @@ class TestAddSpendUsd:
             with pytest.raises(ValueError, match="finite"):
                 store.add_spend_usd(source_connection_id="sid", amount_usd=math.nan)
 
+    def test_finite_input_overflowing_after_scaling_raises(self, tmp_path: Path) -> None:
+        # `amount_usd` is finite, but `amount_usd * 1_000_000` overflows
+        # to `inf` (this happens above ~1.8e302). `round(inf)` would
+        # raise `OverflowError` — an undocumented exception type at
+        # this layer. The guard converts to the same `ValueError`
+        # shape the rest of the validators emit, so callers can catch
+        # one type. Per security-reviewer audit 2026-05-15.
+        with (
+            SQLiteStore(tmp_path / "sb.db") as store,
+            pytest.raises(ValueError, match=r"overflows to non-finite"),
+        ):
+            store.add_spend_usd(source_connection_id="sid", amount_usd=1e303)
+
     def test_micro_precision_preserved(self, tmp_path: Path) -> None:
         # Storage is integer micros (1 USD = 1_000_000 micros). 1 micro
         # USD = $0.000001 — much finer than any per-call LLM cost today
@@ -212,7 +225,7 @@ class TestWriterLockSerializesLedgerWrites:
             store_b.close()
 
 
-class TestSchemaVersionBumpToV3:
+class TestSchemaVersionBumpToV4:
     """The cost ledger lands in schema version `"3"`.
 
     Pre-alpha contract: a store written by an older Schema Brain version
@@ -221,26 +234,26 @@ class TestSchemaVersionBumpToV3:
     migration framework yet (deferred per `project_deferred_decisions.md`).
     """
 
-    def test_fresh_store_has_schema_version_3(self, tmp_path: Path) -> None:
+    def test_fresh_store_has_schema_version_4(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "sb.db") as store:
             stored = (
                 store._require_conn()
                 .execute("SELECT value FROM schemabrain_meta WHERE key = 'schema_version'")
                 .fetchone()
             )
-            assert stored["value"] == "3"
+            assert stored["value"] == "4"
 
-    def test_opening_a_v2_store_raises(self, tmp_path: Path) -> None:
-        # Create a store, manually downgrade its version tag to "2",
+    def test_opening_a_v3_store_raises(self, tmp_path: Path) -> None:
+        # Create a store, manually downgrade its version tag to "3",
         # close it, then re-open. The version check should refuse.
         db_path = tmp_path / "sb.db"
         store = SQLiteStore(db_path)
         store._require_conn().execute(
-            "UPDATE schemabrain_meta SET value = '2' WHERE key = 'schema_version'"
+            "UPDATE schemabrain_meta SET value = '3' WHERE key = 'schema_version'"
         )
         store._require_conn().commit()
         store.close()
-        with pytest.raises(SchemaVersionMismatchError, match=r"2.*3|3.*2"):
+        with pytest.raises(SchemaVersionMismatchError, match=r"3.*4|4.*3"):
             SQLiteStore(db_path)
 
 

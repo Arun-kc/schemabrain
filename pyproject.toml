@@ -27,6 +27,12 @@ dependencies = [
     "fastembed>=0.4,<1.0",
     "mcp>=1.0,<2.0",
     "rich>=13.0,<16.0",
+    # NumPy is the engine behind `Store.search_embeddings_topk` (bulk
+    # SELECT + float32 matmul + cosine). It arrives transitively via
+    # fastembed too, but pin it as a direct dep so the contract is
+    # durable: a future fastembed major can't silently drop it without
+    # us catching the regression.
+    "numpy>=1.26,<3.0",
 ]
 
 [project.optional-dependencies]

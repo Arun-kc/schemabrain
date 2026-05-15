@@ -161,21 +161,16 @@ class Store(Protocol):
         """
         ...
 
-    # ----- Embedding retrieval (filled in Phase A Commit 3) ---------
+    # ----- Embedding retrieval -------------------------------------
     #
-    # New seam introduced in Phase A. v1 retrieval today loads
-    # embeddings per-table and computes cosine in Python, which is an
-    # N+1 SQL pattern (`get_table_embeddings` per table) bounded by a
-    # quadratic-ish round-trip cost. `search_embeddings_topk` exposes
-    # a single bulk-fetch + NumPy matmul path that Commit 3 fills in
-    # `SQLiteStore`. The slot lives on the Protocol from Commit 1 so
-    # Commit 3 is a pure body-fill, not a Protocol-plus-callers
-    # refactor.
-    #
-    # Today: `SQLiteStore.search_embeddings_topk` raises
-    # `NotImplementedError`. `EmbeddingRetriever` does NOT call it
-    # yet; the per-table-loop retrieval path stays the production
-    # path until Commit 3 flips the switch.
+    # Single bulk-fetch + cosine ranking primitive that replaces the
+    # per-table N+1 SQL + Python-loop pattern used through Slice 4-B.
+    # `EmbeddingRetriever` programs against this method exclusively;
+    # any future store backend (in-memory mock, hosted backend) must
+    # honour the full behavioural contract documented below, not just
+    # the type signature, because callers rely on the error surface
+    # and ordering guarantee.
+
     def search_embeddings_topk(
         self,
         query_vector: list[float],
@@ -183,10 +178,41 @@ class Store(Protocol):
         source_connection_id: str,
         k: int,
     ) -> list[tuple[str, str, str, float]]:
-        """Return top-`k` `(schema, table, column, cosine_score)` for the query.
+        """Return top-`k` columns by cosine similarity to `query_vector`.
 
-        Body filled in Phase A Commit 3 (NumPy bulk-fetch matmul cosine).
-        Until then, the canonical implementation raises
-        `NotImplementedError`.
+        Each result is `(schema_name, table_name, column_name,
+        cosine_score)`. Filters by `source_connection_id`; rows under
+        other sources are invisible. Returns up to `k` rows — never
+        pads; if fewer than `k` embeddings exist, the shorter list is
+        the right answer.
+
+        Ordering (REQUIRED — callers depend on this):
+          - Descending by `cosine_score`.
+          - Ties broken ascending by `(schema_name, table_name,
+            column_name)`. The tiebreak must be deterministic so that
+            results across repeated calls are reproducible.
+
+        Implementations MUST raise `ValueError` for any of:
+          - `k < 1`. Top-zero is a caller bug.
+          - Empty `query_vector`.
+          - `query_vector` contains a non-finite value (NaN or +/-inf).
+          - `query_vector` has zero norm. A zero vector has no
+            direction so cosine is mathematically undefined — fail
+            loud rather than silently return everything tied at 0.
+          - Dimension mismatch between `query_vector` and the stored
+            embeddings under `source_connection_id`. The error message
+            MUST contain the substring "dimension" so
+            `EmbeddingRetriever` (and any future caller) can match on
+            that token to surface the user-facing "embedder swapped —
+            wipe and re-index" hint.
+
+        Zero-norm STORED vectors must score 0.0 (NOT NaN). Callers
+        filter zero-score rows; `EmbeddingRetriever` drops them when
+        aggregating to per-table MAX.
+
+        Empty store (no rows under `source_connection_id`) must
+        short-circuit to `[]` BEFORE any dimension validation — a
+        caller with the wrong query dim against an empty store must
+        not raise.
         """
         ...

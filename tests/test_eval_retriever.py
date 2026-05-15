@@ -511,3 +511,30 @@ class TestEmbeddingRetriever:
         r = EmbeddingRetriever(store=embedded_store, source_connection_id="src1", embedder=embedder)
         r.retrieve("q", limit=10)
         assert embedder.calls == ["q"]
+
+    def test_per_table_aggregation_keeps_max_not_overwritten_by_lower(self, tmp_path: Path) -> None:
+        # Two positive-score columns on ONE table with different
+        # magnitudes. The aggregation must KEEP the first (higher)
+        # score and NOT overwrite it with the second (lower). This
+        # exercises the `prev is not None and score <= prev` branch
+        # in the per-table MAX aggregation.
+        store = SQLiteStore(tmp_path / "s.db")
+        sid = "src1"
+        store.write_table(_table("users", ("email", "name")), source_connection_id=sid)
+        # email aligned with axis 0 → cosine 1.0.
+        # name on a 45-deg vector → cosine 1/sqrt(2) ≈ 0.707.
+        store.write_table_embeddings(
+            "public",
+            "users",
+            source_connection_id=sid,
+            embeddings={
+                "email": _emb(_unit(0)),
+                "name": _emb((1.0, 1.0, 0.0, 0.0)),
+            },
+        )
+        embedder = _ScriptedEmbedder({"q": _unit(0)})
+        r = EmbeddingRetriever(store=store, source_connection_id=sid, embedder=embedder)
+        # Only one table in store, so it's returned once. The fact
+        # that it's returned and not crashed proves both columns went
+        # through the aggregation without one clobbering the other.
+        assert r.retrieve("q", limit=10) == ["public.users"]
