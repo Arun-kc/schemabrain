@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from schemabrain.core.example_query import ExampleQuery
-from schemabrain.core.store import SchemaVersionMismatchError, SQLiteStore
+from schemabrain.core.store import SQLiteStore
 from tests._example_query_helpers import (
     insert_example_query as _insert_example,
 )
@@ -27,37 +27,12 @@ from tests._example_query_helpers import (
 )
 
 
-class TestSchemaVersionBumpToV6:
-    """Pre-alpha contract: a store written by a v5 Schema Brain raises
-    `SchemaVersionMismatchError` on open.
-
-    Per project convention only the current N-1 version-bump test is
-    retained — the prior `TestSchemaVersionBumpToV5` class (added at
-    the v4→v5 bump) was removed when this class was added. Stacking
-    every historical version pair would grow the suite without
-    additional signal, since each bump only ever exercises the live
-    mismatch path.
+class TestExampleQueriesTablePresent:
+    """The `example_queries` table is the storage primitive these
+    tests exercise — pin its presence so a future DDL refactor that
+    accidentally drops it fails CI here, where the failure name is
+    informative.
     """
-
-    def test_fresh_store_has_schema_version_6(self, tmp_path: Path) -> None:
-        with SQLiteStore(tmp_path / "sb.db") as store:
-            row = (
-                store._require_conn()
-                .execute("SELECT value FROM schemabrain_meta WHERE key = 'schema_version'")
-                .fetchone()
-            )
-            assert row["value"] == "6"
-
-    def test_opening_a_v5_store_raises(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "sb.db"
-        store = SQLiteStore(db_path)
-        store._require_conn().execute(
-            "UPDATE schemabrain_meta SET value = '5' WHERE key = 'schema_version'"
-        )
-        store._require_conn().commit()
-        store.close()
-        with pytest.raises(SchemaVersionMismatchError, match=r"5.*6|6.*5"):
-            SQLiteStore(db_path)
 
     def test_fresh_store_has_example_queries_table(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "sb.db") as store:

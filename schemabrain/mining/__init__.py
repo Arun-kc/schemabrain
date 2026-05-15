@@ -1,0 +1,17 @@
+"""Query log mining for Schema Brain.
+
+Reads observed SQL from a source database's `pg_stat_statements` view,
+parses each statement with `sqlglot` to identify which indexed tables
+it touches, and writes the result into the `example_queries` store
+table so tool #5 `get_example_queries` can surface real usage
+patterns.
+
+v0.5 entry point:
+  - `schemabrain mine-queries --source <URL>` (CLI subcommand)
+  - `schemabrain.mining.pipeline.mine_queries` (programmatic)
+
+PII fields on the written rows stay at the safe defaults
+(`sensitivity='public'`, `pii_categories=frozenset()`) at v0.5; the
+PII classifier ships in v1 wk-11 and a subsequent re-mining of the
+same rows will reclassify them via the UPSERT.
+"""
