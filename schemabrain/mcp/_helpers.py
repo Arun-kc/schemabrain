@@ -5,7 +5,6 @@ Not part of the public API — the leading underscore is intentional.
 
 from __future__ import annotations
 
-import math
 from typing import TypeVar
 
 from pydantic import BaseModel
@@ -35,30 +34,6 @@ def _with_token_estimate(model: _M) -> _M:
     this is at most a 1-token error on a rough estimate.
     """
     return model.model_copy(update={"token_estimate": _token_estimate_of(model)})
-
-
-def _cosine(a: tuple[float, ...], b: tuple[float, ...]) -> float:
-    """Cosine similarity. Returns 0.0 on zero-norm vectors. Raises on
-    dimension mismatch — that's an embedder swap without re-index, a
-    programming error worth surfacing loudly.
-    """
-    if len(a) != len(b):
-        raise ValueError(
-            f"vector dimension mismatch — query has {len(a)}, stored has {len(b)}. "
-            f"The embedder used at MCP-call time differs from the one used at "
-            f"index time. Wipe the store and re-index with the new embedder."
-        )
-    dot = 0.0
-    norm_a = 0.0
-    norm_b = 0.0
-    # Lengths pre-checked above; `strict=False` keeps ruff B905 quiet.
-    for ai, bi in zip(a, b, strict=False):
-        dot += ai * bi
-        norm_a += ai * ai
-        norm_b += bi * bi
-    if norm_a == 0.0 or norm_b == 0.0:
-        return 0.0
-    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
 
 
 def _parse_qualified_name(qualified_name: str) -> tuple[str, str]:

@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+import numpy as np
+
 from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
-from schemabrain.mcp._helpers import _cosine, _with_token_estimate
+from schemabrain.mcp._helpers import _with_token_estimate
 from schemabrain.mcp.shapes import TableHit
+
+# Upper bound on columns the bulk-fetch primitive will rank before we
+# aggregate to per-table MAX. Parallel to `_BULK_FETCH_COLUMN_K` in
+# `schemabrain.eval.retriever`; both callers want the same property
+# (cover every embedded column under one source for a v1-scale store
+# of < 10k columns). Duplicated rather than abstracted because the two
+# call sites live in different packages and the value is the same
+# *coincidence* of v1 scale, not a shared concept that should be
+# reified yet. Revisit if a third caller appears.
+_BULK_FETCH_COLUMN_K = 10_000
 
 
 def find_relevant_tables_impl(
@@ -24,12 +36,22 @@ def find_relevant_tables_impl(
     surfaces the WINNING column name + description so the MCP response
     explains WHY the table matched.
 
-    Behavior is parallel to `EmbeddingRetriever`:
+    Delegates the ranking primitive to `store.search_embeddings_topk`
+    — one bulk SELECT + NumPy matmul. Description lookup for the
+    winning column happens per-table for the top `limit` results, so
+    the per-table SQL is bounded by `limit` (10 by default) instead of
+    by the total table count.
+
+    Behavior contract:
       - Empty/whitespace query and `limit <= 0` short-circuit to `[]`
         without calling the embedder.
-      - Tables without any embeddings are silently skipped.
+      - Tables without any embeddings are silently skipped (the
+        bulk-fetch primitive has no rows for them).
       - Zero-score tables are excluded from the result list.
       - Deterministic tiebreak by qualified name when scores tie.
+      - Zero-norm queries are translated to `[]` here so the Store's
+        loud `ValueError` doesn't propagate to the MCP caller — the
+        retriever's degeneracy is the right signal at this layer.
     """
     if limit <= 0:
         return []
@@ -38,28 +60,42 @@ def find_relevant_tables_impl(
 
     query_vec = embedder.embed(query)
 
-    # Per-table best (score, best_column_name) tuples.
-    # Reading descriptions per table only when needed (deferred until
-    # we know the table is in the result set).
-    candidates: list[tuple[float, str, str, str]] = []
-    for schema, table in store.list_tables(source_connection_id=source_connection_id):
-        embeddings = store.get_table_embeddings(
-            schema, table, source_connection_id=source_connection_id
-        )
-        if not embeddings:
-            continue
-        best_score = -1.0
-        best_column = ""
-        for col_name, emb in embeddings.items():
-            score = _cosine(query_vec, emb.vector)
-            if score > best_score:
-                best_score = score
-                best_column = col_name
-        if best_score > 0.0:
-            candidates.append((best_score, schema, table, best_column))
+    # Zero-norm query → no direction → no signal. Mirror the
+    # `EmbeddingRetriever` translation so an embedder that emits a
+    # degenerate vector returns an empty result instead of crashing
+    # the MCP call. Use the same float32 norm the Store uses so
+    # subnormal vectors don't slip past this pre-check and trip the
+    # Store's ValueError downstream.
+    if float(np.linalg.norm(np.asarray(query_vec, dtype=np.float32))) == 0.0:
+        return []
 
-    # Sort descending by score; tiebreak by qualified name for
-    # reproducibility (matches EmbeddingRetriever's contract).
+    col_rows = store.search_embeddings_topk(
+        list(query_vec),
+        source_connection_id=source_connection_id,
+        k=_BULK_FETCH_COLUMN_K,
+    )
+
+    # Aggregate column scores to per-table best (score, winning column).
+    # Load-bearing assumption: `Store.search_embeddings_topk` returns
+    # rows sorted by descending cosine score with deterministic
+    # alphabetic tiebreak on (schema, table, column). See the
+    # "Ordering (REQUIRED — callers depend on this)" block in
+    # `core.store_protocol.Store.search_embeddings_topk`. Under that
+    # contract the FIRST occurrence of any (schema, table) IS its
+    # best column — both highest-scoring and (for ties) the
+    # alphabetically-first column. Subsequent occurrences must be
+    # skipped, not allowed to clobber.
+    best_per_table: dict[tuple[str, str], tuple[float, str]] = {}
+    for schema, table, col, score in col_rows:
+        if score <= 0.0:
+            continue
+        if (schema, table) not in best_per_table:
+            best_per_table[(schema, table)] = (score, col)
+
+    candidates = [
+        (score, schema, table, best_col)
+        for (schema, table), (score, best_col) in best_per_table.items()
+    ]
     candidates.sort(key=lambda x: (-x[0], x[1], x[2]))
     top = candidates[:limit]
 

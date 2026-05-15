@@ -35,15 +35,19 @@ from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Tabl
 
 # "2" → Slice 4-B added `column_embeddings`. "3" → Phase A Commit 2
 # adds `cost_ledger`. "4" → Phase A Commit 3 adds the
-# `idx_col_emb_src` covering index on `column_embeddings`
-# `(source_connection_id, schema_name, table_name, column_name)` so
-# `search_embeddings_topk`'s `WHERE source_connection_id = ?` becomes
-# a B-tree seek instead of a full scan (the PRIMARY KEY puts
-# `source_connection_id` as the FOURTH column, which is useless for
-# this predicate). Older stores raise SchemaVersionMismatchError;
-# pre-alpha users re-create. Per database-reviewer audit 2026-05-15
-# (CRITICAL — threatened the Commit 4 p95 < 100ms benchmark gate).
-_SCHEMA_VERSION = "4"
+# `idx_col_emb_src` covering index on `column_embeddings`. "5" →
+# Phase A Commit 4 adds the `idx_col_desc_src` covering index on
+# `column_descriptions` so the post-ranking
+# `get_table_descriptions(schema, table)` calls (10 per
+# `find_relevant_tables` invocation by default) are point seeks
+# instead of partial-PK range scans. The `column_descriptions` PK
+# orders columns as `(schema, table, column, source_connection_id)`
+# — column 4 is `source_connection_id`, so a `WHERE schema=? AND
+# table=? AND source_connection_id=?` predicate misses the PK index
+# tail. Mirror the embeddings-side fix from v4. Older stores raise
+# SchemaVersionMismatchError; pre-alpha users re-create. Per
+# database-reviewer audit 2026-05-15 (HIGH).
+_SCHEMA_VERSION = "5"
 _MEMORY_PATH = ":memory:"
 
 # 1 USD = 1_000_000 micros. Storing the ledger as INTEGER micros avoids
@@ -192,6 +196,23 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS idx_col_emb_src
         ON column_embeddings
+            (source_connection_id, schema_name, table_name, column_name)
+    """,
+    # Sibling covering index for `get_table_descriptions`. Same
+    # structural issue as `column_embeddings`: the PK leads with
+    # `(schema, table, column)` so a `WHERE schema=? AND table=? AND
+    # source_connection_id=?` query — which is what
+    # `find_relevant_tables` issues for each of its top-`limit` hits —
+    # can only prefix-match on `(schema, table)` and then scans every
+    # column row for the table, filtering on `source_connection_id`.
+    # At 100 cols/table x 10 hits per call that's a thousand
+    # superfluous comparisons per `find_relevant_tables` invocation.
+    # This index reorders so the predicate becomes a clean point seek
+    # over `(source_connection_id, schema, table)`. Per
+    # database-reviewer audit 2026-05-15 (HIGH).
+    """
+    CREATE INDEX IF NOT EXISTS idx_col_desc_src
+        ON column_descriptions
             (source_connection_id, schema_name, table_name, column_name)
     """,
 )

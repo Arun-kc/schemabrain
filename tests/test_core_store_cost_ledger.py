@@ -225,7 +225,7 @@ class TestWriterLockSerializesLedgerWrites:
             store_b.close()
 
 
-class TestSchemaVersionBumpToV4:
+class TestSchemaVersionBumpToV5:
     """The cost ledger lands in schema version `"3"`.
 
     Pre-alpha contract: a store written by an older Schema Brain version
@@ -234,26 +234,26 @@ class TestSchemaVersionBumpToV4:
     migration framework yet (deferred per `project_deferred_decisions.md`).
     """
 
-    def test_fresh_store_has_schema_version_4(self, tmp_path: Path) -> None:
+    def test_fresh_store_has_schema_version_5(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "sb.db") as store:
             stored = (
                 store._require_conn()
                 .execute("SELECT value FROM schemabrain_meta WHERE key = 'schema_version'")
                 .fetchone()
             )
-            assert stored["value"] == "4"
+            assert stored["value"] == "5"
 
-    def test_opening_a_v3_store_raises(self, tmp_path: Path) -> None:
-        # Create a store, manually downgrade its version tag to "3",
+    def test_opening_a_v4_store_raises(self, tmp_path: Path) -> None:
+        # Create a store, manually downgrade its version tag to "4",
         # close it, then re-open. The version check should refuse.
         db_path = tmp_path / "sb.db"
         store = SQLiteStore(db_path)
         store._require_conn().execute(
-            "UPDATE schemabrain_meta SET value = '3' WHERE key = 'schema_version'"
+            "UPDATE schemabrain_meta SET value = '4' WHERE key = 'schema_version'"
         )
         store._require_conn().commit()
         store.close()
-        with pytest.raises(SchemaVersionMismatchError, match=r"3.*4|4.*3"):
+        with pytest.raises(SchemaVersionMismatchError, match=r"4.*5|5.*4"):
             SQLiteStore(db_path)
 
 
