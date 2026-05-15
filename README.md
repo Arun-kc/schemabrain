@@ -28,7 +28,8 @@ Schema Brain fixes all four and serves the result through a stable MCP tool surf
 - Indexes your database schema, profiles each column, and generates a one-paragraph LLM description per column (Claude Haiku 4.5 by default; Sonnet 4.6 for cryptic abbreviations).
 - Embeds the descriptions locally with `BAAI/bge-small-en-v1.5` via `fastembed` — no second API vendor.
 - Stores everything in a single SQLite file. No Qdrant, no Redis, no ops.
-- Serves four MCP tools: [`find_relevant_tables`, `describe_table`, `describe_column`, `suggest_joins`](docs/mcp-tools.md). Every response includes a token estimate so agents can budget context.
+- Serves five MCP tools: [`find_relevant_tables`, `describe_table`, `describe_column`, `suggest_joins`, `get_example_queries`](docs/mcp-tools.md). Every response includes a token estimate so agents can budget context.
+- Mines observed queries from `pg_stat_statements` so `get_example_queries` returns the SQL agents (or humans) have actually run against your tables — not invented examples.
 
 ---
 
@@ -40,7 +41,7 @@ That layer needs a semantic substrate underneath it. You can't refuse "this quer
 
 So the engineering order is **schema intelligence → semantic substrate → safety primitives:**
 
-- **v0 — schema intelligence (shipping now):** schema introspection, LLM-enriched column descriptions, embedding retrieval. Query-log mining + 5th MCP tool land in v0.5.
+- **v0 / v0.5 — schema intelligence (shipping now):** schema introspection, LLM-enriched column descriptions, embedding retrieval, query-log mining via `pg_stat_statements`, and 5 MCP tools including `get_example_queries` returning observed SQL.
 - **v1 — semantic substrate:** entities, metrics, canonical joins as first-class persisted definitions. LLM-suggested from observed data; user-confirmed in YAML.
 - **v2 — safety wedge:** PII-tagged refusal, `validate_query` before execute, `execute` with row/cost/timeout caps, **sub-query refusal with recovery** (parse agent SQL, refuse just the unsafe fragment with a suggested rewrite). No shipped competitor as of mid-2026.
 
@@ -61,7 +62,7 @@ The open-source landscape thinned in 2026: Vanna's public repo was frozen as the
 | [dbt-mcp](https://github.com/dbt-labs/dbt-mcp) | Apache-2.0 | ✅ | Active — requires a dbt project |
 | [WrenAI](https://github.com/canner/WrenAI) | Apache-2.0 | ❌ (roadmap) | Active — uses MDL modeling layer |
 
-Schema Brain sits where none of these cover cleanly: **OSS + MIT + first-party MCP + no modeling layer required + introspects a live Postgres in one Python process**. Honest gap: query-log awareness — `pg_stat_statements` parsing is scheduled for v0 Week 8.
+Schema Brain sits where none of these cover cleanly: **OSS + MIT + first-party MCP + no modeling layer required + introspects a live Postgres in one Python process + mines `pg_stat_statements` to surface observed SQL as agent context**.
 
 The longer-term position is the SQL-boundary safety layer for agents (see [Where this is going](#where-this-is-going)). None of the projects above operate at the parse-agent-SQL-and-judge-against-policy layer; that's the v2 wedge.
 
@@ -201,11 +202,11 @@ For the headless Anthropic-SDK path, see [`examples/anthropic_demo.py`](examples
 
 ## Roadmap
 
-**v0.5 — finish schema intelligence:**
-- Agent-UX charter v1.0 retrofit on existing tools + CI enforcement
-- Dev-UX foundations: rich progress UI, guided errors, `--dry-run`
-- Query log mining via `pg_stat_statements`
-- 5th MCP tool: `get_example_queries` — returns real SQL from your query log matching agent intent
+**v0.5 — finish schema intelligence (shipped):**
+- Agent-UX charter v1.0 retrofit on existing tools + CI enforcement ✓
+- Dev-UX foundations: rich progress UI, guided errors, `--dry-run` ✓
+- Query log mining via `pg_stat_statements` (`schemabrain mine-queries`) ✓
+- 5th MCP tool: `get_example_queries` — returns real SQL from your query log matching agent intent ✓
 
 **v1 — semantic substrate:**
 - Entities, metrics, canonical joins as first-class persisted definitions
