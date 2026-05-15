@@ -1,15 +1,22 @@
-# Schema Brain MCP Charter v1.0.1
+# Schema Brain MCP Charter v1.1.0
 
 > **Status:** locked 2026-05-12 as the public design contract for Schema Brain's
 > MCP surface. Living document; version bumps governed by the Versioning section
 > below. All MCP tools shipped from v0.5 onward conform to this charter unless
 > explicitly noted in their docstring.
 >
+> **Minor v1.1.0 (2026-05-15):** additive — three new ErrorKinds
+> (`pii_blocked`, `policy_blocked`, `allowlist_violation`); reserved
+> `refused` status in the Status literal (no v0.5 / v1 tool emits it
+> — v2's `execute` / `validate_query` are the first producers); two
+> new optional `Recovery` fields (`suggested_rewrite`, `widening_hint`)
+> as the shape v2's refuse-with-rewrite path will populate. All
+> changes are backward-compatible with v1.0 clients. The wire
+> `charter_version` field bumps from `"1.0"` to `"1.1"`.
+>
 > **Patch v1.0.1 (2026-05-15):** clarification-only — replaced internal
-> milestone references ("v0.5 wk 4") with the substantive trigger they
-> stood for (query-log mining surfacing realistic agent intents). No
-> shape change. The wire `charter_version` field continues to emit
-> `"1.0"`; see Versioning below.
+> milestone references with the substantive trigger they stood for
+> (query-log mining surfacing realistic agent intents). No shape change.
 
 ## Preamble
 
@@ -50,14 +57,16 @@ The five principles below are the load-bearing details.
 
 ### 1. Status enum, not boolean
 
-Every tool response carries a `status` enum with five values (a sixth,
-`refused`, lands in v2 with policy primitives — see Open items). A boolean
-`ok` / `error` split silently lumps partial responses and empty results into
-"success," which is the false-positive trap that turns into a backstab in
+Every tool response carries a `status` enum with six values. The
+sixth, `refused`, is **reserved in v1.1** — the type contract ships
+now so v2's refuse-before-execute primitives can produce it on day
+one, but no v0.5 / v1 tool emits it. A boolean `ok` / `error` split
+silently lumps partial responses and empty results into "success,"
+which is the false-positive trap that turns into a backstab in
 production.
 
 ```
-status: "success" | "empty" | "partial" | "degraded" | "error"
+status: "success" | "empty" | "partial" | "degraded" | "error" | "refused"
 ```
 
 | Status | Meaning |
@@ -67,6 +76,7 @@ status: "success" | "empty" | "partial" | "degraded" | "error"
 | `partial` | Tool ran, returned some data with caveats. e.g. an enrichment job timed out mid-table; here is what completed. |
 | `degraded` | Tool ran via a fallback path. e.g. keyword retriever used because the embedding store was unavailable. |
 | `error` | Tool could not process. Always paired with a populated `error` object. |
+| `refused` (reserved, v1.1) | Tool ran cleanly and chose to refuse — typically because the query would touch PII or violate an allowlist. Always paired with a populated `error` object using one of `pii_blocked` / `policy_blocked` / `allowlist_violation`. No v0.5 / v1 tool emits this; v2's `execute` / `validate_query` are the first producers. |
 
 **❌ Wrong:**
 ```json
@@ -446,14 +456,17 @@ ecosystem, and (3) drift in tone from instructional to preachy.
 These are known gaps in v1.0. Each will land in a minor version when its
 implementation reaches readiness.
 
-- **Error-kind registry expansion** — v1.0 ships with 7 kinds; real-world
-  agent traffic will surface more (especially around partial results,
-  rate-limiting, transient failures). Additions are minor bumps.
-- **`refused` status (added in v2)** — when refuse-before-leak primitives
-  ship (PII tagging, blast-radius limits, cost-cap-triggered policy
-  refusal), a `refused` status value will be added to the envelope. Until
-  then, policy refusal manifests as `status: "error"` with a specific
-  `error.kind` (e.g. `pii_blocked`, `policy_blocked`).
+- **Error-kind registry expansion** — v1.0 shipped 7 kinds; v1.1
+  added 3 (`pii_blocked`, `policy_blocked`, `allowlist_violation`)
+  for the refuse-before-execute taxonomy. Real-world agent traffic
+  will surface more (especially around partial results, rate-limiting,
+  transient failures). Further additions remain minor bumps.
+- **`refused` status producers** — reserved in v1.1 (type-contract
+  level), no current tool emits. v2's `execute` / `validate_query`
+  are the first producers. The `Recovery` shape gained
+  `suggested_rewrite` and `widening_hint` fields in v1.1 to support
+  the refuse-with-rewrite and refuse-with-widening-hint paths v2 will
+  populate.
 - **Eval query set** — the fixed query set used for Level 3 enforcement
   is defined and frozen once the query-log mining feature surfaces
   realistic agent intents from real workloads. Until then, Level 3 runs
