@@ -30,6 +30,7 @@ import pytest
 
 from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
+from schemabrain.core.example_query import ExampleQuery
 from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
 from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.anthropic_client import (
@@ -445,6 +446,16 @@ class TestStoreProtocolSeamUsable:
                 source_connection_id: str,
                 k: int,
             ) -> list[tuple[str, str, str, float]]:
+                return []
+
+            def list_example_queries(
+                self,
+                schema: str,
+                table: str,
+                *,
+                source_connection_id: str,
+                limit: int,
+            ) -> list[ExampleQuery]:
                 return []
 
             def get_spend_usd(self, *, source_connection_id: str) -> float:

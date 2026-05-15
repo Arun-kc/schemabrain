@@ -62,6 +62,7 @@ _SIBLING_TOOLS = frozenset(
         "describe_table",
         "describe_column",
         "suggest_joins",
+        "get_example_queries",
     }
 )
 
@@ -182,6 +183,9 @@ _HAPPY_PATH_ARGS: dict[str, dict[str, object]] = {
     "describe_table": {"qualified_name": "public.users"},
     "describe_column": {"qualified_name": "public.users.email"},
     "suggest_joins": {"tables": ["public.users", "public.users"]},
+    # The lint store seeds `public.users` only — querying it yields
+    # the `empty` envelope, which still round-trips through Pydantic.
+    "get_example_queries": {"qualified_name": "public.users"},
 }
 
 

@@ -24,6 +24,7 @@ from typing import Protocol, runtime_checkable
 
 from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
+from schemabrain.core.example_query import ExampleQuery
 from schemabrain.core.models import ForeignKey, IncomingForeignKey, Table
 
 
@@ -210,5 +211,43 @@ class Store(Protocol):
         short-circuit to `[]` BEFORE any dimension validation — a
         caller with the wrong query dim against an empty store must
         not raise.
+        """
+        ...
+
+    # ----- Example queries -----------------------------------------
+    #
+    # Storage primitive behind tool #5 `get_example_queries`. v0.5
+    # ships read-only; the writer (`pg_stat_statements` mining +
+    # `sqlglot`) lands in the next PR. An empty result is the right
+    # answer when a table has no recorded examples — the MCP tool
+    # layer maps that to a charter-compliant `status="empty"`
+    # envelope.
+
+    def list_example_queries(
+        self,
+        schema: str,
+        table: str,
+        *,
+        source_connection_id: str,
+        limit: int,
+    ) -> list[ExampleQuery]:
+        """Return observed example SQL for `(schema, table)`, ranked.
+
+        Ordering (REQUIRED — callers depend on this for deterministic
+        pagination once mining writes many rows per table):
+          - Descending by `observation_count`.
+          - Then descending by `last_seen_at`.
+          - Then ascending by insertion order (the surrogate row id).
+
+        Returns up to `limit` rows; fewer is the right answer when the
+        store holds fewer matching examples. Implementations MUST
+        raise `ValueError` for `limit < 1` (mirror of `k` validation
+        on `search_embeddings_topk`).
+
+        This method does NOT distinguish between "no such table" and
+        "table indexed but no examples" — both return `[]`. Callers
+        that need to distinguish those states (the MCP tool layer
+        does, so it can return `unknown_name` vs `empty` envelopes)
+        must call `get_table` first to disambiguate.
         """
         ...
