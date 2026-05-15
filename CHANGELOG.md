@@ -81,6 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `security`, 15 for `integration`). Previously GitHub's 360-minute
   default would have allowed a hung dep / container to burn 6 hours of
   CI minutes per run.
+- `pytest` lower bound bumped to `>=9.0.3`, dropping the
+  `--ignore-vuln CVE-2025-71176` suppression from the `pip-audit` step.
+  pytest 9.0.3 fixes the local-DoS in `/tmp/pytest-of-{user}` directory
+  naming. `pip-audit --strict` now runs with no suppressions; any
+  future CVE in any dep will fail the gate.
 
 ### Changed (docs)
 - `SECURITY.md` SLA language softened from "We commit to" to "we aim

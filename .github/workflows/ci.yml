@@ -117,18 +117,11 @@ jobs:
         run: uv sync --extra dev --python 3.11
 
       - name: pip-audit (known-CVE deps)
-        # Strict mode: any unsuppressed vulnerability fails the build.
-        # CVE-2025-71176 is suppressed: pytest 8.4.2 local-DoS via
-        # /tmp/pytest-of-{user} directory naming. Pytest is dev-only —
-        # never shipped to Schema Brain users — and the exploit requires
-        # an already-present local attacker on the dev/CI host. The
-        # proper fix is pytest>=9.0.3; Dependabot will land that as
-        # its own focused PR. Remove this --ignore-vuln when the bump
-        # merges, so a regression to <9.0.3 re-fails the gate.
+        # Strict mode: any vulnerability fails the build. No
+        # suppressions today; pytest is now >=9.0.3 so CVE-2025-71176
+        # no longer applies.
         run: |
-          uv run --python 3.11 pip-audit \
-            --strict \
-            --ignore-vuln CVE-2025-71176
+          uv run --python 3.11 pip-audit --strict
 
       - name: bandit (Python SAST)
         # Reads `[tool.bandit]` from pyproject.toml so the test/scripts
