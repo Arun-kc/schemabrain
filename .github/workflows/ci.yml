@@ -76,7 +76,7 @@ jobs:
         run: uv run --python ${{ matrix.python-version }} pytest -m "not integration"
 
   security:
-    name: Security scans (pip-audit + bandit)
+    name: Security scans (pip-audit + bandit + semgrep)
     runs-on: ubuntu-latest
     # Independent of lint-and-unit so a ruff failure doesn't hide a
     # CVE in deps, and a CVE in deps doesn't hide a ruff failure.
@@ -123,6 +123,24 @@ jobs:
             -c pyproject.toml \
             -r schemabrain/ \
             -ll
+
+      - name: semgrep (broader Python + security-audit ruleset)
+        # `uvx` (not a direct dev dep) because semgrep ships a heavy
+        # binary (~46 MB) AND its rule registry updates independently
+        # of the binary version — pinning the binary buys little
+        # reproducibility and costs a lot of dev-env weight. The
+        # `p/python` + `p/security-audit` packs are the two community
+        # rulesets that materially overlap our threat model. `--error`
+        # makes any unsuppressed finding fail the build. Inline
+        # `# nosemgrep:` comments justify the two known-safe
+        # `text(sql)` calls in `profiler/postgres.py`; any other
+        # finding fails CI.
+        run: |
+          uvx semgrep scan \
+            --config p/python \
+            --config p/security-audit \
+            --error \
+            schemabrain/
 
   integration:
     name: Integration (Docker / Postgres)

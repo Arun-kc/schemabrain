@@ -42,6 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the SQL string). Configuration lives in `[tool.bandit]` in
   `pyproject.toml` and excludes tests/scripts where intentional
   `assert` and fake-URL usage would generate noise.
+- `semgrep` runs on every PR via the same `security` job, using the
+  community `p/python` + `p/security-audit` rulesets and `--error`
+  so any unsuppressed finding fails the build. Run via `uvx` rather
+  than pinned as a dev dep — the 46 MB binary is heavy and the rule
+  registry updates independently of the binary version. Two
+  `# nosemgrep:` suppressions on the two `text(sql)` calls that
+  pair with the bandit suppressions (same underlying safety
+  guarantee, different scanner).
 
 ### Changed
 - `schemabrain.__version__` is now read dynamically from package

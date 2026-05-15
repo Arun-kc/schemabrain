@@ -53,9 +53,7 @@ class TestDependabotConfig:
         assert "github-actions" in ecosystems
 
     @pytest.mark.parametrize("ecosystem", ["pip", "github-actions"])
-    def test_every_ecosystem_has_weekly_schedule(
-        self, config: dict, ecosystem: str
-    ) -> None:
+    def test_every_ecosystem_has_weekly_schedule(self, config: dict, ecosystem: str) -> None:
         # Daily is too noisy for a solo project; monthly is too slow
         # for security patches. Weekly is the well-tested middle ground.
         entry = next(u for u in config["updates"] if u["package-ecosystem"] == ecosystem)

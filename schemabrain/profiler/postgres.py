@@ -131,6 +131,7 @@ class PostgresProfiler:
         sql = f"SELECT {', '.join(select_parts)} FROM {quoted_table}"  # nosec B608
         try:
             with engine.connect() as conn:
+                # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text - same justification as the `# nosec B608` above; no user input enters `sql`.
                 row = conn.execute(text(sql)).one()
         except ProgrammingError as e:
             # Only `UndefinedTable` (SQLSTATE 42P01) gets translated into a
@@ -188,6 +189,7 @@ class PostgresProfiler:
             f"LIMIT {self._sample_size}"
         )
         with engine.connect() as conn:
+            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text - same justification as the `# nosec B608` above; no user input enters `sql`.
             rows = conn.execute(text(sql)).all()
         # The `WHERE col IS NOT NULL` filter guarantees psycopg never
         # returns a NULL row here. Cap raw width before regex/truncation
