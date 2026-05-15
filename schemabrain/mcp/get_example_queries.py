@@ -57,8 +57,11 @@ def get_example_queries_impl(
     # collapsing the "unknown table" and "no examples yet" cases into
     # one — the MCP layer wants them as separate envelopes.
     if store.get_table(schema, table, source_connection_id=source_connection_id) is None:
+        # Reconstruct from validated parts rather than echoing the raw
+        # user input — consistent with the bounded-echo discipline on
+        # `_parse_qualified_name`'s error path.
         raise TableNotFoundError(
-            f"No indexed table named {qualified_name!r} for this source. "
+            f"No indexed table named {schema}.{table} for this source. "
             f"Call `find_relevant_tables` to discover the qualified names "
             f"of indexed tables."
         )

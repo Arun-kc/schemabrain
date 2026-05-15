@@ -632,6 +632,17 @@ class TestRecoveryHelpers:
         assert _safe_table_part("a.b.c.d") is None
         assert _safe_table_part(".") is None
 
+    def test_safe_table_part_rejects_oversize_part(self) -> None:
+        """Defensive length bound: even if a future call site skips
+        parse validation, the recovery-hint path must not echo an
+        unbounded table name back through `suggested_args`.
+        """
+        from schemabrain.mcp.server import _safe_table_part
+
+        oversize = "x" * 200
+        assert _safe_table_part(f"public.{oversize}") is None
+        assert _safe_table_part(f"public.{oversize}.col") is None
+
     def test_maybe_query_arg_with_parseable(self) -> None:
         from schemabrain.mcp.server import _maybe_query_arg
 
