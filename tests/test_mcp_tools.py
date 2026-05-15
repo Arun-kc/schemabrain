@@ -500,10 +500,9 @@ class TestFindRelevantTablesImpl:
         # one table with two positive-scoring columns at distinct
         # magnitudes (0.8 and 0.6). The result MUST surface the MAX
         # (0.8), not the SUM (1.4), the MEAN (0.7), or anything else.
-        # Per pr-test-analyzer audit 2026-05-15 — the existing
-        # multiple-positive-columns test couldn't distinguish MAX
-        # from accidentally-correct alternatives because the winning
-        # column scored exactly 1.0.
+        # The other multiple-positive-columns test can't distinguish
+        # MAX from accidentally-correct alternatives because the
+        # winning column scores exactly 1.0.
         store = SQLiteStore(tmp_path / "s.db")
         sid = "src1"
         store.write_table(
@@ -557,7 +556,7 @@ class TestFindRelevantTablesImpl:
         # Defensive parity with EmbeddingRetriever: a degenerate
         # zero-norm vector from the embedder must NOT propagate the
         # Store's ValueError to the MCP caller. Translate to [] at
-        # this layer. Per silent-failure-hunter audit 2026-05-15 (HIGH).
+        # this layer.
         embedder = _AxisEmbedder({"q": (0.0, 0.0, 0.0, 0.0)})
         result = find_relevant_tables_impl(
             store=populated_store,

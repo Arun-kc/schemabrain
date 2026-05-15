@@ -205,12 +205,11 @@ class TestIndexCommandValidation:
     def test_bare_postgresql_scheme_rejected_with_guided_error(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ):
-        # The papercut from slice 2.1 manual testing: bare
-        # `postgresql://` resolves to psycopg2 in SQLAlchemy but we
-        # ship only psycopg v3, producing a confusing
+        # Papercut: bare `postgresql://` resolves to psycopg2 in
+        # SQLAlchemy but we ship only psycopg v3, producing a confusing
         # `ModuleNotFoundError: psycopg2` traceback at create_engine
-        # time. Slice 2.2 catches this at the URL boundary with a
-        # guided error pointing at the correct scheme.
+        # time. We catch this at the URL boundary with a guided error
+        # pointing at the correct scheme.
         store_path = tmp_path / "schemabrain.db"
         exit_code = main(["index", "postgresql://user:pw@host/db", "--store-path", str(store_path)])
         assert exit_code == 2
@@ -897,8 +896,7 @@ class TestEnrichmentCliFlags:
         # second call after a cap-breaching first is refused
         # deterministically. Under default concurrency=8, all in-flight
         # tasks complete before any cap check sees the breach — fine
-        # for production but not for this regression test. Per Phase A
-        # Commit 2.
+        # for production but not for this regression test.
         monkeypatch.setattr("schemabrain.cli._PIPELINE_DEFAULT_CONCURRENCY", 1)
         monkeypatch.setattr("schemabrain.cli._PIPELINE_CRYPTIC_CONCURRENCY", 1)
 
@@ -1077,11 +1075,11 @@ class TestEnrichmentCliFlags:
     ):
         # Stub everything so we reach the enrichment loop, then have
         # the fake LLM client raise `anthropic.AuthenticationError`.
-        # Without slice 2.2 this would surface as a raw 401 traceback
-        # spanning httpx → anthropic SDK → indexer; slice 2.2 catches
-        # the typed exception and renders a guided block pointing at
-        # the console.anthropic.com key page + the --no-enrich escape
-        # hatch.
+        # Without the guided-error layer this would surface as a raw
+        # 401 traceback spanning httpx → anthropic SDK → indexer; we
+        # catch the typed exception and render a guided block pointing
+        # at the console.anthropic.com key page + the --no-enrich
+        # escape hatch.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
 
         import anthropic
@@ -1186,8 +1184,8 @@ class TestEnrichmentCliFlags:
         # Connect to a port nothing is listening on. SQLAlchemy raises
         # `OperationalError` wrapping psycopg's connection-refused
         # error, which `postgres_operational_error` translates into a
-        # `postgres_connection_refused` GuidedError. Without slice 2.2
-        # this would surface as a raw traceback.
+        # `postgres_connection_refused` GuidedError. Without the
+        # guided-error layer this would surface as a raw traceback.
         store_path = tmp_path / "schemabrain.db"
         # Port 1 is reserved and never accepts connections; tcpip
         # connect() will return ECONNREFUSED before any auth roundtrip,
@@ -2127,8 +2125,9 @@ class TestFixturePathSubcommand:
 
 
 # ---------------------------------------------------------------------------
-# Q1: --url-env support across index/serve/eval. Credentials in argv leak to
-# shell history, `ps`, and journald — see project_security_audit.md (HIGH).
+# `--url-env` support across index/serve/eval. Credentials passed via
+# argv leak to shell history, `ps`, and journald, so we require an env
+# variable for any URL containing a non-empty password.
 # ---------------------------------------------------------------------------
 
 

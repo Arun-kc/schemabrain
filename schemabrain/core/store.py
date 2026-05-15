@@ -33,20 +33,20 @@ from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
 from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
 
-# "2" → Slice 4-B added `column_embeddings`. "3" → Phase A Commit 2
-# adds `cost_ledger`. "4" → Phase A Commit 3 adds the
-# `idx_col_emb_src` covering index on `column_embeddings`. "5" →
-# Phase A Commit 4 adds the `idx_col_desc_src` covering index on
-# `column_descriptions` so the post-ranking
-# `get_table_descriptions(schema, table)` calls (10 per
-# `find_relevant_tables` invocation by default) are point seeks
-# instead of partial-PK range scans. The `column_descriptions` PK
-# orders columns as `(schema, table, column, source_connection_id)`
-# — column 4 is `source_connection_id`, so a `WHERE schema=? AND
-# table=? AND source_connection_id=?` predicate misses the PK index
-# tail. Mirror the embeddings-side fix from v4. Older stores raise
-# SchemaVersionMismatchError; pre-alpha users re-create. Per
-# database-reviewer audit 2026-05-15 (HIGH).
+# Bump the schema version when the on-disk DDL set changes.
+# History:
+#   "2" → added `column_embeddings`.
+#   "3" → added `cost_ledger` for cross-process spend persistence.
+#   "4" → added `idx_col_emb_src` covering index on `column_embeddings`.
+#   "5" → added `idx_col_desc_src` covering index on `column_descriptions`
+#         so `get_table_descriptions(schema, table, source_connection_id)`
+#         is a point seek instead of a partial-PK range scan. The PK
+#         orders columns as `(schema, table, column, source_connection_id)`
+#         — `source_connection_id` is the 4th column, so a `WHERE schema=?
+#         AND table=? AND source_connection_id=?` predicate misses the
+#         PK tail. The sibling index reorders so the predicate is
+#         a true point seek.
+# Older stores raise SchemaVersionMismatchError; pre-alpha users re-create.
 _SCHEMA_VERSION = "5"
 _MEMORY_PATH = ":memory:"
 
@@ -191,8 +191,7 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     # and includes the ORDER BY columns, so the bulk-fetch SELECT
     # becomes a single B-tree seek + in-index range scan with no
     # filesort. Without this, retrieval is O(M) scan + O(M log M)
-    # sort and the Commit 4 p95 < 100ms gate is at risk. Added
-    # 2026-05-15 per database-reviewer audit (CRITICAL).
+    # sort, and the < 100ms-at-10k-columns retrieval target is at risk.
     """
     CREATE INDEX IF NOT EXISTS idx_col_emb_src
         ON column_embeddings
@@ -208,8 +207,7 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     # At 100 cols/table x 10 hits per call that's a thousand
     # superfluous comparisons per `find_relevant_tables` invocation.
     # This index reorders so the predicate becomes a clean point seek
-    # over `(source_connection_id, schema, table)`. Per
-    # database-reviewer audit 2026-05-15 (HIGH).
+    # over `(source_connection_id, schema, table)`.
     """
     CREATE INDEX IF NOT EXISTS idx_col_desc_src
         ON column_descriptions
@@ -257,17 +255,16 @@ class SQLiteStore:
         """Open a SQLite store at `path`.
 
         `writer_lock=True` is the opt-in flag for callers that need
-        cross-process write serialisation. **Commit 1 stores the flag
-        only — `SQLiteStore`'s write methods do NOT yet issue
-        `BEGIN IMMEDIATE` based on it.** Phase A Commit 2 wires the
-        flag into the write paths for the async-enrichment cost-ledger
-        CAS. Until then, setting `writer_lock=True` is a no-op for
-        Schema Brain's own writes; the contention test in
+        cross-process write serialisation. Today, only the cost-ledger
+        write path (`add_spend_usd`) honours this flag with
+        `BEGIN IMMEDIATE`; the other write methods rely on Python's
+        sqlite3 module GIL-serialised writes through a single
+        connection. The contention test in
         `tests/test_core_store_protocol.py` verifies the underlying
-        SQLite mechanism but does not exercise SQLiteStore methods.
+        SQLite mechanism.
 
-        Connection-level PRAGMA hardening (Phase A Commit 1) tunes the
-        store for the realistic Schema Brain workload. The WAL group
+        Connection-level PRAGMA hardening tunes the store for the
+        realistic Schema Brain workload. The WAL group
         (`journal_mode=WAL` + `synchronous=NORMAL`) only applies to
         file-backed stores; in-memory stores have no fsync to schedule
         and SQLite forces `journal_mode=MEMORY` regardless, so we
@@ -712,8 +709,7 @@ class SQLiteStore:
         `EmbeddingRetriever`'s `score <= 0.0` filter (NaN comparisons
         always return False) — the NaN can then rank as a top result
         with no warning. Reject at the write boundary so the store
-        cannot hold a poisoned vector. Per silent-failure-hunter audit
-        2026-05-15 (CRITICAL).
+        cannot hold a poisoned vector.
         """
         for col_name, emb in embeddings.items():
             for i, v in enumerate(emb.vector):
@@ -755,7 +751,7 @@ class SQLiteStore:
 
     # ----- Cost ledger ---------------------------------------------
     #
-    # Phase A Commit 2 surface. Persists cumulative USD spent per
+    # Persists cumulative USD spent per
     # `source_connection_id` so a re-run after a crash sees the prior
     # total and refuses the next call if it has already breached the
     # cap. Without this layer, a crash mid-enrichment would let the
@@ -829,8 +825,7 @@ class SQLiteStore:
             # inputs above ~1.8e302. `round(inf)` raises OverflowError
             # which would surface as an undocumented exception type.
             # Reject the input cleanly via the same ValueError shape
-            # the rest of the validators use. Per security-reviewer
-            # audit 2026-05-15.
+            # the rest of the validators use.
             raise ValueError(
                 f"amount_usd * {_MICROS_PER_USD} overflows to non-finite: "
                 f"{amount_usd!r}. No legitimate per-call LLM cost is this large; "
@@ -885,8 +880,7 @@ class SQLiteStore:
                 # `sqlite3.DatabaseError` family so the original
                 # exception — the load-bearing signal — is preserved.
                 # Narrower `OperationalError` would let
-                # `ProgrammingError` replace the root cause. Per
-                # silent-failure-hunter audit 2026-05-15.
+                # `ProgrammingError` replace the root cause.
                 with contextlib.suppress(sqlite3.DatabaseError):
                     conn.execute("ROLLBACK")
                 raise
@@ -909,10 +903,10 @@ class SQLiteStore:
         (schema, table, column). Returns at most `k` rows; fewer if the
         store holds fewer embeddings.
 
-        Replaces the per-table N+1 SQL + Python-loop cosine path that
-        `EmbeddingRetriever` used through Slice 4-B. Empty store
-        short-circuits before any dimension validation — that path must
-        not raise on a fresh store.
+        Provides callers with a bulk-fetch alternative to the per-table
+        N+1 SQL + Python-loop cosine pattern. Empty store short-circuits
+        before any dimension validation — that path must not raise on
+        a fresh store.
 
         Validation:
           - `k >= 1` (caller-side bug if not).
@@ -992,8 +986,7 @@ class SQLiteStore:
                 # `_unpack_vector`) catches this, but `np.frombuffer`
                 # silently truncates — without this guard, a 512-float
                 # blob declared at dim 384 would read the first 384
-                # floats and produce wrong scores. Per
-                # silent-failure-hunter audit 2026-05-15 (HIGH).
+                # floats and produce wrong scores.
                 raise ValueError(
                     f"column_embeddings: blob length {len(blob)} for row "
                     f"({row['schema_name']!r}, {row['table_name']!r}, "
@@ -1018,15 +1011,14 @@ class SQLiteStore:
         # through `EmbeddingRetriever`'s `score <= 0.0` filter (NaN
         # comparisons always return False) and can rank as the top
         # result. Clamp non-finite scores to 0.0 so they're treated as
-        # "no signal" instead of poisoning the ranking. Per
-        # silent-failure-hunter audit 2026-05-15 (CRITICAL).
+        # "no signal" instead of poisoning the ranking.
         scores = np.where(np.isfinite(scores), scores, 0.0)
 
         # Full sort by (-score, schema, table, column) for deterministic
         # tiebreaks at the k boundary. M is bounded by the store's
-        # embedding count (<10k for v1); full sort is a few ms in
-        # practice and Commit 4's pytest-benchmark gate enforces that.
-        # `np.argpartition` is a Commit-4+ optimisation if needed.
+        # embedding count; full sort is a few ms in practice at v1 scale
+        # (<10k columns), enforced by the pytest-benchmark perf gate.
+        # `np.argpartition` is a possible optimisation when scales grow.
         indexed = [
             (
                 rows[i]["schema_name"],

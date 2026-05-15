@@ -29,14 +29,14 @@ or care which provider is on the other end. A future LLM provider
 `LLMClient` Protocol (`complete` + `cost_usd`); no changes to this
 module or to any central pricing dispatch.
 
-**Runtime guard on `cost_usd` return value (Commit 2).** Per the
-type-design audit (2026-05-15), a buggy adapter returning negative
-or non-finite cost could silently corrupt `_spent_usd` and escape
-the cap. After each call, `cost` is validated as
-`math.isfinite(cost) and cost >= 0` — failure raises `RuntimeError`
-BEFORE the value can enter the running total or the ledger.
+**Runtime guard on `cost_usd` return value.** A buggy adapter
+returning negative or non-finite cost could silently corrupt
+`_spent_usd` and escape the cap. After each call, `cost` is
+validated as `math.isfinite(cost) and cost >= 0` — failure raises
+`RuntimeError` BEFORE the value can enter the running total or the
+ledger.
 
-**Persistent cost ledger (Commit 2).** When a `Store` and a
+**Persistent cost ledger.** When a `Store` and a
 `source_connection_id` are wired into the pipeline at construction,
 cumulative spend is persisted to the ledger after each successful
 call. A process crash mid-enrichment doesn't reset the counter;
@@ -112,12 +112,12 @@ class EnrichmentPipeline:
     post-call overshoot is bounded by `N x max_per_call_cost` — up to
     N tasks can pass the cap check simultaneously (all see the same
     `spent_usd` value before any records its delta), then each completes
-    its call and records spend serialised through the `spend_lock`. Per
-    silent-failure-hunter audit 2026-05-15: tasks cancelled by
-    `TaskGroup` mid-`asyncio.to_thread` cannot be interrupted (Python
-    threads aren't preemptible), so an in-flight LLM call's cost will
-    be incurred at the provider but not recorded — bounded leak of
-    `concurrency` calls' worth of cost on the failure path.
+    its call and records spend serialised through the `spend_lock`.
+    Caveat: tasks cancelled by `TaskGroup` mid-`asyncio.to_thread`
+    cannot be interrupted (Python threads aren't preemptible), so an
+    in-flight LLM call's cost will be incurred at the provider but
+    not recorded — bounded leak of `concurrency` calls' worth of cost
+    on the failure path.
 
     Routing:
       - If `cryptic_client` is `None` (default), every column goes to
@@ -326,7 +326,7 @@ class EnrichmentPipeline:
         non-negative finite USD value. A buggy adapter that returns
         `nan`, `inf`, or a negative would silently corrupt `_spent_usd`
         and let spend escape the cap. This guard makes the contract
-        enforceable at the seam — per type-design audit 2026-05-15.
+        enforceable at the seam.
         """
         cost = client.cost_usd(usage)
         if not math.isfinite(cost) or cost < 0:
@@ -346,8 +346,7 @@ class EnrichmentPipeline:
         lost from accounting entirely, which under-counts but prevents
         an over-count that would let real spend escape the cap. The
         exception propagates to the caller; the run aborts before
-        scheduling further calls. Per silent-failure-hunter audit
-        2026-05-15.
+        scheduling further calls.
         """
         if self._store is not None and self._source_connection_id is not None:
             new_total = self._store.add_spend_usd(

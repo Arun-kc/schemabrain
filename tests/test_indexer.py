@@ -1,8 +1,8 @@
 """Unit tests for the indexer.
 
 Uses fakes (FakeDataSource, CountingProfiler) instead of a real Postgres
-so we can verify the central claim of Slice 3 — that an unchanged schema
-re-index does ZERO profile queries — by counting calls.
+so we can verify the central no-op-rerun invariant — that an unchanged
+schema re-index does ZERO profile queries — by counting calls.
 """
 
 from __future__ import annotations
@@ -186,7 +186,7 @@ class TestFreshRun:
 
 class TestNoOpRerun:
     def test_unchanged_schema_does_not_call_profiler(self) -> None:
-        # THE central Slice 3 invariant.
+        # THE central no-op-rerun invariant.
         source = FakeDataSource([_users_table(), _orders_table()])
         profiler = CountingProfiler()
         store = SQLiteStore(":memory:")
@@ -215,10 +215,10 @@ class TestNoOpRerun:
         # classified `unchanged` on every run, and the table row is
         # never persisted (since the changed-path is what writes it).
         # This is acceptable because a zero-column table contains no
-        # signal worth caching; if a future Slice ever needs to surface
-        # them in MCP responses we'll revisit. Locking the current
-        # behavior in so a regression that starts profiling them gets
-        # caught.
+        # signal worth caching; if a future change ever needs to
+        # surface them in MCP responses we'll revisit. Locking the
+        # current behavior in so a regression that starts profiling
+        # them gets caught.
         empty_users = Table(name="users", schema_name="public", columns=())
         source = FakeDataSource([empty_users])
         profiler = CountingProfiler()
@@ -493,7 +493,7 @@ class TestEnrichmentIntegration:
         store.close()
 
     def test_unchanged_table_does_not_call_llm(self) -> None:
-        # The Slice 3 no-op-rerun invariant extends to LLM cost: a
+        # The no-op-rerun invariant extends to LLM cost: a
         # second index on an unchanged schema must not make any new
         # LLM calls.
         source = FakeDataSource([_users_table()])
@@ -596,7 +596,7 @@ class TestEnrichmentIntegration:
         # default concurrency=8 the pre-call check races, all in-flight
         # tasks complete, and the cap is approximately enforced — fine
         # for production but not for this regression test which pins
-        # exact ordering. Per Commit 2 (Phase A async enrichment).
+        # exact ordering.
         client = FakeLLMClient(text_provider=lambda s, u: "x" * 5_000_000)
         pipeline = EnrichmentPipeline(client=client, max_cost_usd=2.0, default_concurrency=1)
 

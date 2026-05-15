@@ -1,4 +1,4 @@
-"""Tests for `EnrichmentPipeline.enrich_columns_async` (Phase A Commit 2).
+"""Tests for `EnrichmentPipeline.enrich_columns_async`.
 
 Three responsibility lines covered here:
 
@@ -17,8 +17,7 @@ Three responsibility lines covered here:
    cap. Without a store, the pipeline falls back to in-memory-only
    tracking (legacy mode for tests).
 
-3. **Runtime guard on `cost_usd` return value** — folded into this
-   commit per the type-design audit (2026-05-15 deferred MEDIUM). If
+3. **Runtime guard on `cost_usd` return value** — if
    `client.cost_usd(usage)` returns a non-finite or negative value,
    the pipeline raises `RuntimeError` BEFORE the value can corrupt
    `_spent_usd` or the ledger.
@@ -367,12 +366,9 @@ class TestCostCapEnforcedConcurrently:
 class TestRuntimeGuardOnCostUsd:
     """`client.cost_usd(...)` MUST return a non-negative finite USD value.
 
-    Folded into this commit per the type-design audit (2026-05-15 MEDIUM,
-    pre-existing gap in `EnrichmentPipeline.enrich_column` documented in
-    `project_deferred_decisions.md`). Without this guard, a buggy adapter
-    could silently corrupt `_spent_usd` (e.g., return `-1.0` and let
-    spend escape the cap, or return `nan` and break all subsequent
-    comparisons).
+    Without this guard, a buggy adapter could silently corrupt
+    `_spent_usd` (e.g., return `-1.0` and let spend escape the cap, or
+    return `nan` and break all subsequent comparisons).
     """
 
     def _custom_client_returning(self, value: float) -> Any:

@@ -85,8 +85,8 @@ _DEFAULT_STORE_PATH = "./schemabrain.db"
 _DEFAULT_MAX_COST_USD = 10.0
 _DEFAULT_EVAL_LIMIT = 10
 
-# Per-tier concurrency for the async enrichment pipeline (Phase A
-# Commit 2). Module-level constants rather than locals so test
+# Per-tier concurrency for the async enrichment pipeline.
+# Module-level constants rather than locals so test
 # fixtures can monkeypatch them to `1` for deterministic cap
 # enforcement — under default concurrency, the per-task cap check
 # races and a cap-trip test would need >= 9 columns to land
@@ -227,8 +227,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-embed",
         action="store_true",
         help="Skip generating local sentence embeddings for column "
-        "descriptions. Embeddings power Slice 4-C's EmbeddingRetriever; "
-        "skipping them saves ~10ms per column at index time but disables "
+        "descriptions. Embeddings power semantic retrieval via "
+        "`EmbeddingRetriever`; skipping them saves ~10ms per column "
+        "at index time but disables "
         "semantic retrieval. Default off (embeddings ON). Implied when "
         "--no-enrich is set, since there are no descriptions to embed.",
     )

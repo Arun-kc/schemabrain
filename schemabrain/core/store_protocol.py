@@ -13,11 +13,9 @@ NOT that signatures match. Signature drift between the Protocol and
 test failure on the first call that exercises the divergence).
 
 Forward-compat shape: this Protocol will additively grow as Schema
-Brain learns to persist new model classes. v1 wk 11+ adds
-SemanticRepository methods (entities/metrics/joins); v1 wk 16 adds
-AuditLogWriter methods (append-only audit rows with hash-chained
-fingerprints). Existing methods stay stable; new methods slot in
-without breaking callers.
+Brain learns to persist new model classes (semantic repository,
+audit log writer, etc.). Existing methods stay stable; new methods
+slot in without breaking callers.
 """
 
 from __future__ import annotations
@@ -45,11 +43,10 @@ class Store(Protocol):
     def writer_lock(self) -> bool:
         """`True` if the store serialises writes across processes.
 
-        Phase A Commit 1 stores the flag without wiring behaviour;
-        Phase A Commit 2 wires write methods to honour it for the
-        cost-ledger CAS path. Callers can read this to branch on
-        whether cross-process safety is in effect — useful for
-        Commit 2's async-enrichment dispatcher.
+        Today, the cost-ledger write path honours this flag with
+        `BEGIN IMMEDIATE`; callers can read it to branch on whether
+        cross-process safety is in effect (e.g., for the async
+        enrichment dispatcher).
         """
         ...
 
@@ -133,7 +130,7 @@ class Store(Protocol):
         embeddings: dict[str, ColumnEmbedding],
     ) -> None: ...
 
-    # ----- Cost ledger (Phase A Commit 2) ---------------------------
+    # ----- Cost ledger ----------------------------------------------
     #
     # Persists cumulative USD spent per `source_connection_id` so that
     # a process crash mid-enrichment doesn't let the next run start
@@ -163,8 +160,7 @@ class Store(Protocol):
 
     # ----- Embedding retrieval -------------------------------------
     #
-    # Single bulk-fetch + cosine ranking primitive that replaces the
-    # per-table N+1 SQL + Python-loop pattern used through Slice 4-B.
+    # Single bulk-fetch + cosine ranking primitive.
     # `EmbeddingRetriever` programs against this method exclusively;
     # any future store backend (in-memory mock, hosted backend) must
     # honour the full behavioural contract documented below, not just

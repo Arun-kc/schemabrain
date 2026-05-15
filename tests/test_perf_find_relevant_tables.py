@@ -57,9 +57,8 @@ _P95_TARGET_S = 0.100  # 100ms p95 — the Charter gate
 # pytest-benchmark hyperparams. 50 rounds x ~25ms median ~= 1.25s of
 # benchmark time on top of the ~1.5s fixture seeding. The higher
 # count absorbs single-round OS scheduling spikes on shared CI runners
-# (GitHub x86_64 hosts are 2-3x slower than M-class macbooks on
-# SQLite I/O and have higher latency variance). Per python-reviewer +
-# database-reviewer audit 2026-05-15 (MEDIUM — CI portability).
+# (GitHub x86_64 hosts are slower than M-class macbooks on SQLite I/O
+# and have higher latency variance).
 _MIN_ROUNDS = 50
 
 
@@ -216,8 +215,7 @@ class TestFindRelevantTablesPerfGate:
         assert p95_s < _P95_TARGET_S, (
             f"p95 {p95_s * 1000:.1f}ms exceeds Charter gate "
             f"{_P95_TARGET_S * 1000:.0f}ms at "
-            f"{_NUM_TABLES * _COLS_PER_TABLE} columns — see "
-            f"`project_scalability_ceilings.md` for the next-step swap"
+            f"{_NUM_TABLES * _COLS_PER_TABLE} columns"
         )
 
 

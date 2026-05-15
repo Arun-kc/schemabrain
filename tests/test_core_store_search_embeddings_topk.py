@@ -1,8 +1,8 @@
-"""Tests for `SQLiteStore.search_embeddings_topk` (Phase A Commit 3).
+"""Tests for `SQLiteStore.search_embeddings_topk`.
 
-The method is the new bulk-fetch retrieval seam: one SQL SELECT, one
-NumPy matmul, one top-k. It replaces the per-table N+1 SQL + Python-loop
-cosine path that `EmbeddingRetriever` used through Slice 4-B.
+The method is the bulk-fetch retrieval seam: one SQL SELECT, one
+NumPy matmul, one top-k. Callers use it to avoid the per-table N+1
+SQL + Python-loop cosine pattern.
 
 Contract under test (mirrors `store_protocol.Store.search_embeddings_topk`):
 
@@ -14,8 +14,8 @@ Contract under test (mirrors `store_protocol.Store.search_embeddings_topk`):
 
 Tests pin the contract surface — score correctness, validation,
 isolation, and tie-break determinism — NOT the implementation. The
-caller-visible behavior must not change when Commit 4 swaps full sort
-for `np.argpartition`.
+caller-visible behavior must not change if a future optimisation
+swaps the full sort for `np.argpartition`.
 """
 
 from __future__ import annotations
@@ -398,9 +398,9 @@ class TestStoreSideFinitenessGuards:
     Primary guard is at the WRITE boundary (`write_table_embeddings`
     rejects non-finite entries). Read path adds a secondary clamp so
     NaN/inf scores cannot escape even if a future store bypass or
-    direct SQL poke inserted a poisoned blob. Per silent-failure-hunter
-    audit 2026-05-15 (CRITICAL — NaN scores could rank #1 silently
-    because Python's `score <= 0.0` filter doesn't catch NaN).
+    direct SQL poke inserted a poisoned blob. Without these, NaN
+    scores could rank #1 silently because Python's `score <= 0.0`
+    filter doesn't catch NaN.
     """
 
     def test_write_rejects_nan_in_vector(self, tmp_path: Path) -> None:

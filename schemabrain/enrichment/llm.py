@@ -5,7 +5,7 @@ hypothetically Bedrock or Vertex tomorrow) plus shared types and the
 Anthropic per-family pricing helpers. The pipeline programs against
 `LLMClient` so tests can substitute `FakeLLMClient` without an API key.
 
-**Provider-agnostic cost dispatch (Phase A seams commit).** Pricing
+**Provider-agnostic cost dispatch.** Pricing
 lives ON the `LLMClient` Protocol via `cost_usd(usage)` — each adapter
 owns its own pricing. There is intentionally NO module-level
 `cost_usd_for(model, usage)` central dispatch. A future provider drops
@@ -153,7 +153,6 @@ def anthropic_cost_fn_for_model(model: str) -> CostFn:
     whitespace artifact in `response.model` would silently raise
     `ValueError` when a future caller passes that string back through —
     breaking production while every test with literal model names passes.
-    Per type-design audit 2026-05-15.
 
     Raises:
         ValueError: if `model` does not match any Anthropic family this
@@ -202,8 +201,7 @@ class LLMClient(Protocol):
             silently. If the underlying provider returns malformed
             usage data, raise `RuntimeError` (or a more specific
             exception) instead — that propagates cleanly through
-            `EnrichmentPipeline.enrich_column`. Per type-design audit
-            2026-05-15.
+            `EnrichmentPipeline.enrich_column`.
         """
         ...
 
@@ -220,8 +218,7 @@ class FakeLLMClient:
     **`model` is read-only after construction.** Mutating it post-ctor
     would leave `_cost_fn` stale and silently mis-price subsequent
     calls. To switch tiers, construct a new `FakeLLMClient` with the
-    desired model. This matches `AnthropicClient`'s shape. Per
-    type-design audit 2026-05-15.
+    desired model. This matches `AnthropicClient`'s shape.
 
     **Scope: Anthropic-priced models only.** The model name is resolved
     via `anthropic_cost_fn_for_model`, so this fake validates against

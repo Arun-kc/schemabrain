@@ -200,10 +200,9 @@ class EmbeddingRetriever:
     they're noise that crowds out the actual signal.
 
     Cost characteristic: ONE embedder call per `retrieve()`, ONE SQL
-    SELECT (no per-table N+1), one NumPy matmul. Was per-table Python-
-    loop cosine through Slice 4-B; Phase A Commit 3 swapped it for the
-    bulk path. The Charter target (p95 < 100ms at 10k columns) is gated
-    by Commit 4's pytest-benchmark suite.
+    SELECT (no per-table N+1), one NumPy matmul. The Charter target
+    (p95 < 100ms at 10k columns) is gated by the pytest-benchmark
+    suite at `tests/test_perf_find_relevant_tables.py`.
     """
 
     store: Store
@@ -228,8 +227,7 @@ class EmbeddingRetriever:
         # crash the CLI". Pre-check using the SAME float32 norm the
         # Store uses, so a vector with subnormal entries that round
         # to zero in float32 (but not in Python float64) doesn't slip
-        # past this check and trip the Store's ValueError. Per
-        # silent-failure-hunter audit 2026-05-15 (HIGH).
+        # past this check and trip the Store's ValueError.
         if float(np.linalg.norm(np.asarray(query_vec, dtype=np.float32))) == 0.0:
             return []
 

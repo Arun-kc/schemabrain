@@ -1,4 +1,4 @@
-"""Tests for the Store Protocol + the Phase A hardening on SQLiteStore.
+"""Tests for the Store Protocol + the hardening on SQLiteStore.
 
 Three responsibility lines covered here:
 
@@ -6,7 +6,7 @@ Three responsibility lines covered here:
    `isinstance` check against `Store`. Any future store backend must
    pass the same check.
 
-2. **PRAGMA hardening** — every PRAGMA documented in Phase A Commit 1
+2. **PRAGMA hardening** — every PRAGMA documented on `SQLiteStore`
    is actually in effect on a freshly-opened connection. Each PRAGMA
    gets its own test pinning the resulting value via a `PRAGMA <name>;`
    round-trip — without these, a future contributor could quietly
@@ -14,13 +14,12 @@ Three responsibility lines covered here:
    production behaviour change.
 
 3. **Opt-in writer lock** — the `writer_lock=True` constructor flag
-   serialises writes across processes via `BEGIN IMMEDIATE`. Commit 2's
-   async enrichment will turn it on for the cost-ledger CAS path; today
-   we just pin the on/off behaviour.
+   serialises writes across processes via `BEGIN IMMEDIATE`. The
+   async-enrichment cost-ledger path uses this flag.
 
 Plus a guard that `SQLiteStore.search_embeddings_topk` exists on the
 Protocol — the body itself is exercised by
-`tests/test_core_store_search_embeddings_topk.py` (Phase A Commit 3).
+`tests/test_core_store_search_embeddings_topk.py`.
 """
 
 from __future__ import annotations
@@ -81,9 +80,9 @@ class TestStoreProtocolConformance:
 
 
 class TestPragmaHardening:
-    """Every PRAGMA Phase A Commit 1 promises is in effect on a fresh conn.
+    """Every PRAGMA `SQLiteStore` promises is in effect on a fresh conn.
 
-    The PRAGMA list comes from the Phase A design memo:
+    The PRAGMA list:
       - foreign_keys = ON       (FK enforcement; off by default)
       - journal_mode = WAL      (concurrent readers + single writer)
       - synchronous = NORMAL    (WAL-compatible; FULL is overkill)

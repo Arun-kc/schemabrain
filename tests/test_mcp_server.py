@@ -129,9 +129,8 @@ class TestToolRegistry:
 
     def test_descriptions_lead_with_use_this_when(self, server_with_one_table) -> None:
         # Charter Principle 2: descriptions lead with "Use this when…"
-        # Slice 1.3 ships the lint rule that enforces this in CI; here
-        # we pin the wiring-layer output so a refactor can't silently
-        # drop the rule before the lint catches it.
+        # A separate CI lint enforces this; here we pin the wiring-layer
+        # output so a refactor can't silently drop the rule.
         for tool in asyncio.run(server_with_one_table.list_tools()):
             assert tool.description is not None
             assert tool.description.lower().startswith("use this when"), (
@@ -142,7 +141,7 @@ class TestToolRegistry:
     def test_descriptions_name_at_least_one_composition(self, server_with_one_table) -> None:
         # Charter Principle 2: every description must name at least one
         # canonical composition pattern. Mention of another tool name is
-        # the cheap check; slice 1.3's lint refines this.
+        # the cheap check; a CI lint refines this.
         all_tool_names = {
             "find_relevant_tables",
             "describe_table",
@@ -157,7 +156,7 @@ class TestToolRegistry:
             )
 
     def test_all_tools_have_read_only_hint_true(self, server_with_one_table) -> None:
-        # All four v1.0 tools are read-only. Slice 1.3 will lint this
+        # All four v1.0 tools are read-only. A CI lint enforces this
         # against the per-tool charter manifest.
         for tool in asyncio.run(server_with_one_table.list_tools()):
             assert tool.annotations is not None, f"tool {tool.name!r} missing annotations"
@@ -169,8 +168,8 @@ class TestToolRegistry:
     def test_descriptions_disambiguate_via_instead_when(self, server_with_one_table) -> None:
         # Charter Principle 2 Rule 2: every description must redirect the
         # agent toward a sibling tool when its own use-case doesn't fit
-        # (the "instead when" pattern). Slice 1.3's lint will enforce this
-        # phrase mechanically — pin it now so the descriptions can't drift.
+        # (the "instead when" pattern). A CI lint enforces this phrase
+        # mechanically; pin it here so the descriptions can't drift.
         for tool in asyncio.run(server_with_one_table.list_tools()):
             assert "instead when" in (tool.description or "").lower(), (
                 f"tool {tool.name!r} must include 'instead when' to satisfy "
@@ -178,8 +177,8 @@ class TestToolRegistry:
             )
 
     def test_descriptions_under_500_chars(self, server_with_one_table) -> None:
-        # Charter Enforcement Level 1: descriptions ≤ 500 chars. Slice 1.3
-        # ships the CI lint; this test pins the contract today so a future
+        # Charter Enforcement Level 1: descriptions ≤ 500 chars. A CI
+        # lint covers this; this test pins the contract so a future
         # description edit can't quietly bloat past the gate.
         for tool in asyncio.run(server_with_one_table.list_tools()):
             length = len(tool.description or "")

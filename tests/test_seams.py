@@ -1,17 +1,16 @@
-"""Tests for the two extensibility seams hardened in Phase A Commit 1.5.
+"""Tests for the two extensibility seams.
 
-This commit is a surgical refactor that lifts pricing onto the
-`LLMClient` Protocol and removes the central `cost_usd_for` Anthropic-
-only dispatch. It also switches non-CLI callsites from the concrete
-`SQLiteStore` type annotation to the `Store` Protocol, which lets a
-contributor add a new store backend (or a test double) without touching
-the indexer, the eval retriever, or the four MCP tool modules.
+These seams lift pricing onto the `LLMClient` Protocol (no central
+`cost_usd_for` Anthropic-only dispatch) and switch non-CLI callsites
+from the concrete `SQLiteStore` type annotation to the `Store`
+Protocol, so a contributor can add a new store backend (or a test
+double) without touching the indexer, the eval retriever, or the
+four MCP tool modules.
 
-The architectural audit (2026-05-15) found that these two seams were
-the blocker for "weekend contribution to add a new provider." Without
-them, every new LLM provider would have to extend `cost_usd_for` (a
-central function inside the abstraction file), and every new store
-backend would have to find/replace 10+ concrete type annotations.
+Without these two seams, every new LLM provider would have to extend
+`cost_usd_for` (a central function inside the abstraction file), and
+every new store backend would have to find/replace 10+ concrete type
+annotations.
 
 Why this lives in its own test file: the invariants here are about the
 *shape of the seams*, not about the Anthropic adapter, the SQLite
@@ -470,8 +469,7 @@ class TestAnthropicResolverWhitespaceTolerance:
     formatting artifacts (leading or trailing whitespace). Without
     stripping, a benign whitespace artifact would raise `ValueError` at
     adapter construction — silently breaking production while passing
-    every test that uses literal-string model names. Per type-design
-    audit 2026-05-15 (HIGH).
+    every test that uses literal-string model names.
     """
 
     def test_strips_leading_whitespace(self) -> None:
@@ -498,7 +496,7 @@ class TestFakeLLMClientReadOnlyModel:
     silently mis-price subsequent calls. `AnthropicClient` already solves
     this with a read-only `@property` backed by `self._model`. The test
     double must match — otherwise tests that pass with the fake would
-    fail with the real client. Per type-design audit 2026-05-15 (MEDIUM).
+    fail with the real client.
     """
 
     def test_model_setter_raises_attribute_error(self) -> None:

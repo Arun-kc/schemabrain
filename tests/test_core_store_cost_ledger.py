@@ -1,12 +1,12 @@
-"""Tests for the SQLite-persisted cost ledger introduced in Phase A Commit 2.
+"""Tests for the SQLite-persisted cost ledger.
 
 The cost ledger is the durability layer for `EnrichmentPipeline`'s
-`--max-cost` cap. Before this commit, cumulative spend lived in memory
-on the pipeline instance — a process crash mid-enrichment lost the
-counter, and a re-run started from $0 (the user could effectively
-double-spend by re-running). The ledger persists the counter to SQLite
-keyed on `source_connection_id`, so a re-run reads the prior total
-back and refuses the next call if it has already breached the cap.
+`--max-cost` cap. Without it, cumulative spend lives in memory on the
+pipeline instance — a process crash mid-enrichment loses the counter,
+and a re-run starts from $0 (the user could effectively double-spend
+by re-running). The ledger persists the counter to SQLite keyed on
+`source_connection_id`, so a re-run reads the prior total back and
+refuses the next call if it has already breached the cap.
 
 **Three responsibility lines covered here:**
 
@@ -22,11 +22,6 @@ back and refuses the next call if it has already breached the cap.
    same file, both with `writer_lock=True`, concurrent
    `add_spend_usd` calls. The second BEGIN IMMEDIATE waits for the
    first to commit; both totals land correctly, no lost update.
-
-Schema is bumped to `"3"` to add the `cost_ledger` table. Pre-alpha
-contract: old stores raise `SchemaVersionMismatchError`; users
-re-create. This matches the v2 → v3 contract precedent set when
-`column_embeddings` landed in Slice 4-B.
 """
 
 from __future__ import annotations
@@ -133,7 +128,7 @@ class TestAddSpendUsd:
         # raise `OverflowError` — an undocumented exception type at
         # this layer. The guard converts to the same `ValueError`
         # shape the rest of the validators emit, so callers can catch
-        # one type. Per security-reviewer audit 2026-05-15.
+        # one type.
         with (
             SQLiteStore(tmp_path / "sb.db") as store,
             pytest.raises(ValueError, match=r"overflows to non-finite"),
@@ -226,12 +221,10 @@ class TestWriterLockSerializesLedgerWrites:
 
 
 class TestSchemaVersionBumpToV5:
-    """The cost ledger lands in schema version `"3"`.
-
-    Pre-alpha contract: a store written by an older Schema Brain version
-    raises `SchemaVersionMismatchError` on open, with a message telling
-    the user to delete the store and re-run `schemabrain index`. No
-    migration framework yet (deferred per `project_deferred_decisions.md`).
+    """Pre-alpha contract: a store written by an older Schema Brain
+    version raises `SchemaVersionMismatchError` on open, with a
+    message telling the user to delete the store and re-run
+    `schemabrain index`. No migration framework yet.
     """
 
     def test_fresh_store_has_schema_version_5(self, tmp_path: Path) -> None:

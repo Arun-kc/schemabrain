@@ -1,6 +1,6 @@
 """Guided error messages for the `schemabrain` CLI.
 
-Slice 2.2 (dev-UX foundations). Replaces single-line `error: <raw>`
+Replaces single-line `error: <raw>`
 prints with a structured `error / why / fix / next` block, so a user
 hitting a footgun knows what happened, why, what to change, and where
 to look next. The same `Console` infrastructure as `cli_ui.RichReporter`
