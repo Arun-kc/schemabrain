@@ -26,6 +26,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual escape hatch: re-run CI against any branch from the
+  # Actions UI or `gh workflow run CI --ref <branch>`. Useful when a
+  # transient platform issue (stuck queue, partial outage) leaves
+  # a PR without a fresh status check and the auto-trigger fired
+  # while the workflow was in a degraded state.
+  workflow_dispatch:
 
 # Cancel in-flight runs for the same PR / branch when a new push lands —
 # saves CI minutes on rapid iteration without losing any signal.

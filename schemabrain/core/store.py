@@ -186,7 +186,44 @@ class SQLiteStore:
     the source connection URL).
     """
 
-    def __init__(self, path: Path | str) -> None:
+    def __init__(self, path: Path | str, *, writer_lock: bool = False) -> None:
+        """Open a SQLite store at `path`.
+
+        `writer_lock=True` is the opt-in flag for callers that need
+        cross-process write serialisation. **Commit 1 stores the flag
+        only — `SQLiteStore`'s write methods do NOT yet issue
+        `BEGIN IMMEDIATE` based on it.** Phase A Commit 2 wires the
+        flag into the write paths for the async-enrichment cost-ledger
+        CAS. Until then, setting `writer_lock=True` is a no-op for
+        Schema Brain's own writes; the contention test in
+        `tests/test_core_store_protocol.py` verifies the underlying
+        SQLite mechanism but does not exercise SQLiteStore methods.
+
+        Connection-level PRAGMA hardening (Phase A Commit 1) tunes the
+        store for the realistic Schema Brain workload. The WAL group
+        (`journal_mode=WAL` + `synchronous=NORMAL`) only applies to
+        file-backed stores; in-memory stores have no fsync to schedule
+        and SQLite forces `journal_mode=MEMORY` regardless, so we
+        leave `synchronous` at SQLite's in-memory default there:
+
+          - `foreign_keys=ON`     — FK cascades drive `delete_table`
+                                    (universal)
+          - `journal_mode=WAL`    — concurrent readers + single writer
+                                    (file-backed only)
+          - `synchronous=NORMAL`  — WAL-recommended pairing; FULL is
+                                    the default and overkill on WAL
+                                    (file-backed only)
+          - `temp_store=MEMORY`   — faster sorts/joins for retrieval
+                                    (universal)
+          - `mmap_size=256 MB`    — cache speedup for 10k-col stores;
+                                    SQLite may cap below this on a
+                                    platform-specific basis
+                                    (universal; no-op on memory)
+          - `busy_timeout=5000`   — graceful wait when another
+                                    connection holds BEGIN IMMEDIATE
+                                    (universal)
+        """
+        self.writer_lock = writer_lock
         is_memory = str(path) == _MEMORY_PATH
         if not is_memory:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -197,7 +234,14 @@ class SQLiteStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         if not is_memory:
+            # WAL group: only meaningful when there's a real file to
+            # journal against. In-memory stores get SQLite's default
+            # synchronous; setting it would be a misleading invariant.
             self._conn.execute("PRAGMA journal_mode = WAL")
+            self._conn.execute("PRAGMA synchronous = NORMAL")
+        self._conn.execute("PRAGMA temp_store = MEMORY")
+        self._conn.execute("PRAGMA mmap_size = 268435456")
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         self._init_schema()
 
     def __enter__(self) -> SQLiteStore:
@@ -623,6 +667,32 @@ class SQLiteStore:
                     for col_name, emb in embeddings.items()
                 ],
             )
+
+    def search_embeddings_topk(
+        self,
+        query_vector: list[float],
+        *,
+        source_connection_id: str,
+        k: int,
+    ) -> list[tuple[str, str, str, float]]:
+        """Return top-`k` `(schema, table, column, cosine_score)` for the query.
+
+        Stub today (Phase A Commit 1). Body is filled in Phase A Commit 3
+        with a NumPy bulk-fetch matmul cosine implementation that replaces
+        the current per-table N+1 SQL retrieval path in
+        `EmbeddingRetriever`.
+
+        The signature stays stable across Commits 1 and 3 so the
+        Protocol seam (`store_protocol.Store.search_embeddings_topk`)
+        is forward-compatible from day one.
+        """
+        raise NotImplementedError(
+            "search_embeddings_topk is filled in Phase A Commit 3 "
+            "(NumPy bulk-fetch matmul cosine). EmbeddingRetriever does "
+            "not call this method yet; the per-table-loop retrieval "
+            "path stays the production path until Commit 3 flips the "
+            "switch."
+        )
 
     def list_tables(self, *, source_connection_id: str | None = None) -> list[tuple[str, str]]:
         conn = self._require_conn()
