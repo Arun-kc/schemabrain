@@ -191,7 +191,11 @@ _HAPPY_PATH_ARGS: dict[str, dict[str, object]] = {
 
 def lint_envelope_validation(server) -> list[Violation]:
     """Call each registered tool with a happy-path arg set and verify
-    the structured response Pydantic-validates against `ToolResponse`.
+    the structured response Pydantic-validates against `ToolResponse`
+    AND does not emit the v1.1 reserved `refused` status. `refused` is
+    type-contract-only in v1.1 — v2's `execute` / `validate_query`
+    are the first producers, and any v0.5 / v1 tool emitting it is
+    a charter violation.
     """
     violations: list[Violation] = []
     tools = asyncio.run(server.list_tools())
@@ -218,6 +222,30 @@ def lint_envelope_validation(server) -> list[Violation]:
                     detail=(
                         "structured response failed ToolResponse validation: "
                         f"{exc.error_count()} error(s); first={exc.errors()[0]!r}"
+                    ),
+                )
+            )
+            continue
+        # Reserved-status guard: refused is v2-only, no current tool
+        # should emit it on any input. Caught here rather than at
+        # type-check time because the Status literal accepts it (the
+        # type contract) but the runtime contract forbids it for now.
+        #
+        # Coverage gap (acceptable for v1.1, address at v2): this
+        # check runs only against `_HAPPY_PATH_ARGS`. A future tool
+        # that emits `refused` on certain inputs (e.g., when PII
+        # heuristics match) would pass the lint with happy-path args.
+        # When v2 lands and real producers exist, add a refused-path
+        # probe with adversarial args.
+        if structured.get("status") == "refused":
+            violations.append(
+                Violation(
+                    rule="reserved_status",
+                    tool=tool.name,
+                    detail=(
+                        "tool emitted status='refused'; this status is "
+                        "reserved in charter v1.1 for v2 refuse-before-execute "
+                        "primitives. No v0.5 / v1 tool may produce it."
                     ),
                 )
             )

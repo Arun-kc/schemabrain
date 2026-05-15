@@ -30,8 +30,18 @@ from types import ModuleType
 import pytest
 from pydantic import BaseModel
 
+from schemabrain.mcp.envelope import ToolResponse
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _LINT_PATH = _REPO_ROOT / "scripts" / "charter_lint.py"
+
+
+# Concrete monomorphic alias for `ToolResponse[None]` at module scope.
+# FastMCP's signature inspector evaluates annotations by name in the
+# function's module — a generic subscripted in the function body fails
+# forward-reference resolution. Defining a real alias here lets the
+# refusing-tool helper declare a usable return type.
+_RefusedResponse = ToolResponse[None]
 
 
 class _NotAnEnvelope(BaseModel):
@@ -228,6 +238,17 @@ class TestLintEnvelopeValidation:
         with pytest.raises(ValidationError):
             ToolResponse.model_validate({"foo": "bar"})
 
+    def test_reserved_refused_status_is_violation(self, lint: ModuleType) -> None:
+        """v1.1 reserves `refused` for v2 producers. A current tool
+        emitting it is a charter violation caught by the lint's
+        reserved_status rule."""
+        synthetic = _build_server_emitting_refused()
+        violations = lint.lint_envelope_validation(synthetic)
+        assert any(v.rule == "reserved_status" for v in violations), (
+            f"expected a reserved_status violation; got "
+            f"{[(v.rule, v.detail) for v in violations]!r}"
+        )
+
     def test_sibling_tools_match_live_server(self, lint: ModuleType, tmp_path: Path) -> None:
         # The composition rule depends on `_SIBLING_TOOLS` being a
         # complete mirror of the live server's tool roster. If a 5th
@@ -320,6 +341,40 @@ def _build_test_server(tmp_path: Path):
         },
     )
     return build_server(store=store, source_connection_id=sid, embedder=_StubEmbedder())
+
+
+def _build_server_emitting_refused():
+    """Synthetic FastMCP server with a tool that returns a structurally
+    valid `ToolResponse[...]` envelope using the v1.1 reserved
+    `refused` status. The envelope itself Pydantic-validates cleanly
+    (refused is in the Status literal); the lint catches the
+    reserved-status violation as a separate rule.
+    """
+    from mcp.server.fastmcp import FastMCP
+
+    from schemabrain.mcp.envelope import Recovery, ToolError, ToolResponse
+
+    app = FastMCP("refused-emitting")
+
+    @app.tool(
+        description=(
+            "Use this when testing the reserved-refused-status lint rule. "
+            "Don't use when not. Use find_relevant_tables instead when "
+            "not testing the lint."
+        )
+    )
+    def refusing_tool() -> _RefusedResponse:
+        return ToolResponse[None](
+            status="refused",
+            data=None,
+            error=ToolError(
+                kind="pii_blocked",
+                message="Refused for the test.",
+                recovery=Recovery(),
+            ),
+        )
+
+    return app
 
 
 def _build_server_with_raw_dict_tool():
