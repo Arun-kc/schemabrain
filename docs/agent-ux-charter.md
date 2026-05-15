@@ -1,9 +1,15 @@
-# Schema Brain MCP Charter v1.0
+# Schema Brain MCP Charter v1.0.1
 
 > **Status:** locked 2026-05-12 as the public design contract for Schema Brain's
 > MCP surface. Living document; version bumps governed by the Versioning section
 > below. All MCP tools shipped from v0.5 onward conform to this charter unless
 > explicitly noted in their docstring.
+>
+> **Patch v1.0.1 (2026-05-15):** clarification-only — replaced internal
+> milestone references ("v0.5 wk 4") with the substantive trigger they
+> stood for (query-log mining surfacing realistic agent intents). No
+> shape change. The wire `charter_version` field continues to emit
+> `"1.0"`; see Versioning below.
 
 ## Preamble
 
@@ -119,7 +125,8 @@ Tool descriptions are also tested via blind agent eval: same descriptions,
 fixed query set, run against Claude / GPT / Gemini. Tool-choice agreement
 and end-to-end task success rate are tracked over time; the threshold is a
 calibration knob, not a hardcoded floor, with the first baseline measured
-at v0.5 wk 4 once query-log data exists. See Enforcement level 3.
+once query-log mining surfaces realistic agent intents (see Open items
+for the staging plan). See Enforcement level 3.
 
 ---
 
@@ -388,9 +395,13 @@ The charter follows semver:
   types, retiring principles. Backward compatibility is guaranteed within a
   major version only.
 
-Every tool's metadata includes its `charter_version`. Consumers can pin or
-negotiate. Schema Brain commits to maintaining the most-recent two major
-versions simultaneously when a major bump occurs.
+Every tool's metadata includes its `charter_version`. The wire field
+emits the **shape contract** version (`major.minor` only — e.g. `"1.0"`,
+`"1.1"`, `"2.0"`); patch bumps are documentation-only and do not change
+the wire emission. A consumer pinning on `"1.0"` therefore receives all
+1.0.x doc clarifications transparently. Consumers can pin or negotiate.
+Schema Brain commits to maintaining the most-recent two major versions
+simultaneously when a major bump occurs.
 
 ---
 
@@ -402,7 +413,7 @@ Three levels, two always-on, one at phase boundaries.
 |---|---|---|---|
 | **1. Description lint** | Each tool description starts with "Use this when…", names at least one composition, stays under 500 chars. | $0 | every PR |
 | **2. Envelope schema** | Every tool response Pydantic-validates against the envelope. Status enum is honored. Required fields are present. | $0 | every PR |
-| **3. Blind agent eval** | Fixed query set run against Claude, GPT, Gemini. Tool-choice agreement and end-to-end task success rate tracked over time. Initial baseline measured at v0.5 wk 4 once query-log data exists; thresholds are a calibration knob, not a hardcoded floor. | ~$5–10 / run | phase boundary (v0.5 wk 1, end of v1, end of v2, …) |
+| **3. Blind agent eval** | Fixed query set run against Claude, GPT, Gemini. Tool-choice agreement and end-to-end task success rate tracked over time. Initial baseline measured once query-log mining surfaces realistic agent intents; thresholds are a calibration knob, not a hardcoded floor. | ~$5–10 / run | phase boundary (end of v0.5, end of v1, end of v2, …) |
 
 Levels 1 and 2 run in CI and gate every PR. Level 3 is a quality gate at
 phase boundaries, not per-commit — running it on every PR would burn API
@@ -444,9 +455,9 @@ implementation reaches readiness.
   then, policy refusal manifests as `status: "error"` with a specific
   `error.kind` (e.g. `pii_blocked`, `policy_blocked`).
 - **Eval query set** — the fixed query set used for Level 3 enforcement
-  is defined and frozen at v0.5 wk 4+ once the query-log mining surfaces
-  realistic agent intents. Until then, Level 3 runs on a hand-curated
-  starter set.
+  is defined and frozen once the query-log mining feature surfaces
+  realistic agent intents from real workloads. Until then, Level 3 runs
+  on a hand-curated starter set.
 - **`charter_version` negotiation protocol** — v1.0 publishes the version
   in metadata; explicit client-side negotiation is deferred until multiple
   major versions exist.
