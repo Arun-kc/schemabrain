@@ -133,8 +133,20 @@ jobs:
         # Strict mode: any vulnerability fails the build. No
         # suppressions today; pytest is now >=9.0.3 so CVE-2025-71176
         # no longer applies.
+        #
+        # Audit a uv-exported requirements file rather than the
+        # installed environment. The `--no-emit-project` flag
+        # excludes the local schemabrain project from the export so
+        # pip-audit only sees declared dependencies. This avoids the
+        # chicken-and-egg where release branches that bump
+        # `pyproject.toml` ahead of a PyPI publish fail because
+        # pip-audit can't find the new version on PyPI to check CVEs
+        # against. Auditing dependencies is what we actually care
+        # about; the project's own CVEs are caught at release-time
+        # smoke tests, not here.
         run: |
-          uv run --python 3.11 pip-audit --strict
+          uv export --no-emit-project --format requirements-txt --quiet > /tmp/audit-requirements.txt
+          uv run --python 3.11 pip-audit --strict --requirement /tmp/audit-requirements.txt
 
       - name: bandit (Python SAST)
         # Reads `[tool.bandit]` from pyproject.toml so the test/scripts
