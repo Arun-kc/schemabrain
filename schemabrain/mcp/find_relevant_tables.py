@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from schemabrain.core.store import SQLiteStore
+from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
 from schemabrain.mcp._helpers import _cosine, _with_token_estimate
 from schemabrain.mcp.shapes import TableHit
@@ -10,7 +10,7 @@ from schemabrain.mcp.shapes import TableHit
 
 def find_relevant_tables_impl(
     *,
-    store: SQLiteStore,
+    store: Store,
     source_connection_id: str,
     embedder: Embedder,
     query: str,

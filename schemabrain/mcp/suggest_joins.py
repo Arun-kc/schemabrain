@@ -7,7 +7,7 @@ from collections import deque
 from pydantic import BaseModel, ConfigDict
 
 from schemabrain.core.models import ForeignKey
-from schemabrain.core.store import SQLiteStore
+from schemabrain.core.store_protocol import Store
 from schemabrain.mcp._helpers import _parse_qualified_name, _with_token_estimate
 from schemabrain.mcp.shapes import JoinEdge, JoinPath, SuggestJoinsResult, TableNotFoundError
 
@@ -153,7 +153,7 @@ def _bfs_shortest_path(
 
 def suggest_joins_impl(
     *,
-    store: SQLiteStore,
+    store: Store,
     source_connection_id: str,
     tables: list[str],
     max_hops: int = _DEFAULT_MAX_HOPS,

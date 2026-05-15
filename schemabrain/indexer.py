@@ -1,9 +1,10 @@
 """Cache-aware indexing workflow.
 
 `index()` is the single function that ties together a `DataSource`, a
-`Profiler`, an optional `EnrichmentPipeline`, and a `SQLiteStore` to
-introspect a database, diff against cached fingerprints, profile +
-enrich only what changed, and persist the new state.
+`Profiler`, an optional `EnrichmentPipeline`, and a `Store` (the
+Protocol; `SQLiteStore` is the v1 concrete) to introspect a database,
+diff against cached fingerprints, profile + enrich only what changed,
+and persist the new state.
 
 The central invariant: re-running `index()` on a schema that hasn't
 changed performs zero profile queries AND zero LLM calls. The profiler
@@ -67,7 +68,7 @@ from schemabrain.core.fingerprint import (
     column_structural_fingerprint,
     fk_targets_for_column,
 )
-from schemabrain.core.store import SQLiteStore
+from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder, embedding_for
 from schemabrain.enrichment.pipeline import EnrichmentPipeline
 from schemabrain.enrichment.prompts import PROMPT_VERSION
@@ -200,7 +201,7 @@ def index(
     *,
     source: DataSource,
     profiler: Profiler,
-    store: SQLiteStore,
+    store: Store,
     source_connection_id: str,
     pipeline: EnrichmentPipeline | None = None,
     embedder: Embedder | None = None,
@@ -392,7 +393,7 @@ _AVG_COST_PER_COLUMN_USD = 0.0003
 def dry_run_index(
     *,
     source: DataSource,
-    store: SQLiteStore,
+    store: Store,
     source_connection_id: str,
     will_enrich: bool,
     will_embed: bool,

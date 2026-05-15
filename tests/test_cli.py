@@ -875,6 +875,13 @@ class TestEnrichmentCliFlags:
                     ),
                 )
 
+            def cost_usd(self, usage: LLMUsage) -> float:
+                # `LLMClient` Protocol: per-client cost dispatch (seams
+                # commit). Haiku rate matches `self.model`.
+                from schemabrain.enrichment.llm import haiku_45_cost_usd
+
+                return haiku_45_cost_usd(usage)
+
         monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _OneTableSource)
         monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
         # Stub the Haiku factory: the CLI calls
@@ -995,6 +1002,11 @@ class TestEnrichmentCliFlags:
                         input_tokens=1_000_000, cached_input_tokens=0, output_tokens=100
                     ),
                 )
+
+            def cost_usd(self, usage: LLMUsage) -> float:
+                from schemabrain.enrichment.llm import haiku_45_cost_usd
+
+                return haiku_45_cost_usd(usage)
 
         monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _OneTableSource)
         monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)

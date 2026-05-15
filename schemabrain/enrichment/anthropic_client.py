@@ -32,7 +32,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from schemabrain.enrichment.llm import LLMResponse, LLMUsage
+from schemabrain.enrichment.llm import (
+    CostFn,
+    LLMResponse,
+    LLMUsage,
+    anthropic_cost_fn_for_model,
+)
 
 __all__ = [
     "AnthropicClient",
@@ -68,6 +73,11 @@ class AnthropicClient:
         client: Any | None = None,
         max_output_tokens: int = _HAIKU_DEFAULT_MAX_OUTPUT_TOKENS,
     ) -> None:
+        # Resolve pricing at construction. A misrouted / typo'd model
+        # name raises here BEFORE any API call is made — so we never
+        # successfully burn money on a call whose cost we can't compute.
+        # See `anthropic_cost_fn_for_model` for the regex contract.
+        self._cost_fn: CostFn = anthropic_cost_fn_for_model(model)
         if client is None:
             # Lazy import so the unit tests (which inject a fake client)
             # don't fail when ANTHROPIC_API_KEY is missing.
@@ -82,6 +92,14 @@ class AnthropicClient:
     def model(self) -> str:
         """The model name this client targets (e.g. `"claude-haiku-4-5"`)."""
         return self._model
+
+    def cost_usd(self, usage: LLMUsage) -> float:
+        """USD cost for this client's `usage`, using the family rate
+        resolved at construction. No `response.model` parsing — the
+        client knows its own pricing family from the model it was
+        configured with.
+        """
+        return self._cost_fn(usage)
 
     def complete(self, *, system: str, user: str) -> LLMResponse:
         message = self._client.messages.create(

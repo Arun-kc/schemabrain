@@ -12,25 +12,31 @@ columns (cheap) and Sonnet for cryptic ones (better reasoning, ~5x
 cost). Single-client mode (no `cryptic_client`) is still fully
 supported and remains the default.
 
-Cost is computed via `cost_usd_for(response.model, usage)` — the
-pipeline does not know or care which model is on the other end of the
-client, only that the response carries a model name we have pricing
-for. If the model is unknown (a programming error: routed to a model
-without a pricing entry), `cost_usd_for` raises `ValueError` AFTER the
-LLM call already succeeded; that one call's cost escapes the cap
-counter, but the exception propagates and tanks the run before any
-further calls. Cost leakage is bounded by per-call `max_output_tokens`,
-not unbounded — see `test_unknown_model_does_not_record_spend`.
+**Provider-agnostic cost dispatch.** Cost is computed via the
+client's own `cost_usd(usage)` method — the pipeline does not know
+or care which provider is on the other end. A future LLM provider
+(Bedrock, Vertex, OpenAI, Ollama) drops in by implementing the
+`LLMClient` Protocol (`complete` + `cost_usd`); no changes to this
+module or to any central pricing dispatch. The previous module-level
+`cost_usd_for(model, usage)` Anthropic-only central dispatch was
+removed in Phase A's seams commit precisely to make this possible.
+
+If `client.cost_usd` raises for a runtime reason (e.g. a provider
+returns a malformed usage payload), that exception propagates AFTER
+the LLM call already succeeded; the call's cost escapes the cap
+counter for that one call but no further calls run. Cost leakage is
+bounded by per-call `max_output_tokens`, not unbounded.
 
 The pipeline depends on `LLMClient`, not on Anthropic specifically. Tests
-substitute `FakeLLMClient` so they never need an API key.
+substitute `FakeLLMClient` (or any custom impl) so they never need an
+API key.
 """
 
 from __future__ import annotations
 
 from schemabrain.core.description import ColumnDescription
 from schemabrain.core.models import Column, Table
-from schemabrain.enrichment.llm import LLMClient, cost_usd_for
+from schemabrain.enrichment.llm import LLMClient
 from schemabrain.enrichment.prompts import (
     PROMPT_VERSION,
     SYSTEM_PROMPT,
@@ -127,7 +133,7 @@ class EnrichmentPipeline:
             table=table, column=column, stats=stats, fk_targets=fk_targets
         )
         response = client.complete(system=SYSTEM_PROMPT, user=user)
-        cost = cost_usd_for(response.model, response.usage)
+        cost = client.cost_usd(response.usage)
         self._spent_usd += cost
         return ColumnDescription(
             text=response.text.strip(),

@@ -2,8 +2,15 @@
 
 Defines the Protocol every concrete client implements (Anthropic today,
 hypothetically Bedrock or Vertex tomorrow) plus shared types and the
-Haiku 4.5 cost calculator. The pipeline programs against `LLMClient`
-so tests can substitute `FakeLLMClient` without an API key.
+Anthropic per-family pricing helpers. The pipeline programs against
+`LLMClient` so tests can substitute `FakeLLMClient` without an API key.
+
+**Provider-agnostic cost dispatch (Phase A seams commit).** Pricing
+lives ON the `LLMClient` Protocol via `cost_usd(usage)` — each adapter
+owns its own pricing. There is intentionally NO module-level
+`cost_usd_for(model, usage)` central dispatch. A future provider drops
+in by implementing `cost_usd` on its adapter, without touching this
+module or the pipeline. See `tests/test_seams.py` for the invariants.
 """
 
 from __future__ import annotations
@@ -12,6 +19,8 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
+
+CostFn = Callable[["LLMUsage"], float]
 
 # Anthropic pricing tables (USD per 1M tokens). Update when Anthropic
 # changes pricing — that's a deliberate cache invalidation if any
@@ -113,7 +122,7 @@ def sonnet_46_cost_usd(usage: LLMUsage) -> float:
     )
 
 
-# Anchored patterns so the dispatch can't false-positive on a future
+# Anchored patterns so the resolver can't false-positive on a future
 # model whose version string is a numeric extension of ours (e.g.
 # `"claude-haiku-4-50"` would silently match a substring like
 # `"haiku-4-5"`). The `(?:-.+)?$` allows the alias on its own OR
@@ -124,36 +133,57 @@ _HAIKU_4_5_MODEL_RE = re.compile(r"^claude-haiku-4-5(?:-.+)?$")
 _SONNET_4_6_MODEL_RE = re.compile(r"^claude-sonnet-4-6(?:-.+)?$")
 
 
-def cost_usd_for(model: str, usage: LLMUsage) -> float:
-    """Dispatch to the right per-model cost function based on `model`.
+def anthropic_cost_fn_for_model(model: str) -> CostFn:
+    """Resolve the Anthropic cost function for `model`, at CONSTRUCTION time.
 
-    The Anthropic API stamps the resolved model name (e.g.
-    `"claude-haiku-4-5-20251001"`) on the response, so we match on the
-    family + version PREFIX with an anchored regex — not a substring
-    `in` check — so unrelated models that happen to embed the same
-    version digits cannot silently resolve to the wrong pricing table.
+    Each Anthropic adapter (`AnthropicClient`, `FakeLLMClient`) calls
+    this once in its constructor and stashes the result. Two reasons:
+
+    1. **Fail-fast at ctor.** A misrouted model surfaces immediately,
+       not on the first successful API call (which would have burned
+       money before the cost path tripped).
+    2. **Pricing dispatch is intrinsic to the adapter, not central.**
+       `LLMClient.cost_usd(usage)` then becomes a single function-call
+       indirection on the stashed reference — no per-call regex match,
+       no central dispatch table to update for a new provider.
 
     Raises:
-        ValueError: if `model` does not match any known pricing entry.
-            Add the pricing constants and a regex above before routing
-            traffic to a new model.
+        ValueError: if `model` does not match any Anthropic family this
+            module has pricing for. A new family lands by adding a
+            regex + cost function above and a branch here.
     """
     if _HAIKU_4_5_MODEL_RE.match(model):
-        return haiku_45_cost_usd(usage)
+        return haiku_45_cost_usd
     if _SONNET_4_6_MODEL_RE.match(model):
-        return sonnet_46_cost_usd(usage)
+        return sonnet_46_cost_usd
     raise ValueError(
-        f"unknown Anthropic model for cost calculation: {model!r}. "
-        "Add a pricing entry in llm.py before routing to it."
+        f"unknown Anthropic model for pricing: {model!r}. "
+        "Add a pricing entry in llm.py (new regex + cost function + "
+        "branch in anthropic_cost_fn_for_model) before routing to it."
     )
 
 
 @runtime_checkable
 class LLMClient(Protocol):
-    """Single-turn completion with optional system + cache."""
+    """Single-turn completion + per-client cost dispatch.
+
+    Each adapter owns its pricing (`cost_usd(usage)`). There is no
+    module-level Anthropic-only central dispatch; adding a new
+    provider means writing an adapter that implements both methods.
+    """
 
     def complete(self, *, system: str, user: str) -> LLMResponse:
         """Return the model's response to the system + user prompts."""
+        ...
+
+    def cost_usd(self, usage: LLMUsage) -> float:
+        """Compute USD cost for this client's last call given its usage.
+
+        The pipeline does not know or care which provider is on the
+        other end — it just calls `cost_usd` on the same client object
+        it called `complete` on. Tests can substitute clients with
+        arbitrary pricing without touching the pipeline.
+        """
         ...
 
 
@@ -161,15 +191,32 @@ class LLMClient(Protocol):
 class FakeLLMClient:
     """Test double for `LLMClient`. Records every call.
 
-    The `model` default uses the Haiku 4.5 alias so the pipeline's
-    `cost_usd_for(response.model, ...)` dispatch resolves to a real
-    pricing function in tests instead of raising on an unknown model.
-    Tests that need a different tier override `model=` explicitly.
+    The `model` default uses the Haiku 4.5 alias so `cost_usd` resolves
+    to Haiku pricing in tests. Tests that need a different tier
+    override `model=` explicitly. Unknown models raise at construction
+    (`__post_init__`) — same fail-fast shape as `AnthropicClient`, so a
+    test passing on the fake won't fail on a real client.
+
+    **Scope: Anthropic-priced models only.** The model name is resolved
+    via `anthropic_cost_fn_for_model`, so this fake validates against
+    the Anthropic regex set. Tests that need to exercise the seam
+    against a hypothetical non-Anthropic provider should write a
+    purpose-built inline `LLMClient` (see `FlatRateClient` in
+    `tests/test_seams.py` for the pattern). The seam exists precisely
+    so future providers don't have to extend `FakeLLMClient`.
     """
 
     text_provider: Callable[[str, str], str]
     model: str = "claude-haiku-4-5"
     calls: list[tuple[str, str]] = field(default_factory=list)
+    _cost_fn: CostFn = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        # Resolve pricing once at construction — same shape as
+        # AnthropicClient. A test that constructs the fake with an
+        # unknown model tripping ValueError here is by design: the
+        # production adapter would have done the same.
+        self._cost_fn = anthropic_cost_fn_for_model(self.model)
 
     def complete(self, *, system: str, user: str) -> LLMResponse:
         self.calls.append((system, user))
@@ -185,3 +232,6 @@ class FakeLLMClient:
                 output_tokens=max(1, len(text) // 4),
             ),
         )
+
+    def cost_usd(self, usage: LLMUsage) -> float:
+        return self._cost_fn(usage)

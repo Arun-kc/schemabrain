@@ -27,7 +27,7 @@ import re
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from schemabrain.core.store import SQLiteStore
+from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
 
 # Stopwords to drop before scoring overlap. Kept short on purpose: most
@@ -122,7 +122,7 @@ class KeywordRetriever:
     SOMETHING that returns ranked tables today" baseline.
     """
 
-    store: SQLiteStore
+    store: Store
     source_connection_id: str
 
     def retrieve(self, query: str, *, limit: int) -> list[str]:
@@ -222,7 +222,7 @@ class EmbeddingRetriever:
     if MCP traffic shows it's needed.
     """
 
-    store: SQLiteStore
+    store: Store
     source_connection_id: str
     embedder: Embedder
 

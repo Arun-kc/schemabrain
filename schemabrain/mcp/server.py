@@ -28,7 +28,7 @@ import logging
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from schemabrain.core.store import SQLiteStore
+from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
 from schemabrain.mcp.describe_column import describe_column_impl
 from schemabrain.mcp.describe_table import describe_table_impl
@@ -108,7 +108,7 @@ def _safe_table_part(qualified_name: str) -> str | None:
 
 def build_server(
     *,
-    store: SQLiteStore,
+    store: Store,
     source_connection_id: str,
     embedder: Embedder,
 ) -> FastMCP:
@@ -399,7 +399,7 @@ def _parent_table_qualified_name(column_qualified_name: str) -> str | None:
 
 def run_stdio(
     *,
-    store: SQLiteStore,
+    store: Store,
     source_connection_id: str,
     embedder: Embedder,
 ) -> None:
