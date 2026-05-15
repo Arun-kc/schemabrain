@@ -167,6 +167,50 @@ class TestToolRegistry:
             assert tool.annotations.idempotentHint is True
             assert tool.annotations.openWorldHint is True
 
+    def test_every_tool_arg_has_a_description(self, server_with_one_table) -> None:
+        """Charter Principle 2 + per-arg discoverability: every MCP tool
+        argument should carry a Pydantic Field(description=...) so the
+        JSON schema FastMCP exposes to MCP clients tells the agent what
+        the argument is for. Without per-arg descriptions, agents have
+        to infer meaning from the parameter name alone.
+        """
+        for tool in asyncio.run(server_with_one_table.list_tools()):
+            schema = tool.inputSchema or {}
+            properties = schema.get("properties", {})
+            assert properties, f"tool {tool.name!r} exposes no args at all"
+            for arg_name, arg_schema in properties.items():
+                desc = arg_schema.get("description") or ""
+                assert desc.strip(), (
+                    f"tool {tool.name!r} arg {arg_name!r} has no description; "
+                    f"add Annotated[..., Field(description=...)] to the signature"
+                )
+
+    def test_specific_arg_descriptions_present(self, server_with_one_table) -> None:
+        """Pin the key per-arg descriptions so a refactor that drops one
+        is caught in CI rather than only in user feedback. Spot-checks
+        on the args agents reach for most often."""
+        tools_by_name = {t.name: t for t in asyncio.run(server_with_one_table.list_tools())}
+
+        # find_relevant_tables.query mentions natural-language phrasing
+        frt = tools_by_name["find_relevant_tables"]
+        query_desc = frt.inputSchema["properties"]["query"]["description"]
+        assert "natural" in query_desc.lower() or "describe" in query_desc.lower()
+
+        # describe_table.qualified_name names the shape
+        dt = tools_by_name["describe_table"]
+        qn_desc = dt.inputSchema["properties"]["qualified_name"]["description"]
+        assert "schema.table" in qn_desc.lower() or "schema.name" in qn_desc.lower()
+
+        # describe_column.qualified_name names the column-shape variant
+        dc = tools_by_name["describe_column"]
+        cqn_desc = dc.inputSchema["properties"]["qualified_name"]["description"]
+        assert "schema.table.column" in cqn_desc.lower()
+
+        # suggest_joins.tables names the list shape
+        sj = tools_by_name["suggest_joins"]
+        tables_desc = sj.inputSchema["properties"]["tables"]["description"]
+        assert "qualified" in tables_desc.lower() or "schema.table" in tables_desc.lower()
+
     def test_descriptions_disambiguate_via_instead_when(self, server_with_one_table) -> None:
         # Charter Principle 2 Rule 2: every description must redirect the
         # agent toward a sibling tool when its own use-case doesn't fit

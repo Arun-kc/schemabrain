@@ -277,6 +277,37 @@ flags (i.e. Claude Desktop). In a terminal, prefer the flag.
 | Agent loop hits `max-turns` cap | Question too broad or store under-indexed | Re-run `index` first; ask a more specific question |
 | Tool returns `isError=True` with "is not in the store" | Store source ID doesn't match `--source` URL | `--source` must match the URL passed to `index` exactly |
 
+### Inspecting tool shapes with the official MCP Inspector
+
+The Model Context Protocol team publishes an interactive inspector
+that connects to any MCP server over stdio. It's the cleanest way to
+see the JSON schemas Schema Brain exposes — including the per-arg
+descriptions — without needing Claude Desktop, Cursor, or the
+Anthropic SDK.
+
+```bash
+# No install — npx runs the latest published version. Requires Node.js 18+.
+npx @modelcontextprotocol/inspector \
+    schemabrain serve \
+        --url-env DATABASE_URL \
+        --store-path ./schemabrain.db
+```
+
+The inspector opens a browser tab showing every registered tool, its
+description, the input JSON schema (with per-argument descriptions),
+and a live call-and-response panel. Use it to:
+
+- Verify the server boots cleanly against your store + connection.
+- See exactly what shape an agent will see when it calls
+  `find_relevant_tables`, `describe_table`, `describe_column`,
+  `get_example_queries`, or `suggest_joins`.
+- Trigger each tool with hand-crafted args and read the structured
+  `ToolResponse` envelope directly.
+
+`DATABASE_URL` must be exported in the same shell that runs the
+`npx` command, since the inspector spawns `schemabrain serve` as a
+subprocess and inherits your environment.
+
 ## Validating SQL Claude generates
 
 Schema Brain gives Claude rich context, but it doesn't run the SQL. The agent

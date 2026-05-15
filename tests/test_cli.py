@@ -390,11 +390,176 @@ class TestEnrichmentCliFlags:
         )
         assert exit_code == 0
 
-    def test_max_cost_default_is_ten(self) -> None:
-        # Default --max-cost should match the EnrichmentPipeline default.
+    def test_max_cost_default_is_one_dollar(self) -> None:
+        """Default cap intentionally low so a fresh user's first `index`
+        can't surprise-spend more than $1 before they understand what's
+        happening. Override with `--max-cost N` or `--no-cost-cap`.
+        """
         from schemabrain.cli import _DEFAULT_MAX_COST_USD
 
-        assert _DEFAULT_MAX_COST_USD == 10.0
+        assert _DEFAULT_MAX_COST_USD == 1.0
+
+    def test_no_cost_cap_overrides_max_cost(self) -> None:
+        """When both are passed, `--no-cost-cap` wins. argparse parses
+        both; the CLI resolves to the no-cap sentinel.
+        """
+        import argparse
+
+        from schemabrain.cli import _build_parser, _resolve_max_cost
+
+        parser: argparse.ArgumentParser = _build_parser()
+        args = parser.parse_args(
+            [
+                "index",
+                "postgresql+psycopg://x/y",
+                "--max-cost",
+                "5",
+                "--no-cost-cap",
+            ]
+        )
+        assert _resolve_max_cost(args) >= 1e9  # effectively unlimited
+
+    def test_max_cost_flag_still_works(self) -> None:
+        from schemabrain.cli import _build_parser, _resolve_max_cost
+
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "index",
+                "postgresql+psycopg://x/y",
+                "--max-cost",
+                "2.5",
+            ]
+        )
+        assert _resolve_max_cost(args) == 2.5
+
+    def test_pipeline_wired_with_store_and_source_id(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The CLI must construct `EnrichmentPipeline` with `store=`
+        and `source_connection_id=` so cumulative spend persists across
+        runs. Without this wiring, the cost cap is per-process only —
+        a fresh `index` run resets to $0 even if previous runs already
+        spent the full cap.
+        """
+        captured: dict[str, object] = {}
+
+        import schemabrain.cli as cli_mod
+        from schemabrain.enrichment.pipeline import EnrichmentPipeline
+
+        original_init = EnrichmentPipeline.__init__
+
+        # Mirror the production signature so a future positional
+        # parameter on `EnrichmentPipeline.__init__` produces a test
+        # failure rather than silently passing.
+        def _capturing_init(
+            self: object,
+            *,
+            store: object = None,
+            source_connection_id: object = None,
+            **rest: object,
+        ) -> None:
+            captured["store"] = store
+            captured["source_connection_id"] = source_connection_id
+            original_init(
+                self,
+                store=store,
+                source_connection_id=source_connection_id,
+                **rest,
+            )
+
+        monkeypatch.setattr(EnrichmentPipeline, "__init__", _capturing_init)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+        # Stub the LLM clients so no real Anthropic calls happen.
+        monkeypatch.setattr(cli_mod, "anthropic_haiku_45_client", lambda **_: object())
+        monkeypatch.setattr(cli_mod, "anthropic_sonnet_46_client", lambda **_: object())
+        # Stub fastembed so no ONNX download.
+        monkeypatch.setattr(cli_mod, "fastembed_default", lambda: None)
+        # Stub the indexer so we don't need a real Postgres.
+        monkeypatch.setattr(
+            cli_mod,
+            "PostgresDataSource",
+            lambda _url: __import__("contextlib").nullcontext(enter_result=object()),
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "PostgresProfiler",
+            lambda _url: __import__("contextlib").nullcontext(enter_result=object()),
+        )
+        from schemabrain.indexer import IndexResult
+
+        monkeypatch.setattr(
+            cli_mod,
+            "index",
+            lambda **_: IndexResult(
+                tables_seen=0,
+                tables_changed=0,
+                tables_unchanged=0,
+                tables_removed=0,
+                columns_added=0,
+                columns_changed=0,
+                columns_removed=0,
+            ),
+        )
+
+        store_path = tmp_path / "schemabrain.db"
+        cli_mod.main(
+            [
+                "index",
+                "postgresql+psycopg://fake/db",
+                "--store-path",
+                str(store_path),
+            ]
+        )
+
+        assert captured["store"] is not None, (
+            "CLI must pass store= into EnrichmentPipeline so the cumulative "
+            "cost ledger persists across runs"
+        )
+        # Equality check, not just is-not-None: an off-by-construction
+        # empty string would pass the latter but break the ledger keying.
+        expected_source_id = cli_mod._make_source_id("postgresql+psycopg://fake/db")
+        assert captured["source_connection_id"] == expected_source_id, (
+            f"CLI must pass the canonical source_id; "
+            f"got {captured['source_connection_id']!r}, expected {expected_source_id!r}"
+        )
+
+    def test_no_cost_cap_alone_returns_sentinel(self) -> None:
+        """Coverage gap closed: `--no-cost-cap` passed WITHOUT an
+        explicit `--max-cost`. The implementation short-circuits before
+        reading `args.max_cost`, but a future refactor that removes that
+        short-circuit would only fail on this combination.
+        """
+        from schemabrain.cli import (
+            _NO_COST_CAP_SENTINEL,
+            _build_parser,
+            _resolve_max_cost,
+        )
+
+        args = _build_parser().parse_args(
+            [
+                "index",
+                "postgresql+psycopg://x/y",
+                "--no-cost-cap",
+            ]
+        )
+        assert _resolve_max_cost(args) == _NO_COST_CAP_SENTINEL
+
+    def test_default_resolved_cap_is_one(self) -> None:
+        from schemabrain.cli import _build_parser, _resolve_max_cost
+
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "index",
+                "postgresql+psycopg://x/y",
+            ]
+        )
+        assert _resolve_max_cost(args) == 1.0
 
     def test_enable_sonnet_default_is_off(
         self,

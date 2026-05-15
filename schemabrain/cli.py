@@ -20,15 +20,19 @@ Re-running `index` against an unchanged source is a no-op: the
 fingerprint cache lets us skip introspection writes, profiler queries,
 AND LLM calls.
 
-Cost discipline: `--max-cost N` (default $10) hard-caps LLM spend per
-run. Exceeding the cap aborts cleanly before the next call.
-ANTHROPIC_API_KEY must be set in the environment unless `--no-enrich`
-is passed.
+Cost discipline: `--max-cost N` (default $1) hard-caps LLM spend per
+run. Spend is also persisted across runs in the SQLite store's
+cost ledger — a fresh `index` run reads the prior cumulative total
+and refuses to issue calls once the cap is reached, so the cap is
+not just per-process. Use `--no-cost-cap` to disable the cap
+entirely (intended for users who've previewed cost via `--dry-run`
+and accept the projected spend). ANTHROPIC_API_KEY must be set in
+the environment unless `--no-enrich` is passed.
 
 `eval` scores a `Retriever` against a hand-curated `GoldenSet` and
 prints recall@1/@3/@10. Two retrievers are available via `--retriever`:
 `embedding` (default, cosine over stored column embeddings) and
-`keyword` (the Week-3 keyword-overlap baseline). The harness is
+`keyword` (the keyword-overlap baseline). The harness is
 schema-agnostic: pass `--golden /path/to/your-schema.json` for a real
 schema. The bundled default is just one starter example
 (`schemabrain/eval/golden_sets/ecommerce.json`, paired with the
@@ -36,10 +40,10 @@ synthetic fixture in `schemabrain/eval/fixtures/ecommerce.sql`) so the
 CLI works out of the box.
 
 `serve` runs the MCP server on stdio against a previously-indexed
-store. Two tools are exposed: `find_relevant_tables` (embedding
-retrieval) and `describe_table` (full structural + semantic detail).
-Wire into Claude Desktop or any MCP client by adding an entry to
-`claude_desktop_config.json` that runs
+store. Five tools are exposed: `find_relevant_tables`,
+`describe_table`, `describe_column`, `suggest_joins`, and
+`get_example_queries`. Wire into Claude Desktop or any MCP client by
+adding an entry to `claude_desktop_config.json` that runs
 `schemabrain serve --url-env DATABASE_URL --store-path <PATH>` with
 `DATABASE_URL` set in the config's `env` block.
 """
@@ -84,7 +88,18 @@ from schemabrain.mining.pipeline import mine_queries
 from schemabrain.profiler.postgres import PostgresProfiler
 
 _DEFAULT_STORE_PATH = "./schemabrain.db"
-_DEFAULT_MAX_COST_USD = 10.0
+# Default cap deliberately low — a first-time user's `schemabrain index`
+# should not be able to surprise-spend more than $1 against the LLM
+# vendor before they understand what's running. Override with
+# `--max-cost N` for higher limits, or `--no-cost-cap` to disable
+# entirely (intended for large schemas where the operator has already
+# previewed cost via `--dry-run`).
+_DEFAULT_MAX_COST_USD = 1.0
+# Sentinel returned by `_resolve_max_cost` when `--no-cost-cap` is
+# passed. Large enough to never trip the pipeline's pre-call cap check
+# under any realistic Anthropic spend, far below `math.inf` so it
+# round-trips through any JSON / log serialiser cleanly.
+_NO_COST_CAP_SENTINEL = 1e12
 _DEFAULT_EVAL_LIMIT = 10
 
 # Per-tier concurrency for the async enrichment pipeline.
@@ -113,6 +128,19 @@ _POSTGRES_SCHEMES: dict[str, int] = {
 }
 
 
+def _resolve_max_cost(args: argparse.Namespace) -> float:
+    """Resolve `--max-cost` and `--no-cost-cap` into a single value.
+
+    `--no-cost-cap` takes precedence over `--max-cost` so users can
+    flip from a capped run to an uncapped one without removing the
+    earlier flag from their command-line history. The returned value
+    flows directly to `EnrichmentPipeline(max_cost_usd=...)`.
+    """
+    if args.no_cost_cap:
+        return _NO_COST_CAP_SENTINEL
+    return float(args.max_cost)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns process exit code."""
     parser = _build_parser()
@@ -127,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
             url_env=args.url_env,
             store_path=args.store_path,
             no_enrich=args.no_enrich,
-            max_cost_usd=args.max_cost,
+            max_cost_usd=_resolve_max_cost(args),
             enable_sonnet=args.enable_sonnet,
             no_embed=args.no_embed,
             quiet=args.quiet,
@@ -219,7 +247,15 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=_DEFAULT_MAX_COST_USD,
         help=f"Hard cap on USD spend per run (default: ${_DEFAULT_MAX_COST_USD:.2f}). "
-        "Aborts cleanly when reached; no effect with --no-enrich.",
+        "Aborts cleanly when reached; no effect with --no-enrich. "
+        "Use --no-cost-cap to disable entirely.",
+    )
+    p_index.add_argument(
+        "--no-cost-cap",
+        action="store_true",
+        help="Disable the cost cap entirely. Use only when you've already "
+        "previewed cost via `--dry-run` and accept the projected spend. "
+        "Overrides --max-cost when both are passed.",
     )
     p_index.add_argument(
         "--enable-sonnet",
@@ -413,7 +449,10 @@ def _cmd_index(
             quiet=quiet,
         )
 
-    pipeline: EnrichmentPipeline | None = None
+    # API key check happens BEFORE the store opens — failing fast on
+    # configuration is friendlier than half-initialising the SQLite
+    # file and then aborting.
+    api_key: str | None = None
     if not no_enrich:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
@@ -427,14 +466,6 @@ def _cmd_index(
                 )
             )
             return 2
-        cryptic_client = anthropic_sonnet_46_client(api_key=api_key) if enable_sonnet else None
-        pipeline = EnrichmentPipeline(
-            client=anthropic_haiku_45_client(api_key=api_key),
-            cryptic_client=cryptic_client,
-            max_cost_usd=max_cost_usd,
-            default_concurrency=_PIPELINE_DEFAULT_CONCURRENCY,
-            cryptic_concurrency=_PIPELINE_CRYPTIC_CONCURRENCY,
-        )
 
     # Build the embedder only if both enrichment AND embedding are
     # active. With no enrichment, there's no description text to embed,
@@ -475,6 +506,36 @@ def _cmd_index(
                 PostgresProfiler(url) as profiler,
                 SQLiteStore(store_path) as store,
             ):
+                # Pipeline construction is moved inside the `with
+                # SQLiteStore` block so the cumulative-cost ledger
+                # (`store.get_spend_usd`) is readable at construction
+                # time. Without this wiring the cost cap is per-process
+                # only — a fresh `index` run would reset spend to $0
+                # even if previous runs had already exhausted the cap.
+                pipeline: EnrichmentPipeline | None = None
+                if not no_enrich:
+                    # Real guard rather than `assert`: `python -O` strips
+                    # `assert` statements, which would let `None` slip
+                    # silently to `anthropic_haiku_45_client(api_key=...)`.
+                    # The earlier `if not no_enrich:` block returns 2 when
+                    # the env var is missing, so reaching here without a
+                    # key is a programmer error worth surfacing loudly.
+                    if api_key is None:  # pragma: no cover — guard for `python -O`
+                        raise RuntimeError(
+                            "internal invariant violated: api_key is None inside the enrich branch"
+                        )
+                    cryptic_client = (
+                        anthropic_sonnet_46_client(api_key=api_key) if enable_sonnet else None
+                    )
+                    pipeline = EnrichmentPipeline(
+                        client=anthropic_haiku_45_client(api_key=api_key),
+                        cryptic_client=cryptic_client,
+                        max_cost_usd=max_cost_usd,
+                        default_concurrency=_PIPELINE_DEFAULT_CONCURRENCY,
+                        cryptic_concurrency=_PIPELINE_CRYPTIC_CONCURRENCY,
+                        store=store,
+                        source_connection_id=source_id,
+                    )
                 result = index(
                     source=source,
                     profiler=profiler,
