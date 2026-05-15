@@ -51,7 +51,15 @@ class PostgresProfiler:
         if sample_size < 1:
             raise ValueError(f"sample_size must be >= 1, got {sample_size}")
         self._sample_size = sample_size
-        self._engine: Engine | None = create_engine(url)
+        # See `PostgresDataSource.__init__` for the rationale: server-side
+        # enforcement of read-only access on the source database. The
+        # profiler only ever issues SELECT, but a defense-in-depth flag
+        # at session level prevents a future regression from silently
+        # mutating customer data.
+        self._engine: Engine | None = create_engine(
+            url,
+            connect_args={"options": "-c default_transaction_read_only=on"},
+        )
 
     def __enter__(self) -> PostgresProfiler:
         return self

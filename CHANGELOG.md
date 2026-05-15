@@ -50,6 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `# nosemgrep:` suppressions on the two `text(sql)` calls that
   pair with the bandit suppressions (same underlying safety
   guarantee, different scanner).
+- Source-database engines (`PostgresDataSource`, `PostgresProfiler`)
+  now set `default_transaction_read_only=on` at the connection
+  boundary. The profiler has always issued `SELECT` only, but the
+  flag enforces the contract at the Postgres session level — any
+  future regression that tries to INSERT/UPDATE/DELETE/DROP fails
+  with a clear `read-only transaction` error rather than silently
+  mutating a customer database. Backs the read-only claim in
+  `SECURITY.md` with server-side enforcement instead of code-review
+  convention. Three new integration tests pin the behaviour.
 
 ### Changed
 - `schemabrain.__version__` is now read dynamically from package

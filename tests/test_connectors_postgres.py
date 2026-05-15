@@ -156,3 +156,57 @@ class TestLifecycle:
             list(ds.list_tables())
         with pytest.raises(RuntimeError, match="closed"):
             list(ds.list_tables())
+
+
+class TestSourceConnectionIsReadOnly:
+    """The source database connection MUST be read-only at the Postgres
+    session level.
+
+    SECURITY.md ("Security Posture Today") promises that the profiler
+    issues `SELECT` queries only. Code review enforced that promise
+    until 2026-05-15. From that date, `default_transaction_read_only=on`
+    enforces it at the wire too — any future regression that tries to
+    INSERT/UPDATE/DELETE/DROP fails with a clear Postgres error rather
+    than silently mutating a customer database.
+
+    These tests verify the server-side enforcement is actually
+    configured (not just the connect_args dict; the GUC takes effect
+    on the live session).
+    """
+
+    def test_insert_against_seeded_table_raises_read_only(self, seeded_pg_url: str) -> None:
+        # An INSERT through the DataSource's engine must be rejected by
+        # Postgres itself (error code 25006: read_only_sql_transaction).
+        # The exact error class comes from psycopg's mapping; we match
+        # on the SQLSTATE-derived message text which is stable.
+        from sqlalchemy import text
+        from sqlalchemy.exc import InternalError
+
+        with PostgresDataSource(seeded_pg_url) as ds:
+            engine = ds._require_engine()
+            with engine.connect() as conn, pytest.raises(InternalError, match="read-only"):
+                conn.execute(text("INSERT INTO public.users (id) VALUES (-1)"))
+
+    def test_create_table_against_engine_raises_read_only(self, seeded_pg_url: str) -> None:
+        # DDL (CREATE TABLE) is also blocked under
+        # default_transaction_read_only=on. Belt-and-suspenders coverage
+        # so a future regression that tries to materialize a temp table
+        # for query optimization (a real anti-pattern in profilers)
+        # fails fast.
+        from sqlalchemy import text
+        from sqlalchemy.exc import InternalError
+
+        with PostgresDataSource(seeded_pg_url) as ds:
+            engine = ds._require_engine()
+            with engine.connect() as conn, pytest.raises(InternalError, match="read-only"):
+                conn.execute(text("CREATE TABLE public.__sb_test_ro_marker (id INT)"))
+
+    def test_select_still_works(self, seeded_pg_url: str) -> None:
+        # Sanity: the read-only flag must NOT break SELECT. Without
+        # this test, an accidentally-too-strict GUC could pass the two
+        # rejection tests above while silently breaking the actual
+        # profiler. `list_tables` issues SELECTs against `pg_catalog`,
+        # which is the same query shape the profiler uses.
+        with PostgresDataSource(seeded_pg_url) as ds:
+            tables = list(ds.list_tables())
+            assert len(tables) > 0
