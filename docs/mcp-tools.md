@@ -49,7 +49,7 @@ incoming FKs describe the entire join surface in one tool call.
 Pass `qualified_name` as `schema.table.column` — e.g.
 `"public.orders.user_id"`.
 
-## `suggest_joins(tables: list[str], max_hops: int = 4) -> SuggestJoinsResult`
+## `suggest_joins(tables: list[str], max_hops: int = 6) -> SuggestJoinsResult`
 
 Shortest FK-graph join paths between every pair of input tables. Each
 `JoinEdge` is path-oriented (`left`/`right` columns positionally aligned

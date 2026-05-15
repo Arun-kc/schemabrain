@@ -13,12 +13,16 @@ flowchart LR
     Enricher -->|Haiku 4.5 / Sonnet 4.6<br/>via prompt cache| Embedder
     Embedder -->|fastembed<br/>BAAI/bge-small-en-v1.5| Store[(SQLite<br/>store)]
 
+    QueryLog[(pg_stat_statements)] -->|schemabrain mine-queries| Miner
+    Miner -->|normalized SQL +<br/>PII tagging| Store
+
     Store --> Tool1[find_relevant_tables]
     Store --> Tool2[describe_table]
     Store --> Tool3[describe_column]
     Store --> Tool4[suggest_joins]
+    Store --> Tool5[get_example_queries]
 
-    Tool1 & Tool2 & Tool3 & Tool4 -->|MCP / stdio| Agent[Agent<br/>Claude Desktop /<br/>Anthropic SDK /<br/>custom]
+    Tool1 & Tool2 & Tool3 & Tool4 & Tool5 -->|MCP / stdio| Agent[Agent<br/>Claude Desktop /<br/>Anthropic SDK /<br/>custom]
 ```
 
 The pipeline is single-process and synchronous. No Celery, no Redis, no
@@ -67,6 +71,22 @@ Score thresholds are the agent's call, not the tool's. In our testing
 score = the search reaching, not a real hit" and answered honestly. A
 future `match_quality` enum may land in v1 if smaller models struggle to
 reason about raw scores.
+
+## Query-log mining
+
+Schema introspection tells the agent what *exists*; query-log mining tells
+it what *runs*. `schemabrain mine-queries` reads `pg_stat_statements`,
+normalizes each SQL text, and stores it alongside an observation count,
+first/last seen timestamps, sensitivity tag, and PII category set. The
+`get_example_queries` MCP tool surfaces those examples per table so the
+agent can pattern-match on real usage instead of guessing column shapes
+from names alone.
+
+Mining is opt-in and idempotent. Run it once for a snapshot, or on a
+schedule for living usage data. Until it has run, `get_example_queries`
+returns `status: empty` with a recovery hint pointing the agent at
+`describe_table` — the agent never gets a hard failure for an
+unpopulated cache.
 
 ## Cost model
 
@@ -129,9 +149,10 @@ text-to-SQL execution accuracy.
 
 ## What's validated
 
-As of 2026-05-11, against two anchors: the bundled e-commerce fixture
-(6 tables / 24 columns) and the Pagila DVD-rental sample (15 tables /
-87 columns after declarative-partition deduplication; 22 / 129 raw):
+As of v0.2.0a1 (2026-05-15), against two anchors: the bundled e-commerce
+fixture (6 tables / 24 columns) and the Pagila DVD-rental sample
+(15 tables / 87 columns after declarative-partition deduplication;
+22 / 129 raw):
 
 - ✅ Indexes Postgres 16 schema with FK-aware introspection (both anchors)
 - ✅ Partitioned tables are deduplicated; only the parent is enriched
@@ -140,16 +161,19 @@ As of 2026-05-11, against two anchors: the bundled e-commerce fixture
 - ✅ Generates LLM descriptions via Anthropic Claude (Haiku 4.5 default,
   Sonnet 4.6 for cryptic columns)
 - ✅ Local embeddings via `fastembed` (no second API vendor)
-- ✅ All 4 MCP tools tested via Claude Desktop AND headless Anthropic SDK,
+- ✅ All 5 MCP tools tested via Claude Desktop AND headless Anthropic SDK,
   on both anchors
 - ✅ Adversarial questions handled honestly ("not in indexed schema" with
   explicit qualifier) — Pagila negative-question test correctly distinguished
   internal `payment_id` from external payment-processor transaction IDs
 - ✅ Multi-hop join discovery via `suggest_joins` (Pagila: rental → customer
   → address path returned correctly)
+- ✅ Query-log mining via `pg_stat_statements`; `get_example_queries`
+  returns observed SQL with PII tagging
 - ✅ Cache-aware re-index ($0 on unchanged schemas)
 - ✅ Fresh-machine quickstart works from a stripped shell
-- ✅ Continuous integration (lint + unit + integration with 99% coverage gate)
+- ✅ Continuous integration (lint + unit + integration with 99% coverage
+  gate; 1300 tests on `main` at the v0.2.0a1 cut)
 
 Not yet validated:
 
