@@ -122,12 +122,12 @@ class PostgresProfiler:
             quoted_col = preparer.quote(col_name)
             select_parts.append(f"COUNT({quoted_col}) AS nn_{idx}")
             select_parts.append(f"COUNT(DISTINCT {quoted_col}) AS d_{idx}")
-        # nosec B608 - identifier-only f-string: `quoted_table` and every
-        # `quoted_col` are produced by SQLAlchemy's IdentifierPreparer
-        # which dialect-escapes them. `idx` is a loop counter. No user
-        # input enters this string. See SECURITY.md for the broader
-        # SQL-construction policy and project_security_audit.md for the
-        # 2026-05-11 verification of this exact code path.
+        # Identifier-only f-string: `quoted_table` and every `quoted_col`
+        # are produced by SQLAlchemy's `IdentifierPreparer.quote()` /
+        # `.quote_schema()`, which dialect-escapes them (wraps in double
+        # quotes, doubles any embedded double-quote). `idx` is a loop
+        # counter. No user input enters this string. See SECURITY.md
+        # for the project's broader SQL-construction policy.
         sql = f"SELECT {', '.join(select_parts)} FROM {quoted_table}"  # nosec B608
         try:
             with engine.connect() as conn:
@@ -173,14 +173,14 @@ class PostgresProfiler:
         and would defeat the content-addressable cache.
         """
         quoted_col = preparer.quote(col_name)
-        # Identifier-only f-string: `quoted_table` and `quoted_col` come
-        # from SQLAlchemy's IdentifierPreparer (dialect escaped).
-        # `self._sample_size` is an int set at profiler construction.
-        # No user input enters this string. Cross-ref: SECURITY.md
-        # ("Security Posture Today") + project_security_audit.md
-        # (audited 2026-05-11). The `# nosec B608` sits on the first
-        # f-string line because that's where bandit attaches the
-        # finding for multi-line concatenations.
+        # Identifier-only f-string: `quoted_table` and `quoted_col`
+        # come from SQLAlchemy's `IdentifierPreparer.quote()` /
+        # `.quote_schema()` (dialect escaped). `self._sample_size` is
+        # an int set at profiler construction. No user input enters
+        # this string. See SECURITY.md ("Security Posture Today") for
+        # the broader SQL-construction policy. The `# nosec B608` sits
+        # on the first f-string line because that's where bandit
+        # attaches the finding for multi-line concatenations.
         sql = (
             f"SELECT DISTINCT {quoted_col}::text AS v "  # nosec B608
             f"FROM {quoted_table} "

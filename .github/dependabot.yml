@@ -22,9 +22,8 @@
 #   1. pip (project + dev dependencies declared in pyproject.toml)
 #   2. github-actions (action versions pinned in .github/workflows/*)
 #
-# Per the security audit (`project_security_audit.md`, MEDIUM finding):
-# Dependabot config is one of three security-surface artifacts the
-# project shipped without and should not stay without.
+# See SECURITY.md for the broader policy this config supports
+# (vulnerability disclosure, `pip-audit` gate in CI, supported versions).
 
 version: 2
 

@@ -73,10 +73,12 @@ not currently offer a bug bounty.
 
 ## Out of Scope
 
-- Vulnerabilities in third-party dependencies are out of scope for direct
-  report, but please do file a report if you find one that materially
-  affects Schema Brain's security posture. We track upstream advisories
-  via `pip-audit` in CI and Dependabot weekly.
+- Vulnerabilities in third-party dependencies should be reported to
+  the upstream project. We track upstream advisories via `pip-audit`
+  in CI and Dependabot weekly, so most upstream CVEs become Schema
+  Brain dep-bump PRs automatically. If you believe an upstream CVE
+  has a Schema-Brain-specific exploit path that the upstream patch
+  alone won't close, please report it here.
 - Self-hosted deployments of Schema Brain where the operator has
   intentionally exposed it to untrusted networks. Schema Brain is
   designed for local-only use today; hardened multi-tenant operation is
@@ -100,11 +102,13 @@ Schema Brain currently:
   pre-quoted identifiers from SQLAlchemy's `identifier_preparer`
 - Redacts PII (emails, SSNs, credit-card numbers) before sample values
   reach the store
-- Restricts the data source to a read-only profile — no `INSERT`,
-  `UPDATE`, `DELETE`, or `DROP` codepaths exist
+- Restricts the source-database connection to read-only access: the
+  profiler issues `SELECT` queries only. No `INSERT`, `UPDATE`,
+  `DELETE`, or `DROP` codepaths exist against the source database.
+  (Schema Brain's own local SQLite store is written to, of course —
+  that's the cache.)
 - Runs `pip-audit`, `bandit`, and `semgrep` on every PR via CI
 
-The roadmap tracks additional hardening in
-`docs/setup.md` and the project's status memory: host allowlisting for
+Hardening on the roadmap (not yet shipped): host allowlisting for
 SSRF, exception sanitization, federated authentication for any future
 HTTP transport, and SBOM publishing.
