@@ -21,6 +21,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   journald). New scripts should prefer `--url-env` over the positional
   URL form. Closes the HIGH-severity finding from the 2026-05-11
   security audit.
+- `SECURITY.md` at the repo root: vulnerability disclosure policy,
+  acknowledgement SLA, scope, and coordinated-disclosure window.
+  GitHub Private Vulnerability Reporting is the preferred channel; email
+  is the fallback.
+- `.github/dependabot.yml`: weekly minor+patch grouped updates for the
+  pip and github-actions ecosystems, plus a separate security-updates
+  group so CVE patches don't get held back by version-bump batching.
+- PyYAML pinned as a direct dev dependency (used by the new dependabot
+  config structural tests).
+- `pip-audit` runs on every PR via a new `security` CI job. Strict
+  mode fails the build on any known-CVE dep. One transient suppression:
+  CVE-2025-71176 (pytest local-DoS, dev-only, fix in 9.0.3 — Dependabot
+  will ship the bump as its own PR).
+- `bandit` runs on every PR via the same `security` job (strictest
+  `-ll` threshold). Two `# nosec B608` suppressions on the two
+  identifier-only f-string SQL assemblies in `profiler/postgres.py`
+  — both audit-verified safe (all interpolated values come from
+  SQLAlchemy's `IdentifierPreparer.quote()`; no user input enters
+  the SQL string). Configuration lives in `[tool.bandit]` in
+  `pyproject.toml` and excludes tests/scripts where intentional
+  `assert` and fake-URL usage would generate noise.
+- `semgrep` runs on every PR via the same `security` job, using the
+  community `p/python` + `p/security-audit` rulesets and `--error`
+  so any unsuppressed finding fails the build. Run via `uvx` rather
+  than pinned as a dev dep — the 46 MB binary is heavy and the rule
+  registry updates independently of the binary version. Two
+  `# nosemgrep:` suppressions on the two `text(sql)` calls that
+  pair with the bandit suppressions (same underlying safety
+  guarantee, different scanner).
+- Source-database engines (`PostgresDataSource`, `PostgresProfiler`)
+  now set `default_transaction_read_only=on` at the connection
+  boundary. The profiler has always issued `SELECT` only, but the
+  flag enforces the contract at the Postgres session level — any
+  future regression that tries to INSERT/UPDATE/DELETE/DROP fails
+  with a clear `read-only transaction` error rather than silently
+  mutating a customer database. Backs the read-only claim in
+  `SECURITY.md` with server-side enforcement instead of code-review
+  convention. Three new integration tests pin the behaviour.
+
+### Changed (CI)
+- Workflow-level `permissions: contents: read` on `.github/workflows/ci.yml`.
+  No job currently needs write access; if one ever does (e.g. publishing
+  a wheel), it must declare elevated permissions explicitly. Hardens
+  against a compromised CI step (third-party action, semgrep rule pack)
+  ever exfiltrating or pushing.
+- `security` job now `needs: lint-and-unit` so a typo in source doesn't
+  burn a ~90 s `uv sync` + 3 scanner runs before `ruff check` rejects
+  the same PR. Sequencing doesn't lengthen the critical path because
+  `integration` (already after lint, ~3-4 min) dominates anyway.
+- `semgrep` is now pinned to a specific version (`uvx semgrep@1.163.0`)
+  in the security job. Previous unpinned `uvx semgrep` would have
+  resolved to the latest PyPI release every run; a malicious or buggy
+  semgrep release would have flipped the `--error` gate red on benign
+  code with no warning. Rule packs (`p/python`, `p/security-audit`)
+  still fetch from the registry at run time, so rule updates land
+  automatically; the binary version is now under our control.
+- All three CI jobs now declare `timeout-minutes` (10 for `lint-and-unit`
+  and `security`, 15 for `integration`). Previously GitHub's 360-minute
+  default would have allowed a hung dep / container to burn 6 hours of
+  CI minutes per run.
+
+### Changed (docs)
+- `SECURITY.md` SLA language softened from "We commit to" to "we aim
+  to" / "we target", with a note that any slip will be published on
+  the advisory thread. Solo, part-time maintenance makes hard
+  commitments risky to put in public policy. The day-counts are
+  unchanged.
+- `SECURITY.md` "In Scope" no longer claims "fingerprint integrity
+  guarantees" — that's a v2 feature not shipped at `0.1.0a1`. Now
+  reads "PII redaction in sample values written to the local SQLite
+  store", which is what actually ships today.
+- `SECURITY.md` "Out of Scope" adds an explicit clause excluding
+  build-time-only dependency compromise that doesn't materially
+  affect the published PyPI wheel. Closes a wording gap that could
+  have been read as inviting reports on every Dependabot-quiet
+  week.
 
 ### Changed
 - `schemabrain.__version__` is now read dynamically from package

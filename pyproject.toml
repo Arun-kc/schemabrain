@@ -35,6 +35,19 @@ dev = [
     "pytest-cov>=5.0,<6.0",
     "ruff>=0.6,<1.0",
     "testcontainers[postgres]>=4.0,<5.0",
+    # PyYAML is used by `tests/test_dependabot_config.py` to parse
+    # `.github/dependabot.yml`. It arrives transitively via fastembed's
+    # dep chain today, but pinning it as a direct dev dep makes the
+    # contract durable: a future upstream drop can't silently skip the
+    # structural pins on the Dependabot config.
+    "pyyaml>=6.0,<7.0",
+    # `pip-audit` runs in the `security` CI job to fail any PR that
+    # introduces a known-CVE dep. Pinning here (rather than uvx) lets
+    # Dependabot manage upgrades and reproducibility lives in uv.lock.
+    "pip-audit>=2.7,<3.0",
+    # `bandit` runs in the `security` CI job for Python SAST. Same
+    # pinning rationale as pip-audit: Dependabot-managed, uv.lock-pinned.
+    "bandit>=1.7,<2.0",
 ]
 
 [project.urls]
@@ -110,3 +123,14 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "^\\s*\\.\\.\\.\\s*$",
 ]
+
+[tool.bandit]
+# Scan only the runtime package — tests intentionally use `assert`
+# (B101) and binding stubs against fake URLs that look like SQLi to
+# bandit. Scope keeps the signal high.
+exclude_dirs = ["tests", "scripts", ".venv", "build", "dist"]
+# Per-line `# nosec B608` comments justify the only deliberate
+# exceptions today (identifier-only f-string SQL assembled from
+# SQLAlchemy `IdentifierPreparer.quote()` output — no user input).
+# See `schemabrain/profiler/postgres.py:_fetch_aggregates` /
+# `_fetch_samples` for the in-source justification.

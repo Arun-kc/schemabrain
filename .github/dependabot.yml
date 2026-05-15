@@ -1,0 +1,77 @@
+# Dependabot configuration for Schema Brain.
+#
+# Why this exists: Schema Brain ships seven runtime dependencies — all
+# under active development (anthropic, fastembed, mcp, sqlalchemy,
+# psycopg, fastmcp, pydantic). Without Dependabot, a known-CVE patch
+# release lands silently. With it, we get a PR on the day a security
+# update ships and `pip-audit` in CI fails any PR that introduces a
+# known-vulnerable dep.
+#
+# Update strategy:
+#   - Weekly schedule (Monday) — fast enough for security, slow enough
+#     to bundle naturally with the rest of the week's work.
+#   - Minor + patch updates GROUPED into one PR per ecosystem per week
+#     to avoid PR storm. A single weekly "deps: weekly minor+patch"
+#     PR is far easier to review than 5–10 individual bumps.
+#   - Major updates remain individual PRs — they may carry breaking
+#     changes and deserve dedicated review.
+#   - `open-pull-requests-limit` keeps the queue bounded so a long
+#     review pause doesn't accumulate 30 PRs.
+#
+# Two ecosystems are tracked:
+#   1. pip (project + dev dependencies declared in pyproject.toml)
+#   2. github-actions (action versions pinned in .github/workflows/*)
+#
+# See SECURITY.md for the broader policy this config supports
+# (vulnerability disclosure, `pip-audit` gate in CI, supported versions).
+
+version: 2
+
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Kolkata"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "pip"
+    groups:
+      python-minor-and-patch:
+        applies-to: "version-updates"
+        update-types:
+          - "minor"
+          - "patch"
+      python-security:
+        applies-to: "security-updates"
+        update-types:
+          - "minor"
+          - "patch"
+          - "major"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Kolkata"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      actions-minor-and-patch:
+        applies-to: "version-updates"
+        update-types:
+          - "minor"
+          - "patch"

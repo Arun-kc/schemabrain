@@ -51,7 +51,15 @@ class PostgresProfiler:
         if sample_size < 1:
             raise ValueError(f"sample_size must be >= 1, got {sample_size}")
         self._sample_size = sample_size
-        self._engine: Engine | None = create_engine(url)
+        # See `PostgresDataSource.__init__` for the rationale: server-side
+        # enforcement of read-only access on the source database. The
+        # profiler only ever issues SELECT, but a defense-in-depth flag
+        # at session level prevents a future regression from silently
+        # mutating customer data.
+        self._engine: Engine | None = create_engine(
+            url,
+            connect_args={"options": "-c default_transaction_read_only=on"},
+        )
 
     def __enter__(self) -> PostgresProfiler:
         return self
@@ -122,9 +130,16 @@ class PostgresProfiler:
             quoted_col = preparer.quote(col_name)
             select_parts.append(f"COUNT({quoted_col}) AS nn_{idx}")
             select_parts.append(f"COUNT(DISTINCT {quoted_col}) AS d_{idx}")
-        sql = f"SELECT {', '.join(select_parts)} FROM {quoted_table}"
+        # Identifier-only f-string: `quoted_table` and every `quoted_col`
+        # are produced by SQLAlchemy's `IdentifierPreparer.quote()` /
+        # `.quote_schema()`, which dialect-escapes them (wraps in double
+        # quotes, doubles any embedded double-quote). `idx` is a loop
+        # counter. No user input enters this string. See SECURITY.md
+        # for the project's broader SQL-construction policy.
+        sql = f"SELECT {', '.join(select_parts)} FROM {quoted_table}"  # nosec B608
         try:
             with engine.connect() as conn:
+                # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text - same justification as the `# nosec B608` above; no user input enters `sql`.
                 row = conn.execute(text(sql)).one()
         except ProgrammingError as e:
             # Only `UndefinedTable` (SQLSTATE 42P01) gets translated into a
@@ -166,14 +181,23 @@ class PostgresProfiler:
         and would defeat the content-addressable cache.
         """
         quoted_col = preparer.quote(col_name)
+        # Identifier-only f-string: `quoted_table` and `quoted_col`
+        # come from SQLAlchemy's `IdentifierPreparer.quote()` /
+        # `.quote_schema()` (dialect escaped). `self._sample_size` is
+        # an int set at profiler construction. No user input enters
+        # this string. See SECURITY.md ("Security Posture Today") for
+        # the broader SQL-construction policy. The `# nosec B608` sits
+        # on the first f-string line because that's where bandit
+        # attaches the finding for multi-line concatenations.
         sql = (
-            f"SELECT DISTINCT {quoted_col}::text AS v "
+            f"SELECT DISTINCT {quoted_col}::text AS v "  # nosec B608
             f"FROM {quoted_table} "
             f"WHERE {quoted_col} IS NOT NULL "
             f"ORDER BY 1 "
             f"LIMIT {self._sample_size}"
         )
         with engine.connect() as conn:
+            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text - same justification as the `# nosec B608` above; no user input enters `sql`.
             rows = conn.execute(text(sql)).all()
         # The `WHERE col IS NOT NULL` filter guarantees psycopg never
         # returns a NULL row here. Cap raw width before regex/truncation

@@ -33,10 +33,23 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Default least-privilege token for all jobs. The workflow only reads
+# the checked-out source tree; nothing here pushes, comments, or
+# publishes. Individual jobs that need elevated permissions must
+# declare them explicitly. Hardens against a compromised CI step
+# (e.g. a malicious dep / semgrep rule pack) ever exfiltrating or
+# pushing to the repo.
+permissions:
+  contents: read
+
 jobs:
   lint-and-unit:
     name: Lint + unit (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    # Hard cap on runaway tests / fetches. The job typically finishes
+    # in under 60 s with a warm cache; 10 min is a generous ceiling
+    # that still bounds CI-minute burn on a hang.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -75,6 +88,81 @@ jobs:
         # sees the full suite. This job is the fast PR-feedback signal.
         run: uv run --python ${{ matrix.python-version }} pytest -m "not integration"
 
+  security:
+    name: Security scans (pip-audit + bandit + semgrep)
+    runs-on: ubuntu-latest
+    # Sequence after lint-and-unit. A typo / syntax error has no business
+    # burning a ~90-second `uv sync` + 3 scanner runs only to be obviated
+    # by a `ruff check` failure that lands first. The critical path of
+    # the workflow is `lint-and-unit -> integration` (~3-4 min); the
+    # security job finishes well inside that window even when sequenced,
+    # so the parallel-for-speed argument doesn't apply here.
+    needs: lint-and-unit
+    # Strict ceiling so a hung semgrep registry fetch can't burn 6 hours
+    # of CI minutes (GitHub's default).
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --extra dev --python 3.11
+
+      - name: pip-audit (known-CVE deps)
+        # Strict mode: any unsuppressed vulnerability fails the build.
+        # CVE-2025-71176 is suppressed: pytest 8.4.2 local-DoS via
+        # /tmp/pytest-of-{user} directory naming. Pytest is dev-only —
+        # never shipped to Schema Brain users — and the exploit requires
+        # an already-present local attacker on the dev/CI host. The
+        # proper fix is pytest>=9.0.3; Dependabot will land that as
+        # its own focused PR. Remove this --ignore-vuln when the bump
+        # merges, so a regression to <9.0.3 re-fails the gate.
+        run: |
+          uv run --python 3.11 pip-audit \
+            --strict \
+            --ignore-vuln CVE-2025-71176
+
+      - name: bandit (Python SAST)
+        # Reads `[tool.bandit]` from pyproject.toml so the test/scripts
+        # exclusions and any future suppressions live in one place.
+        # `-ll` raises confidence + severity threshold to "low" — i.e.,
+        # we fail on Low/Medium/High of either, which is the strictest
+        # mode bandit ships. Inline `# nosec B608` comments justify the
+        # two known-safe identifier-only f-strings in
+        # `profiler/postgres.py`; any other finding fails the build.
+        run: |
+          uv run --python 3.11 bandit \
+            -c pyproject.toml \
+            -r schemabrain/ \
+            -ll
+
+      - name: semgrep (broader Python + security-audit ruleset)
+        # `uvx` (not a direct dev dep) because semgrep ships a heavy
+        # binary (~46 MB) AND would balloon `uv sync --extra dev` for
+        # every contributor. The version is PINNED — without that, a
+        # malicious or buggy semgrep release between runs would flip
+        # the `--error` gate red on a benign codebase and block every
+        # PR until we tracked down which floating dep changed. The
+        # rule packs (`p/python` + `p/security-audit`) still fetch
+        # from the Semgrep registry at run time, so rules update
+        # independently of the binary version. Dependabot doesn't
+        # currently track uvx-pinned tools — bump this manually when
+        # a fresh CVE or false-positive forces it.
+        run: |
+          uvx semgrep@1.163.0 scan \
+            --config p/python \
+            --config p/security-audit \
+            --error \
+            schemabrain/
+
   integration:
     name: Integration (Docker / Postgres)
     runs-on: ubuntu-latest
@@ -82,6 +170,10 @@ jobs:
     # container boot. Either lint-and-unit cell green is enough — we don't
     # need both Python versions to pass before integration starts.
     needs: lint-and-unit
+    # Generous because container boot adds ~30-60 s on top of the test
+    # suite. A hang in testcontainers / Docker would otherwise burn
+    # the GitHub-default 6-hour ceiling.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 

@@ -29,7 +29,18 @@ class PostgresDataSource:
     """
 
     def __init__(self, url: str) -> None:
-        self._engine: Engine | None = create_engine(url)
+        # `default_transaction_read_only=on` is a session-level Postgres
+        # parameter that rejects INSERT/UPDATE/DELETE/DROP/TRUNCATE/CREATE
+        # at the server. SECURITY.md ("Security Posture Today") states
+        # the source-database connection is read-only; this connect_arg
+        # enforces that at the wire instead of relying on code review.
+        # A future profiler PR that accidentally issues a write would
+        # fail with a clear Postgres error rather than silently mutating
+        # a customer's production database.
+        self._engine: Engine | None = create_engine(
+            url,
+            connect_args={"options": "-c default_transaction_read_only=on"},
+        )
 
     def __enter__(self) -> PostgresDataSource:
         return self
