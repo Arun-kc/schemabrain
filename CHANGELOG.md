@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   acknowledgement SLA, scope, and coordinated-disclosure window.
   GitHub Private Vulnerability Reporting is the preferred channel; email
   is the fallback.
+- `.github/dependabot.yml`: weekly minor+patch grouped updates for the
+  pip and github-actions ecosystems, plus a separate security-updates
+  group so CVE patches don't get held back by version-bump batching.
+- PyYAML pinned as a direct dev dependency (used by the new dependabot
+  config structural tests).
 
 ### Changed
 - `schemabrain.__version__` is now read dynamically from package
