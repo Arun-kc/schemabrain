@@ -55,7 +55,7 @@ from schemabrain.mcp.shapes import (
 from schemabrain.mcp.suggest_joins import suggest_joins_impl
 
 _DEFAULT_LIMIT = 10
-_DEFAULT_MAX_HOPS = 4
+_DEFAULT_MAX_HOPS = 6
 _SERVER_NAME = "schemabrain"
 _SERVER_INSTRUCTIONS = (
     "Schema Brain — semantic understanding of an indexed database. "
@@ -390,7 +390,7 @@ def build_server(
             "(`schema.table`) and get one shortest FK path per pair, "
             "with columns on each side ready for a SQL JOIN. Multi-hop "
             "paths via intermediates are returned; pairs with no path "
-            "within `max_hops` (default 4) land in `unreachable_pairs`. "
+            "within `max_hops` (default 6) land in `unreachable_pairs`. "
             "Use `find_relevant_tables` instead when you don't yet know "
             "the table names. Common composition: chain "
             "`find_relevant_tables` to `suggest_joins`."
@@ -415,9 +415,10 @@ def build_server(
             Field(
                 description=(
                     "Maximum number of FK-graph hops to traverse when "
-                    "searching for join paths. Default 4. Increase only "
-                    "for deeply junction-tabled schemas; higher values "
-                    "make the search non-trivially slower."
+                    "searching for join paths. Default 6 — covers M:N "
+                    "junction-table chains common in normalised OLTP "
+                    "schemas. Increase only for unusually deep schemas; "
+                    "higher values make the search non-trivially slower."
                 ),
             ),
         ] = _DEFAULT_MAX_HOPS,

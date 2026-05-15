@@ -6,7 +6,7 @@
 [![Python 3.11 | 3.12](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**Status: 0.1.0a1 (alpha preview).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the v1 roadmap. APIs may change before v1 — pin the version (`pip install schemabrain==0.1.0a1`) if you need stability.
+**Status: 0.2.0a1 (alpha preview).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the v1 roadmap. APIs may change before v1 — pin the version (`pip install schemabrain==0.2.0a1`) if you need stability.
 
 ---
 
@@ -55,7 +55,7 @@ The open-source landscape thinned in 2026: Vanna's public repo was frozen as the
 
 | Project | License | First-party MCP | Status |
 |---|---|---|---|
-| **Schema Brain** | MIT | ✅ | Active — `0.1.0a1` alpha |
+| **Schema Brain** | MIT | ✅ | Active — `0.2.0a1` alpha |
 | [Vanna AI](https://github.com/vanna-ai/vanna) | MIT (repo frozen) | ❌ | OSS archived 2026-03; project moved commercial (Vanna 2.0 / Cloud / Enterprise) |
 | [Reference Postgres MCP](https://github.com/modelcontextprotocol/servers-archived) | MIT | ✅ | Archived 2025-05; no first-party successor named |
 | [Atlan](https://atlan.com) | Closed-source | ✅ | SaaS-only, enterprise pricing |

@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0a1] - 2026-05-15
+
 ### Added
+- PEP 561 `py.typed` marker shipped in the wheel. Schema Brain's
+  source carries full type annotations on every public function
+  signature; the marker tells downstream type checkers (mypy,
+  pyright, pyrefly) to use them. Without it, the checkers silently
+  treated imports as untyped.
 - `schemabrain --version` / `-V` flag. Reads from installed package
   metadata via `importlib.metadata`, so `pyproject.toml` is the single
   source of truth for the version literal.
@@ -104,6 +111,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   week.
 
 ### Changed
+- `schemabrain mine-queries` now filters Schema Brain's own profiler
+  SELECT statements out of the mined `example_queries` set.
+  Previously, running `mine-queries` against a Postgres that was also
+  indexed surfaced Schema Brain's own profiling chatter (positional-
+  alias counts queries and `::text AS v` value samplers) alongside
+  real user workload, polluting what `get_example_queries` returned
+  to agents. The filter is narrow — joint signatures only, so
+  realistic user shapes like
+  `SELECT DISTINCT status::text AS v FROM orders LIMIT 100` are
+  preserved. Skipped statements emit a DEBUG breadcrumb so
+  contributors can trace missing rows.
+- sqlglot's WARNING-level "Falling back to parsing as a 'Command'."
+  notices are silenced inside the mining module.
+  `pg_stat_statements` surfaces non-DML statements (`SHOW`,
+  `CREATE EXTENSION`, `SET`) from any session's connection setup;
+  the pipeline already drops non-DML via type filtering, so the
+  warnings were pure noise. Real parse failures still surface as
+  exceptions.
+- `suggest_joins` default `max_hops` raised from 4 to 6. The bundled
+  e-commerce fixture's longest reachable pair (`users → orders →
+  order_items → products → product_categories → categories`) is 5
+  hops, so the previous default reported it as unreachable —
+  surprising for users walking the documented demo. 6 covers M:N
+  junction-table chains common in normalised OLTP schemas with one
+  hop of headroom while staying below the threshold where BFS
+  exploration becomes expensive on wide FK graphs.
 - `schemabrain.__version__` is now read dynamically from package
   metadata. The literal was previously hardcoded in `__init__.py`.
 - README quickstart uses `$(schemabrain fixture-path ecommerce.sql)`
@@ -122,6 +155,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer marked `required=True` at the argparse layer. Either flag
   (`--source` or `--url-env`) satisfies the requirement; passing both
   is a guided error.
+
+### Fixed
+- `IndexResult.summary()` no longer prints
+  `LLM: 0 descriptions ($0.XXXX)` on a cache-hit re-index. The
+  enrichment pipeline initialises `spent_usd` from the persistent
+  ledger so the in-memory cost-cap check covers historical spend,
+  then accumulates new spend on top; the end-of-run value carrying
+  the cumulative total leaked into the per-run summary clause,
+  making a zero-cost re-index look like it spent money. The
+  clause now scopes to runs that actually generated descriptions.
+  A separate branch surfaces the rare anomaly path (LLM calls
+  billed but no descriptions landed) with a "check logs" hint so
+  unaccounted spend remains visible.
 
 ## [0.1.0a1] - 2026-05-11
 
@@ -168,5 +214,6 @@ First public preview. Live on PyPI as `schemabrain==0.1.0a1`.
 - MIT license; SSH-signed commits; CI on Python 3.11 + 3.12 (Linux
   unit) plus Docker Postgres integration with `--cov-fail-under=99`.
 
-[Unreleased]: https://github.com/Arun-kc/schemabrain/compare/v0.1.0a1...HEAD
+[Unreleased]: https://github.com/Arun-kc/schemabrain/compare/v0.2.0a1...HEAD
+[0.2.0a1]: https://github.com/Arun-kc/schemabrain/releases/tag/v0.2.0a1
 [0.1.0a1]: https://github.com/Arun-kc/schemabrain/releases/tag/v0.1.0a1

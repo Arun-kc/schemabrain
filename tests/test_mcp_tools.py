@@ -1228,6 +1228,50 @@ class TestSuggestJoinsImpl:
         assert result.paths == []
         assert result.unreachable_pairs == [["public.products", "public.users"]]
 
+    def test_default_max_hops_reaches_five_hop_chain(self, tmp_path: Path) -> None:
+        """A 5-hop FK chain `a→b→c→d→e→f` (the depth of the bundled
+        e-commerce fixture's `users → categories` pair through the M:N
+        junction) MUST be reachable at the default `max_hops`. Without
+        this guard, the documented demo path returns `unreachable` on
+        the fixture, which is a confusing first-touch experience for
+        users evaluating Schema Brain.
+        """
+        store = SQLiteStore(tmp_path / "deep.db")
+        sid = "src1"
+
+        # f has no outgoing FKs; each preceding table points one step closer.
+        def _fk(name: str, src_col: str, target_table: str) -> ForeignKey:
+            return ForeignKey(
+                name=name,
+                source_columns=(src_col,),
+                target_schema="public",
+                target_table=target_table,
+                target_columns=("id",),
+            )
+
+        f = _bare_table("f", ("id",))
+        e = _bare_table("e", ("id", "f_id"), fks=(_fk("e_f_fk", "f_id", "f"),))
+        d = _bare_table("d", ("id", "e_id"), fks=(_fk("d_e_fk", "e_id", "e"),))
+        c = _bare_table("c", ("id", "d_id"), fks=(_fk("c_d_fk", "d_id", "d"),))
+        b = _bare_table("b", ("id", "c_id"), fks=(_fk("b_c_fk", "c_id", "c"),))
+        a = _bare_table("a", ("id", "b_id"), fks=(_fk("a_b_fk", "b_id", "b"),))
+
+        for t in (f, e, d, c, b, a):
+            store.write_table(t, source_connection_id=sid)
+
+        result = suggest_joins_impl(
+            store=store,
+            source_connection_id=sid,
+            tables=["public.a", "public.f"],
+        )
+        assert result.unreachable_pairs == [], (
+            "default max_hops must cover a 5-hop chain — current "
+            "default truncates before the bundled e-commerce fixture's "
+            "users→categories depth, breaking the documented demo path"
+        )
+        assert len(result.paths) == 1
+        assert result.paths[0].hops == 5
+
     def test_max_hops_zero_or_negative_raises(self, fk_graph_store: SQLiteStore) -> None:
         for bad in (0, -1):
             with pytest.raises(ValueError, match="max_hops"):
