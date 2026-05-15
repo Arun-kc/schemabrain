@@ -60,6 +60,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SECURITY.md` with server-side enforcement instead of code-review
   convention. Three new integration tests pin the behaviour.
 
+### Changed (CI)
+- Workflow-level `permissions: contents: read` on `.github/workflows/ci.yml`.
+  No job currently needs write access; if one ever does (e.g. publishing
+  a wheel), it must declare elevated permissions explicitly. Hardens
+  against a compromised CI step (third-party action, semgrep rule pack)
+  ever exfiltrating or pushing.
+- `security` job now `needs: lint-and-unit` so a typo in source doesn't
+  burn a ~90 s `uv sync` + 3 scanner runs before `ruff check` rejects
+  the same PR. Sequencing doesn't lengthen the critical path because
+  `integration` (already after lint, ~3-4 min) dominates anyway.
+- `semgrep` is now pinned to a specific version (`uvx semgrep@1.163.0`)
+  in the security job. Previous unpinned `uvx semgrep` would have
+  resolved to the latest PyPI release every run; a malicious or buggy
+  semgrep release would have flipped the `--error` gate red on benign
+  code with no warning. Rule packs (`p/python`, `p/security-audit`)
+  still fetch from the registry at run time, so rule updates land
+  automatically; the binary version is now under our control.
+- All three CI jobs now declare `timeout-minutes` (10 for `lint-and-unit`
+  and `security`, 15 for `integration`). Previously GitHub's 360-minute
+  default would have allowed a hung dep / container to burn 6 hours of
+  CI minutes per run.
+
 ### Changed
 - `schemabrain.__version__` is now read dynamically from package
   metadata. The literal was previously hardcoded in `__init__.py`.

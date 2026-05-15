@@ -33,10 +33,23 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Default least-privilege token for all jobs. The workflow only reads
+# the checked-out source tree; nothing here pushes, comments, or
+# publishes. Individual jobs that need elevated permissions must
+# declare them explicitly. Hardens against a compromised CI step
+# (e.g. a malicious dep / semgrep rule pack) ever exfiltrating or
+# pushing to the repo.
+permissions:
+  contents: read
+
 jobs:
   lint-and-unit:
     name: Lint + unit (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    # Hard cap on runaway tests / fetches. The job typically finishes
+    # in under 60 s with a warm cache; 10 min is a generous ceiling
+    # that still bounds CI-minute burn on a hang.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -78,9 +91,16 @@ jobs:
   security:
     name: Security scans (pip-audit + bandit + semgrep)
     runs-on: ubuntu-latest
-    # Independent of lint-and-unit so a ruff failure doesn't hide a
-    # CVE in deps, and a CVE in deps doesn't hide a ruff failure.
-    # Both run in parallel; both block merge.
+    # Sequence after lint-and-unit. A typo / syntax error has no business
+    # burning a ~90-second `uv sync` + 3 scanner runs only to be obviated
+    # by a `ruff check` failure that lands first. The critical path of
+    # the workflow is `lint-and-unit -> integration` (~3-4 min); the
+    # security job finishes well inside that window even when sequenced,
+    # so the parallel-for-speed argument doesn't apply here.
+    needs: lint-and-unit
+    # Strict ceiling so a hung semgrep registry fetch can't burn 6 hours
+    # of CI minutes (GitHub's default).
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -126,17 +146,18 @@ jobs:
 
       - name: semgrep (broader Python + security-audit ruleset)
         # `uvx` (not a direct dev dep) because semgrep ships a heavy
-        # binary (~46 MB) AND its rule registry updates independently
-        # of the binary version — pinning the binary buys little
-        # reproducibility and costs a lot of dev-env weight. The
-        # `p/python` + `p/security-audit` packs are the two community
-        # rulesets that materially overlap our threat model. `--error`
-        # makes any unsuppressed finding fail the build. Inline
-        # `# nosemgrep:` comments justify the two known-safe
-        # `text(sql)` calls in `profiler/postgres.py`; any other
-        # finding fails CI.
+        # binary (~46 MB) AND would balloon `uv sync --extra dev` for
+        # every contributor. The version is PINNED — without that, a
+        # malicious or buggy semgrep release between runs would flip
+        # the `--error` gate red on a benign codebase and block every
+        # PR until we tracked down which floating dep changed. The
+        # rule packs (`p/python` + `p/security-audit`) still fetch
+        # from the Semgrep registry at run time, so rules update
+        # independently of the binary version. Dependabot doesn't
+        # currently track uvx-pinned tools — bump this manually when
+        # a fresh CVE or false-positive forces it.
         run: |
-          uvx semgrep scan \
+          uvx semgrep@1.163.0 scan \
             --config p/python \
             --config p/security-audit \
             --error \
@@ -149,6 +170,10 @@ jobs:
     # container boot. Either lint-and-unit cell green is enough — we don't
     # need both Python versions to pass before integration starts.
     needs: lint-and-unit
+    # Generous because container boot adds ~30-60 s on top of the test
+    # suite. A hang in testcontainers / Docker would otherwise burn
+    # the GitHub-default 6-hour ceiling.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
