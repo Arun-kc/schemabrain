@@ -37,7 +37,7 @@ from schemabrain.mining.pg_stat_statements import (
     PgStatStatementsUnavailable,
 )
 from schemabrain.mining.pg_stat_statements import fetch_statements as _default_fetch
-from schemabrain.mining.sql_parse import extract_table_references
+from schemabrain.mining.sql_parse import extract_table_references, is_profiler_query
 
 _logger = logging.getLogger(__name__)
 
@@ -123,6 +123,21 @@ def mine_queries(
     rows_to_write: list[ExampleQuery] = []
 
     for raw in raw_rows:
+        if is_profiler_query(raw.query):
+            # Schema Brain's own profiler statements get captured by
+            # pg_stat_statements when the user runs `mine-queries`
+            # against a Postgres they also ran `schemabrain index`
+            # against. Dropping them here keeps `get_example_queries`
+            # returning only real user workload SQL.
+            #
+            # DEBUG so a contributor debugging "why is my query
+            # missing from get_example_queries?" can trace it back
+            # to the filter without flooding stderr on a busy run.
+            _logger.debug(
+                "skipping Schema Brain profiler query: %.120s",
+                raw.query,
+            )
+            continue
         refs = extract_table_references(raw.query)
         if not refs:
             continue
