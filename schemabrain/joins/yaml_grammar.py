@@ -349,8 +349,7 @@ def _parse_cardinality(raw: Any) -> Cardinality | None:
         )
     if raw not in _VALID_CARDINALITIES:
         raise CanonicalJoinParseError(
-            f"cardinality must be one of {sorted(_VALID_CARDINALITIES)} "
-            f"(got {raw!r})"
+            f"cardinality must be one of {sorted(_VALID_CARDINALITIES)} (got {raw!r})"
         )
     # Literal narrowing via runtime check.
     return raw  # type: ignore[return-value]

@@ -199,15 +199,11 @@ def _render_join_info(
     source_alias = _safe_alias(source_entity.name)
     target_alias = _safe_alias(target_entity.name)
     predicates = " AND ".join(
-        f'"{source_alias}"."{pair.source_column}" '
-        f'= "{target_alias}"."{pair.target_column}"'
+        f'"{source_alias}"."{pair.source_column}" = "{target_alias}"."{pair.target_column}"'
         for pair in join.on
     )
     target_schema, target_table = target_entity.qualified_table.split(".", 1)
-    sql_skeleton = (
-        f'JOIN "{target_schema}"."{target_table}" AS "{target_alias}" '
-        f"ON {predicates}"
-    )
+    sql_skeleton = f'JOIN "{target_schema}"."{target_table}" AS "{target_alias}" ON {predicates}'
 
     partial = CanonicalJoinInfo(
         name=join.name,

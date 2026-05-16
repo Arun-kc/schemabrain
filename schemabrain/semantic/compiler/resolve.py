@@ -180,9 +180,7 @@ def resolve_metric_plan(
 
     # Sort joins by canonical name so emit + provenance are
     # deterministic regardless of resolution order.
-    sorted_joins = tuple(
-        sorted(resolved_joins.values(), key=lambda j: j.canonical_name)
-    )
+    sorted_joins = tuple(sorted(resolved_joins.values(), key=lambda j: j.canonical_name))
 
     return MetricPlan(
         metric=metric,
@@ -218,8 +216,7 @@ def _check_operator_value(op: Operator, value: Any, index: int) -> None:
     if op in _UNARY_OPS:
         if value is not None:
             raise MalformedColumnError(
-                f"filter[{index}] operator {op!r} is unary; value must be omitted "
-                f"(got {value!r})"
+                f"filter[{index}] operator {op!r} is unary; value must be omitted (got {value!r})"
             )
         return
     if op in _LIST_OPS:
@@ -261,9 +258,7 @@ def _alias_for(entity_name: str) -> str:
     return entity_name
 
 
-def _lookup_anchor_table(
-    store: Store, entity_name: str, source_connection_id: str
-) -> str:
+def _lookup_anchor_table(store: Store, entity_name: str, source_connection_id: str) -> str:
     """Look up the qualified table for a known entity, asserting presence.
 
     Used for the metric's anchor (FK guarantees it exists) and for
@@ -279,14 +274,10 @@ def _lookup_anchor_table(
     return entity.qualified_table
 
 
-def _lookup_optional_table(
-    store: Store, entity_name: str, source_connection_id: str
-) -> str | None:
+def _lookup_optional_table(store: Store, entity_name: str, source_connection_id: str) -> str | None:
     """Look up a potentially-missing entity, used for UnknownColumnError
     vs UnreachableEntityError disambiguation."""
     entity = store.get_entity(entity_name, source_connection_id=source_connection_id)
     if entity is None:
         return None
     return entity.qualified_table
-
-

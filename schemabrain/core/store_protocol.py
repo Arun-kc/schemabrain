@@ -461,9 +461,7 @@ class Store(Protocol):
         """Return the metric named `name`, or `None` if absent."""
         ...
 
-    def list_metrics(
-        self, *, source_connection_id: str | None = None
-    ) -> list[Metric]:
+    def list_metrics(self, *, source_connection_id: str | None = None) -> list[Metric]:
         """Return all metrics, ordered deterministically by name.
 
         `source_connection_id=None` lists across sources. The CLI

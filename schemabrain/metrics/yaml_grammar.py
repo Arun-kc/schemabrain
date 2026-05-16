@@ -61,9 +61,7 @@ _ALLOWED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
         "origin",
     }
 )
-_REQUIRED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
-    {"version", "name", "entity", "measure"}
-)
+_REQUIRED_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"version", "name", "entity", "measure"})
 
 _ALLOWED_MEASURE_KEYS: frozenset[str] = frozenset({"agg", "column"})
 _REQUIRED_MEASURE_KEYS: frozenset[str] = frozenset({"agg", "column"})
@@ -159,8 +157,7 @@ def parse_metric_yaml_file(path: Path) -> Metric:
         ) from exc
     except UnicodeDecodeError as exc:
         raise MetricYamlError(
-            f"{path} is not a valid UTF-8 text file (metric YAML must be UTF-8): "
-            f"{exc.reason}"
+            f"{path} is not a valid UTF-8 text file (metric YAML must be UTF-8): {exc.reason}"
         ) from exc
     return parse_metric_yaml(text)
 
@@ -178,9 +175,7 @@ def _check_keys(
     keys = set(data.keys())
     missing = required - keys
     if missing:
-        raise MetricYamlError(
-            f"missing required {scope} field(s): {sorted(missing)}"
-        )
+        raise MetricYamlError(f"missing required {scope} field(s): {sorted(missing)}")
     unknown = keys - allowed
     if unknown:
         raise MetricYamlError(f"unknown {scope} keys: {sorted(unknown)}")
@@ -208,9 +203,7 @@ def _check_version(value: Any) -> None:
 def _require_str(data: dict[str, Any], field: str) -> str:
     value = data[field]
     if not isinstance(value, str):
-        raise MetricYamlError(
-            f"{field} must be a string (got {type(value).__name__}: {value!r})"
-        )
+        raise MetricYamlError(f"{field} must be a string (got {type(value).__name__}: {value!r})")
     if not value:
         raise MetricYamlError(f"{field} must be non-empty")
     return value
@@ -221,17 +214,13 @@ def _optional_str(data: dict[str, Any], field: str, *, default: str) -> str:
         return default
     value = data[field]
     if not isinstance(value, str):
-        raise MetricYamlError(
-            f"{field} must be a string (got {type(value).__name__}: {value!r})"
-        )
+        raise MetricYamlError(f"{field} must be a string (got {type(value).__name__}: {value!r})")
     return value
 
 
 def _parse_measure(raw: Any) -> MetricMeasure:
     if not isinstance(raw, dict):
-        raise MetricYamlError(
-            f"measure must be a mapping (got {type(raw).__name__}: {raw!r})"
-        )
+        raise MetricYamlError(f"measure must be a mapping (got {type(raw).__name__}: {raw!r})")
     _check_keys(
         raw,
         allowed=_ALLOWED_MEASURE_KEYS,
@@ -245,15 +234,12 @@ def _parse_measure(raw: Any) -> MetricMeasure:
             f"measure.agg must be a string (got {type(agg_raw).__name__}: {agg_raw!r})"
         )
     if agg_raw not in _VALID_AGGS:
-        raise MetricYamlError(
-            f"measure.agg must be one of {sorted(_VALID_AGGS)} (got {agg_raw!r})"
-        )
+        raise MetricYamlError(f"measure.agg must be one of {sorted(_VALID_AGGS)} (got {agg_raw!r})")
 
     column_raw = raw["column"]
     if not isinstance(column_raw, str):
         raise MetricYamlError(
-            f"measure.column must be a string "
-            f"(got {type(column_raw).__name__}: {column_raw!r})"
+            f"measure.column must be a string (got {type(column_raw).__name__}: {column_raw!r})"
         )
 
     try:
@@ -275,21 +261,18 @@ def _parse_time(
     # clearer than a downstream "validation failed" wrap.
     if has_time_dimension and not has_time_grains:
         raise MetricYamlError(
-            "time_dimension is set but time_grains is missing; "
-            "either set both or neither"
+            "time_dimension is set but time_grains is missing; either set both or neither"
         )
     if has_time_grains and not has_time_dimension:
         raise MetricYamlError(
-            "time_grains is set but time_dimension is missing; "
-            "either set both or neither"
+            "time_grains is set but time_dimension is missing; either set both or neither"
         )
     if not has_time_dimension and not has_time_grains:
         return None, ()
 
     if not isinstance(dim_raw, str):
         raise MetricYamlError(
-            f"time_dimension must be a string "
-            f"(got {type(dim_raw).__name__}: {dim_raw!r})"
+            f"time_dimension must be a string (got {type(dim_raw).__name__}: {dim_raw!r})"
         )
 
     if not isinstance(grains_raw, list):
@@ -297,20 +280,16 @@ def _parse_time(
             f"time_grains must be a list (got {type(grains_raw).__name__}: {grains_raw!r})"
         )
     if not grains_raw:
-        raise MetricYamlError(
-            "time_grains must be a non-empty list when time_dimension is set"
-        )
+        raise MetricYamlError("time_grains must be a non-empty list when time_dimension is set")
     typed_grains: list[TimeGrain] = []
     for item in grains_raw:
         if not isinstance(item, str):
             raise MetricYamlError(
-                f"time_grains items must be strings "
-                f"(got {type(item).__name__}: {item!r})"
+                f"time_grains items must be strings (got {type(item).__name__}: {item!r})"
             )
         if item not in _VALID_GRAINS:
             raise MetricYamlError(
-                f"time_grains items must be one of {sorted(_VALID_GRAINS)} "
-                f"(got {item!r})"
+                f"time_grains items must be one of {sorted(_VALID_GRAINS)} (got {item!r})"
             )
         # Literal narrowing via runtime check.
         typed_grains.append(item)  # type: ignore[arg-type]
@@ -326,9 +305,7 @@ def _parse_origin(raw: Any) -> MetricOrigin:
     # pattern coherent: the importer is the only producer that
     # writes that origin.
     if not isinstance(raw, str):
-        raise MetricYamlError(
-            f"origin must be a string (got {type(raw).__name__}: {raw!r})"
-        )
+        raise MetricYamlError(f"origin must be a string (got {type(raw).__name__}: {raw!r})")
     if raw == "dbt_import":
         raise MetricYamlError(
             "origin: dbt_import is reserved for the dbt-metrics importer; "
@@ -337,8 +314,6 @@ def _parse_origin(raw: Any) -> MetricOrigin:
             "to import dbt-owned metrics instead."
         )
     if raw not in _VALID_ORIGINS:
-        raise MetricYamlError(
-            f"origin must be one of {sorted(_VALID_ORIGINS)} (got {raw!r})"
-        )
+        raise MetricYamlError(f"origin must be one of {sorted(_VALID_ORIGINS)} (got {raw!r})")
     # Literal narrowing via runtime check.
     return raw  # type: ignore[return-value]

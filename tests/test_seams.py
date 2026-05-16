@@ -518,14 +518,10 @@ class TestStoreProtocolSeamUsable:
             def write_metric(self, metric: Metric, *, source_connection_id: str) -> None:
                 pass
 
-            def get_metric(
-                self, name: str, *, source_connection_id: str
-            ) -> Metric | None:
+            def get_metric(self, name: str, *, source_connection_id: str) -> Metric | None:
                 return None
 
-            def list_metrics(
-                self, *, source_connection_id: str | None = None
-            ) -> list[Metric]:
+            def list_metrics(self, *, source_connection_id: str | None = None) -> list[Metric]:
                 return []
 
         store = _InMemoryStore()

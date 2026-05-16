@@ -180,9 +180,7 @@ def scalar_filter(draw: st.DrawFn) -> RequestedFilter:
         st.one_of(
             st.integers(min_value=-1_000_000, max_value=1_000_000),
             st.text(
-                alphabet=st.characters(
-                    blacklist_categories=("Cs",), blacklist_characters="\x00"
-                ),
+                alphabet=st.characters(blacklist_categories=("Cs",), blacklist_characters="\x00"),
                 min_size=0,
                 max_size=64,
             ),
@@ -342,8 +340,7 @@ def test_parameterisation_invariant_structural(
         sql,
     )
     assert "'" not in residue, (
-        "parameterised SQL contains an unexpected single quote — "
-        "string literal leaked inline"
+        "parameterised SQL contains an unexpected single quote — string literal leaked inline"
     )
 
 
@@ -431,9 +428,7 @@ def test_params_keys_are_placeholder_names(
     )
     _sql, params = emit_sql(plan)
     for key in params:
-        assert key.startswith("p_"), (
-            f"param key {key!r} doesn't follow p_* convention"
-        )
+        assert key.startswith("p_"), f"param key {key!r} doesn't follow p_* convention"
 
 
 def test_param_count_matches_placeholder_count(shared_store: SQLiteStore) -> None:
@@ -460,6 +455,5 @@ def test_param_count_matches_placeholder_count(shared_store: SQLiteStore) -> Non
 
     placeholders = set(re.findall(r":(p_[A-Za-z0-9_]+)", sql))
     assert placeholders == set(params.keys()), (
-        f"placeholder/param mismatch — placeholders: {placeholders}, "
-        f"params: {set(params.keys())}"
+        f"placeholder/param mismatch — placeholders: {placeholders}, params: {set(params.keys())}"
     )

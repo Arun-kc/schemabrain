@@ -154,9 +154,7 @@ def metric_store(pg_url: str, tmp_path_factory: pytest.TempPathFactory) -> SQLit
 
 @pytest.mark.integration
 class TestPostgresMetricExecution:
-    def test_date_trunc_day_grain_executes(
-        self, pg_url: str, metric_store: SQLiteStore
-    ) -> None:
+    def test_date_trunc_day_grain_executes(self, pg_url: str, metric_store: SQLiteStore) -> None:
         # `date_trunc('day', col)` literal form must execute cleanly
         # against Postgres 16 — locks the emit choice in tests.
         pg_engine = create_engine(pg_url)
@@ -194,11 +192,7 @@ class TestPostgresMetricExecution:
                 store=metric_store,
                 source_connection_id=_SOURCE,
                 metric_name="total_revenue",
-                filters=(
-                    RequestedFilter(
-                        column="order.status", op="eq", value="completed"
-                    ),
-                ),
+                filters=(RequestedFilter(column="order.status", op="eq", value="completed"),),
             )
             sql, params = emit_sql(plan)
             assert "completed" not in sql  # bound, not inline

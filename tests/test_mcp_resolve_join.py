@@ -377,8 +377,7 @@ class TestSqlSkeleton:
         # double-quoted so reserved-keyword aliases (`order`) survive
         # paste-into-Postgres.
         assert info.sql_skeleton == (
-            'JOIN "public"."users" AS "customer" '
-            'ON "order"."user_id" = "customer"."id"'
+            'JOIN "public"."users" AS "customer" ON "order"."user_id" = "customer"."id"'
         )
 
     def test_composite_predicate_renders_with_and(self, tmp_path: Path) -> None:

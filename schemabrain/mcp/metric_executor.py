@@ -93,6 +93,4 @@ class EngineMetricExecutor:
                 exc,
                 exc_info=exc,
             )
-            raise RuntimeError(
-                f"metric query failed ({type(exc).__name__}): {exc}"
-            ) from exc
+            raise RuntimeError(f"metric query failed ({type(exc).__name__}): {exc}") from exc

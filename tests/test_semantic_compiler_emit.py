@@ -143,9 +143,7 @@ class TestBasicShape:
         assert "LIMIT :p_limit" in sql
         assert params == {"p_limit": 1000}
 
-    def test_no_group_by_clause_when_no_time_bucket_or_group_by(
-        self, tmp_path: Path
-    ) -> None:
+    def test_no_group_by_clause_when_no_time_bucket_or_group_by(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "store.db") as store:
             _seed_total_revenue(store)
             plan = resolve_metric_plan(
@@ -197,15 +195,10 @@ class TestGroupBy:
                 group_by=("customer.region",),
             )
             sql, _params = emit_sql(plan)
-        assert (
-            'JOIN "public"."users" AS "customer" '
-            'ON "order"."user_id" = "customer"."id"' in sql
-        )
+        assert 'JOIN "public"."users" AS "customer" ON "order"."user_id" = "customer"."id"' in sql
         assert '"customer"."region" AS group_col_0' in sql
 
-    def test_group_by_two_columns_emits_two_select_two_group(
-        self, tmp_path: Path
-    ) -> None:
+    def test_group_by_two_columns_emits_two_select_two_group(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "store.db") as store:
             _seed_total_revenue(store)
             plan = resolve_metric_plan(
@@ -237,9 +230,7 @@ class TestTimeBucket:
                 time_grain="day",
             )
             sql, params = emit_sql(plan)
-        assert (
-            'date_trunc(\'day\', "order"."created_at") AS time_bucket' in sql
-        )
+        assert 'date_trunc(\'day\', "order"."created_at") AS time_bucket' in sql
         assert "GROUP BY time_bucket" in sql
         # No `p_bucket` parameter — grain is inline.
         assert "p_bucket" not in params
@@ -275,9 +266,7 @@ class TestTimeBucket:
         # raised InvalidTimeGrainError, but defensive test), a non-
         # temporal metric never emits date_trunc.
         with SQLiteStore(tmp_path / "store.db") as store:
-            _seed_total_revenue(
-                store, time_dimension=None, time_grains=()
-            )
+            _seed_total_revenue(store, time_dimension=None, time_grains=())
             plan = resolve_metric_plan(
                 store=store,
                 source_connection_id=SOURCE,
@@ -301,9 +290,7 @@ class TestAggregations:
             ("max", 'max("order"."total_amount")'),
         ],
     )
-    def test_simple_agg_emits_function_call(
-        self, tmp_path: Path, agg: str, expected: str
-    ) -> None:
+    def test_simple_agg_emits_function_call(self, tmp_path: Path, agg: str, expected: str) -> None:
         with SQLiteStore(tmp_path / "store.db") as store:
             _seed_total_revenue(store, agg=agg)
             plan = resolve_metric_plan(
@@ -337,9 +324,7 @@ class TestFilters:
                 store=store,
                 source_connection_id=SOURCE,
                 metric_name="total_revenue",
-                filters=(
-                    RequestedFilter(column="order.status", op="eq", value="completed"),
-                ),
+                filters=(RequestedFilter(column="order.status", op="eq", value="completed"),),
             )
             sql, params = emit_sql(plan)
         assert 'WHERE "order"."status" = :p_filter_0' in sql
@@ -357,9 +342,7 @@ class TestFilters:
             ("gte", ">="),
         ],
     )
-    def test_comparison_operators(
-        self, tmp_path: Path, op: str, expected_op: str
-    ) -> None:
+    def test_comparison_operators(self, tmp_path: Path, op: str, expected_op: str) -> None:
         with SQLiteStore(tmp_path / "store.db") as store:
             _seed_total_revenue(store)
             plan = resolve_metric_plan(
@@ -368,7 +351,9 @@ class TestFilters:
                 metric_name="total_revenue",
                 filters=(
                     RequestedFilter(
-                        column="order.total_amount", op=op, value=100  # type: ignore[arg-type]
+                        column="order.total_amount",
+                        op=op,
+                        value=100,  # type: ignore[arg-type]
                     ),
                 ),
             )
@@ -392,10 +377,7 @@ class TestFilters:
                 ),
             )
             sql, params = emit_sql(plan)
-        assert (
-            '"order"."status" IN (:p_filter_0_0, :p_filter_0_1, :p_filter_0_2)'
-            in sql
-        )
+        assert '"order"."status" IN (:p_filter_0_0, :p_filter_0_1, :p_filter_0_2)' in sql
         assert params["p_filter_0_0"] == "completed"
         assert params["p_filter_0_1"] == "shipped"
         assert params["p_filter_0_2"] == "refunded"
@@ -425,9 +407,7 @@ class TestFilters:
                 store=store,
                 source_connection_id=SOURCE,
                 metric_name="total_revenue",
-                filters=(
-                    RequestedFilter(column="order.refunded_at", op="is_null"),
-                ),
+                filters=(RequestedFilter(column="order.refunded_at", op="is_null"),),
             )
             sql, params = emit_sql(plan)
         assert '"order"."refunded_at" IS NULL' in sql
@@ -441,9 +421,7 @@ class TestFilters:
                 store=store,
                 source_connection_id=SOURCE,
                 metric_name="total_revenue",
-                filters=(
-                    RequestedFilter(column="order.shipped_at", op="not_null"),
-                ),
+                filters=(RequestedFilter(column="order.shipped_at", op="not_null"),),
             )
             sql, _params = emit_sql(plan)
         assert '"order"."shipped_at" IS NOT NULL' in sql
@@ -457,15 +435,12 @@ class TestFilters:
                 metric_name="total_revenue",
                 filters=(
                     RequestedFilter(column="order.status", op="eq", value="completed"),
-                    RequestedFilter(
-                        column="order.total_amount", op="gte", value=100
-                    ),
+                    RequestedFilter(column="order.total_amount", op="gte", value=100),
                 ),
             )
             sql, params = emit_sql(plan)
         assert (
-            'WHERE "order"."status" = :p_filter_0 '
-            'AND "order"."total_amount" >= :p_filter_1' in sql
+            'WHERE "order"."status" = :p_filter_0 AND "order"."total_amount" >= :p_filter_1' in sql
         )
         assert params["p_filter_0"] == "completed"
         assert params["p_filter_1"] == 100
@@ -568,9 +543,7 @@ class TestParameterisationInvariant:
                 store=store,
                 source_connection_id=SOURCE,
                 metric_name="total_revenue",
-                filters=(
-                    RequestedFilter(column="order.status", op="eq", value=evil),
-                ),
+                filters=(RequestedFilter(column="order.status", op="eq", value=evil),),
             )
             sql, params = emit_sql(plan)
         assert evil not in sql
@@ -583,11 +556,7 @@ class TestParameterisationInvariant:
                 store=store,
                 source_connection_id=SOURCE,
                 metric_name="total_revenue",
-                filters=(
-                    RequestedFilter(
-                        column="order.total_amount", op="gte", value=12345
-                    ),
-                ),
+                filters=(RequestedFilter(column="order.total_amount", op="gte", value=12345),),
             )
             sql, params = emit_sql(plan)
         # The integer value itself must NOT appear in the SQL text.

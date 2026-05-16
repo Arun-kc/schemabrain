@@ -126,8 +126,7 @@ class DbtMetricSkip:
     def __post_init__(self) -> None:
         if self.reason not in _VALID_REASONS:
             raise ValueError(
-                f"reason must be one of {sorted(_VALID_REASONS)} "
-                f"(got {self.reason!r})"
+                f"reason must be one of {sorted(_VALID_REASONS)} (got {self.reason!r})"
             )
 
 
@@ -183,9 +182,7 @@ def parse_dbt_metrics(
 
 def _read_manifest(path: Path) -> dict[str, Any]:
     if not path.exists():
-        raise DbtMetricImportError(
-            f"dbt manifest not found at {path}; run `dbt compile` first."
-        )
+        raise DbtMetricImportError(f"dbt manifest not found at {path}; run `dbt compile` first.")
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:  # pragma: no cover — guarded by exists()
@@ -194,8 +191,7 @@ def _read_manifest(path: Path) -> dict[str, Any]:
         return json.loads(text)
     except json.JSONDecodeError as exc:
         raise DbtMetricImportError(
-            f"invalid JSON in {path}: {exc.msg} "
-            f"(line {exc.lineno} column {exc.colno})"
+            f"invalid JSON in {path}: {exc.msg} (line {exc.lineno} column {exc.colno})"
         ) from exc
 
 
@@ -235,9 +231,7 @@ class _MeasureBinding:
     semantic_model: dict[str, Any]
 
 
-def _build_measure_index(
-    semantic_models_raw: dict[str, Any]
-) -> dict[str, _MeasureBinding]:
+def _build_measure_index(semantic_models_raw: dict[str, Any]) -> dict[str, _MeasureBinding]:
     """Index every measure across all semantic_models by name.
 
     A duplicate measure name across two semantic_models is allowed by
@@ -255,13 +249,13 @@ def _build_measure_index(
             name = measure.get("name")
             agg = measure.get("agg")
             expr = measure.get("expr")
-            if not isinstance(name, str) or not isinstance(agg, str):  # pragma: no cover — defensive
+            if not isinstance(name, str) or not isinstance(
+                agg, str
+            ):  # pragma: no cover — defensive
                 continue
             if not isinstance(expr, str):  # pragma: no cover — defensive
                 continue
-            index[name] = _MeasureBinding(
-                agg=agg, expr=expr, semantic_model=sm_node
-            )
+            index[name] = _MeasureBinding(agg=agg, expr=expr, semantic_model=sm_node)
     return index
 
 
@@ -311,8 +305,7 @@ def _map_one_metric(
             metric_name=name,
             reason="measure_not_found",
             message=(
-                f"metric references measure {measure_name!r} but no "
-                f"semantic_model declares it."
+                f"metric references measure {measure_name!r} but no semantic_model declares it."
             ),
         )
 
@@ -382,9 +375,7 @@ def _map_one_metric(
             ),
         )
 
-    time_dimension, time_grains = _extract_time(
-        binding.semantic_model, anchor_entity=anchor_entity
-    )
+    time_dimension, time_grains = _extract_time(binding.semantic_model, anchor_entity=anchor_entity)
 
     return Metric(
         name=name,
@@ -419,8 +410,8 @@ def _extract_time(
         if not isinstance(dim, dict) or dim.get("type") != "time":  # pragma: no cover — defensive
             continue
         dim_name = dim.get("name", "")
-        if (
-            not isinstance(dim_name, str) or not _BARE_COLUMN_RE.fullmatch(dim_name)
+        if not isinstance(dim_name, str) or not _BARE_COLUMN_RE.fullmatch(
+            dim_name
         ):  # pragma: no cover — defensive
             continue
         type_params = dim.get("type_params") or {}
@@ -445,9 +436,7 @@ def _extract_time(
 
         # Canonical sort by rank — Schema Brain `Metric` dataclass
         # rejects unsorted time_grains.
-        sorted_grains = tuple(
-            sorted(set(candidates), key=lambda g: _TIME_GRAIN_RANK[g])
-        )
+        sorted_grains = tuple(sorted(set(candidates), key=lambda g: _TIME_GRAIN_RANK[g]))
         return f"{anchor_entity}.{dim_name}", sorted_grains  # type: ignore[return-value]
 
     return None, ()

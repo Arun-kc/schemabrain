@@ -614,8 +614,7 @@ class TestParseFilePermissionWrap:
                     parse_metric_yaml_file(target)
             else:
                 pytest.skip(
-                    "filesystem permits read of 0-mode file; "
-                    "cannot exercise PermissionError wrap"
+                    "filesystem permits read of 0-mode file; cannot exercise PermissionError wrap"
                 )
         finally:
             # Restore so the tmp_path cleanup can remove it.

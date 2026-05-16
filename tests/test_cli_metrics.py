@@ -153,9 +153,7 @@ class TestMetricsApplySingleFile:
         # explicit confirmation → stored origin must be `manual`.
         store_path = tmp_path / "store.db"
         source_id = _seed_order_entity(store_path)
-        yaml_text = (
-            _temporal_yaml() + "\norigin: suggested\n"
-        )
+        yaml_text = _temporal_yaml() + "\norigin: suggested\n"
         yaml_file = tmp_path / "total_revenue.yaml"
         yaml_file.write_text(yaml_text, encoding="utf-8")
         _set_env(monkeypatch)
@@ -287,12 +285,8 @@ class TestMetricsApplyDirectory:
         source_id = _seed_order_entity(store_path)
         metrics_dir = tmp_path / "metrics"
         metrics_dir.mkdir()
-        (metrics_dir / "total_revenue.yaml").write_text(
-            _temporal_yaml(), encoding="utf-8"
-        )
-        (metrics_dir / "open_count.yaml").write_text(
-            _open_count_yaml(), encoding="utf-8"
-        )
+        (metrics_dir / "total_revenue.yaml").write_text(_temporal_yaml(), encoding="utf-8")
+        (metrics_dir / "open_count.yaml").write_text(_open_count_yaml(), encoding="utf-8")
         _set_env(monkeypatch)
 
         code, out, _err = _run(
@@ -311,14 +305,8 @@ class TestMetricsApplyDirectory:
         assert "applied metric: total_revenue" in out
         assert "applied metric: open_count" in out
         with SQLiteStore(store_path) as store:
-            assert (
-                store.get_metric("total_revenue", source_connection_id=source_id)
-                is not None
-            )
-            assert (
-                store.get_metric("open_count", source_connection_id=source_id)
-                is not None
-            )
+            assert store.get_metric("total_revenue", source_connection_id=source_id) is not None
+            assert store.get_metric("open_count", source_connection_id=source_id) is not None
 
     def test_directory_with_parse_error_skips_bad_file(
         self, tmp_path: Path, capsys: Any, monkeypatch: Any
@@ -328,9 +316,7 @@ class TestMetricsApplyDirectory:
         metrics_dir = tmp_path / "metrics"
         metrics_dir.mkdir()
         (metrics_dir / "good.yaml").write_text(_open_count_yaml(), encoding="utf-8")
-        (metrics_dir / "bad.yaml").write_text(
-            "this is not valid yaml: [\n", encoding="utf-8"
-        )
+        (metrics_dir / "bad.yaml").write_text("this is not valid yaml: [\n", encoding="utf-8")
         _set_env(monkeypatch)
 
         code, out, err = _run(
@@ -350,10 +336,7 @@ class TestMetricsApplyDirectory:
         assert "applied metric: open_count" in out
         assert "bad.yaml" in err
         with SQLiteStore(store_path) as store:
-            assert (
-                store.get_metric("open_count", source_connection_id=source_id)
-                is not None
-            )
+            assert store.get_metric("open_count", source_connection_id=source_id) is not None
 
     def test_empty_directory_returns_error(
         self, tmp_path: Path, capsys: Any, monkeypatch: Any
@@ -406,20 +389,14 @@ class TestMetricsApplyDirectory:
 
 
 class TestMetricsList:
-    def test_empty_store_returns_zero(
-        self, tmp_path: Path, capsys: Any
-    ) -> None:
+    def test_empty_store_returns_zero(self, tmp_path: Path, capsys: Any) -> None:
         store_path = tmp_path / "store.db"
         SQLiteStore(store_path).close()
-        code, out, _err = _run(
-            ["metrics", "list", "--store-path", str(store_path)], capsys
-        )
+        code, out, _err = _run(["metrics", "list", "--store-path", str(store_path)], capsys)
         assert code == 0
         assert "no metrics" in out.lower()
 
-    def test_lists_written_metrics(
-        self, tmp_path: Path, capsys: Any, monkeypatch: Any
-    ) -> None:
+    def test_lists_written_metrics(self, tmp_path: Path, capsys: Any, monkeypatch: Any) -> None:
         store_path = tmp_path / "store.db"
         _seed_order_entity(store_path)
         yaml_file = tmp_path / "total_revenue.yaml"
@@ -442,17 +419,13 @@ class TestMetricsList:
         assert apply_code == 0
 
         # Then list.
-        code, out, _err = _run(
-            ["metrics", "list", "--store-path", str(store_path)], capsys
-        )
+        code, out, _err = _run(["metrics", "list", "--store-path", str(store_path)], capsys)
         assert code == 0
         assert "total_revenue" in out
         assert "sum" in out
         assert "total_amount" in out
 
-    def test_filters_by_source(
-        self, tmp_path: Path, capsys: Any, monkeypatch: Any
-    ) -> None:
+    def test_filters_by_source(self, tmp_path: Path, capsys: Any, monkeypatch: Any) -> None:
         # Write the same metric under two different sources. Filtered
         # list should show only the requested source.
         store_path = tmp_path / "store.db"
@@ -492,9 +465,7 @@ class TestMetricsList:
 
 
 class TestCorruptStore:
-    def test_metrics_list_surfaces_corruption_as_exit_2(
-        self, tmp_path: Path, capsys: Any
-    ) -> None:
+    def test_metrics_list_surfaces_corruption_as_exit_2(self, tmp_path: Path, capsys: Any) -> None:
         # Hand-corrupt the metrics table so `_row_to_metric` raises
         # ValueError on the canonical-sort invariant. The CLI must
         # surface a structured error and exit 2, not raise a Python
@@ -520,17 +491,14 @@ class TestCorruptStore:
         conn = sqlite3.connect(str(store_path))
         try:
             conn.execute(
-                "UPDATE metrics SET time_grains = ? "
-                "WHERE name = 'total_revenue'",
+                "UPDATE metrics SET time_grains = ? WHERE name = 'total_revenue'",
                 ("week,day",),
             )
             conn.commit()
         finally:
             conn.close()
 
-        code, _out, err = _run(
-            ["metrics", "list", "--store-path", str(store_path)], capsys
-        )
+        code, _out, err = _run(["metrics", "list", "--store-path", str(store_path)], capsys)
         assert code == 2
         assert "corrupt" in err.lower()
 

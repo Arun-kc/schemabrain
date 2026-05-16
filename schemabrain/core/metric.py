@@ -136,9 +136,7 @@ class MetricMeasure:
 
     def __post_init__(self) -> None:
         if self.agg not in _VALID_AGGS:
-            raise ValueError(
-                f"agg must be one of {sorted(_VALID_AGGS)} (got {self.agg!r})"
-            )
+            raise ValueError(f"agg must be one of {sorted(_VALID_AGGS)} (got {self.agg!r})")
         if not _IDENT_RE.fullmatch(self.column):
             raise ValueError(f"column must be an identifier (got {self.column!r})")
 
@@ -194,8 +192,7 @@ class Metric:
             self.time_dimension
         ):
             raise ValueError(
-                f"time_dimension must be 'entity.column' form "
-                f"(got {self.time_dimension!r})"
+                f"time_dimension must be 'entity.column' form (got {self.time_dimension!r})"
             )
 
         # Validate every grain is in the closed Literal, then enforce
@@ -206,13 +203,10 @@ class Metric:
         for grain in self.time_grains:
             if grain not in _VALID_GRAINS:
                 raise ValueError(
-                    f"time_grains must be a subset of {sorted(_VALID_GRAINS)} "
-                    f"(got {grain!r})"
+                    f"time_grains must be a subset of {sorted(_VALID_GRAINS)} (got {grain!r})"
                 )
         if len(set(self.time_grains)) != len(self.time_grains):
-            raise ValueError(
-                f"time_grains must be unique (got {self.time_grains})"
-            )
+            raise ValueError(f"time_grains must be unique (got {self.time_grains})")
         ranks = [_TIME_GRAIN_RANK[g] for g in self.time_grains]
         if ranks != sorted(ranks):
             raise ValueError(

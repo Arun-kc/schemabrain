@@ -242,7 +242,7 @@ class ResolvedColumn:
         Both alias AND column are double-quoted so reserved-keyword
         names (`order.user`, `customer.from`, etc.) survive emission.
         """
-        return f'{self.quoted_alias}.{self.quoted_column}'
+        return f"{self.quoted_alias}.{self.quoted_column}"
 
 
 @dataclass(frozen=True)

@@ -482,8 +482,16 @@ class MetricFilterArg(BaseModel):
 
     column: str
     op: Literal[
-        "eq", "ne", "lt", "lte", "gt", "gte",
-        "in", "not_in", "is_null", "not_null",
+        "eq",
+        "ne",
+        "lt",
+        "lte",
+        "gt",
+        "gte",
+        "in",
+        "not_in",
+        "is_null",
+        "not_null",
     ]
     value: Any = None
 

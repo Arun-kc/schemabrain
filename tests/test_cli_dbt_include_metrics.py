@@ -223,9 +223,7 @@ def _manifest_with_entity_and_metric(tmp_path: Path) -> Path:
 
 
 class TestIncludeMetrics:
-    def test_imports_metric_alongside_entity(
-        self, tmp_path: Path, capsys: Any
-    ) -> None:
+    def test_imports_metric_alongside_entity(self, tmp_path: Path, capsys: Any) -> None:
         store_path = _seed_orders_table(tmp_path)
         manifest_path = _manifest_with_entity_and_metric(tmp_path)
 
@@ -244,9 +242,7 @@ class TestIncludeMetrics:
         source_id = _make_source_id(_SOURCE_URL)
         with SQLiteStore(store_path) as store:
             entity = store.get_entity("order", source_connection_id=source_id)
-            metric = store.get_metric(
-                "total_revenue", source_connection_id=source_id
-            )
+            metric = store.get_metric("total_revenue", source_connection_id=source_id)
 
         # Entity import wrote with origin=dbt_import.
         assert entity is not None
@@ -265,9 +261,7 @@ class TestIncludeMetrics:
         out = capsys.readouterr().out
         assert "dbt metrics: imported 1, skipped 0" in out
 
-    def test_include_metrics_off_by_default(
-        self, tmp_path: Path, capsys: Any
-    ) -> None:
+    def test_include_metrics_off_by_default(self, tmp_path: Path, capsys: Any) -> None:
         # Without --include-metrics, the metric portion of the manifest
         # is ignored entirely (no skip count printed).
         store_path = _seed_orders_table(tmp_path)
@@ -287,18 +281,14 @@ class TestIncludeMetrics:
 
         source_id = _make_source_id(_SOURCE_URL)
         with SQLiteStore(store_path) as store:
-            metric = store.get_metric(
-                "total_revenue", source_connection_id=source_id
-            )
+            metric = store.get_metric("total_revenue", source_connection_id=source_id)
         # Metric was NOT imported.
         assert metric is None
 
         out = capsys.readouterr().out
         assert "dbt metrics:" not in out
 
-    def test_dry_run_does_not_write(
-        self, tmp_path: Path, capsys: Any
-    ) -> None:
+    def test_dry_run_does_not_write(self, tmp_path: Path, capsys: Any) -> None:
         store_path = _seed_orders_table(tmp_path)
         manifest_path = _manifest_with_entity_and_metric(tmp_path)
 
@@ -316,9 +306,7 @@ class TestIncludeMetrics:
 
         source_id = _make_source_id(_SOURCE_URL)
         with SQLiteStore(store_path) as store:
-            metric = store.get_metric(
-                "total_revenue", source_connection_id=source_id
-            )
+            metric = store.get_metric("total_revenue", source_connection_id=source_id)
         assert metric is None
 
         out = capsys.readouterr().out
@@ -337,9 +325,7 @@ class TestIncludeMetrics:
         # Rename the model from `order` to `customer` so the entity
         # import lands a `customer` entity but the metric (still
         # anchored on `order`) can't find its anchor.
-        manifest["nodes"]["model.demo.customer"] = manifest["nodes"].pop(
-            "model.demo.order"
-        )
+        manifest["nodes"]["model.demo.customer"] = manifest["nodes"].pop("model.demo.order")
         manifest["nodes"]["model.demo.customer"]["name"] = "customer"
         manifest["nodes"]["model.demo.customer"]["unique_id"] = "model.demo.customer"
         manifest_path = tmp_path / "manifest2.json"

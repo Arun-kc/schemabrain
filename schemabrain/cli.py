@@ -2001,7 +2001,9 @@ def _cmd_import_dbt(
     # parser is lenient about a shape the metric parser refuses
     # (e.g., entity import succeeds on a v12-shaped JSON whose
     # `dbt_schema_version` field is hand-tampered to be < v11).
-    if include_metrics and metric_summary is None:  # pragma: no cover — entity-parser-rejects-first invariant
+    if (
+        include_metrics and metric_summary is None
+    ):  # pragma: no cover — entity-parser-rejects-first invariant
         return 1
     return 0
 
@@ -2060,15 +2062,11 @@ def _apply_dbt_metrics(
             # FK violation — should not happen because the entity
             # import ran first and the `parse_dbt_metrics`
             # `anchor_entity_not_imported` skip catches the gap.
-            failures.append(
-                (metric.name, f"anchor entity FK violation: {exc}")
-            )
+            failures.append((metric.name, f"anchor entity FK violation: {exc}"))
         except Exception as exc:  # pragma: no cover — defense-in-depth catch for unanticipated store / library failures
             # Unexpected exception — surface type info so a real bug
             # is distinguishable from FK/dbt-guard at triage time.
-            failures.append(
-                (metric.name, f"{type(exc).__name__}: {exc}")
-            )
+            failures.append((metric.name, f"{type(exc).__name__}: {exc}"))
     for metric_name, message in failures:
         print(
             f"error: failed to write dbt metric {metric_name!r}: {message}",
@@ -2667,8 +2665,7 @@ def _cmd_metrics_list(
         # sees "your store file is corrupt, here's how" instead of a
         # bare traceback.
         print(
-            f"error: failed to read metrics from {store_path!r}: "
-            f"store appears corrupt ({exc})",
+            f"error: failed to read metrics from {store_path!r}: store appears corrupt ({exc})",
             file=sys.stderr,
         )
         return 2

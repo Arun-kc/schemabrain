@@ -294,6 +294,4 @@ class TestDbtOwnedMetricError:
 
     def test_can_be_raised_and_caught(self) -> None:
         with pytest.raises(DbtOwnedMetricError, match="total_revenue"):
-            raise DbtOwnedMetricError(
-                "total_revenue is owned by dbt; manual edits refused"
-            )
+            raise DbtOwnedMetricError("total_revenue is owned by dbt; manual edits refused")

@@ -283,9 +283,7 @@ class TestHappyPath:
         assert join.on_pairs[0].source_column == "user_id"
         assert join.on_pairs[0].target_column == "id"
 
-    def test_two_group_by_columns_on_same_joined_entity_dedupe(
-        self, tmp_path: Path
-    ) -> None:
+    def test_two_group_by_columns_on_same_joined_entity_dedupe(self, tmp_path: Path) -> None:
         # Both group_by columns are on `customer` — one JOIN, two
         # group_by columns in the resulting plan.
         with SQLiteStore(tmp_path / "store.db") as store:
@@ -307,9 +305,7 @@ class TestHappyPath:
                 store=store,
                 source_connection_id=SOURCE,
                 metric_name="total_revenue",
-                filters=(
-                    RequestedFilter(column="order.status", op="eq", value="completed"),
-                ),
+                filters=(RequestedFilter(column="order.status", op="eq", value="completed"),),
             )
         assert plan.joins == ()
         assert len(plan.filter_predicates) == 1
@@ -318,9 +314,7 @@ class TestHappyPath:
         assert predicate.value == "completed"
         assert predicate.param_names == ("p_filter_0",)
 
-    def test_same_entity_in_group_by_and_filter_share_join(
-        self, tmp_path: Path
-    ) -> None:
+    def test_same_entity_in_group_by_and_filter_share_join(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "store.db") as store:
             _seed_basic(store)
             plan = resolve_metric_plan(
@@ -328,9 +322,7 @@ class TestHappyPath:
                 source_connection_id=SOURCE,
                 metric_name="total_revenue",
                 group_by=("customer.region",),
-                filters=(
-                    RequestedFilter(column="customer.tier", op="eq", value="gold"),
-                ),
+                filters=(RequestedFilter(column="customer.tier", op="eq", value="gold"),),
             )
         # ONE join — shared between group_by and filter.
         assert len(plan.joins) == 1
@@ -357,9 +349,7 @@ class TestHappyPath:
             )
         assert plan.time_bucket == "day"
 
-    def test_time_grain_none_against_temporal_metric_ok(
-        self, tmp_path: Path
-    ) -> None:
+    def test_time_grain_none_against_temporal_metric_ok(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "store.db") as store:
             _seed_basic(store)
             plan = resolve_metric_plan(
@@ -375,9 +365,7 @@ class TestHappyPath:
 
 
 class TestUnreachable:
-    def test_existing_entity_no_canonical_join_unreachable(
-        self, tmp_path: Path
-    ) -> None:
+    def test_existing_entity_no_canonical_join_unreachable(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "store.db") as store:
             _seed_basic(store)
             # Add an entity (`product`) with NO canonical join from `order`.
@@ -526,9 +514,7 @@ class TestMalformedInputs:
                     store=store,
                     source_connection_id=SOURCE,
                     metric_name="total_revenue",
-                    filters=(
-                        RequestedFilter(column="order.status", op="is_null", value="x"),
-                    ),
+                    filters=(RequestedFilter(column="order.status", op="is_null", value="x"),),
                 )
 
     def test_list_op_with_scalar_rejected(self, tmp_path: Path) -> None:
@@ -539,9 +525,7 @@ class TestMalformedInputs:
                     store=store,
                     source_connection_id=SOURCE,
                     metric_name="total_revenue",
-                    filters=(
-                        RequestedFilter(column="order.status", op="in", value="x"),
-                    ),
+                    filters=(RequestedFilter(column="order.status", op="in", value="x"),),
                 )
 
     def test_list_op_empty_list_rejected(self, tmp_path: Path) -> None:
@@ -552,9 +536,7 @@ class TestMalformedInputs:
                     store=store,
                     source_connection_id=SOURCE,
                     metric_name="total_revenue",
-                    filters=(
-                        RequestedFilter(column="order.status", op="in", value=[]),
-                    ),
+                    filters=(RequestedFilter(column="order.status", op="in", value=[]),),
                 )
 
     def test_scalar_op_with_none_rejected(self, tmp_path: Path) -> None:
@@ -565,9 +547,7 @@ class TestMalformedInputs:
                     store=store,
                     source_connection_id=SOURCE,
                     metric_name="total_revenue",
-                    filters=(
-                        RequestedFilter(column="order.status", op="eq", value=None),
-                    ),
+                    filters=(RequestedFilter(column="order.status", op="eq", value=None),),
                 )
 
     def test_scalar_op_with_list_rejected(self, tmp_path: Path) -> None:
@@ -578,9 +558,7 @@ class TestMalformedInputs:
                     store=store,
                     source_connection_id=SOURCE,
                     metric_name="total_revenue",
-                    filters=(
-                        RequestedFilter(column="order.status", op="eq", value=[1, 2]),
-                    ),
+                    filters=(RequestedFilter(column="order.status", op="eq", value=[1, 2]),),
                 )
 
 
@@ -588,9 +566,7 @@ class TestMalformedInputs:
 
 
 class TestListOperatorParams:
-    def test_in_operator_generates_one_param_per_value(
-        self, tmp_path: Path
-    ) -> None:
+    def test_in_operator_generates_one_param_per_value(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "store.db") as store:
             _seed_basic(store)
             plan = resolve_metric_plan(
@@ -619,9 +595,7 @@ class TestListOperatorParams:
                 store=store,
                 source_connection_id=SOURCE,
                 metric_name="total_revenue",
-                filters=(
-                    RequestedFilter(column="order.status", op="is_null", value=None),
-                ),
+                filters=(RequestedFilter(column="order.status", op="is_null", value=None),),
             )
         predicate = plan.filter_predicates[0]
         assert predicate.param_names == ()

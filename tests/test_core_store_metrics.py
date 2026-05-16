@@ -170,9 +170,7 @@ class TestWriteReadRoundTrip:
         "origin",
         ["manual", "suggested", "dbt_import"],
     )
-    def test_all_three_origin_literals_round_trip(
-        self, tmp_path: Path, origin: str
-    ) -> None:
+    def test_all_three_origin_literals_round_trip(self, tmp_path: Path, origin: str) -> None:
         with SQLiteStore(tmp_path / "store.db") as store:
             _seed_order_entity(store)
             metric = _total_revenue_metric(origin=origin)
@@ -193,9 +191,7 @@ class TestWriteReadRoundTrip:
             ("day", "week", "month", "quarter", "year"),
         ],
     )
-    def test_time_grains_subsets_round_trip(
-        self, tmp_path: Path, grains: tuple[str, ...]
-    ) -> None:
+    def test_time_grains_subsets_round_trip(self, tmp_path: Path, grains: tuple[str, ...]) -> None:
         with SQLiteStore(tmp_path / "store.db") as store:
             _seed_order_entity(store)
             metric = _total_revenue_metric(time_grains=grains)
@@ -338,9 +334,7 @@ class TestDbtGuard:
                 source_connection_id=SOURCE_A,
             )
             store.write_metric(
-                _total_revenue_metric(
-                    origin="dbt_import", description="Updated by re-import."
-                ),
+                _total_revenue_metric(origin="dbt_import", description="Updated by re-import."),
                 source_connection_id=SOURCE_A,
             )
             got = store.get_metric("total_revenue", source_connection_id=SOURCE_A)

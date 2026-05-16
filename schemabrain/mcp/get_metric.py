@@ -96,8 +96,7 @@ def get_metric_impl(
     # `RequestedFilter`. The shape is one-to-one — the boundary
     # exists so the compiler doesn't depend on Pydantic.
     compiler_filters = tuple(
-        RequestedFilter(column=f.column, op=f.op, value=f.value)
-        for f in filters
+        RequestedFilter(column=f.column, op=f.op, value=f.value) for f in filters
     )
 
     plan = resolve_metric_plan(

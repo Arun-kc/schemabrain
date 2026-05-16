@@ -309,9 +309,7 @@ class TestImplHappyPath:
                 executor=executor,
                 source_connection_id=SOURCE,
                 name="total_revenue",
-                filters=(
-                    MetricFilterArg(column="order.status", op="eq", value="completed"),
-                ),
+                filters=(MetricFilterArg(column="order.status", op="eq", value="completed"),),
             )
         sql, params = executor.calls[0]
         assert "completed" not in sql
@@ -376,27 +374,21 @@ def _call(app: Any, args: dict[str, Any]) -> Any:
 
 
 class TestEnvelopeMapping:
-    def test_happy_path_envelope_status_success(
-        self, store_with_seed: SQLiteStore
-    ) -> None:
+    def test_happy_path_envelope_status_success(self, store_with_seed: SQLiteStore) -> None:
         executor = _StubExecutor(rows=[{"total_revenue": 12345}])
         app = _build(store_with_seed, executor)
         _content, structured = _call(app, {"name": "total_revenue"})
         assert structured["status"] == "success"
         assert structured["data"]["row_count"] == 1
 
-    def test_unknown_metric_maps_to_unknown_metric_kind(
-        self, store_with_seed: SQLiteStore
-    ) -> None:
+    def test_unknown_metric_maps_to_unknown_metric_kind(self, store_with_seed: SQLiteStore) -> None:
         executor = _StubExecutor()
         app = _build(store_with_seed, executor)
         _content, structured = _call(app, {"name": "ghost_metric"})
         assert structured["status"] == "error"
         assert structured["error"]["kind"] == "unknown_metric"
 
-    def test_malformed_column_maps_to_malformed_name(
-        self, store_with_seed: SQLiteStore
-    ) -> None:
+    def test_malformed_column_maps_to_malformed_name(self, store_with_seed: SQLiteStore) -> None:
         executor = _StubExecutor()
         app = _build(store_with_seed, executor)
         _content, structured = _call(
@@ -409,9 +401,7 @@ class TestEnvelopeMapping:
         assert structured["status"] == "error"
         assert structured["error"]["kind"] == "malformed_name"
 
-    def test_unknown_column_maps_to_unknown_name(
-        self, store_with_seed: SQLiteStore
-    ) -> None:
+    def test_unknown_column_maps_to_unknown_name(self, store_with_seed: SQLiteStore) -> None:
         executor = _StubExecutor()
         app = _build(store_with_seed, executor)
         _content, structured = _call(
@@ -429,9 +419,7 @@ class TestEnvelopeMapping:
     ) -> None:
         # Need an entity that exists but has no canonical join from
         # `order`.
-        store_with_seed.write_table(
-            _addresses_table(), source_connection_id=SOURCE
-        )
+        store_with_seed.write_table(_addresses_table(), source_connection_id=SOURCE)
         store_with_seed.write_entity(
             Entity(
                 name="address",
@@ -458,9 +446,7 @@ class TestEnvelopeMapping:
         assert recovery["suggested_args"]["entity_a"] == "order"
         assert recovery["suggested_args"]["entity_b"] == "address"
 
-    def test_ambiguous_join_maps_to_ambiguous_join(
-        self, store_with_ambiguous: SQLiteStore
-    ) -> None:
+    def test_ambiguous_join_maps_to_ambiguous_join(self, store_with_ambiguous: SQLiteStore) -> None:
         executor = _StubExecutor()
         app = _build(store_with_ambiguous, executor)
         _content, structured = _call(
@@ -513,9 +499,7 @@ class TestEnvelopeMapping:
         assert structured["status"] == "error"
         assert structured["error"]["kind"] == "invalid_time_grain"
 
-    def test_fan_out_join_maps_to_degraded(
-        self, store_with_fan_out: SQLiteStore
-    ) -> None:
+    def test_fan_out_join_maps_to_degraded(self, store_with_fan_out: SQLiteStore) -> None:
         # one_to_many join → SQL still executes but envelope status
         # surfaces `degraded` so the agent knows aggregation may
         # double-count.
@@ -531,9 +515,7 @@ class TestEnvelopeMapping:
         assert structured["status"] == "degraded"
         assert structured["data"]["fan_out_join_names"] == ["customer_orders"]
 
-    def test_no_executor_returns_internal_error(
-        self, store_with_seed: SQLiteStore
-    ) -> None:
+    def test_no_executor_returns_internal_error(self, store_with_seed: SQLiteStore) -> None:
         # Build without an executor — get_metric is registered but
         # every call surfaces as `internal_error` with a
         # server-config message. The operator misconfigured serve.
@@ -547,9 +529,7 @@ class TestEnvelopeMapping:
         assert structured["status"] == "error"
         assert structured["error"]["kind"] == "internal_error"
 
-    def test_executor_error_surfaces_internal_error(
-        self, store_with_seed: SQLiteStore
-    ) -> None:
+    def test_executor_error_surfaces_internal_error(self, store_with_seed: SQLiteStore) -> None:
         class _BrokenExecutor:
             def execute(self, sql_text: str, params: dict[str, Any]) -> list[dict[str, Any]]:
                 raise RuntimeError("DB connection refused")
@@ -561,9 +541,7 @@ class TestEnvelopeMapping:
 
 
 class TestFilterParameterisation:
-    def test_in_filter_value_binds_correctly(
-        self, store_with_seed: SQLiteStore
-    ) -> None:
+    def test_in_filter_value_binds_correctly(self, store_with_seed: SQLiteStore) -> None:
         executor = _StubExecutor(rows=[])
         app = _build(store_with_seed, executor)
         _call(

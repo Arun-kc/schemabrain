@@ -50,7 +50,8 @@ def _semantic_model(
         "resource_type": "semantic_model",
         "name": name,
         "node_relation": {"schema_name": "public", "alias": "orders"},
-        "measures": measures or [
+        "measures": measures
+        or [
             {"name": "revenue_measure", "agg": "sum", "expr": "total_amount"},
         ],
         "entities": entities
@@ -113,13 +114,9 @@ class TestSimpleMetricImport:
     def test_simple_sum_metric_imports(self, tmp_path: Path) -> None:
         manifest_path = _write_manifest(
             tmp_path,
-            _manifest_with(
-                metrics={"metric.demo.total_revenue": _metric_node()}
-            ),
+            _manifest_with(metrics={"metric.demo.total_revenue": _metric_node()}),
         )
-        metrics, skipped = parse_dbt_metrics(
-            manifest_path, imported_entity_names={"order"}
-        )
+        metrics, skipped = parse_dbt_metrics(manifest_path, imported_entity_names={"order"})
         assert len(metrics) == 1
         assert skipped == ()
         metric = metrics[0]
@@ -161,9 +158,7 @@ class TestSimpleMetricImport:
                 },
             ),
         )
-        metrics, _skipped = parse_dbt_metrics(
-            manifest_path, imported_entity_names={"order"}
-        )
+        metrics, _skipped = parse_dbt_metrics(manifest_path, imported_entity_names={"order"})
         assert metrics[0].measure.agg == sb_agg
 
     def test_description_carries_through(self, tmp_path: Path) -> None:
@@ -177,14 +172,10 @@ class TestSimpleMetricImport:
                 }
             ),
         )
-        metrics, _skipped = parse_dbt_metrics(
-            manifest_path, imported_entity_names={"order"}
-        )
+        metrics, _skipped = parse_dbt_metrics(manifest_path, imported_entity_names={"order"})
         assert metrics[0].description == "Sum of completed order totals."
 
-    def test_subday_primary_grain_falls_through_to_options(
-        self, tmp_path: Path
-    ) -> None:
+    def test_subday_primary_grain_falls_through_to_options(self, tmp_path: Path) -> None:
         # dbt accepts `hour`/`minute` but Schema Brain starts at `day`.
         # When `time_granularity` is sub-day, the importer ignores it
         # and falls back to `granularity_options` for valid grains.
@@ -208,14 +199,10 @@ class TestSimpleMetricImport:
                 },
             ),
         )
-        metrics, _skipped = parse_dbt_metrics(
-            manifest_path, imported_entity_names={"order"}
-        )
+        metrics, _skipped = parse_dbt_metrics(manifest_path, imported_entity_names={"order"})
         assert metrics[0].time_grains == ("day", "week")
 
-    def test_time_grains_canonical_sorted_from_dimension(
-        self, tmp_path: Path
-    ) -> None:
+    def test_time_grains_canonical_sorted_from_dimension(self, tmp_path: Path) -> None:
         # When the semantic_model declares multiple time grains
         # (granularity_options in dbt), the result is canonical-sorted.
         manifest_path = _write_manifest(
@@ -242,9 +229,7 @@ class TestSimpleMetricImport:
                 },
             ),
         )
-        metrics, _skipped = parse_dbt_metrics(
-            manifest_path, imported_entity_names={"order"}
-        )
+        metrics, _skipped = parse_dbt_metrics(manifest_path, imported_entity_names={"order"})
         assert metrics[0].time_grains == ("day", "week", "month")
 
 
@@ -254,16 +239,10 @@ class TestNonTemporalMetric:
             tmp_path,
             _manifest_with(
                 metrics={"metric.demo.m": _metric_node()},
-                semantic_models={
-                    "semantic_model.demo.orders": _semantic_model(
-                        dimensions=[]
-                    )
-                },
+                semantic_models={"semantic_model.demo.orders": _semantic_model(dimensions=[])},
             ),
         )
-        metrics, _skipped = parse_dbt_metrics(
-            manifest_path, imported_entity_names={"order"}
-        )
+        metrics, _skipped = parse_dbt_metrics(manifest_path, imported_entity_names={"order"})
         assert len(metrics) == 1
         assert metrics[0].time_dimension is None
         assert metrics[0].time_grains == ()
@@ -273,25 +252,15 @@ class TestNonTemporalMetric:
 
 
 class TestSkipNonSimpleTypes:
-    @pytest.mark.parametrize(
-        "metric_type", ["ratio", "derived", "cumulative", "conversion"]
-    )
-    def test_non_simple_type_skipped_with_reason(
-        self, tmp_path: Path, metric_type: str
-    ) -> None:
+    @pytest.mark.parametrize("metric_type", ["ratio", "derived", "cumulative", "conversion"])
+    def test_non_simple_type_skipped_with_reason(self, tmp_path: Path, metric_type: str) -> None:
         manifest_path = _write_manifest(
             tmp_path,
             _manifest_with(
-                metrics={
-                    "metric.demo.m": _metric_node(
-                        name="m", metric_type=metric_type
-                    )
-                }
+                metrics={"metric.demo.m": _metric_node(name="m", metric_type=metric_type)}
             ),
         )
-        metrics, skipped = parse_dbt_metrics(
-            manifest_path, imported_entity_names={"order"}
-        )
+        metrics, skipped = parse_dbt_metrics(manifest_path, imported_entity_names={"order"})
         assert metrics == ()
         assert len(skipped) == 1
         assert skipped[0].reason == "non_simple_type"
@@ -318,9 +287,7 @@ class TestSkipExpressions:
                 },
             ),
         )
-        metrics, skipped = parse_dbt_metrics(
-            manifest_path, imported_entity_names={"order"}
-        )
+        metrics, skipped = parse_dbt_metrics(manifest_path, imported_entity_names={"order"})
         assert metrics == ()
         assert len(skipped) == 1
         assert skipped[0].reason == "non_column_expr"
@@ -345,9 +312,7 @@ class TestSkipExpressions:
                 },
             ),
         )
-        metrics, skipped = parse_dbt_metrics(
-            manifest_path, imported_entity_names={"order"}
-        )
+        metrics, skipped = parse_dbt_metrics(manifest_path, imported_entity_names={"order"})
         assert metrics == ()
         assert len(skipped) == 1
         assert skipped[0].reason == "unsupported_agg"
@@ -359,43 +324,32 @@ class TestSkipEntityMapping:
             tmp_path,
             _manifest_with(
                 metrics={"metric.demo.m": _metric_node()},
-                semantic_models={
-                    "semantic_model.demo.orders": _semantic_model(
-                        entities=[]
-                    )
-                },
+                semantic_models={"semantic_model.demo.orders": _semantic_model(entities=[])},
             ),
         )
-        metrics, skipped = parse_dbt_metrics(
-            manifest_path, imported_entity_names={"order"}
-        )
+        metrics, skipped = parse_dbt_metrics(manifest_path, imported_entity_names={"order"})
         assert metrics == ()
         assert len(skipped) == 1
         assert skipped[0].reason == "no_primary_entity"
 
-    def test_anchor_entity_not_in_imported_set_skipped(
-        self, tmp_path: Path
-    ) -> None:
+    def test_anchor_entity_not_in_imported_set_skipped(self, tmp_path: Path) -> None:
         # The metric anchors on `order`, but the entity import didn't
         # include `order`. Refuse — anchoring a metric on an entity
         # the user hasn't confirmed would silently land with broken
         # FK at write time.
         manifest_path = _write_manifest(
             tmp_path,
-            _manifest_with(
-                metrics={"metric.demo.m": _metric_node()}
-            ),
+            _manifest_with(metrics={"metric.demo.m": _metric_node()}),
         )
         metrics, skipped = parse_dbt_metrics(
-            manifest_path, imported_entity_names=set()  # no entities
+            manifest_path,
+            imported_entity_names=set(),  # no entities
         )
         assert metrics == ()
         assert len(skipped) == 1
         assert skipped[0].reason == "anchor_entity_not_imported"
 
-    def test_primary_entity_without_name_yields_no_primary_entity(
-        self, tmp_path: Path
-    ) -> None:
+    def test_primary_entity_without_name_yields_no_primary_entity(self, tmp_path: Path) -> None:
         # A semantic_model with a primary entity entry that lacks a
         # `name` field is a malformed manifest. The importer must skip
         # with `no_primary_entity` rather than mis-attribute as
@@ -411,17 +365,13 @@ class TestSkipEntityMapping:
                 },
             ),
         )
-        metrics, skipped = parse_dbt_metrics(
-            manifest_path, imported_entity_names={"order"}
-        )
+        metrics, skipped = parse_dbt_metrics(manifest_path, imported_entity_names={"order"})
         assert metrics == ()
         assert len(skipped) == 1
         assert skipped[0].reason == "no_primary_entity"
         assert "malformed" in skipped[0].message
 
-    def test_non_dict_measure_ref_yields_measure_not_found(
-        self, tmp_path: Path
-    ) -> None:
+    def test_non_dict_measure_ref_yields_measure_not_found(self, tmp_path: Path) -> None:
         # A malformed `type_params.measure` (non-dict truthy value)
         # would otherwise crash the importer with AttributeError. The
         # importer must skip with `measure_not_found` instead.
@@ -441,30 +391,20 @@ class TestSkipEntityMapping:
                 }
             ),
         )
-        metrics, skipped = parse_dbt_metrics(
-            manifest_path, imported_entity_names={"order"}
-        )
+        metrics, skipped = parse_dbt_metrics(manifest_path, imported_entity_names={"order"})
         assert metrics == ()
         assert len(skipped) == 1
         assert skipped[0].reason == "measure_not_found"
         assert "mapping" in skipped[0].message
 
-    def test_measure_not_found_in_semantic_models_skipped(
-        self, tmp_path: Path
-    ) -> None:
+    def test_measure_not_found_in_semantic_models_skipped(self, tmp_path: Path) -> None:
         # Metric references a measure name that doesn't exist in any
         # semantic_model. Bad manifest — skip rather than crash.
         manifest_path = _write_manifest(
             tmp_path,
-            _manifest_with(
-                metrics={
-                    "metric.demo.m": _metric_node(measure_name="ghost_measure")
-                }
-            ),
+            _manifest_with(metrics={"metric.demo.m": _metric_node(measure_name="ghost_measure")}),
         )
-        metrics, skipped = parse_dbt_metrics(
-            manifest_path, imported_entity_names={"order"}
-        )
+        metrics, skipped = parse_dbt_metrics(manifest_path, imported_entity_names={"order"})
         assert metrics == ()
         assert len(skipped) == 1
         assert skipped[0].reason == "measure_not_found"
@@ -473,9 +413,7 @@ class TestSkipEntityMapping:
 class TestManifestErrors:
     def test_missing_file_raises(self, tmp_path: Path) -> None:
         with pytest.raises(DbtMetricImportError, match="not found"):
-            parse_dbt_metrics(
-                tmp_path / "absent.json", imported_entity_names=set()
-            )
+            parse_dbt_metrics(tmp_path / "absent.json", imported_entity_names=set())
 
     def test_malformed_json_raises(self, tmp_path: Path) -> None:
         target = tmp_path / "bad.json"
@@ -483,9 +421,7 @@ class TestManifestErrors:
         with pytest.raises(DbtMetricImportError, match="JSON"):
             parse_dbt_metrics(target, imported_entity_names=set())
 
-    def test_manifest_without_metrics_returns_empty(
-        self, tmp_path: Path
-    ) -> None:
+    def test_manifest_without_metrics_returns_empty(self, tmp_path: Path) -> None:
         # A manifest with no `metrics` key is valid — just means the
         # dbt project doesn't define metrics yet. Return empty, no
         # skip, no error.
@@ -501,15 +437,11 @@ class TestManifestErrors:
                 "sources": {},
             },
         )
-        metrics, skipped = parse_dbt_metrics(
-            manifest_path, imported_entity_names={"order"}
-        )
+        metrics, skipped = parse_dbt_metrics(manifest_path, imported_entity_names={"order"})
         assert metrics == ()
         assert skipped == ()
 
-    def test_manifest_with_old_schema_skips_metrics(
-        self, tmp_path: Path
-    ) -> None:
+    def test_manifest_with_old_schema_skips_metrics(self, tmp_path: Path) -> None:
         # Manifest schema versions before 1.6 (v9) didn't have
         # semantic_models in the format we parse. Skip with a
         # version-specific reason.
@@ -526,9 +458,7 @@ class TestManifestErrors:
             },
         )
         with pytest.raises(DbtMetricImportError, match="schema version"):
-            parse_dbt_metrics(
-                manifest_path, imported_entity_names={"order"}
-            )
+            parse_dbt_metrics(manifest_path, imported_entity_names={"order"})
 
 
 class TestDbtMetricSkip:

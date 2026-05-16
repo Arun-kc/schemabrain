@@ -1895,8 +1895,7 @@ class SQLiteStore:
         conn = self._require_conn()
         with conn:
             existing = conn.execute(
-                "SELECT origin FROM metrics "
-                "WHERE source_connection_id = ? AND name = ?",
+                "SELECT origin FROM metrics WHERE source_connection_id = ? AND name = ?",
                 (source_connection_id, metric.name),
             ).fetchone()
             if (
@@ -1965,9 +1964,7 @@ class SQLiteStore:
             return None
         return _row_to_metric(row)
 
-    def list_metrics(
-        self, *, source_connection_id: str | None = None
-    ) -> list[Metric]:
+    def list_metrics(self, *, source_connection_id: str | None = None) -> list[Metric]:
         """Return all metrics, ordered alphabetically by name.
 
         `source_connection_id=None` lists across sources; ordering is

@@ -35,9 +35,7 @@ from schemabrain.semantic.compiler import (
 )
 
 _URL = "postgresql+psycopg://u:p@h/db"
-_EXPECTED_METRIC_NAMES = frozenset(
-    {"total_revenue", "order_count", "customer_count"}
-)
+_EXPECTED_METRIC_NAMES = frozenset({"total_revenue", "order_count", "customer_count"})
 
 
 # ----- bundled-fixture structure --------------------------------------------
@@ -104,9 +102,7 @@ class TestBundledJoinCardinality:
             if yaml_file.suffix != ".yaml":
                 continue  # pragma: no cover — only YAMLs in fixture dir
             join = parse_canonical_join_yaml_file(yaml_file)
-            assert (
-                join.cardinality is not None
-            ), f"{yaml_file.name} is missing cardinality"
+            assert join.cardinality is not None, f"{yaml_file.name} is missing cardinality"
 
 
 # ----- CLI round-trip + compiler reach --------------------------------------
@@ -175,9 +171,7 @@ def _seed_order_entity_for_url(store_path: Path) -> str:
 
 
 class TestCliRoundTrip:
-    def test_apply_bundled_metrics_lands_all_three(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_apply_bundled_metrics_lands_all_three(self, tmp_path: Path, monkeypatch) -> None:
         store_path = tmp_path / "store.db"
         source_id = _seed_order_entity_for_url(store_path)
         monkeypatch.setenv("DBURL", _URL)
@@ -197,14 +191,10 @@ class TestCliRoundTrip:
         assert exit_code == 0
 
         with SQLiteStore(store_path) as store:
-            names = {
-                m.name for m in store.list_metrics(source_connection_id=source_id)
-            }
+            names = {m.name for m in store.list_metrics(source_connection_id=source_id)}
         assert names == _EXPECTED_METRIC_NAMES
 
-    def test_compiler_reaches_all_three_to_emit_sql(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_compiler_reaches_all_three_to_emit_sql(self, tmp_path: Path, monkeypatch) -> None:
         # After apply, the compiler can resolve + emit SQL for each
         # bundled metric. This pins the metric-fixture / compiler /
         # store integration in one go.
@@ -239,9 +229,7 @@ class TestCliRoundTrip:
                 # `p_limit` is always bound — exercises the params dict
                 assert "p_limit" in params
 
-    def test_metrics_list_after_apply(
-        self, tmp_path: Path, monkeypatch, capsys
-    ) -> None:
+    def test_metrics_list_after_apply(self, tmp_path: Path, monkeypatch, capsys) -> None:
         # The verification path after `metrics apply`. The list
         # output must include each metric's name + measure shape.
         store_path = tmp_path / "store.db"
@@ -262,9 +250,7 @@ class TestCliRoundTrip:
         )
         capsys.readouterr()  # drop the apply output
 
-        exit_code = main(
-            ["metrics", "list", "--store-path", str(store_path)]
-        )
+        exit_code = main(["metrics", "list", "--store-path", str(store_path)])
         assert exit_code == 0
         out = capsys.readouterr().out
         for name in _EXPECTED_METRIC_NAMES:
@@ -275,9 +261,7 @@ class TestCliRoundTrip:
 
 
 class TestAmbiguityRefusalE2E:
-    def test_billing_shipping_ambiguity_surfaces_via_get_metric(
-        self, tmp_path: Path
-    ) -> None:
+    def test_billing_shipping_ambiguity_surfaces_via_get_metric(self, tmp_path: Path) -> None:
         # The bundled fixture's billing/shipping joins create the
         # classic ambiguous-join case. Apply both joins + the
         # total_revenue metric, then ask the compiler to group by
@@ -338,11 +322,7 @@ class TestAmbiguityRefusalE2E:
                         description="",
                         source_entity="order",
                         target_entity="address",
-                        on=(
-                            JoinColumnPair(
-                                source_column=src_col, target_column="id"
-                            ),
-                        ),
+                        on=(JoinColumnPair(source_column=src_col, target_column="id"),),
                         cardinality="many_to_one",
                     ),
                     source_connection_id=source_id,

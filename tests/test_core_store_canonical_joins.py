@@ -584,9 +584,7 @@ class TestCardinalityRoundTrip:
         "cardinality",
         ["one_to_one", "one_to_many", "many_to_one", "many_to_many"],
     )
-    def test_explicit_cardinality_round_trips(
-        self, tmp_path: Path, cardinality: str
-    ) -> None:
+    def test_explicit_cardinality_round_trips(self, tmp_path: Path, cardinality: str) -> None:
         # All four cardinality literals survive write → read. The
         # metric compiler consumes this field to decide fan-out
         # warnings on the get_metric result envelope.
