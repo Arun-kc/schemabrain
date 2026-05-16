@@ -73,6 +73,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from urllib.parse import urlparse
 
+import sqlalchemy
 import yaml
 from sqlalchemy.exc import OperationalError
 
@@ -80,6 +81,7 @@ from schemabrain import __version__
 from schemabrain.connectors._url import safe_engine_url
 from schemabrain.connectors.base import DataSource
 from schemabrain.connectors.postgres import PostgresDataSource
+from schemabrain.core.metric import DbtOwnedMetricError
 from schemabrain.core.models import Table
 from schemabrain.core.store import DbtOwnedEntityError, SQLiteStore
 from schemabrain.enrichment.anthropic_client import (
@@ -121,6 +123,11 @@ from schemabrain.imports.dbt import (
     parse_dbt_manifest,
     plan_dbt_import,
 )
+from schemabrain.imports.dbt_metrics import (
+    DbtMetricImportError,
+    DbtMetricSkip,
+    parse_dbt_metrics,
+)
 from schemabrain.indexer import IndexReporter, NullReporter, dry_run_index, index
 from schemabrain.joins.suggest import (
     JoinCandidate,
@@ -133,7 +140,12 @@ from schemabrain.joins.yaml_grammar import (
     parse_canonical_join_yaml_file,
 )
 from schemabrain.logging_config import configure_logging
+from schemabrain.mcp.metric_executor import EngineMetricExecutor
 from schemabrain.mcp.server import run_stdio
+from schemabrain.metrics.yaml_grammar import (
+    MetricYamlError,
+    parse_metric_yaml_file,
+)
 from schemabrain.mining.pipeline import mine_queries
 from schemabrain.profiler.postgres import PostgresProfiler
 
@@ -285,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
                 store_path=args.store_path,
                 dry_run=args.dry_run,
                 report_path=args.report_path,
+                include_metrics=args.include_metrics,
             )
         # Symmetric with the entities branch — argparse subparser
         # `required=True` blocks the fall-through, but a structurally
@@ -316,6 +329,21 @@ def main(argv: list[str] | None = None) -> int:
                 url_env=args.url_env,
             )
         parser.error(f"unknown joins action: {args.joins_action}")  # pragma: no cover
+    if args.command == "metrics":
+        if args.metrics_action == "apply":
+            return _cmd_metrics_apply(
+                yaml_path=args.yaml_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+                store_path=args.store_path,
+            )
+        if args.metrics_action == "list":
+            return _cmd_metrics_list(
+                store_path=args.store_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+            )
+        parser.error(f"unknown metrics action: {args.metrics_action}")  # pragma: no cover
     # argparse `required=True` on subparsers prevents reaching here, but
     # leaving an explicit branch is cheaper than a guarded assertion.
     parser.error(f"unknown command: {args.command}")  # pragma: no cover
@@ -718,6 +746,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "plan (bucket counts + per-model details) to this path. Works "
         "with both dry-run and apply.",
     )
+    p_import_dbt.add_argument(
+        "--include-metrics",
+        dest="include_metrics",
+        action="store_true",
+        help="Also import dbt metrics (type=simple only) anchored on "
+        "the entities imported in this run. Skips ratio/derived/"
+        "cumulative metrics with structured reasons. Off by default "
+        "to preserve backwards-compatible behaviour from earlier "
+        "releases; on by default in a future release.",
+    )
 
     # `joins` — canonical-join-graph commands. Mirrors `entities` shape:
     # `suggest` (3 modes: dry-run / out-dir / apply, plus --report),
@@ -842,6 +880,72 @@ def _build_parser() -> argparse.ArgumentParser:
         "`index`). Without this flag, lists across every source.",
     )
     p_joins_list.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL.",
+    )
+
+    # ----- metrics -----
+    #
+    # Same shape as `entities apply` + `joins apply`. No `metrics
+    # suggest` at v1 — metrics are business decisions, so the
+    # LLM-suggest path defers to post-v1. Producers at v1 are hand-
+    # authored YAML (this `apply`) + dbt-metrics import (in
+    # `schemabrain import dbt --include-metrics`).
+    p_metrics = sub.add_parser(
+        "metrics",
+        help="Manage metric definitions (entity-anchored business measures).",
+    )
+    metrics_sub = p_metrics.add_subparsers(dest="metrics_action", required=True)
+
+    p_metrics_apply = metrics_sub.add_parser(
+        "apply",
+        help="Load a metric YAML file (or directory) into the local store.",
+    )
+    p_metrics_apply.add_argument(
+        "yaml_path",
+        help="Path to a metric YAML file, OR a directory of YAML files "
+        "(each file ending in `.yaml`/`.yml`). Multi-file apply lands "
+        "each file independently; an error in one file skips that file "
+        "and reports it in the summary.",
+    )
+    p_metrics_apply.add_argument(
+        "--source",
+        default=None,
+        help="The same source URL passed to `index`. DEPRECATED when "
+        "the URL contains a password; prefer --url-env.",
+    )
+    p_metrics_apply.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL.",
+    )
+    p_metrics_apply.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+
+    p_metrics_list = metrics_sub.add_parser(
+        "list",
+        help="List metrics in the local store. The verification path after `metrics apply`.",
+    )
+    p_metrics_list.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_metrics_list.add_argument(
+        "--source",
+        default=None,
+        help="Filter listing to one source (the same URL passed to "
+        "`index`). Without this flag, lists across every source.",
+    )
+    p_metrics_list.add_argument(
         "--url-env",
         dest="url_env",
         metavar="VARNAME",
@@ -1168,12 +1272,28 @@ def _cmd_serve(
     # Construct the same default embedder the indexer used so query and
     # stored vectors are dimension-compatible. fastembed loads the ONNX
     # model lazily on first call.
+    # Build a read-only SQLAlchemy engine for `get_metric` to execute
+    # compiled SQL against. Same posture as `PostgresProfiler` from
+    # PR #9: `default_transaction_read_only=on` is defense-in-depth on
+    # top of the read-only role we already enforce at index time.
+    try:
+        engine = sqlalchemy.create_engine(
+            safe_engine_url(source_url),
+            connect_args={"options": "-c default_transaction_read_only=on"},
+        )
+    except (sqlalchemy.exc.ArgumentError, ValueError) as exc:  # pragma: no cover — defensive
+        print(f"error: cannot construct read-only engine: {exc}", file=sys.stderr)
+        return 2
+
+    metric_executor = EngineMetricExecutor(engine)
+
     try:
         with SQLiteStore(store_path) as store:
             run_stdio(
                 store=store,
                 source_connection_id=source_id,
                 embedder=fastembed_default(),
+                metric_executor=metric_executor,
             )
     except OSError as e:
         # Unwritable directory, missing parent, etc. Surface as a
@@ -1181,6 +1301,8 @@ def _cmd_serve(
         # issues are the most common case here.
         _render_guided(store_path_unwritable(store_path, e))
         return 2
+    finally:
+        engine.dispose()
     return 0
 
 
@@ -1783,6 +1905,7 @@ def _cmd_import_dbt(
     store_path: str,
     dry_run: bool,
     report_path: str | None,
+    include_metrics: bool = False,
     _source_factory: Callable[[str], AbstractContextManager[DataSource]] | None = None,
 ) -> int:
     """Read a dbt manifest.json and import its models as entities.
@@ -1817,6 +1940,7 @@ def _cmd_import_dbt(
         return 1
 
     factory = _source_factory or (lambda url: PostgresDataSource(url))
+    metric_summary: tuple[int, tuple] | None = None
     try:
         with SQLiteStore(store_path) as store, factory(source_url) as source:
             plan = plan_dbt_import(manifest, source, store, source_connection_id=source_id)
@@ -1824,6 +1948,15 @@ def _cmd_import_dbt(
                 result = None
             else:
                 result = apply_dbt_import_plan(plan, store, source_connection_id=source_id)
+            if include_metrics:
+                metric_summary = _apply_dbt_metrics(
+                    manifest_path=Path(manifest_path),
+                    plan=plan,
+                    apply_result=result,
+                    store=store,
+                    source_connection_id=source_id,
+                    dry_run=dry_run,
+                )
     except OperationalError as exc:
         # Postgres connection failure (wrong host, bad password,
         # timeout) — same handler shape as `_cmd_index` / `_cmd_serve`
@@ -1837,6 +1970,8 @@ def _cmd_import_dbt(
 
     _render_import_dbt_summary(plan, result=result, dry_run=dry_run)
     _render_import_dbt_breadcrumbs(plan, result=result)
+    if metric_summary is not None:
+        _render_dbt_metric_summary(metric_summary, dry_run=dry_run)
     if report_path is not None:
         try:
             _write_import_dbt_report(plan, result=result, path=Path(report_path))
@@ -1856,7 +1991,114 @@ def _cmd_import_dbt(
     # know a planned entity is absent from the store.
     if result is not None and result.write_failures:
         return 1
+    # If --include-metrics was requested but the metric-import phase
+    # errored out at the parse layer (manifest schema-version, JSON
+    # decode), `metric_summary` is None. The error is already on
+    # stderr; surface it as exit 1 so CI doesn't see a green run.
+    # NB: in practice the entity parser rejects malformed manifests
+    # BEFORE the metric parser sees them — both rely on the same
+    # underlying JSON. This branch is reachable only when the entity
+    # parser is lenient about a shape the metric parser refuses
+    # (e.g., entity import succeeds on a v12-shaped JSON whose
+    # `dbt_schema_version` field is hand-tampered to be < v11).
+    if include_metrics and metric_summary is None:  # pragma: no cover — entity-parser-rejects-first invariant
+        return 1
     return 0
+
+
+def _apply_dbt_metrics(
+    *,
+    manifest_path: Path,
+    plan: DbtImportPlan,
+    apply_result: DbtImportResult | None,
+    store: SQLiteStore,
+    source_connection_id: str,
+    dry_run: bool,
+) -> tuple[int, tuple[DbtMetricSkip, ...]] | None:
+    """Run the dbt-metric import alongside the entity import.
+
+    Returns `(applied_count, skipped)` on success, `None` if metric
+    import was attempted but errored out at the parse layer (the
+    error is already printed to stderr).
+
+    The set of "imported entity names" is the union of the plan's
+    write buckets — any entity that exists in the store after this
+    run, whether newly added, updated, or ownership-transferred.
+    Skipped entities aren't included.
+    """
+    imported_entity_names: set[str] = set()
+    for imported in plan.to_add:
+        imported_entity_names.add(imported.entity.name)
+    for imported in plan.to_update:
+        imported_entity_names.add(imported.entity.name)
+    for imported, _prev_origin in plan.to_take_ownership:
+        imported_entity_names.add(imported.entity.name)
+
+    try:
+        metrics, skipped = parse_dbt_metrics(
+            manifest_path, imported_entity_names=imported_entity_names
+        )
+    except DbtMetricImportError as exc:
+        print(f"error: dbt metric import failed: {exc}", file=sys.stderr)
+        return None
+
+    if dry_run:
+        # Dry-run mode skips the actual `write_metric` calls; we still
+        # surface the count + skip reasons so the operator sees what
+        # would happen on a real apply.
+        return len(metrics), skipped
+
+    applied_count = 0
+    failures: list[tuple[str, str]] = []
+    for metric in metrics:
+        try:
+            store.write_metric(metric, source_connection_id=source_connection_id)
+            applied_count += 1
+        except DbtOwnedMetricError as exc:  # pragma: no cover — the importer writes origin=dbt_import, so dbt_import→dbt_import is the idempotent path and the guard can't fire from this code path
+            failures.append((metric.name, f"dbt-owned guard: {exc}"))
+        except sqlite3.IntegrityError as exc:  # pragma: no cover — entity-import-first invariant makes FK violation here a store-corruption / race-only path
+            # FK violation — should not happen because the entity
+            # import ran first and the `parse_dbt_metrics`
+            # `anchor_entity_not_imported` skip catches the gap.
+            failures.append(
+                (metric.name, f"anchor entity FK violation: {exc}")
+            )
+        except Exception as exc:  # pragma: no cover — defense-in-depth catch for unanticipated store / library failures
+            # Unexpected exception — surface type info so a real bug
+            # is distinguishable from FK/dbt-guard at triage time.
+            failures.append(
+                (metric.name, f"{type(exc).__name__}: {exc}")
+            )
+    for metric_name, message in failures:
+        print(
+            f"error: failed to write dbt metric {metric_name!r}: {message}",
+            file=sys.stderr,
+        )
+    return applied_count, skipped
+
+
+def _render_dbt_metric_summary(
+    summary: tuple[int, tuple[DbtMetricSkip, ...]],
+    *,
+    dry_run: bool,
+) -> None:
+    """Print the metric-import portion of the end-of-run breadcrumb.
+
+    Skips are bucketed by reason so the operator can see (at a glance)
+    why each metric was rejected.
+    """
+    applied, skipped = summary
+    verb = "would import" if dry_run else "imported"
+    print(f"dbt metrics: {verb} {applied}, skipped {len(skipped)}")
+    if skipped:
+        # Group by reason for the breadcrumb.
+        by_reason: dict[str, list[str]] = {}
+        for skip in skipped:
+            by_reason.setdefault(skip.reason, []).append(skip.metric_name)
+        for reason, names in sorted(by_reason.items()):
+            preview = ", ".join(names[:5])
+            extra = f", +{len(names) - 5} more" if len(names) > 5 else ""
+            print(f"  skipped[{reason}]: {preview}{extra}")
 
 
 def _render_import_dbt_summary(
@@ -2270,6 +2512,181 @@ def _cmd_joins_list(
             f"{join.name}  "
             f"{join.source_entity} → {join.target_entity}  "
             f"[{on_summary}]  origin={join.origin}"
+        )
+    return 0
+
+
+# ----- metrics CLI commands --------------------------------------------------
+#
+# Mirrors `_cmd_entities_apply` / `_cmd_joins_apply`. Single-file + directory
+# modes for apply; the dbt-owned-metric guard surfaces as a user-facing
+# exit-1 message naming the metric.
+
+
+def _cmd_metrics_apply(
+    *,
+    yaml_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+) -> int:
+    """Load metric YAML files into the local store.
+
+    `yaml_path` may be a single file OR a directory. Directory mode
+    loads every `*.yaml`/`*.yml` in the immediate children, applies
+    each, and surfaces a summary. A parse/FK/dbt-guard error in one
+    file does NOT block the rest — failures aggregate into the
+    summary; exit code is 1 if any file failed.
+
+    Exit codes:
+      0: every file applied cleanly
+      1: at least one file failed (parse / FK violation / dbt-owned)
+      2: structural (URL missing, unwritable store)
+    """
+    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if source_url is None:
+        return 2
+    if _resolve_url(source_url) is None:  # pragma: no cover — defensive
+        return 2
+    source_id = _make_source_id(source_url)
+
+    path = Path(yaml_path)
+    if path.is_dir():
+        yaml_files = sorted(
+            p for p in path.iterdir() if p.is_file() and p.suffix.lower() in (".yaml", ".yml")
+        )
+        if not yaml_files:
+            print(
+                f"error: no `.yaml`/`.yml` files found in directory {yaml_path!r}",
+                file=sys.stderr,
+            )
+            return 1
+    elif path.is_file():
+        yaml_files = [path]
+    else:
+        print(
+            f"error: {yaml_path!r} is not a file or directory",
+            file=sys.stderr,
+        )
+        return 1
+
+    applied: list[str] = []
+    failures: list[tuple[str, str]] = []
+
+    try:
+        with SQLiteStore(store_path) as store:
+            for yaml_file in yaml_files:
+                try:
+                    metric = parse_metric_yaml_file(yaml_file)
+                except (
+                    FileNotFoundError,
+                    IsADirectoryError,
+                ) as exc:  # pragma: no cover — directory listing already filters non-files; race-only path
+                    failures.append((str(yaml_file), str(exc)))
+                    continue
+                except MetricYamlError as exc:
+                    failures.append((str(yaml_file), str(exc)))
+                    continue
+
+                # Force origin to "manual" for the apply path — even if
+                # the YAML carries origin: suggested. The hand-author
+                # who runs `metrics apply` is overriding any prior
+                # suggestion provenance with explicit confirmation.
+                # `origin: dbt_import` would have been refused at YAML
+                # parse-time (per `MetricYamlError`-reservation), so
+                # the only surviving origins here are manual/suggested.
+                manual_metric = dataclasses.replace(metric, origin="manual")
+                try:
+                    store.write_metric(manual_metric, source_connection_id=source_id)
+                    applied.append(manual_metric.name)
+                except DbtOwnedMetricError as exc:
+                    failures.append((str(yaml_file), str(exc)))
+                except sqlite3.IntegrityError:
+                    # FK violation — the anchor entity doesn't exist
+                    # for this source. CHECK violations are ruled out
+                    # by the YAML parser + dataclass invariants. The
+                    # message intentionally drops the raw SQLite text
+                    # ("FOREIGN KEY constraint failed") so the user
+                    # sees the actionable fix, not the database lingo.
+                    failures.append(
+                        (
+                            str(yaml_file),
+                            f"anchor entity {manual_metric.entity!r} is not "
+                            f"present in the store for this source. Run "
+                            f"`schemabrain entities apply` first.",
+                        )
+                    )
+    except OSError as e:  # pragma: no cover — store-path-unwritable variant covered via `metrics list` OSError test
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+
+    for name in applied:
+        print(f"applied metric: {name}")
+    for file_str, message in failures:
+        print(f"error in {file_str}: {message}", file=sys.stderr)
+
+    return 1 if failures else 0
+
+
+def _cmd_metrics_list(
+    *,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """List metrics in the store, pretty-printed.
+
+    With `--source` / `--url-env` filter to one source. Without
+    either, lists every metric across every source. The verification
+    path after `metrics apply`.
+
+    Exit codes:
+      0: success (empty list is success, not an error)
+      2: structural (unwritable store path or URL-source mismatch)
+    """
+    source_id: str | None = None
+    if positional_url is not None or url_env is not None:
+        source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+        if source_url is None:
+            return 2
+        if _resolve_url(source_url) is None:  # pragma: no cover — defensive
+            return 2  # pragma: no cover
+        source_id = _make_source_id(source_url)
+
+    try:
+        with SQLiteStore(store_path) as store:
+            metrics = store.list_metrics(source_connection_id=source_id)
+    except OSError as e:
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+    except ValueError as exc:
+        # `_row_to_metric` re-runs the dataclass invariants — a corrupt
+        # row (e.g., hand-edited `time_grains` out of canonical order,
+        # invalid grain string) surfaces as a plain `ValueError` from
+        # the constructor. Wrap with store-path context so the user
+        # sees "your store file is corrupt, here's how" instead of a
+        # bare traceback.
+        print(
+            f"error: failed to read metrics from {store_path!r}: "
+            f"store appears corrupt ({exc})",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not metrics:
+        print("(no metrics in the store)")
+        return 0
+
+    for metric in metrics:
+        grains = ",".join(metric.time_grains) if metric.time_grains else "(non-temporal)"
+        time_dim = metric.time_dimension or "—"
+        print(
+            f"{metric.name}  "
+            f"entity={metric.entity}  "
+            f"{metric.measure.agg}({metric.measure.column})  "
+            f"time_dim={time_dim}  "
+            f"grains={grains}  "
+            f"origin={metric.origin}"
         )
     return 0
 
