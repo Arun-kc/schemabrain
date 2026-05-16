@@ -1,9 +1,10 @@
 """FastMCP server wiring for Schema Brain.
 
 `build_server(store, source_connection_id, embedder)` returns a
-configured `FastMCP` instance with four tools registered:
-`find_relevant_tables`, `describe_table`, `describe_column`, and
-`suggest_joins`.
+configured `FastMCP` instance with seven tools registered:
+`find_relevant_tables`, `describe_table`, `describe_column`,
+`suggest_joins`, `get_example_queries`, `list_entities`, and
+`describe_entity`.
 
 This module is the *boundary* between Schema Brain's pure-function tool
 implementations (in `mcp/*.py`) and the MCP transport. Two boundary
@@ -34,6 +35,7 @@ from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
 from schemabrain.mcp._helpers import _MAX_IDENT_LEN
 from schemabrain.mcp.describe_column import describe_column_impl
+from schemabrain.mcp.describe_entity import describe_entity_impl
 from schemabrain.mcp.describe_table import describe_table_impl
 from schemabrain.mcp.envelope import (
     Provenance,
@@ -43,9 +45,13 @@ from schemabrain.mcp.envelope import (
 )
 from schemabrain.mcp.find_relevant_tables import find_relevant_tables_impl
 from schemabrain.mcp.get_example_queries import get_example_queries_impl
+from schemabrain.mcp.list_entities import list_entities_impl
 from schemabrain.mcp.shapes import (
     ColumnDetail,
     ColumnNotFoundError,
+    EntityDetail,
+    EntityNotFoundError,
+    EntitySummary,
     ExampleQueriesResult,
     SuggestJoinsResult,
     TableDescription,
@@ -59,13 +65,15 @@ _DEFAULT_MAX_HOPS = 6
 _SERVER_NAME = "schemabrain"
 _SERVER_INSTRUCTIONS = (
     "Schema Brain — semantic understanding of an indexed database. "
-    "Use `find_relevant_tables` to discover which tables are relevant to "
-    "a question, `describe_table` to get the full structural and semantic "
-    "shape of one table, `describe_column` to drill into a single column "
-    "(including which other tables join in to it), and `suggest_joins` "
-    "to get ranked FK-graph join paths between two or more tables. Every "
-    "tool returns a `ToolResponse` envelope (status / data / error / "
-    "confidence / follow_up_hints) per the agent-UX charter v1.0."
+    "Physical-schema tools: `find_relevant_tables` to discover tables, "
+    "`describe_table` for one table's full shape, `describe_column` to "
+    "drill into a single column (with join graph), `suggest_joins` for "
+    "FK-graph paths between tables, `get_example_queries` for real SQL "
+    "patterns from query logs. Semantic-layer tools: `list_entities` to "
+    "survey defined entities, `describe_entity` for one entity's full "
+    "column shape with PII sensitivity. Every tool returns a "
+    "`ToolResponse` envelope (status / data / error / confidence / "
+    "follow_up_hints) per the agent-UX charter v1.1."
 )
 
 _logger = logging.getLogger(__name__)
@@ -449,6 +457,101 @@ def build_server(
             confidence="HIGH",
             provenance=Provenance(source="schema"),
             follow_up_hints=["describe_table"],
+        )
+
+    @app.tool(
+        description=(
+            "Use this when the user asks what semantic entities are "
+            "defined (e.g. 'what entities do we have?', 'show me the "
+            "entity list'). Returns every confirmed entity with its "
+            "bound table, identity column, and provenance. Use "
+            "`describe_entity` instead when you already know the "
+            "entity name and want its full column shape. Common "
+            "compositions: chain to `describe_entity` to drill in; "
+            "chain to `find_relevant_tables` to discover physical "
+            "tables that should become entities."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
+    def list_entities() -> ToolResponse[list[EntitySummary]]:
+        try:
+            summaries = list_entities_impl(
+                store=store,
+                source_connection_id=source_connection_id,
+            )
+        except Exception as exc:
+            return _wrap_internal_error(exc)
+        if not summaries:
+            # Charter Principle 1: an indexed store with no defined
+            # entities yet is `empty`, not `success` with `[]`. The
+            # follow-up hint points the agent at discovery so it has
+            # an actionable next step when the semantic layer is bare.
+            return ToolResponse[list[EntitySummary]](
+                status="empty",
+                data=[],
+                confidence=None,
+                follow_up_hints=["find_relevant_tables"],
+            )
+        return ToolResponse[list[EntitySummary]](
+            status="success",
+            data=summaries,
+            confidence="HIGH",
+            provenance=Provenance(source="schema"),
+            follow_up_hints=["describe_entity"],
+        )
+
+    @app.tool(
+        description=(
+            "Use this when the user names a specific entity (e.g. "
+            "'show me the customer entity', 'what's in the order "
+            "entity'). Returns the entity's bound table, identity "
+            "column, description, and full column list with PII "
+            "sensitivity. Use `list_entities` instead when you "
+            "don't yet know what entities exist. Common "
+            "compositions: chain to `describe_table` to see the "
+            "physical structure under the entity; chain to "
+            "`describe_column` for one column's join graph."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
+    def describe_entity(
+        name: Annotated[
+            str,
+            Field(
+                description=(
+                    "Entity name (a single identifier — no dots, no "
+                    "schema qualifier; e.g. `customer`, not "
+                    "`public.customer`). Call `list_entities` first if "
+                    "you don't know the entity names."
+                ),
+            ),
+        ],
+    ) -> ToolResponse[EntityDetail]:
+        try:
+            detail = describe_entity_impl(
+                store=store,
+                source_connection_id=source_connection_id,
+                name=name,
+            )
+        except ValueError as exc:
+            return _malformed_name_response(
+                exc,
+                suggested_tool="list_entities",
+            )
+        except EntityNotFoundError as exc:
+            return _unknown_name_response(
+                exc,
+                suggested_tool="list_entities",
+                suggested_args=None,
+            )
+        except Exception as exc:
+            return _wrap_internal_error(exc)
+        return ToolResponse[EntityDetail](
+            status="success",
+            data=detail,
+            confidence="HIGH",
+            provenance=Provenance(source="schema"),
+            follow_up_hints=["describe_table", "describe_column"],
         )
 
     return app

@@ -11,10 +11,11 @@ from typing import Literal, TypeVar
 from pydantic import BaseModel
 
 # Component role names referenced by `_validate_ident`. Pinned as a
-# Literal so a maintainer who adds a fourth call site (e.g. "index"
+# Literal so a maintainer who adds a fifth call site (e.g. "index"
 # or "partition") gets a type error rather than a runtime parse
-# error message with an unrecognised role.
-IdentRole = Literal["schema", "table", "column"]
+# error message with an unrecognised role. `"entity"` is used by
+# the `describe_entity` name argument.
+IdentRole = Literal["schema", "table", "column", "entity"]
 
 # Char-to-token ratio for the token estimator. ~4 is the standard rough
 # estimate for English text + JSON punctuation. Used uniformly across
