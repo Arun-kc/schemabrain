@@ -45,7 +45,9 @@ from schemabrain.mcp.envelope import (
 )
 from schemabrain.mcp.find_relevant_tables import find_relevant_tables_impl
 from schemabrain.mcp.get_example_queries import get_example_queries_impl
+from schemabrain.mcp.get_metric import get_metric_impl
 from schemabrain.mcp.list_entities import list_entities_impl
+from schemabrain.mcp.metric_executor import MetricExecutor
 from schemabrain.mcp.resolve_join import resolve_join_impl
 from schemabrain.mcp.shapes import (
     AmbiguousJoinError,
@@ -57,6 +59,8 @@ from schemabrain.mcp.shapes import (
     EntitySummary,
     ExampleQueriesResult,
     JoinNameMismatchError,
+    MetricFilterArg,
+    MetricResult,
     NoCanonicalJoinError,
     SuggestJoinsResult,
     TableDescription,
@@ -65,6 +69,16 @@ from schemabrain.mcp.shapes import (
     UnknownJoinNameError,
 )
 from schemabrain.mcp.suggest_joins import suggest_joins_impl
+from schemabrain.semantic.compiler import (
+    AmbiguousJoinError as CompilerAmbiguousJoinError,
+)
+from schemabrain.semantic.compiler import (
+    InvalidTimeGrainError,
+    MalformedColumnError,
+    UnknownColumnError,
+    UnknownMetricError,
+    UnreachableEntityError,
+)
 
 _DEFAULT_LIMIT = 10
 _DEFAULT_MAX_HOPS = 6
@@ -137,12 +151,21 @@ def build_server(
     store: Store,
     source_connection_id: str,
     embedder: Embedder,
+    metric_executor: MetricExecutor | None = None,
 ) -> FastMCP:
     """Build (but do not run) a configured `FastMCP` app.
 
     The store, source ID, and embedder are captured by closure on the
     registered tool callables. Returned app is ready to `.run("stdio")`
     or to be exercised in-process via `app.call_tool(...)`.
+
+    `metric_executor` is required when `get_metric` is exercised — it
+    carries the SQLAlchemy engine that runs compiled SQL against the
+    source database. Tests inject stubs; the `run_stdio` entrypoint
+    builds an `EngineMetricExecutor` keyed on the same URL passed to
+    `index`. Passing `None` registers `get_metric` but every call
+    raises `internal_error` with "executor not configured" — a
+    structural mistake on the operator side.
     """
     app = FastMCP(_SERVER_NAME, instructions=_SERVER_INSTRUCTIONS)
 
@@ -688,6 +711,190 @@ def build_server(
             follow_up_hints=["describe_entity"],
         )
 
+    @app.tool(
+        description=(
+            "Use this when you have a defined metric name and want its "
+            "value sliced/filtered against the live database — returns "
+            "rows plus the parameterised SQL the compiler emitted. Use "
+            "`list_entities` instead when you don't yet know what's "
+            "defined. Don't use when you want to run arbitrary SQL — "
+            "`get_metric` only computes pre-declared metrics. Common "
+            "compositions: chain `resolve_join` → `get_metric` to "
+            "confirm cross-entity group_by reachability first."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
+    def get_metric(
+        name: Annotated[
+            str,
+            Field(
+                description=(
+                    "The metric name to compute (e.g. `total_revenue`). "
+                    "Run `schemabrain metrics list` from the CLI or "
+                    "`list_entities` + `describe_entity` for the anchor "
+                    "entity to discover what's available."
+                ),
+            ),
+        ],
+        group_by: Annotated[
+            tuple[str, ...],
+            Field(
+                description=(
+                    "Tuple of `entity.column` references to slice by "
+                    "(e.g. `('product_category.name',)`). Each entity "
+                    "must be reachable from the metric's anchor via a "
+                    "canonical join. Empty tuple = no slicing."
+                ),
+            ),
+        ] = (),
+        filters: Annotated[
+            tuple[MetricFilterArg, ...],
+            Field(
+                description=(
+                    "Tuple of `(column, op, value)` predicates. Column is "
+                    "`entity.column` form. Ops: eq, ne, lt, lte, gt, gte, "
+                    "in, not_in, is_null, not_null. Values bind as "
+                    "parameters — never inlined into SQL."
+                ),
+            ),
+        ] = (),
+        time_grain: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "One of the metric's declared time_grains (day, week, "
+                    "month, quarter, year). Defaults null = no time "
+                    "bucketing."
+                ),
+            ),
+        ] = None,
+        limit: Annotated[
+            int,
+            Field(
+                ge=1,
+                le=10_000,
+                description=(
+                    "Max rows returned. Defaults 1000, hard cap 10000. "
+                    "The compiler always emits LIMIT regardless of "
+                    "group_by complexity."
+                ),
+            ),
+        ] = 1000,
+    ) -> ToolResponse[MetricResult]:
+        if metric_executor is None:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="internal_error",
+                    message=(
+                        "get_metric is registered but no metric_executor "
+                        "is configured on the server. This is a server-"
+                        "config error, not an agent-input error."
+                    ),
+                    recovery=Recovery(suggested_tool="list_entities"),
+                ),
+            )
+        try:
+            result = get_metric_impl(
+                store=store,
+                executor=metric_executor,
+                source_connection_id=source_connection_id,
+                name=name,
+                group_by=group_by,
+                filters=filters,
+                time_grain=time_grain,
+                limit=limit,
+            )
+        except UnknownMetricError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="unknown_metric",
+                    message=str(exc),
+                    recovery=Recovery(suggested_tool="list_entities"),
+                ),
+            )
+        except MalformedColumnError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="malformed_name",
+                    message=str(exc),
+                    recovery=Recovery(suggested_tool="describe_entity"),
+                ),
+            )
+        except UnknownColumnError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="unknown_name",
+                    message=str(exc),
+                    recovery=Recovery(suggested_tool="list_entities"),
+                ),
+            )
+        except UnreachableEntityError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="unreachable_entity",
+                    message=str(exc),
+                    recovery=Recovery(
+                        suggested_tool="resolve_join",
+                        suggested_args={
+                            "entity_a": exc.anchor_entity,
+                            "entity_b": exc.target_entity,
+                        },
+                    ),
+                ),
+            )
+        except CompilerAmbiguousJoinError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="ambiguous_join",
+                    message=str(exc),
+                    recovery=Recovery(
+                        suggested_tool="resolve_join",
+                        suggested_args={
+                            "entity_a": exc.anchor_entity,
+                            "entity_b": exc.target_entity,
+                            "name": exc.candidate_join_names[0],
+                        },
+                    ),
+                ),
+            )
+        except InvalidTimeGrainError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="invalid_time_grain",
+                    message=str(exc),
+                    recovery=Recovery(suggested_tool="get_metric"),
+                ),
+            )
+        except RuntimeError as exc:
+            return _wrap_internal_error(exc)
+        except Exception as exc:  # pragma: no cover — defensive
+            return _wrap_internal_error(exc)
+        # Fan-out joins surfaced via `degraded` status (the agent gets
+        # rows but knows aggregation may be inflated). No fan-out
+        # joins = standard `success`.
+        if result.fan_out_join_names:
+            return ToolResponse[MetricResult](
+                status="degraded",
+                data=result,
+                confidence="MEDIUM",
+                provenance=Provenance(source="schema"),
+                follow_up_hints=["describe_entity"],
+            )
+        return ToolResponse[MetricResult](
+            status="success",
+            data=result,
+            confidence="HIGH",
+            provenance=Provenance(source="schema"),
+            follow_up_hints=["describe_entity"],
+        )
+
     return app
 
 
@@ -782,11 +989,17 @@ def run_stdio(
     store: Store,
     source_connection_id: str,
     embedder: Embedder,
+    metric_executor: MetricExecutor | None = None,
 ) -> None:
     """Build the server and run it forever on stdio.
 
     Blocks until the client disconnects. Used by the `schemabrain serve`
     CLI subcommand.
+
+    `metric_executor` carries the read-only engine `get_metric` runs
+    compiled SQL through. Required for `get_metric` to actually execute;
+    without it the tool returns `internal_error`. CLI `_cmd_serve`
+    wires this from the same URL passed to `index`.
 
     Defensively configures stderr-only logging if no caller has done so
     already — stdout is the JSON-RPC wire here, and a stray log byte
@@ -802,5 +1015,10 @@ def run_stdio(
     already_configured = any(getattr(h, "name", None) == _HANDLER_NAME for h in pkg_logger.handlers)
     if not already_configured:
         configure_logging()
-    app = build_server(store=store, source_connection_id=source_connection_id, embedder=embedder)
+    app = build_server(
+        store=store,
+        source_connection_id=source_connection_id,
+        embedder=embedder,
+        metric_executor=metric_executor,
+    )
     app.run(transport="stdio")

@@ -189,17 +189,25 @@ def _render_join_info(
     """Build the `CanonicalJoinInfo` envelope including a paste-ready
     SQL JOIN skeleton.
 
-    The skeleton uses the entity name as the table alias when the
-    entity name is identifier-shaped (which the dataclass guarantees).
+    Identifiers (aliases + columns + table qualified names) are
+    double-quoted so entity names like `order`, `user`, `select` (valid
+    Schema Brain identifiers, reserved Postgres keywords) survive when
+    a user pastes the skeleton into a query.
+
     Composite-key joins render with `AND`-joined predicates.
     """
     source_alias = _safe_alias(source_entity.name)
     target_alias = _safe_alias(target_entity.name)
     predicates = " AND ".join(
-        f"{source_alias}.{pair.source_column} = {target_alias}.{pair.target_column}"
+        f'"{source_alias}"."{pair.source_column}" '
+        f'= "{target_alias}"."{pair.target_column}"'
         for pair in join.on
     )
-    sql_skeleton = f"JOIN {target_entity.qualified_table} AS {target_alias} ON {predicates}"
+    target_schema, target_table = target_entity.qualified_table.split(".", 1)
+    sql_skeleton = (
+        f'JOIN "{target_schema}"."{target_table}" AS "{target_alias}" '
+        f"ON {predicates}"
+    )
 
     partial = CanonicalJoinInfo(
         name=join.name,

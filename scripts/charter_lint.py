@@ -66,6 +66,7 @@ _SIBLING_TOOLS = frozenset(
         "list_entities",
         "describe_entity",
         "resolve_join",
+        "get_metric",
     }
 )
 
@@ -199,6 +200,12 @@ _HAPPY_PATH_ARGS: dict[str, dict[str, object]] = {
     # (entity `customer` doesn't exist in the lint store). The
     # response still round-trips through `ToolResponse`.
     "resolve_join": {"entity_a": "customer", "entity_b": "order"},
+    # No metric seeded → returns `unknown_metric` envelope. Still
+    # round-trips through `ToolResponse`. The lint server is built
+    # without a `metric_executor`, so a metric-found call would hit
+    # the `internal_error` "executor not configured" branch — but
+    # there's no metric seeded, so `unknown_metric` fires first.
+    "get_metric": {"name": "total_revenue"},
 }
 
 

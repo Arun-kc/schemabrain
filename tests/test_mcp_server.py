@@ -129,6 +129,7 @@ class TestToolRegistry:
             "list_entities",
             "describe_entity",
             "resolve_join",
+            "get_metric",
         }
 
     def test_descriptions_lead_with_use_this_when(self, server_with_one_table) -> None:
@@ -1177,5 +1178,7 @@ class TestResolveJoinNoCanonical:
         assert structured["status"] == "success"
         assert structured["data"]["name"] == "customer_orders"
         # sql_skeleton renders with the entity-aliased JOIN clause.
-        assert "JOIN public.users AS customer" in structured["data"]["sql_skeleton"]
-        assert "order.user_id = customer.id" in structured["data"]["sql_skeleton"]
+        # Identifiers are double-quoted so reserved-keyword aliases
+        # like `order` survive Postgres paste.
+        assert 'JOIN "public"."users" AS "customer"' in structured["data"]["sql_skeleton"]
+        assert '"order"."user_id" = "customer"."id"' in structured["data"]["sql_skeleton"]
