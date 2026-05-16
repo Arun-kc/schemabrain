@@ -32,6 +32,7 @@ from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
 from schemabrain.core.entity import Entity
 from schemabrain.core.example_query import ExampleQuery
+from schemabrain.core.join import CanonicalJoin
 from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
 from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.anthropic_client import (
@@ -467,6 +468,13 @@ class TestStoreProtocolSeamUsable:
             ) -> list[ExampleQuery]:
                 return []
 
+            def list_all_example_queries(
+                self,
+                *,
+                source_connection_id: str,
+            ) -> list[ExampleQuery]:
+                return []
+
             def get_spend_usd(self, *, source_connection_id: str) -> float:
                 return 0.0
 
@@ -480,6 +488,30 @@ class TestStoreProtocolSeamUsable:
                 return None
 
             def list_entities(self, *, source_connection_id: str | None = None) -> list[Entity]:
+                return []
+
+            def write_canonical_join(
+                self, join: CanonicalJoin, *, source_connection_id: str
+            ) -> None:
+                pass
+
+            def get_canonical_join(
+                self, name: str, *, source_connection_id: str
+            ) -> CanonicalJoin | None:
+                return None
+
+            def list_canonical_joins(
+                self, *, source_connection_id: str | None = None
+            ) -> list[CanonicalJoin]:
+                return []
+
+            def resolve_canonical_joins(
+                self,
+                entity_a: str,
+                entity_b: str,
+                *,
+                source_connection_id: str,
+            ) -> list[CanonicalJoin]:
                 return []
 
         store = _InMemoryStore()
