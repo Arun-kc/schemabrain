@@ -67,6 +67,8 @@ import os
 import sqlite3
 import sys
 import time
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -75,6 +77,7 @@ from sqlalchemy.exc import OperationalError
 
 from schemabrain import __version__
 from schemabrain.connectors._url import safe_engine_url
+from schemabrain.connectors.base import DataSource
 from schemabrain.connectors.postgres import PostgresDataSource
 from schemabrain.core.models import Table
 from schemabrain.core.store import DbtOwnedEntityError, SQLiteStore
@@ -109,6 +112,14 @@ from schemabrain.eval.bundled import resolve_bundled_path
 from schemabrain.eval.golden import DEFAULT_GOLDEN_PATH, load_golden
 from schemabrain.eval.retriever import EmbeddingRetriever, KeywordRetriever, Retriever
 from schemabrain.eval.runner import format_report, run_eval
+from schemabrain.imports.dbt import (
+    DbtImportPlan,
+    DbtImportResult,
+    DbtManifestParseError,
+    apply_dbt_import_plan,
+    parse_dbt_manifest,
+    plan_dbt_import,
+)
 from schemabrain.indexer import IndexReporter, NullReporter, dry_run_index, index
 from schemabrain.logging_config import configure_logging
 from schemabrain.mcp.server import run_stdio
@@ -254,6 +265,20 @@ def main(argv: list[str] | None = None) -> int:
         # prevents reaching here; the branch is structurally
         # unreachable but symmetric with the outer command dispatch.
         parser.error(f"unknown entities action: {args.entity_action}")  # pragma: no cover
+    if args.command == "import":
+        if args.import_action == "dbt":
+            return _cmd_import_dbt(
+                manifest_path=args.manifest_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+                store_path=args.store_path,
+                dry_run=args.dry_run,
+                report_path=args.report_path,
+            )
+        # Symmetric with the entities branch — argparse subparser
+        # `required=True` blocks the fall-through, but a structurally
+        # unreachable branch is cheaper than a guarded assertion.
+        parser.error(f"unknown import action: {args.import_action}")  # pragma: no cover
     # argparse `required=True` on subparsers prevents reaching here, but
     # leaving an explicit branch is cheaper than a guarded assertion.
     parser.error(f"unknown command: {args.command}")  # pragma: no cover
@@ -600,6 +625,61 @@ def _build_parser() -> argparse.ArgumentParser:
         f"${_DEFAULT_SUGGEST_MAX_COST_USD:.2f}). Aborts cleanly when "
         f"reached. Reads SCHEMABRAIN_MAX_LLM_COST_USD if unset; CLI "
         f"flag wins on conflict.",
+    )
+
+    # `import` is a subgroup for external semantic-source ingestion.
+    # Today: dbt manifest.json import. Future: Cube YAML, OSI semantic
+    # models drop in alongside as new sub-actions.
+    p_import = sub.add_parser(
+        "import",
+        help="Import semantic definitions from an external source (dbt, etc.)",
+    )
+    import_sub = p_import.add_subparsers(dest="import_action", required=True)
+
+    p_import_dbt = import_sub.add_parser(
+        "dbt",
+        help="Import entities from a dbt manifest.json (read-only, no export).",
+    )
+    p_import_dbt.add_argument(
+        "manifest_path",
+        help="Path to your dbt project's compiled `target/manifest.json`. "
+        "Run `dbt compile` in your dbt project to produce it. Remote "
+        "(dbt Cloud) manifests aren't supported at v1; download "
+        "locally and pass the path.",
+    )
+    p_import_dbt.add_argument(
+        "--source",
+        default=None,
+        help="The same source URL passed to `index`. DEPRECATED when the "
+        "URL contains a password; prefer --url-env.",
+    )
+    p_import_dbt.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL. "
+        "Preferred over --source so credentials never appear in argv.",
+    )
+    p_import_dbt.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_import_dbt.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Compute the plan (added / updated / ownership-transferred / "
+        "skipped / orphans) and print the summary, but write nothing. "
+        "Best mode for CI previews.",
+    )
+    p_import_dbt.add_argument(
+        "--report",
+        dest="report_path",
+        default=None,
+        help="Optional path. If set, the run writes a JSON report of the "
+        "plan (bucket counts + per-model details) to this path. Works "
+        "with both dry-run and apply.",
     )
 
     return parser
@@ -1526,6 +1606,214 @@ def _entity_error(message: str) -> None:
     corruption, unwritable path) still use `_render_guided`.
     """
     print(f"error: {message}", file=sys.stderr)
+
+
+def _cmd_import_dbt(
+    *,
+    manifest_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+    dry_run: bool,
+    report_path: str | None,
+    _source_factory: Callable[[str], AbstractContextManager[DataSource]] | None = None,
+) -> int:
+    """Read a dbt manifest.json and import its models as entities.
+
+    Default mode writes through `Store.write_entity` with
+    `origin="dbt_import"`. `--dry-run` computes the plan but writes
+    nothing. `--report` writes a JSON summary for CI consumption.
+
+    Error surface mirrors the rest of the entity CLI:
+      - exit 1 on manifest parse error / missing file / unsupported
+        version
+      - exit 2 on URL-source mismatch / unwritable store path
+      - exit 0 on successful run (even if some models were skipped —
+        skips are part of normal flow, not user error)
+
+    `_source_factory` is a documented private test seam: a callable
+    taking a URL and returning a `DataSource`. Production callers
+    leave it `None` (uses `PostgresDataSource`); CLI tests inject a
+    fake to avoid a real Postgres dependency.
+    """
+    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if source_url is None:
+        return 2
+    if _resolve_url(source_url) is None:
+        return 2
+    source_id = _make_source_id(source_url)
+
+    try:
+        manifest = parse_dbt_manifest(Path(manifest_path))
+    except DbtManifestParseError as exc:
+        _entity_error(str(exc))
+        return 1
+
+    factory = _source_factory or (lambda url: PostgresDataSource(url))
+    try:
+        with SQLiteStore(store_path) as store, factory(source_url) as source:
+            plan = plan_dbt_import(manifest, source, store, source_connection_id=source_id)
+            if dry_run:
+                result = None
+            else:
+                result = apply_dbt_import_plan(plan, store, source_connection_id=source_id)
+    except OperationalError as exc:
+        # Postgres connection failure (wrong host, bad password,
+        # timeout) — same handler shape as `_cmd_index` / `_cmd_serve`
+        # / `_cmd_mine_queries` for symmetry across Postgres-touching
+        # commands.
+        _render_guided(postgres_operational_error(exc, url_hint=source_url))
+        return 2
+    except OSError as e:
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+
+    _render_import_dbt_summary(plan, result=result, dry_run=dry_run)
+    _render_import_dbt_breadcrumbs(plan, result=result)
+    if report_path is not None:
+        try:
+            _write_import_dbt_report(plan, result=result, path=Path(report_path))
+        except OSError as exc:
+            # The write phase has already committed to the store at
+            # this point. Surface the report failure on stderr but
+            # return exit 2 so CI can distinguish "report missing"
+            # from "import failed."
+            print(
+                f"error: could not write report to {report_path!r}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+    # Skipped models are part of normal flow (exit 0); WRITE failures
+    # are not — the planner classified the entity as writable but the
+    # store rejected it, so a CI consumer checking exit codes needs to
+    # know a planned entity is absent from the store.
+    if result is not None and result.write_failures:
+        return 1
+    return 0
+
+
+def _render_import_dbt_summary(
+    plan: DbtImportPlan, *, result: DbtImportResult | None, dry_run: bool
+) -> None:
+    """Print a stdout summary of the plan + result.
+
+    Keeps the surface plain text (rich panels are reserved for
+    structural errors per `_render_guided`). The summary names the
+    project + bucket counts; orphans + skips are rendered on stderr
+    by `_render_import_dbt_breadcrumbs`.
+    """
+    mode = "dry-run (no writes)" if dry_run else "applied"
+    write_failures = len(result.write_failures) if result is not None else 0
+    written = (
+        len(plan.to_add) + len(plan.to_update) + len(plan.to_take_ownership) - write_failures
+        if result is not None
+        else 0
+    )
+    lines = [
+        f"dbt import: {plan.dbt_project_name} ({mode})",
+        f"  added: {len(plan.to_add)}",
+        f"  updated: {len(plan.to_update)}",
+        f"  ownership-transferred: {len(plan.to_take_ownership)}",
+        f"  orphans: {len(plan.orphans)}",
+        f"  skipped: {len(plan.skipped)}",
+    ]
+    if result is not None:
+        lines.append(f"  written: {written}")
+        if write_failures:
+            lines.append(f"  write_failures: {write_failures}")
+    # Single dict-driven loop so a future field added to `DbtSkipCounts`
+    # only needs editing here, not in two parallel places.
+    skip_fields = {
+        "metrics": plan.skip_counts.metrics,
+        "snapshots": plan.skip_counts.snapshots,
+        "seeds": plan.skip_counts.seeds,
+        "analyses": plan.skip_counts.analyses,
+        "operations": plan.skip_counts.operations,
+        "exposures": plan.skip_counts.exposures,
+        "other": plan.skip_counts.other,
+    }
+    non_zero = [f"{name}={count}" for name, count in skip_fields.items() if count]
+    if non_zero:
+        lines.append(f"  non-model resources deferred: {', '.join(non_zero)}")
+    print("\n".join(lines))
+
+
+def _render_import_dbt_breadcrumbs(plan: DbtImportPlan, *, result: DbtImportResult | None) -> None:
+    """Print per-model orphan + skip + write-failure breadcrumbs to stderr.
+
+    Orphans, skipped models, and write failures are bucketed by the
+    driver. Each line names the item so the user can act on it
+    without re-running with `--dry-run`.
+    """
+    for name in plan.orphans:
+        print(
+            f"warning: entity {name!r} exists in the store with origin=dbt_import "
+            "but is no longer in the manifest; left untouched (no auto-delete at v1).",
+            file=sys.stderr,
+        )
+    for skip in plan.skipped:
+        print(
+            f"warning: skipped dbt model {skip.dbt_unique_id!r} "
+            f"(reason={skip.reason}): {skip.message}",
+            file=sys.stderr,
+        )
+    if result is not None:
+        for failure in result.write_failures:
+            print(
+                f"error: write failed for entity {failure.entity_name!r}: {failure.message}",
+                file=sys.stderr,
+            )
+
+
+def _write_import_dbt_report(
+    plan: DbtImportPlan, *, result: DbtImportResult | None, path: Path
+) -> None:
+    """Write a JSON report of the plan + apply result.
+
+    Shape is intentionally CI-friendly: counts at the top level,
+    per-model detail in nested arrays. Same field names as the
+    Python dataclasses so a CI consumer that already knows the
+    driver shapes can read it without translation.
+    """
+    report = {
+        "dbt_project_name": plan.dbt_project_name,
+        "counts": {
+            "to_add": len(plan.to_add),
+            "to_update": len(plan.to_update),
+            "to_take_ownership": len(plan.to_take_ownership),
+            "orphans": len(plan.orphans),
+            "skipped": len(plan.skipped),
+        },
+        "to_add": [e.entity.name for e in plan.to_add],
+        "to_update": [e.entity.name for e in plan.to_update],
+        "to_take_ownership": [
+            {"name": env.entity.name, "previous_origin": prior}
+            for env, prior in plan.to_take_ownership
+        ],
+        "orphans": list(plan.orphans),
+        "skipped": [
+            {
+                "dbt_unique_id": s.dbt_unique_id,
+                "reason": s.reason,
+                "message": s.message,
+            }
+            for s in plan.skipped
+        ],
+        "skip_counts": {
+            "metrics": plan.skip_counts.metrics,
+            "snapshots": plan.skip_counts.snapshots,
+            "seeds": plan.skip_counts.seeds,
+            "analyses": plan.skip_counts.analyses,
+            "operations": plan.skip_counts.operations,
+            "exposures": plan.skip_counts.exposures,
+            "other": plan.skip_counts.other,
+        },
+    }
+    if result is not None:
+        report["write_failures"] = [
+            {"entity_name": f.entity_name, "message": f.message} for f in result.write_failures
+        ]
+    path.write_text(json.dumps(report, indent=2))
 
 
 def _cmd_fixture_path(name: str) -> int:

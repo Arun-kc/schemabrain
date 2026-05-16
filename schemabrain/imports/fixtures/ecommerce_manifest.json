@@ -1,0 +1,124 @@
+{
+  "metadata": {
+    "dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v12.json",
+    "dbt_version": "1.8.0",
+    "project_name": "schemabrain_demo",
+    "adapter_type": "postgres"
+  },
+  "nodes": {
+    "model.schemabrain_demo.customer": {
+      "resource_type": "model",
+      "unique_id": "model.schemabrain_demo.customer",
+      "name": "customer",
+      "database": "schemabrain_demo",
+      "schema": "public",
+      "alias": "users",
+      "description": "A registered shopper. Imported from the schemabrain_demo dbt project's `customer` model, which aliases the raw `public.users` table.",
+      "columns": {
+        "id": {
+          "name": "id",
+          "data_type": "bigint",
+          "description": "Primary key — internal user identifier.",
+          "constraints": [{"type": "primary_key"}]
+        },
+        "email": {
+          "name": "email",
+          "data_type": "text",
+          "description": "Login + contact email. UNIQUE in the raw schema.",
+          "constraints": [{"type": "not_null"}, {"type": "unique"}]
+        }
+      },
+      "depends_on": {"nodes": ["source.schemabrain_demo.raw.users_export"]}
+    },
+    "model.schemabrain_demo.order": {
+      "resource_type": "model",
+      "unique_id": "model.schemabrain_demo.order",
+      "name": "order",
+      "database": "schemabrain_demo",
+      "schema": "public",
+      "alias": "orders",
+      "description": "A purchase placed by a customer. Imported from the dbt `order` model.",
+      "columns": {
+        "id": {
+          "name": "id",
+          "data_type": "bigint",
+          "description": "Primary key — internal order identifier.",
+          "constraints": [{"type": "primary_key"}]
+        },
+        "user_id": {
+          "name": "user_id",
+          "data_type": "bigint",
+          "description": "Customer who placed this order. Foreign key to `users.id`.",
+          "constraints": [{"type": "not_null"}]
+        },
+        "total_cents": {
+          "name": "total_cents",
+          "data_type": "integer",
+          "description": "Order total in minor currency units.",
+          "constraints": []
+        }
+      },
+      "depends_on": {"nodes": []}
+    },
+    "model.schemabrain_demo.product": {
+      "resource_type": "model",
+      "unique_id": "model.schemabrain_demo.product",
+      "name": "product",
+      "database": "schemabrain_demo",
+      "schema": "public",
+      "alias": "products",
+      "description": "A purchasable item. Imported from the dbt `product` model.",
+      "columns": {
+        "id": {
+          "name": "id",
+          "data_type": "bigint",
+          "description": "Primary key — internal product identifier.",
+          "constraints": [{"type": "primary_key"}]
+        },
+        "sku": {
+          "name": "sku",
+          "data_type": "text",
+          "description": "Stock-keeping unit. UNIQUE.",
+          "constraints": []
+        }
+      },
+      "depends_on": {"nodes": []}
+    },
+    "metric.schemabrain_demo.daily_revenue": {
+      "resource_type": "metric",
+      "unique_id": "metric.schemabrain_demo.daily_revenue",
+      "name": "daily_revenue",
+      "description": "Sum of orders.total_cents grouped by day. Metric import lands in a follow-up release."
+    },
+    "snapshot.schemabrain_demo.users_history": {
+      "resource_type": "snapshot",
+      "unique_id": "snapshot.schemabrain_demo.users_history",
+      "name": "users_history",
+      "description": "SCD-type-2 snapshot of users. Snapshot import is out of v1 scope."
+    },
+    "seed.schemabrain_demo.country_codes": {
+      "resource_type": "seed",
+      "unique_id": "seed.schemabrain_demo.country_codes",
+      "name": "country_codes",
+      "description": "Static reference data. Seeds are static, not entities."
+    },
+    "test.schemabrain_demo.unique_customer_id.abc": {
+      "resource_type": "test",
+      "unique_id": "test.schemabrain_demo.unique_customer_id.abc",
+      "name": "unique",
+      "test_metadata": {"name": "unique"},
+      "column_name": "id",
+      "attached_node": "model.schemabrain_demo.customer"
+    }
+  },
+  "sources": {
+    "source.schemabrain_demo.raw.users_export": {
+      "unique_id": "source.schemabrain_demo.raw.users_export",
+      "source_name": "raw",
+      "name": "users_export",
+      "database": "schemabrain_demo",
+      "schema": "raw",
+      "identifier": "users_export"
+    }
+  }
+}

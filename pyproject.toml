@@ -94,6 +94,7 @@ artifacts = [
     "schemabrain/eval/golden_sets/*.json",
     "schemabrain/eval/fixtures/*.sql",
     "schemabrain/eval/fixtures/entities/**/*.yaml",
+    "schemabrain/imports/fixtures/*.json",
 ]
 
 [tool.ruff]

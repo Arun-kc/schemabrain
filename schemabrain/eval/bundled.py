@@ -23,6 +23,11 @@ from __future__ import annotations
 from pathlib import Path
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent
+# Sibling package root for cross-module fixtures (currently only
+# `schemabrain/imports/fixtures/`). The resolver searches across both
+# `eval/` and `imports/` so the user-facing `fixture-path` CLI doesn't
+# leak the internal directory layout.
+_IMPORTS_FIXTURES_DIR: Path = _PACKAGE_ROOT.parent / "imports" / "fixtures"
 
 # Module-private — internal layout of the wheel is not a public API
 # contract. Callers outside the package go through `resolve_bundled_path`
@@ -33,10 +38,14 @@ _BUNDLED_FIXTURES_DIR: Path = _PACKAGE_ROOT / "fixtures"
 _BUNDLED_GOLDEN_DIR: Path = _PACKAGE_ROOT / "golden_sets"
 
 # Search order matters for collision-handling: if a future contributor
-# accidentally ships the same basename in both directories, the first
+# accidentally ships the same basename in two directories, the first
 # match wins. fixtures/ first because SQL seeds are the more common
 # README quickstart target.
-_BUNDLED_DIRS: tuple[Path, ...] = (_BUNDLED_FIXTURES_DIR, _BUNDLED_GOLDEN_DIR)
+_BUNDLED_DIRS: tuple[Path, ...] = (
+    _BUNDLED_FIXTURES_DIR,
+    _BUNDLED_GOLDEN_DIR,
+    _IMPORTS_FIXTURES_DIR,
+)
 
 
 def resolve_bundled_path(name: str) -> Path:
