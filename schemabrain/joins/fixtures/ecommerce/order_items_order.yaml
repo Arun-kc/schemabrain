@@ -1,0 +1,8 @@
+version: 1
+name: order_items_order
+description: Links each order item to the parent order.
+source_entity: order_item
+target_entity: order
+"on":
+  - source: order_id
+    target: id

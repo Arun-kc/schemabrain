@@ -1,0 +1,8 @@
+version: 1
+name: order_items_product
+description: Links each order item to the product purchased.
+source_entity: order_item
+target_entity: product
+"on":
+  - source: product_id
+    target: id

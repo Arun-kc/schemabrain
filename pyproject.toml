@@ -95,6 +95,7 @@ artifacts = [
     "schemabrain/eval/fixtures/*.sql",
     "schemabrain/eval/fixtures/entities/**/*.yaml",
     "schemabrain/imports/fixtures/*.json",
+    "schemabrain/joins/fixtures/**/*.yaml",
 ]
 
 [tool.ruff]

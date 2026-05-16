@@ -1,0 +1,11 @@
+# Other half of the multi-canonical-per-pair demonstration —
+# see also order_billing_address.yaml.
+
+version: 1
+name: order_shipping_address
+description: Links each order to the address it ships to.
+source_entity: order
+target_entity: address
+"on":
+  - source: shipping_address_id
+    target: id

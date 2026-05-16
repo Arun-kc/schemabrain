@@ -1,0 +1,11 @@
+version: 1
+name: product_category
+description: |
+  Links each (product, category) junction-table entry to its category.
+  Use together with `order_items_product` to find the categories of
+  products an order touched.
+source_entity: product_category
+target_entity: category
+"on":
+  - source: category_id
+    target: id

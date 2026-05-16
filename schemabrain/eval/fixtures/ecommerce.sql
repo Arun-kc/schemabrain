@@ -43,9 +43,22 @@ CREATE TABLE IF NOT EXISTS public.product_categories (
     PRIMARY KEY (product_id, category_id)
 );
 
+-- `addresses` exists to demonstrate the wk-13 multi-canonical-per-pair
+-- case in the bundled fixture: `orders` carries TWO FKs to addresses
+-- (billing + shipping), which produce two distinct canonical joins
+-- with the same `(order, address)` entity pair, disambiguated by name.
+CREATE TABLE IF NOT EXISTS public.addresses (
+    id BIGSERIAL PRIMARY KEY,
+    line1 TEXT NOT NULL,
+    city TEXT NOT NULL,
+    country TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS public.orders (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL REFERENCES public.users(id),
+    billing_address_id BIGINT REFERENCES public.addresses(id),
+    shipping_address_id BIGINT REFERENCES public.addresses(id),
     status TEXT NOT NULL DEFAULT 'pending',
     total_cents INTEGER NOT NULL,
     placed_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -75,4 +88,9 @@ ON CONFLICT DO NOTHING;
 INSERT INTO public.products (sku, name, description, price_cents) VALUES
     ('SKU-001', 'Running Shoes', 'Lightweight trail runners', 8999),
     ('SKU-002', 'Wireless Headphones', 'Over-ear bluetooth', 14999)
+ON CONFLICT DO NOTHING;
+
+INSERT INTO public.addresses (id, line1, city, country) VALUES
+    (1, '101 First Street', 'Brooklyn', 'US'),
+    (2, '42 Second Avenue', 'Brooklyn', 'US')
 ON CONFLICT DO NOTHING;
