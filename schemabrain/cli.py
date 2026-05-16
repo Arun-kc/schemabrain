@@ -49,15 +49,20 @@ that runs `schemabrain serve --url-env DATABASE_URL --store-path
 <PATH>` with `DATABASE_URL` set in the config's `env` block.
 
 `entities apply <yaml-path>` loads one entity YAML definition into
-the store — the file-loader side of the semantic-layer foundation.
-Non-interactive by design; the LLM-suggest review UX ships with
-`entities suggest` in a follow-up PR.
+the store — the deterministic file-to-store loader. `entities suggest`
+runs the LLM-suggest pipeline against an indexed schema with three
+output modes (`--dry-run`, `--out-dir DIR`, `--apply`), bounded by
+`--max-cost-usd` (or the `SCHEMABRAIN_MAX_LLM_COST_USD` env var). Both
+commands share the same `Entity` write path; suggested entities
+land with `origin="suggested"` and a dbt-owned-entity write guard
+refuses cross-origin overwrites.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import sqlite3
 import sys
@@ -65,18 +70,29 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+import yaml
 from sqlalchemy.exc import OperationalError
 
 from schemabrain import __version__
 from schemabrain.connectors._url import safe_engine_url
 from schemabrain.connectors.postgres import PostgresDataSource
+from schemabrain.core.models import Table
 from schemabrain.core.store import DbtOwnedEntityError, SQLiteStore
 from schemabrain.enrichment.anthropic_client import (
     anthropic_haiku_45_client,
     anthropic_sonnet_46_client,
 )
 from schemabrain.enrichment.embeddings import Embedder, fastembed_default
+from schemabrain.enrichment.llm import FakeLLMClient, LLMClient
 from schemabrain.enrichment.pipeline import CostCapExceeded, EnrichmentPipeline
+from schemabrain.entities.suggest import (
+    CostCeilingExceededError,
+    CostCeilingGuard,
+    EntityCandidate,
+    EntitySuggestionPipeline,
+    SuggestionParseError,
+    SuggestionResult,
+)
 from schemabrain.entities.yaml_grammar import (
     EntityParseError,
     parse_entity_yaml_file,
@@ -107,6 +123,24 @@ _DEFAULT_STORE_PATH = "./schemabrain.db"
 # entirely (intended for large schemas where the operator has already
 # previewed cost via `--dry-run`).
 _DEFAULT_MAX_COST_USD = 1.0
+# Default cost ceiling for `entities suggest`. Generous enough for
+# ~50-table schemas with Sonnet, conservative enough that a first-time
+# user can't accidentally rack up >$1 of spend. Override per-run via
+# `--max-cost-usd N` or the `SCHEMABRAIN_MAX_LLM_COST_USD` env var.
+_DEFAULT_SUGGEST_MAX_COST_USD = 1.0
+# Default candidate cap for `entities suggest`. The pipeline both
+# communicates this to the LLM (via the user prompt) and enforces it
+# post-parse, so a misbehaving LLM that over-produces still gets
+# capped before any output is written.
+_DEFAULT_SUGGEST_TOP_K = 10
+# Env var read by `entities suggest` when --max-cost-usd is omitted.
+# Mirrors how --url-env keeps sensitive values out of argv (cost
+# ceiling isn't secret, but env-var precedence is a familiar pattern
+# for users wiring schemabrain into a shared toolchain).
+_SUGGEST_COST_ENV_VAR = "SCHEMABRAIN_MAX_LLM_COST_USD"
+# Env var that holds the canned LLM response when `--provider stub` is
+# used. Same rationale as `--url-env`: keep multi-line YAML out of argv.
+_SUGGEST_STUB_RESPONSE_ENV_VAR = "SCHEMABRAIN_STUB_RESPONSE"
 # Sentinel returned by `_resolve_max_cost` when `--no-cost-cap` is
 # passed. Large enough to never trip the pipeline's pre-call cap check
 # under any realistic Anthropic spend, far below `math.inf` so it
@@ -203,6 +237,18 @@ def main(argv: list[str] | None = None) -> int:
                 positional_url=args.source,
                 url_env=args.url_env,
                 store_path=args.store_path,
+            )
+        if args.entity_action == "suggest":
+            return _cmd_entities_suggest(
+                positional_url=args.source,
+                url_env=args.url_env,
+                store_path=args.store_path,
+                dry_run=args.dry_run,
+                out_dir=args.out_dir,
+                apply=args.apply,
+                top_k=args.top_k,
+                provider=args.provider,
+                max_cost_usd=args.max_cost_usd,
             )
         # argparse `required=True` on the entity-action subparser
         # prevents reaching here; the branch is structurally
@@ -437,10 +483,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "ecommerce.sql)`.",
     )
 
-    # `entities` is a subgroup for semantic-layer management. This
-    # release ships `entities apply <yaml>`; a follow-up PR will add
-    # `entities suggest` (LLM-suggest pipeline) and possibly
-    # `entities list`.
+    # `entities` is a subgroup for semantic-layer management.
+    # Two actions today: `apply` (file -> store loader) and `suggest`
+    # (LLM-suggest pipeline with three output modes).
     p_entities = sub.add_parser(
         "entities",
         help="Manage semantic entity definitions",
@@ -478,6 +523,83 @@ def _build_parser() -> argparse.ArgumentParser:
         "--store-path",
         default=_DEFAULT_STORE_PATH,
         help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+
+    p_suggest = entity_sub.add_parser(
+        "suggest",
+        help="LLM-suggest entities for an indexed schema; preview, write to disk, or apply.",
+    )
+    p_suggest.add_argument(
+        "--source",
+        default=None,
+        help="The same source URL passed to `index`. DEPRECATED when "
+        "the URL contains a password; prefer --url-env.",
+    )
+    p_suggest.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL. "
+        "Preferred over --source so credentials never appear in argv.",
+    )
+    p_suggest.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    # The three output modes are mutually exclusive; argparse enforces.
+    mode_group = p_suggest.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print candidates (entity body + envelope) to stdout. No "
+        "files written, no store writes. Best mode for cost/quality "
+        "previews.",
+    )
+    mode_group.add_argument(
+        "--out-dir",
+        dest="out_dir",
+        default=None,
+        help="Directory to write one YAML file per candidate "
+        "(<entity_name>.yaml) plus a sidecar `_suggestion_metadata.json` "
+        "carrying confidence/rationale/pii_hints. The per-entity YAML "
+        "is `entities apply`-ready: edit, then apply per file.",
+    )
+    mode_group.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write candidates directly to the local store with "
+        "origin='suggested'. Skips the review step — use --out-dir if "
+        "you want a chance to edit before committing.",
+    )
+    p_suggest.add_argument(
+        "--top-k",
+        dest="top_k",
+        type=int,
+        default=_DEFAULT_SUGGEST_TOP_K,
+        help=f"Maximum number of candidates to keep (default: "
+        f"{_DEFAULT_SUGGEST_TOP_K}). The cap is both communicated to "
+        f"the LLM and enforced post-parse.",
+    )
+    p_suggest.add_argument(
+        "--provider",
+        choices=["anthropic", "stub"],
+        default="anthropic",
+        help="LLM provider. `anthropic` is the production default; "
+        "`stub` reads the canned response from "
+        "$SCHEMABRAIN_STUB_RESPONSE and is intended for CI smoke "
+        "tests, not for real schemas.",
+    )
+    p_suggest.add_argument(
+        "--max-cost-usd",
+        dest="max_cost_usd",
+        type=float,
+        default=None,
+        help=f"Hard cap on USD spend per run (default: "
+        f"${_DEFAULT_SUGGEST_MAX_COST_USD:.2f}). Aborts cleanly when "
+        f"reached. Reads SCHEMABRAIN_MAX_LLM_COST_USD if unset; CLI "
+        f"flag wins on conflict.",
     )
 
     return parser
@@ -930,9 +1052,9 @@ def _cmd_entities_apply(
 ) -> int:
     """Load one entity YAML file and write it to the local store.
 
-    Non-interactive by design — the LLM-suggest review UX ships with
-    a follow-up PR, this loader is a deterministic file-to-store
-    operation.
+    Non-interactive by design — this is the deterministic file-to-
+    store operation. `entities suggest --apply` is the LLM-suggest
+    write path; both share the same `Store.write_entity` call.
 
     Error surface:
       - exit 1 on parse error, missing file, FK violation
@@ -1005,6 +1127,390 @@ def _cmd_entities_apply(
 
     print(f"applied entity: {entity.name}")
     return 0
+
+
+def _cmd_entities_suggest(
+    *,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+    dry_run: bool,
+    out_dir: str | None,
+    apply: bool,
+    top_k: int,
+    provider: str,
+    max_cost_usd: float | None,
+) -> int:
+    """LLM-suggest entities for an indexed schema.
+
+    Orchestrates: resolve source -> read indexed tables from store ->
+    build LLM client (anthropic or stub) wrapped in CostCeilingGuard ->
+    run suggest pipeline -> render output per mode (dry-run / out-dir /
+    apply). All LLM cost flows through the guard so a runaway run is
+    bounded by `--max-cost-usd` (or `SCHEMABRAIN_MAX_LLM_COST_USD`).
+
+    Exit codes:
+      0: success
+      1: user-input class (empty schema, malformed LLM output, ceiling
+         breached, dbt-guard refusal)
+      2: structural (missing URL, missing API key, unwritable store)
+    """
+    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if source_url is None:
+        return 2
+    if _resolve_url(source_url) is None:
+        return 2
+    source_id = _make_source_id(source_url)
+
+    # Resolve the cost ceiling: CLI flag > env var > default.
+    if max_cost_usd is None:
+        env_value = os.environ.get(_SUGGEST_COST_ENV_VAR)
+        if env_value is not None:
+            try:
+                max_cost_usd = float(env_value)
+            except ValueError:
+                _render_guided(
+                    GuidedError(
+                        kind="suggest_cost_env_malformed",
+                        message=f"{_SUGGEST_COST_ENV_VAR}={env_value!r} is not a valid number",
+                        why="cost ceiling must be a positive float (USD)",
+                        fix=f"unset {_SUGGEST_COST_ENV_VAR} or set it to a number "
+                        f"(e.g. {_SUGGEST_COST_ENV_VAR}=0.50)",
+                        next_step="see `schemabrain entities suggest --help`",
+                    )
+                )
+                return 2
+        else:
+            max_cost_usd = _DEFAULT_SUGGEST_MAX_COST_USD
+
+    # Build the LLM client. Stub reads canned YAML from env (so the
+    # multi-line response stays out of argv). Anthropic reads
+    # ANTHROPIC_API_KEY — same env source as `index`.
+    llm_client: LLMClient
+    if provider == "stub":
+        canned = os.environ.get(_SUGGEST_STUB_RESPONSE_ENV_VAR)
+        if canned is None:
+            # `--provider stub` is meaningful only with a canned response.
+            # The empty-default would silently exit 0 with no candidates,
+            # which masks a misconfigured CI job that forgot to set the
+            # env var. Warn loudly to stderr and use the empty default
+            # only after the warning fires.
+            print(
+                f"warning: --provider stub with {_SUGGEST_STUB_RESPONSE_ENV_VAR} "
+                f"unset; defaulting to an empty candidate list. Set "
+                f"{_SUGGEST_STUB_RESPONSE_ENV_VAR} to provide a canned response.",
+                file=sys.stderr,
+            )
+            canned = "candidates: []"
+        llm_client = FakeLLMClient(text_provider=lambda _s, _u: canned)
+    else:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            _render_guided(
+                GuidedError(
+                    kind="anthropic_api_key_missing",
+                    message="ANTHROPIC_API_KEY is not set",
+                    why="entity suggestion uses Claude (Sonnet 4.6) to "
+                    "analyse your schema; the SDK needs a key",
+                    fix="export ANTHROPIC_API_KEY=sk-ant-... and re-run, OR "
+                    "use --provider stub for offline runs",
+                    next_step="get a key at https://console.anthropic.com/settings/keys",
+                )
+            )
+            return 2
+        llm_client = anthropic_sonnet_46_client(api_key=api_key)
+
+    guard = CostCeilingGuard(inner=llm_client, max_cost_usd=max_cost_usd)
+    pipeline = EntitySuggestionPipeline(llm=guard)
+
+    # Read the indexed schema into Table objects. Bail with a guided
+    # error rather than calling the LLM with an empty schema.
+    try:
+        tables = _load_tables_for_source(store_path=store_path, source_id=source_id)
+    except OSError as e:
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+    if not tables:
+        _render_guided(
+            GuidedError(
+                kind="suggest_empty_schema",
+                message="no tables in the local store for this source",
+                why="entity suggestion needs an indexed schema to analyse",
+                fix="run `schemabrain index --url-env DATABASE_URL` first, "
+                "then re-run `entities suggest`",
+                next_step=f"verify with `sqlite3 {store_path} 'select count(*) from tables'`",
+            )
+        )
+        return 1
+
+    try:
+        result = pipeline.propose_from_tables(tables, top_k=top_k)
+    except CostCeilingExceededError as exc:
+        _render_guided(
+            GuidedError(
+                kind="suggest_cost_ceiling_exceeded",
+                message=str(exc),
+                why="the suggested prompt would exceed --max-cost-usd",
+                fix="re-run with a higher --max-cost-usd (or set "
+                f"{_SUGGEST_COST_ENV_VAR} in your environment)",
+                next_step="use --provider stub for cost-free smoke testing",
+            )
+        )
+        return 1
+    except SuggestionParseError as exc:
+        _render_guided(
+            GuidedError(
+                kind="suggest_llm_output_malformed",
+                message=f"LLM returned unparseable YAML: {exc}",
+                why="the suggestion grammar requires strict YAML with a "
+                "top-level `candidates` list",
+                fix="re-run; transient LLM hiccups usually clear on retry. "
+                "Repeated failures suggest a prompt issue worth filing.",
+                next_step="if reproducible, please open an issue with the LLM response captured",
+            )
+        )
+        return 1
+
+    if dry_run:
+        _render_dry_run(result)
+        return 0
+    if out_dir is not None:
+        return _render_to_out_dir(result, Path(out_dir))
+    if not apply:  # pragma: no cover — argparse mutex group makes this unreachable
+        # `assert` would be stripped under `python -O`, silently
+        # returning None (which sys.exit treats as 0). Use an
+        # explicit raise so the invariant survives optimization.
+        raise RuntimeError(
+            "unreachable: argparse mutex group requires --dry-run, --out-dir, or --apply"
+        )
+    return _render_apply(result, store_path=store_path, source_id=source_id)
+
+
+def _load_tables_for_source(*, store_path: str, source_id: str) -> list[Table]:
+    """Read every indexed Table for `source_id` from the local store.
+
+    Wraps `Store.list_tables` + `get_table` so the caller gets the
+    full hydrated Table list in one shot. Returns an empty list if
+    the store has no rows for this source (the suggest CLI's
+    "did you index yet?" check fires on that).
+    """
+    with SQLiteStore(store_path) as store:
+        names = store.list_tables(source_connection_id=source_id)
+        tables: list[Table] = []
+        for schema, name in names:
+            table = store.get_table(schema, name, source_connection_id=source_id)
+            if table is not None:
+                tables.append(table)
+        return tables
+
+
+def _render_dry_run(result: SuggestionResult) -> None:
+    """Print suggestion candidates to stdout in human-readable form.
+
+    Each candidate is rendered as a YAML body (the apply-ready entity
+    grammar) with envelope fields (confidence, rationale, pii_hints)
+    as comment lines above. A trailing summary reports total cost and
+    the LLM model.
+    """
+    if not result.candidates:
+        print("no candidates suggested.")
+        return
+    for candidate in result.candidates:
+        print(_format_candidate_for_dry_run(candidate))
+        print()
+    print(
+        f"-- {len(result.candidates)} candidate(s) | "
+        f"model: {result.llm_model} | "
+        f"cost: ${result.total_cost_usd:.4f}"
+    )
+
+
+def _collapse_newlines(value: str) -> str:
+    """Collapse newlines to spaces for use inside a `# ...` comment line.
+
+    The dry-run renderer emits `# rationale: <value>` as a single
+    comment line. A newline in `value` would break the comment-prefix
+    invariant — the next line would lack `# ` and could be interpreted
+    as live YAML if the dry-run output is copy-pasted into a file.
+    """
+    return value.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+
+def _format_candidate_for_dry_run(candidate: EntityCandidate) -> str:
+    """Render one EntityCandidate as YAML body + envelope comments.
+
+    The body matches the canonical entity YAML grammar (so it could be
+    copy-pasted into a file and applied verbatim). Envelope fields
+    appear as `# <field>: <value>` comments above the body — visible
+    to humans, invisible to `parse_entity_yaml`.
+    """
+    rationale = _collapse_newlines(candidate.rationale or "(no rationale provided)")
+    lines: list[str] = [
+        f"# confidence: {candidate.confidence}",
+        f"# rationale: {rationale}",
+    ]
+    if candidate.pii_hints:
+        lines.append("# pii_hints:")
+        for col, sensitivity in sorted(candidate.pii_hints.items()):
+            lines.append(f"#   {col}: {sensitivity}")
+    lines.extend(_format_entity_yaml_body(candidate).splitlines())
+    return "\n".join(lines)
+
+
+def _format_entity_yaml_body(candidate: EntityCandidate) -> str:
+    """Render the canonical entity YAML body — apply-ready, no envelope.
+
+    Uses `yaml.safe_dump` for the description scalar so an LLM-supplied
+    value containing colons, newlines, or other YAML-special characters
+    is properly quoted/escaped. Manual string concatenation here would
+    open the door to YAML injection where a malicious or careless
+    description string fragments the document. The dumped value is
+    spliced back into a hand-rolled key-order layout so the file
+    matches the same field ordering that `entities apply` and the
+    bundled fixtures use.
+    """
+    entity = candidate.entity
+    body: dict[str, object] = {
+        "version": 1,
+        "name": entity.name,
+    }
+    if entity.description:
+        body["description"] = entity.description
+    body["binding"] = {"single_table": entity.qualified_table}
+    body["identity"] = entity.identity
+    body["origin"] = entity.origin
+    # `sort_keys=False` preserves the insertion order set above.
+    # `allow_unicode=True` keeps non-ASCII (e.g., entity descriptions
+    # in any language) human-readable instead of `\u` escaped.
+    return yaml.safe_dump(
+        body,
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=True,
+    ).rstrip()
+
+
+def _render_to_out_dir(result: SuggestionResult, out_dir: Path) -> int:
+    """Write one apply-ready YAML per candidate plus a metadata sidecar.
+
+    Per-entity YAML is the canonical entity grammar — clean of
+    envelope fields. The sidecar `_suggestion_metadata.json` carries
+    confidence/rationale/pii_hints keyed by entity name, so a human
+    reviewing the directory can see the LLM's reasoning without it
+    leaking into the persisted entity rows.
+
+    Refuses to overwrite existing files: a user who has hand-edited a
+    previous run's YAML in this directory should not lose that edit
+    silently. The conflict check fires before any write, so a partial
+    write isn't possible either.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # Pre-check for conflicts so we either write everything or write
+    # nothing — no partial overwrites of user-edited files.
+    conflicts: list[str] = []
+    for candidate in result.candidates:
+        if (out_dir / f"{candidate.entity.name}.yaml").exists():
+            conflicts.append(f"{candidate.entity.name}.yaml")
+    sidecar = out_dir / "_suggestion_metadata.json"
+    if sidecar.exists():
+        conflicts.append("_suggestion_metadata.json")
+    if conflicts:
+        _render_guided(
+            GuidedError(
+                kind="suggest_out_dir_conflict",
+                message=f"{out_dir} already contains: {', '.join(sorted(conflicts))}",
+                why="overwriting existing files would lose any hand-edits "
+                "made between suggest runs",
+                fix="pass --out-dir to a fresh directory, or delete the conflicting files first",
+                next_step="for review-then-apply workflows, copy the "
+                "edited files elsewhere before re-running suggest",
+            )
+        )
+        return 1
+
+    metadata: dict[str, dict[str, object]] = {}
+    for candidate in result.candidates:
+        yaml_path = out_dir / f"{candidate.entity.name}.yaml"
+        yaml_path.write_text(_format_entity_yaml_body(candidate) + "\n")
+        metadata[candidate.entity.name] = {
+            "confidence": candidate.confidence,
+            "rationale": candidate.rationale,
+            "pii_hints": dict(candidate.pii_hints),
+        }
+    sidecar.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+    print(
+        f"wrote {len(result.candidates)} candidate(s) to {out_dir} | "
+        f"model: {result.llm_model} | "
+        f"cost: ${result.total_cost_usd:.4f}"
+    )
+    return 0
+
+
+def _render_apply(
+    result: SuggestionResult,
+    *,
+    store_path: str,
+    source_id: str,
+) -> int:
+    """Write suggested candidates to the store with origin='suggested'.
+
+    `store.write_entity` commits per call (each is its own SQLite
+    transaction). If candidate N fails (dbt-guard refusal or FK
+    violation on the bound table), candidates 0..N-1 are already
+    durably committed. The error message names how many entities
+    landed before the failure so the user knows the state of the
+    store without having to query it manually.
+    """
+    written: list[str] = []
+    total = len(result.candidates)
+    try:
+        with SQLiteStore(store_path) as store:
+            for candidate in result.candidates:
+                try:
+                    store.write_entity(candidate.entity, source_connection_id=source_id)
+                except DbtOwnedEntityError as exc:
+                    _entity_error(_partial_write_message(written, total, str(exc)))
+                    return 1
+                except sqlite3.IntegrityError:
+                    _entity_error(
+                        _partial_write_message(
+                            written,
+                            total,
+                            f"entity {candidate.entity.name!r} binds to table "
+                            f"{candidate.entity.qualified_table!r} which isn't "
+                            f"indexed for this source. The LLM proposed a table "
+                            f"that doesn't appear in the store — re-run "
+                            f"`schemabrain index` first.",
+                        )
+                    )
+                    return 1
+                written.append(candidate.entity.name)
+    except OSError as e:
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+    print(
+        f"applied {len(result.candidates)} suggested entity/ies | "
+        f"model: {result.llm_model} | "
+        f"cost: ${result.total_cost_usd:.4f}"
+    )
+    return 0
+
+
+def _partial_write_message(written: list[str], total: int, error: str) -> str:
+    """Prefix an apply-mode error with the count of entities that landed.
+
+    `write_entity` commits per call, so a failure mid-loop leaves the
+    store in a partial-write state. The user needs to know which
+    entities landed and which didn't so they can re-run cleanly.
+    """
+    if not written:
+        return error
+    return (
+        f"{len(written)} of {total} entities were written before this "
+        f"failure ({', '.join(repr(n) for n in written)}). "
+        f"Re-running --apply is safe (UPSERT semantics) once the "
+        f"underlying issue is fixed. {error}"
+    )
 
 
 def _entity_error(message: str) -> None:
