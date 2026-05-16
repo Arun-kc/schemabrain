@@ -854,3 +854,328 @@ class TestInternalErrorCatchAll:
         assert structured["error"]["kind"] == "internal_error"
         assert "bfs exploded" not in structured["error"]["message"]
         assert "bfs exploded" in capfd.readouterr().err
+
+
+@pytest.fixture
+def server_with_canonical_joins(tmp_path: Path) -> Generator[FastMCP, None, None]:
+    """Server seeded with 2 entities + 2 canonical joins between the same
+    entity pair — the multi-canonical-per-pair shape that exercises the
+    full ambiguity-refusal envelope branches.
+    """
+    from schemabrain.core.entity import Entity, SingleTableBinding
+    from schemabrain.core.join import CanonicalJoin, JoinColumnPair
+
+    store = SQLiteStore(tmp_path / "store.db")
+    sid = "src1"
+
+    orders = Table(
+        name="orders",
+        schema_name="public",
+        columns=(
+            Column(
+                name="id",
+                table_name="orders",
+                schema_name="public",
+                data_type="BIGINT",
+                nullable=False,
+                ordinal_position=1,
+                is_primary_key=True,
+            ),
+        ),
+    )
+    addresses = Table(
+        name="addresses",
+        schema_name="public",
+        columns=(
+            Column(
+                name="id",
+                table_name="addresses",
+                schema_name="public",
+                data_type="BIGINT",
+                nullable=False,
+                ordinal_position=1,
+                is_primary_key=True,
+            ),
+        ),
+    )
+    store.write_table(orders, source_connection_id=sid)
+    store.write_table(addresses, source_connection_id=sid)
+    store.write_entity(
+        Entity(
+            name="order",
+            description="",
+            binding=SingleTableBinding(qualified_table="public.orders"),
+            identity="id",
+        ),
+        source_connection_id=sid,
+    )
+    store.write_entity(
+        Entity(
+            name="address",
+            description="",
+            binding=SingleTableBinding(qualified_table="public.addresses"),
+            identity="id",
+        ),
+        source_connection_id=sid,
+    )
+    # Two canonical joins between the same pair — triggers AmbiguousJoinError.
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="order_billing_address",
+            description="",
+            source_entity="order",
+            target_entity="address",
+            on=(JoinColumnPair(source_column="billing_address_id", target_column="id"),),
+        ),
+        source_connection_id=sid,
+    )
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="order_shipping_address",
+            description="",
+            source_entity="order",
+            target_entity="address",
+            on=(JoinColumnPair(source_column="shipping_address_id", target_column="id"),),
+        ),
+        source_connection_id=sid,
+    )
+    app = build_server(store=store, source_connection_id=sid, embedder=_StubEmbedder())
+    yield app
+    store.close()
+
+
+class TestResolveJoinEnvelope:
+    """Exercises the FastMCP wrapper around `resolve_join_impl` — each
+    exception class from the impl maps to a specific Charter v1.1 error
+    kind on the envelope with the right recovery hint shape."""
+
+    def test_ambiguous_join_envelope(self, server_with_canonical_joins) -> None:
+        _content, structured = asyncio.run(
+            server_with_canonical_joins.call_tool(
+                "resolve_join", {"entity_a": "order", "entity_b": "address"}
+            )
+        )
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "ambiguous_join"
+        # Recovery includes a `suggested_tool=resolve_join` hint with
+        # `suggested_args` carrying one of the candidate names.
+        recovery = structured["error"]["recovery"]
+        assert recovery["suggested_tool"] == "resolve_join"
+        assert recovery["suggested_args"]["name"] in {
+            "order_billing_address",
+            "order_shipping_address",
+        }
+        # Message lists both candidate names so the agent can choose.
+        msg = structured["error"]["message"]
+        assert "order_billing_address" in msg
+        assert "order_shipping_address" in msg
+
+    def test_unknown_join_name_envelope(self, server_with_canonical_joins) -> None:
+        # 2+ joins but `name=` doesn't match any.
+        _content, structured = asyncio.run(
+            server_with_canonical_joins.call_tool(
+                "resolve_join",
+                {"entity_a": "order", "entity_b": "address", "name": "no_such_join"},
+            )
+        )
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "unknown_join_name"
+        recovery = structured["error"]["recovery"]
+        assert recovery["suggested_tool"] == "resolve_join"
+        assert recovery["suggested_args"]["name"] in {
+            "order_billing_address",
+            "order_shipping_address",
+        }
+
+    def test_name_disambiguator_returns_named_join(self, server_with_canonical_joins) -> None:
+        _content, structured = asyncio.run(
+            server_with_canonical_joins.call_tool(
+                "resolve_join",
+                {
+                    "entity_a": "order",
+                    "entity_b": "address",
+                    "name": "order_billing_address",
+                },
+            )
+        )
+        assert structured["status"] == "success"
+        assert structured["data"]["name"] == "order_billing_address"
+        # follow_up_hints chains to describe_entity for drill-in.
+        assert "describe_entity" in (structured["follow_up_hints"] or [])
+
+    def test_entity_not_found_envelope(self, server_with_canonical_joins) -> None:
+        _content, structured = asyncio.run(
+            server_with_canonical_joins.call_tool(
+                "resolve_join", {"entity_a": "ghost", "entity_b": "address"}
+            )
+        )
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "unknown_name"
+        # Recovery points at list_entities for discovery.
+        assert structured["error"]["recovery"]["suggested_tool"] == "list_entities"
+
+    def test_malformed_entity_name_envelope(self, server_with_canonical_joins) -> None:
+        # `_validate_ident` rejects names with spaces. Maps to
+        # `malformed_name` per the existing pattern.
+        _content, structured = asyncio.run(
+            server_with_canonical_joins.call_tool(
+                "resolve_join", {"entity_a": "has space", "entity_b": "address"}
+            )
+        )
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "malformed_name"
+
+    def test_internal_error_envelope_redacts_message(
+        self, server_with_canonical_joins, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Force an unexpected exception in the impl to exercise the
+        # `_wrap_internal_error` catch-all branch. Envelope message
+        # stays generic — `_wrap_internal_error` itself is exhaustively
+        # tested in `TestInternalErrorCatchAll` for the other tools;
+        # this test pins the resolve_join wiring to that helper.
+        def _boom(**_: object) -> None:
+            raise RuntimeError("resolve exploded")
+
+        monkeypatch.setattr("schemabrain.mcp.server.resolve_join_impl", _boom)
+        _content, structured = asyncio.run(
+            server_with_canonical_joins.call_tool(
+                "resolve_join", {"entity_a": "order", "entity_b": "address"}
+            )
+        )
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "internal_error"
+        assert "resolve exploded" not in structured["error"]["message"]
+
+
+class TestResolveJoinNoCanonical:
+    """The no-canonical-join + join-name-mismatch envelope branches need
+    a server fixture where a single canonical join exists between the
+    pair (so the 1-join + name-mismatch path triggers) and where some
+    entity pair has zero joins (so the no-canonical path triggers)."""
+
+    @pytest.fixture
+    def server_with_single_join(self, tmp_path: Path) -> Generator[FastMCP, None, None]:
+        from schemabrain.core.entity import Entity, SingleTableBinding
+        from schemabrain.core.join import CanonicalJoin, JoinColumnPair
+
+        store = SQLiteStore(tmp_path / "store.db")
+        sid = "src1"
+        users = Table(
+            name="users",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="users",
+                    schema_name="public",
+                    data_type="BIGINT",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+            ),
+        )
+        orders = Table(
+            name="orders",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="orders",
+                    schema_name="public",
+                    data_type="BIGINT",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+            ),
+        )
+        addresses = Table(
+            name="addresses",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="addresses",
+                    schema_name="public",
+                    data_type="BIGINT",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+            ),
+        )
+        store.write_table(users, source_connection_id=sid)
+        store.write_table(orders, source_connection_id=sid)
+        store.write_table(addresses, source_connection_id=sid)
+        for name, qn in (
+            ("customer", "public.users"),
+            ("order", "public.orders"),
+            ("address", "public.addresses"),
+        ):
+            store.write_entity(
+                Entity(
+                    name=name,
+                    description="",
+                    binding=SingleTableBinding(qualified_table=qn),
+                    identity="id",
+                ),
+                source_connection_id=sid,
+            )
+        # ONE canonical join — only (order, customer).
+        store.write_canonical_join(
+            CanonicalJoin(
+                name="customer_orders",
+                description="",
+                source_entity="order",
+                target_entity="customer",
+                on=(JoinColumnPair(source_column="user_id", target_column="id"),),
+            ),
+            source_connection_id=sid,
+        )
+        app = build_server(store=store, source_connection_id=sid, embedder=_StubEmbedder())
+        yield app
+        store.close()
+
+    def test_no_canonical_join_envelope(self, server_with_single_join) -> None:
+        # (customer, address) has no canonical join.
+        _content, structured = asyncio.run(
+            server_with_single_join.call_tool(
+                "resolve_join", {"entity_a": "customer", "entity_b": "address"}
+            )
+        )
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "no_canonical_join"
+        # Recovery points at suggest_joins so the agent can surface candidates.
+        assert structured["error"]["recovery"]["suggested_tool"] == "suggest_joins"
+
+    def test_join_name_mismatch_envelope(self, server_with_single_join) -> None:
+        # Only one canonical join (customer_orders), but caller passes
+        # a different name → maps to `join_name_mismatch`.
+        _content, structured = asyncio.run(
+            server_with_single_join.call_tool(
+                "resolve_join",
+                {
+                    "entity_a": "order",
+                    "entity_b": "customer",
+                    "name": "wrong_name",
+                },
+            )
+        )
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "join_name_mismatch"
+        recovery = structured["error"]["recovery"]
+        assert recovery["suggested_tool"] == "resolve_join"
+        assert recovery["suggested_args"]["name"] == "customer_orders"
+
+    def test_single_join_no_name_returns_success(self, server_with_single_join) -> None:
+        _content, structured = asyncio.run(
+            server_with_single_join.call_tool(
+                "resolve_join", {"entity_a": "order", "entity_b": "customer"}
+            )
+        )
+        assert structured["status"] == "success"
+        assert structured["data"]["name"] == "customer_orders"
+        # sql_skeleton renders with the entity-aliased JOIN clause.
+        assert "JOIN public.users AS customer" in structured["data"]["sql_skeleton"]
+        assert "order.user_id = customer.id" in structured["data"]["sql_skeleton"]
