@@ -40,6 +40,14 @@ dependencies = [
     # bumps the parser semantics across majors, so widening the range
     # is a deliberate review.
     "sqlglot>=25.0,<27.0",
+    # PyYAML powers the entity YAML grammar parser
+    # (`schemabrain entities apply <yaml-path>` and the in-process
+    # loader behind it). It also arrives transitively via fastembed's
+    # dep chain, but pinning it as a direct runtime dep makes the
+    # contract durable: a future upstream drop can't silently break
+    # the entity loader. Same pin previously held in dev-deps for
+    # `tests/test_dependabot_config.py`; now lifted to runtime.
+    "pyyaml>=6.0,<7.0",
 ]
 
 [project.optional-dependencies]
@@ -48,12 +56,6 @@ dev = [
     "pytest-cov>=5.0,<8.0",
     "ruff>=0.6,<1.0",
     "testcontainers[postgres]>=4.0,<5.0",
-    # PyYAML is used by `tests/test_dependabot_config.py` to parse
-    # `.github/dependabot.yml`. It arrives transitively via fastembed's
-    # dep chain today, but pinning it as a direct dev dep makes the
-    # contract durable: a future upstream drop can't silently skip the
-    # structural pins on the Dependabot config.
-    "pyyaml>=6.0,<7.0",
     # `pip-audit` runs in the `security` CI job to fail any PR that
     # introduces a known-CVE dep. Pinning here (rather than uvx) lets
     # Dependabot manage upgrades and reproducibility lives in uv.lock.
@@ -91,6 +93,7 @@ packages = ["schemabrain"]
 artifacts = [
     "schemabrain/eval/golden_sets/*.json",
     "schemabrain/eval/fixtures/*.sql",
+    "schemabrain/eval/fixtures/entities/**/*.yaml",
 ]
 
 [tool.ruff]
