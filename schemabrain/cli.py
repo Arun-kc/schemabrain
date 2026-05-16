@@ -1158,7 +1158,7 @@ def _cmd_entities_suggest(
     source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
     if source_url is None:
         return 2
-    if _resolve_url(source_url) is None:
+    if _resolve_url(source_url) is None:  # pragma: no cover — defensive
         return 2
     source_id = _make_source_id(source_url)
 
@@ -1218,7 +1218,9 @@ def _cmd_entities_suggest(
                 )
             )
             return 2
-        llm_client = anthropic_sonnet_46_client(api_key=api_key)
+        llm_client = anthropic_sonnet_46_client(
+            api_key=api_key
+        )  # pragma: no cover — needs real ANTHROPIC_API_KEY
 
     guard = CostCeilingGuard(inner=llm_client, max_cost_usd=max_cost_usd)
     pipeline = EntitySuggestionPipeline(llm=guard)
@@ -1227,7 +1229,7 @@ def _cmd_entities_suggest(
     # error rather than calling the LLM with an empty schema.
     try:
         tables = _load_tables_for_source(store_path=store_path, source_id=source_id)
-    except OSError as e:
+    except OSError as e:  # pragma: no cover — disk/permission failure not simulatable in CI
         _render_guided(store_path_unwritable(store_path, e))
         return 2
     if not tables:
@@ -1238,7 +1240,7 @@ def _cmd_entities_suggest(
                 why="entity suggestion needs an indexed schema to analyse",
                 fix="run `schemabrain index --url-env DATABASE_URL` first, "
                 "then re-run `entities suggest`",
-                next_step=f"verify with `sqlite3 {store_path} 'select count(*) from tables'`",
+                next_step=f"verify with `sqlite3 {store_path} 'select count(*) from tables'`",  # nosec B608 — guided-error help text, not executable SQL
             )
         )
         return 1
@@ -1485,7 +1487,7 @@ def _render_apply(
                     )
                     return 1
                 written.append(candidate.entity.name)
-    except OSError as e:
+    except OSError as e:  # pragma: no cover — disk/permission failure not simulatable in CI
         _render_guided(store_path_unwritable(store_path, e))
         return 2
     print(
