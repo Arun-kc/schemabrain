@@ -9,3 +9,4 @@ target_entity: address
 "on":
   - source: shipping_address_id
     target: id
+cardinality: many_to_one

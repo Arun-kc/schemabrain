@@ -31,6 +31,10 @@ _IMPORTS_FIXTURES_DIR: Path = _PACKAGE_ROOT.parent / "imports" / "fixtures"
 # `joins/fixtures/ecommerce/*.yaml` — one directory deeper than the
 # other bundled fixtures so the per-vertical grouping is explicit.
 _JOINS_FIXTURES_DIR: Path = _PACKAGE_ROOT.parent / "joins" / "fixtures" / "ecommerce"
+# Bundled metric example pack. Mirrors the joins fixture layout — one
+# directory deeper than the other bundled fixtures so the per-vertical
+# grouping is explicit.
+_METRICS_FIXTURES_DIR: Path = _PACKAGE_ROOT.parent / "metrics" / "fixtures" / "ecommerce"
 
 # Module-private — internal layout of the wheel is not a public API
 # contract. Callers outside the package go through `resolve_bundled_path`
@@ -49,6 +53,7 @@ _BUNDLED_DIRS: tuple[Path, ...] = (
     _BUNDLED_GOLDEN_DIR,
     _IMPORTS_FIXTURES_DIR,
     _JOINS_FIXTURES_DIR,
+    _METRICS_FIXTURES_DIR,
 )
 
 
@@ -62,6 +67,16 @@ def bundled_joins_fixture_dir() -> Path:
     composition.
     """
     return _JOINS_FIXTURES_DIR
+
+
+def bundled_metrics_fixture_dir() -> Path:
+    """Return the absolute path to the bundled metric example pack.
+
+    The pack is a directory of YAML files (one metric per file)
+    consumable by `schemabrain metrics apply <dir>`. Same shape as
+    `bundled_joins_fixture_dir`.
+    """
+    return _METRICS_FIXTURES_DIR
 
 
 def resolve_bundled_path(name: str) -> Path:
@@ -132,6 +147,7 @@ def list_bundled_files() -> list[str]:
 
 __all__ = [
     "bundled_joins_fixture_dir",
+    "bundled_metrics_fixture_dir",
     "list_bundled_files",
     "resolve_bundled_path",
 ]

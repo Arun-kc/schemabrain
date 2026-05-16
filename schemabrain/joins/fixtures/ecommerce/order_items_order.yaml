@@ -6,3 +6,4 @@ target_entity: order
 "on":
   - source: order_id
     target: id
+cardinality: many_to_one
