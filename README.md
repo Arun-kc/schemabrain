@@ -248,6 +248,51 @@ physical-schema tools.
 
 ---
 
+## Import from dbt (alpha)
+
+If you already curate entities in **dbt**, point Schema Brain at your
+compiled `target/manifest.json` and dbt becomes the source of truth:
+
+```bash
+schemabrain import dbt path/to/target/manifest.json \
+    --url-env DATABASE_URL
+```
+
+Each dbt model with a single-column primary key (declared via the
+`constraints` syntax, a `unique` + `not_null` constraint pair, or
+`tests: [unique, not_null]` on a column) lands as a Schema Brain
+entity with `origin="dbt_import"`. Re-running the command is
+idempotent — already-imported entities update in place; entities
+that previously had `origin="manual"` or `"suggested"` flip to
+`"dbt_import"` (dbt takes ownership). Subsequent manual edits to
+dbt-owned rows are refused at the store boundary.
+
+Modes:
+
+| Flag | What it does |
+|---|---|
+| _(default)_ | Plan + apply. Writes entities through the store. |
+| `--dry-run` | Compute the plan; write nothing. Print the bucket counts. |
+| `--report report.json` | Emit a CI-friendly JSON report with per-model detail. |
+
+Models that fail to map (no resolvable identity, non-identifier
+name, or live-schema drift) are skipped — the run continues and
+names each skip on stderr. dbt resource types out of v1 scope
+(`metrics`, `snapshots`, `seeds`, `analyses`, `operations`,
+`exposures`) are counted in the run summary so deferred work is
+visible.
+
+A bundled fixture demonstrates the flow against the same ecommerce
+schema the rest of the README quickstart uses:
+
+```bash
+schemabrain import dbt $(schemabrain fixture-path ecommerce_manifest.json) \
+    --url-env DATABASE_URL \
+    --dry-run
+```
+
+---
+
 ## Roadmap
 
 **v0.5 — finish schema intelligence (shipped):**
