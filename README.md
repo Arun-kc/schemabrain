@@ -200,6 +200,54 @@ For the headless Anthropic-SDK path, see [`examples/anthropic_demo.py`](examples
 
 ---
 
+## Discover entities (alpha)
+
+After indexing, you can have Schema Brain propose **entities** —
+named, validator-backed bindings from a domain concept (`customer`,
+`order`) to one physical table. Entities are the substrate metrics
+and canonical joins compose on top of in upcoming releases.
+
+```bash
+schemabrain entities suggest --url-env DATABASE_URL --dry-run
+```
+
+Three output modes:
+
+| Mode | What it does | When to use |
+|---|---|---|
+| `--dry-run` | Print candidates with envelope (confidence, rationale, PII hints) to stdout | Preview cost and quality before committing |
+| `--out-dir ./suggestions` | Write one `<entity>.yaml` per candidate plus a metadata sidecar | Edit before applying — pipe individual files through `entities apply` |
+| `--apply` | Write candidates directly with `origin="suggested"` | Trust the LLM and commit |
+
+Spend is bounded by `--max-cost-usd` (default `$1.00`) or the
+`SCHEMABRAIN_MAX_LLM_COST_USD` environment variable; the run aborts
+cleanly before the ceiling is breached. Pair with `--top-k N` to cap
+the candidate count.
+
+Sample dry-run output:
+
+```
+# confidence: high
+# rationale: users has id PK, NOT NULL email, referenced by orders.user_id
+# pii_hints:
+#   email: pii
+version: 1
+name: customer
+description: A registered customer
+binding:
+  single_table: public.users
+identity: id
+origin: suggested
+
+-- 3 candidate(s) | model: claude-sonnet-4-6 | cost: $0.0271
+```
+
+Once entities are in the store, the MCP server exposes them via
+`list_entities` and `describe_entity` — agents see them alongside the
+physical-schema tools.
+
+---
+
 ## Roadmap
 
 **v0.5 — finish schema intelligence (shipped):**
