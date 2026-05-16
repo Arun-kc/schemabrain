@@ -31,8 +31,19 @@ import numpy as np
 
 from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
+from schemabrain.core.entity import (
+    DbtOwnedEntityError,
+    Entity,
+    SingleTableBinding,
+)
 from schemabrain.core.example_query import ExampleQuery
 from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
+
+# Re-export so existing `from schemabrain.core.store import
+# DbtOwnedEntityError` imports keep working. The exception now lives
+# in `core.entity` (a Protocol-contract concern, not a SQLite concern)
+# but the historical import path stays valid.
+__all__ = ["DbtOwnedEntityError", "SQLiteStore", "SchemaVersionMismatchError"]
 
 # Bump the schema version when the on-disk DDL set changes.
 # History:
@@ -63,8 +74,19 @@ from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Tabl
 #         `sensitivity`, and `pii_categories` while preserving
 #         `first_seen_at` so the original observation timestamp
 #         survives.
+#   "8" → added `entities` table for the semantic-layer
+#         foundation. PRIMARY KEY is `(source_connection_id, name)`
+#         so point lookups by source are a single B-tree seek. FK
+#         CASCADE on `tables` so `delete_table` sweeps every entity
+#         bound to the dropped table. SQL-layer CHECK constraint on
+#         `origin` mirrors the `Origin` Literal in
+#         `schemabrain.core.entity`. The dbt-owned write guard is
+#         enforced in `write_entity` (Python-side) rather than at the
+#         SQL layer because "manual cannot overwrite dbt_import" is
+#         a row-vs-row predicate SQLite triggers don't express
+#         cleanly.
 # Older stores raise SchemaVersionMismatchError; pre-alpha users re-create.
-_SCHEMA_VERSION = "7"
+_SCHEMA_VERSION = "8"
 _MEMORY_PATH = ":memory:"
 
 # 1 USD = 1_000_000 micros. Storing the ledger as INTEGER micros avoids
@@ -292,7 +314,56 @@ _DDL_STATEMENTS: tuple[str, ...] = (
             sql_text
         )
     """,
+    # Semantic-layer foundation. `name` is the entity's
+    # domain-level identifier (e.g. "customer"); `(source_connection_id,
+    # name)` is the PK so point lookups by source are a single B-tree
+    # seek. `binding_schema` + `binding_table` carry the entity's
+    # single_table binding split into the FK-shaped column pair —
+    # this lets the SQLite FK to `tables` enforce that an entity can
+    # only bind to an indexed physical table. The `origin` CHECK
+    # constraint mirrors `Origin` in `schemabrain.core.entity`; the
+    # dbt-owned write guard ("manual cannot overwrite dbt_import")
+    # is enforced in `write_entity` rather than via a trigger because
+    # it's a row-vs-row predicate.
+    """
+    CREATE TABLE IF NOT EXISTS entities (
+        source_connection_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        binding_schema TEXT NOT NULL,
+        binding_table TEXT NOT NULL,
+        identity TEXT NOT NULL,
+        origin TEXT NOT NULL
+            CHECK (origin IN ('manual', 'suggested', 'dbt_import')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (source_connection_id, name),
+        FOREIGN KEY (binding_schema, binding_table, source_connection_id)
+            REFERENCES tables (schema_name, name, source_connection_id)
+            ON DELETE CASCADE
+    )
+    """,
 )
+
+
+def _row_to_entity(row: sqlite3.Row) -> Entity:
+    """Reconstruct an `Entity` from an `entities` row.
+
+    The store splits the entity's qualified table across two columns
+    (`binding_schema`, `binding_table`) for FK integrity, then rejoins
+    them on read. The `Entity` constructor re-runs identifier and
+    origin-enum validation defensively — a corrupt row would otherwise
+    surface much later in MCP-tool callers.
+    """
+    return Entity(
+        name=row["name"],
+        description=row["description"],
+        binding=SingleTableBinding(
+            qualified_table=f"{row['binding_schema']}.{row['binding_table']}"
+        ),
+        identity=row["identity"],
+        origin=row["origin"],
+    )
 
 
 def _pack_vector(vector: tuple[float, ...]) -> bytes:
@@ -1277,6 +1348,115 @@ class SQLiteStore:
                 (source_connection_id,),
             ).fetchall()
         return [(row["schema_name"], row["name"]) for row in rows]
+
+    # ----- Entities ------------------------------------------------
+    #
+    # Semantic-layer foundation. The read side is the substrate for
+    # the `list_entities` / `describe_entity` MCP tools; the write
+    # side is the substrate for `schemabrain entities apply <yaml>`
+    # and a future dbt-import write-path.
+
+    def write_entity(self, entity: Entity, *, source_connection_id: str) -> None:
+        """Idempotent upsert of one Entity.
+
+        Refuses to overwrite a `dbt_import` row with a non-`dbt_import`
+        entity — raises `DbtOwnedEntityError`. The check is a SELECT
+        + branch inside the same connection that does the write; the
+        outer `with conn:` block makes the read + write atomic. Note
+        that `sqlite3` connection-context-manager commits on success
+        and rolls back on exception; the dbt-guard exception triggers
+        the rollback path, which is fine because no INSERT has run
+        yet.
+
+        Single-statement UPSERT — preserves `created_at` across
+        re-writes by letting `excluded.created_at` lose to the
+        existing row, while `updated_at` advances every write.
+        """
+        schema_name, table_name = entity.binding.qualified_table.split(".", 1)
+        conn = self._require_conn()
+        with conn:
+            existing = conn.execute(
+                "SELECT origin FROM entities WHERE source_connection_id = ? AND name = ?",
+                (source_connection_id, entity.name),
+            ).fetchone()
+            if (
+                existing is not None
+                and existing["origin"] == "dbt_import"
+                and entity.origin != "dbt_import"
+            ):
+                raise DbtOwnedEntityError(
+                    f"entity {entity.name!r} is owned by dbt import "
+                    f"(origin='dbt_import'); manual / suggested writes refused. "
+                    f"Edit the upstream dbt model and re-run "
+                    f"`schemabrain import dbt`."
+                )
+            now = int(time.time())
+            # NB: `created_at` is deliberately omitted from the UPDATE
+            # set so the original insertion timestamp survives every
+            # UPSERT. Only `updated_at` advances; the asymmetry is the
+            # whole reason both columns exist.
+            conn.execute(
+                "INSERT INTO entities ("
+                "source_connection_id, name, description, "
+                "binding_schema, binding_table, identity, origin, "
+                "created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (source_connection_id, name) DO UPDATE SET "
+                "description = excluded.description, "
+                "binding_schema = excluded.binding_schema, "
+                "binding_table = excluded.binding_table, "
+                "identity = excluded.identity, "
+                "origin = excluded.origin, "
+                "updated_at = excluded.updated_at",
+                (
+                    source_connection_id,
+                    entity.name,
+                    entity.description,
+                    schema_name,
+                    table_name,
+                    entity.identity,
+                    entity.origin,
+                    now,
+                    now,
+                ),
+            )
+
+    def get_entity(self, name: str, *, source_connection_id: str) -> Entity | None:
+        conn = self._require_conn()
+        row = conn.execute(
+            "SELECT name, description, binding_schema, binding_table, "
+            "identity, origin FROM entities "
+            "WHERE source_connection_id = ? AND name = ?",
+            (source_connection_id, name),
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_entity(row)
+
+    def list_entities(self, *, source_connection_id: str | None = None) -> list[Entity]:
+        """Return all entities, ordered alphabetically by name.
+
+        `source_connection_id=None` lists across sources; ordering is
+        `(name, source_connection_id)` so the result is deterministic
+        across both the filtered and unfiltered call shapes. The MCP
+        `list_entities` tool depends on the alpha order so the agent
+        sees a stable list across calls.
+        """
+        conn = self._require_conn()
+        if source_connection_id is None:
+            rows = conn.execute(
+                "SELECT name, description, binding_schema, binding_table, "
+                "identity, origin FROM entities "
+                "ORDER BY name, source_connection_id"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT name, description, binding_schema, binding_table, "
+                "identity, origin FROM entities "
+                "WHERE source_connection_id = ? ORDER BY name",
+                (source_connection_id,),
+            ).fetchall()
+        return [_row_to_entity(row) for row in rows]
 
     def close(self) -> None:
         if self._conn is not None:

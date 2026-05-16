@@ -126,6 +126,8 @@ class TestToolRegistry:
             "describe_column",
             "suggest_joins",
             "get_example_queries",
+            "list_entities",
+            "describe_entity",
         }
 
     def test_descriptions_lead_with_use_this_when(self, server_with_one_table) -> None:
@@ -149,6 +151,8 @@ class TestToolRegistry:
             "describe_column",
             "suggest_joins",
             "get_example_queries",
+            "list_entities",
+            "describe_entity",
         }
         for tool in asyncio.run(server_with_one_table.list_tools()):
             other_names = all_tool_names - {tool.name}
@@ -173,11 +177,14 @@ class TestToolRegistry:
         JSON schema FastMCP exposes to MCP clients tells the agent what
         the argument is for. Without per-arg descriptions, agents have
         to infer meaning from the parameter name alone.
+
+        Zero-arg tools (e.g. `list_entities`) are vacuously fine — the
+        per-arg description rule has nothing to enforce against an
+        empty argument list.
         """
         for tool in asyncio.run(server_with_one_table.list_tools()):
             schema = tool.inputSchema or {}
             properties = schema.get("properties", {})
-            assert properties, f"tool {tool.name!r} exposes no args at all"
             for arg_name, arg_schema in properties.items():
                 desc = arg_schema.get("description") or ""
                 assert desc.strip(), (

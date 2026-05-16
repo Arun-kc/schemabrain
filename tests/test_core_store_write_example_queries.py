@@ -60,32 +60,33 @@ def _eq(
     )
 
 
-class TestSchemaVersionBumpToV7:
-    """Pre-alpha contract: a store written by a v6 Schema Brain raises
+class TestSchemaVersionBumpToV8:
+    """Pre-alpha contract: a store written by a v7 Schema Brain raises
     `SchemaVersionMismatchError` on open. Per project convention only
     the current N-1 version-bump test is retained — the prior
-    `TestSchemaVersionBumpToV6` class (added at the v5→v6 bump) was
-    removed when this class was added.
+    `TestSchemaVersionBumpToV7` class (added at the v6→v7 bump) was
+    removed when this class was added at the v7→v8 bump (entities
+    table introduction).
     """
 
-    def test_fresh_store_has_schema_version_7(self, tmp_path: Path) -> None:
+    def test_fresh_store_has_schema_version_8(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "sb.db") as store:
             row = (
                 store._require_conn()
                 .execute("SELECT value FROM schemabrain_meta WHERE key = 'schema_version'")
                 .fetchone()
             )
-            assert row["value"] == "7"
+            assert row["value"] == "8"
 
-    def test_opening_a_v6_store_raises(self, tmp_path: Path) -> None:
+    def test_opening_a_v7_store_raises(self, tmp_path: Path) -> None:
         db_path = tmp_path / "sb.db"
         store = SQLiteStore(db_path)
         store._require_conn().execute(
-            "UPDATE schemabrain_meta SET value = '6' WHERE key = 'schema_version'"
+            "UPDATE schemabrain_meta SET value = '7' WHERE key = 'schema_version'"
         )
         store._require_conn().commit()
         store.close()
-        with pytest.raises(SchemaVersionMismatchError, match=r"6.*7|7.*6"):
+        with pytest.raises(SchemaVersionMismatchError, match=r"7.*8|8.*7"):
             SQLiteStore(db_path)
 
     def test_unique_index_exists(self, tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from schemabrain.core.entity import Origin
 from schemabrain.core.example_query import ExampleQuerySource
 from schemabrain.pii.categories import Sensitivity
 
@@ -24,6 +25,14 @@ class ColumnNotFoundError(LookupError):
     """Raised by `describe_column_impl` when the table exists but the
     requested column does not. Distinct from `TableNotFoundError` so
     callers can route the two cases differently.
+    """
+
+
+class EntityNotFoundError(LookupError):
+    """Raised by `describe_entity_impl` when the requested entity name
+    has no matching row in the store for the given
+    `source_connection_id`. Mirrors `TableNotFoundError` so callers
+    can catch either via `LookupError` when they don't care which.
     """
 
 
@@ -277,4 +286,78 @@ class ExampleQueriesResult(BaseModel):
 
     qualified_name: str
     queries: list[ExampleQueryItem]
+    token_estimate: int
+
+
+class EntitySummary(BaseModel):
+    """One entity in the `list_entities` response.
+
+    Lean by design: no `columns` or token estimate. An agent surveying
+    "what entities are defined?" wants a short list; it then calls
+    `describe_entity(name)` to drill into one. `qualified_table` is the
+    `schema.table` form already joined (matches the YAML grammar's
+    `binding.single_table` syntax).
+
+    `origin: Origin` is enforced by Pydantic at construction time —
+    a wrong value raises `ValidationError`, so callers building
+    summaries from raw dicts get the same closed-set guarantee that
+    `Entity.__post_init__` provides at the storage layer.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    description: str
+    qualified_table: str
+    identity: str
+    origin: Origin
+
+
+class EntityColumn(BaseModel):
+    """One column on an entity's bound table.
+
+    Mirrors the per-column shape from `describe_table` plus a
+    `pii_sensitivity` field that future PII-redaction work will
+    populate. Today every column ships with the default `"public"` —
+    the field is inert at this stage but the wire shape is locked
+    so the redaction layer can fill it without retrofitting the
+    envelope.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    data_type: str
+    nullable: bool
+    description: str = Field(
+        default="",
+        description="LLM-generated semantic description, or empty string "
+        "if the column was indexed without enrichment.",
+    )
+    pii_sensitivity: Sensitivity = Field(
+        default="public",
+        description="PII classification carried through to the agent. "
+        "Currently hardcoded to 'public' for every column; a future "
+        "release will populate from column-level classification.",
+    )
+
+
+class EntityDetail(BaseModel):
+    """Return shape for `describe_entity`.
+
+    Includes every column of the bound table — at this release the
+    YAML grammar doesn't yet let an entity allowlist a subset, so
+    `columns` is the full underlying table. The agent gets one-look
+    access to "what does this entity expose?" without a second
+    round-trip to `describe_table`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    description: str
+    qualified_table: str
+    identity: str
+    origin: Origin
+    columns: list[EntityColumn]
     token_estimate: int

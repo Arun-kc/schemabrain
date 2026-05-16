@@ -24,6 +24,7 @@ from typing import Protocol, runtime_checkable
 
 from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
+from schemabrain.core.entity import Entity
 from schemabrain.core.example_query import ExampleQuery
 from schemabrain.core.models import ForeignKey, IncomingForeignKey, Table
 
@@ -273,5 +274,53 @@ class Store(Protocol):
         that need to distinguish those states (the MCP tool layer
         does, so it can return `unknown_name` vs `empty` envelopes)
         must call `get_table` first to disambiguate.
+        """
+        ...
+
+    # ----- Entities ------------------------------------------------
+    #
+    # Semantic-layer foundation. Implementations MUST raise
+    # `DbtOwnedEntityError` from `write_entity` when a non-`dbt_import`
+    # entity is written over an existing `dbt_import` row — the
+    # contract that lets the dbt-import write-path own its entities
+    # without re-litigation at every manual edit.
+
+    def write_entity(self, entity: Entity, *, source_connection_id: str) -> None:
+        """Upsert one Entity into the store.
+
+        Implementations MUST:
+          - Reject overwriting an existing `origin="dbt_import"` row
+            with a non-`dbt_import` entity; raise `DbtOwnedEntityError`
+            (a `ValueError` subclass, defined in
+            `schemabrain.core.entity`).
+          - Allow `dbt_import → dbt_import` (idempotent re-import is
+            the intended `schemabrain import dbt` re-run path).
+          - Allow `dbt_import` to overwrite an existing `manual` or
+            `suggested` entity — the dbt import is the source of
+            truth and takes ownership.
+          - Allow `manual ↔ manual` and `suggested → manual` (user
+            confirmation of an LLM suggestion); other transitions
+            between non-`dbt_import` origins are unconstrained by
+            this Protocol and may be tightened in a follow-up PR
+            alongside the LLM-suggest pipeline.
+          - Preserve `created_at` semantics across rewrites of the
+            same `(source_connection_id, name)` — the first insert's
+            timestamp is durable.
+          - Enforce the bound-table foreign key — writes referencing
+            a table not yet in the store MUST fail.
+        """
+        ...
+
+    def get_entity(self, name: str, *, source_connection_id: str) -> Entity | None:
+        """Return the entity named `name`, or `None` if absent."""
+        ...
+
+    def list_entities(self, *, source_connection_id: str | None = None) -> list[Entity]:
+        """Return all entities, ordered deterministically by `name`.
+
+        `source_connection_id=None` lists across sources; with a
+        source filter, only that source's entities are returned. The
+        MCP `list_entities` tool depends on the alphabetical ordering
+        so the agent sees a stable list across repeat calls.
         """
         ...

@@ -30,6 +30,7 @@ import pytest
 
 from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
+from schemabrain.core.entity import Entity
 from schemabrain.core.example_query import ExampleQuery
 from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
 from schemabrain.core.store_protocol import Store
@@ -471,6 +472,15 @@ class TestStoreProtocolSeamUsable:
 
             def add_spend_usd(self, *, source_connection_id: str, amount_usd: float) -> float:
                 return amount_usd
+
+            def write_entity(self, entity: Entity, *, source_connection_id: str) -> None:
+                pass
+
+            def get_entity(self, name: str, *, source_connection_id: str) -> Entity | None:
+                return None
+
+            def list_entities(self, *, source_connection_id: str | None = None) -> list[Entity]:
+                return []
 
         store = _InMemoryStore()
         assert isinstance(store, Store), (

@@ -63,6 +63,8 @@ _SIBLING_TOOLS = frozenset(
         "describe_column",
         "suggest_joins",
         "get_example_queries",
+        "list_entities",
+        "describe_entity",
     }
 )
 
@@ -186,6 +188,12 @@ _HAPPY_PATH_ARGS: dict[str, dict[str, object]] = {
     # The lint store seeds `public.users` only — querying it yields
     # the `empty` envelope, which still round-trips through Pydantic.
     "get_example_queries": {"qualified_name": "public.users"},
+    # No entities seeded → `list_entities` returns the `empty`
+    # envelope; `describe_entity` on an unseeded name returns the
+    # `unknown_name` error envelope. Both still validate cleanly
+    # against `ToolResponse`.
+    "list_entities": {},
+    "describe_entity": {"name": "customer"},
 }
 
 

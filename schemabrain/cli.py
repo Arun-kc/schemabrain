@@ -40,12 +40,18 @@ synthetic fixture in `schemabrain/eval/fixtures/ecommerce.sql`) so the
 CLI works out of the box.
 
 `serve` runs the MCP server on stdio against a previously-indexed
-store. Five tools are exposed: `find_relevant_tables`,
-`describe_table`, `describe_column`, `suggest_joins`, and
-`get_example_queries`. Wire into Claude Desktop or any MCP client by
-adding an entry to `claude_desktop_config.json` that runs
-`schemabrain serve --url-env DATABASE_URL --store-path <PATH>` with
-`DATABASE_URL` set in the config's `env` block.
+store. Seven tools are exposed: the five physical-schema tools
+(`find_relevant_tables`, `describe_table`, `describe_column`,
+`suggest_joins`, `get_example_queries`) plus the v1 semantic-layer
+tools (`list_entities`, `describe_entity`). Wire into Claude Desktop
+or any MCP client by adding an entry to `claude_desktop_config.json`
+that runs `schemabrain serve --url-env DATABASE_URL --store-path
+<PATH>` with `DATABASE_URL` set in the config's `env` block.
+
+`entities apply <yaml-path>` loads one entity YAML definition into
+the store — the file-loader side of the semantic-layer foundation.
+Non-interactive by design; the LLM-suggest review UX ships with
+`entities suggest` in a follow-up PR.
 """
 
 from __future__ import annotations
@@ -53,8 +59,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import sqlite3
 import sys
 import time
+from pathlib import Path
 from urllib.parse import urlparse
 
 from sqlalchemy.exc import OperationalError
@@ -62,13 +70,17 @@ from sqlalchemy.exc import OperationalError
 from schemabrain import __version__
 from schemabrain.connectors._url import safe_engine_url
 from schemabrain.connectors.postgres import PostgresDataSource
-from schemabrain.core.store import SQLiteStore
+from schemabrain.core.store import DbtOwnedEntityError, SQLiteStore
 from schemabrain.enrichment.anthropic_client import (
     anthropic_haiku_45_client,
     anthropic_sonnet_46_client,
 )
 from schemabrain.enrichment.embeddings import Embedder, fastembed_default
 from schemabrain.enrichment.pipeline import CostCapExceeded, EnrichmentPipeline
+from schemabrain.entities.yaml_grammar import (
+    EntityParseError,
+    parse_entity_yaml_file,
+)
 from schemabrain.errors import (
     GuidedError,
     anthropic_auth_failed,
@@ -184,6 +196,18 @@ def main(argv: list[str] | None = None) -> int:
             url_env=args.url_env,
             store_path=args.store_path,
         )
+    if args.command == "entities":
+        if args.entity_action == "apply":
+            return _cmd_entities_apply(
+                yaml_path=args.yaml_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+                store_path=args.store_path,
+            )
+        # argparse `required=True` on the entity-action subparser
+        # prevents reaching here; the branch is structurally
+        # unreachable but symmetric with the outer command dispatch.
+        parser.error(f"unknown entities action: {args.entity_action}")  # pragma: no cover
     # argparse `required=True` on subparsers prevents reaching here, but
     # leaving an explicit branch is cheaper than a guarded assertion.
     parser.error(f"unknown command: {args.command}")  # pragma: no cover
@@ -411,6 +435,49 @@ def _build_parser() -> argparse.ArgumentParser:
         "`ecommerce.json` (golden set). The output is paste-clean for "
         "shell substitution, e.g. `psql ... < $(schemabrain fixture-path "
         "ecommerce.sql)`.",
+    )
+
+    # `entities` is a subgroup for semantic-layer management. This
+    # release ships `entities apply <yaml>`; a follow-up PR will add
+    # `entities suggest` (LLM-suggest pipeline) and possibly
+    # `entities list`.
+    p_entities = sub.add_parser(
+        "entities",
+        help="Manage semantic entity definitions",
+    )
+    entity_sub = p_entities.add_subparsers(dest="entity_action", required=True)
+
+    p_apply = entity_sub.add_parser(
+        "apply",
+        help="Load an entity YAML file into the local store",
+    )
+    p_apply.add_argument(
+        "yaml_path",
+        help="Path to an entity YAML file (see docs/setup.md for the "
+        "grammar; minimum required fields: version, name, binding, "
+        "identity).",
+    )
+    p_apply.add_argument(
+        "--source",
+        default=None,
+        help="The same source URL passed to `index` — used to resolve "
+        "which source's entity surface the YAML attaches to. "
+        "DEPRECATED when the URL contains a password; prefer --url-env. "
+        "One of --source / --url-env is required.",
+    )
+    p_apply.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL "
+        "(e.g. --url-env DATABASE_URL). Preferred over --source so "
+        "credentials never appear in argv.",
+    )
+    p_apply.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
     )
 
     return parser
@@ -852,6 +919,105 @@ def _cmd_mine_queries(
             file=sys.stderr,
         )
     return 0
+
+
+def _cmd_entities_apply(
+    *,
+    yaml_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+) -> int:
+    """Load one entity YAML file and write it to the local store.
+
+    Non-interactive by design — the LLM-suggest review UX ships with
+    a follow-up PR, this loader is a deterministic file-to-store
+    operation.
+
+    Error surface:
+      - exit 1 on parse error, missing file, FK violation
+        (unindexed bound table), or dbt-guard refusal
+      - exit 2 on URL-source mismatch / unwritable store path
+        (mirrors the existing pattern in `serve` / `mine-queries`)
+      - exit 0 on successful write (prints `applied entity: <name>`
+        to stdout)
+    """
+    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if source_url is None:
+        return 2
+    if _resolve_url(source_url) is None:
+        return 2
+    source_id = _make_source_id(source_url)
+
+    path = Path(yaml_path)
+    try:
+        entity = parse_entity_yaml_file(path)
+    except FileNotFoundError:
+        _entity_error(f"entity YAML file not found: {yaml_path}")
+        return 1
+    except IsADirectoryError:
+        _entity_error(f"{yaml_path!r} is a directory, not a file")
+        return 1
+    except EntityParseError as exc:
+        _entity_error(f"parsing {yaml_path}: {exc}")
+        return 1
+
+    try:
+        with SQLiteStore(store_path) as store:
+            try:
+                store.write_entity(entity, source_connection_id=source_id)
+            except DbtOwnedEntityError as exc:
+                _entity_error(str(exc))
+                return 1
+            except sqlite3.IntegrityError:
+                # The bound-table FK is the only IntegrityError this
+                # call path can raise — surface as a guided message
+                # pointing the user at `schemabrain index`.
+                _entity_error(
+                    f"entity {entity.name!r} binds to table "
+                    f"{entity.qualified_table!r} which isn't indexed "
+                    f"for this source. Run `schemabrain index` first to make "
+                    f"the table available, then re-run `entities apply`."
+                )
+                return 1
+            except sqlite3.DatabaseError as exc:
+                # Catch-all for non-Integrity DB-level errors: disk full,
+                # WAL checkpoint failure, CHECK constraint trips on a
+                # corrupted store, etc. Returns exit 2 (structural, not
+                # user input) and routes through `_render_guided` so
+                # the user gets the same shape of message that other
+                # CLI commands produce for store-level failures.
+                _render_guided(
+                    GuidedError(
+                        kind="entities_apply_store_error",
+                        message=f"store-level error during write: {exc}",
+                        why="the SQLite store reported an error other than a foreign-key violation",
+                        fix="check the store file integrity, available disk "
+                        "space, and that no other Schema Brain process is "
+                        "writing to the same store",
+                        next_step=f"inspect {store_path} with `sqlite3 .schema`",
+                    )
+                )
+                return 2
+    except OSError as e:
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+
+    print(f"applied entity: {entity.name}")
+    return 0
+
+
+def _entity_error(message: str) -> None:
+    """Render an `entities apply` user-input-class error to stderr.
+
+    The user-input-class errors (parse failure, dbt-guard refusal,
+    bound-table FK violation) are deliberately plain stderr writes
+    rather than `_render_guided` panels — they map 1:1 to a YAML field
+    or store state the user can directly edit, so the rich panel adds
+    visual weight without information. Structural failures (store
+    corruption, unwritable path) still use `_render_guided`.
+    """
+    print(f"error: {message}", file=sys.stderr)
 
 
 def _cmd_fixture_path(name: str) -> int:

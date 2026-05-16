@@ -1,0 +1,6 @@
+version: 1
+name: product
+description: A purchasable product with SKU, name, and price
+binding:
+  single_table: public.products
+identity: id
