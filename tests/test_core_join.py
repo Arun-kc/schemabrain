@@ -1,0 +1,228 @@
+"""Tests for `CanonicalJoin` + `JoinColumnPair` + `JoinOrigin` literal.
+
+Locks the canonical-join-graph design decisions in code:
+
+  - `name`-keyed identification (not `(source, target)`-keyed) so
+    multiple canonical joins between the same entity pair coexist
+    (billing/shipping address case).
+  - Equi-join-only at v1; `on` is a non-empty tuple of
+    `JoinColumnPair`.
+  - Self-joins (`source_entity == target_entity`) are rejected at v1 —
+    deferred to wk-15 alongside grain-aware metrics.
+  - `JoinOrigin = Literal["manual", "suggested", "dbt_import"]` —
+    `dbt_import` is RESERVED at the (no producer until wk-15) but
+    valid at the dataclass + store layer for schema symmetry with
+    `Entity.origin`.
+
+All invariants enforced in `__post_init__` so store reads + YAML loads
++ mining output all converge on the same validity guarantee.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+
+import pytest
+
+from schemabrain.core.join import CanonicalJoin, JoinColumnPair
+
+# ----- JoinColumnPair --------------------------------------------------------
+
+
+class TestJoinColumnPair:
+    def test_accepts_valid_identifier_pair(self) -> None:
+        pair = JoinColumnPair(source_column="user_id", target_column="id")
+        assert pair.source_column == "user_id"
+        assert pair.target_column == "id"
+
+    def test_is_frozen(self) -> None:
+        pair = JoinColumnPair(source_column="user_id", target_column="id")
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            pair.source_column = "other"  # type: ignore[misc]
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",  # empty
+            "1leading_digit",  # starts with digit
+            "user id",  # space
+            "user.id",  # dot (column-shaped — for entity columns, no dot)
+            "user-id",  # hyphen
+        ],
+    )
+    def test_rejects_non_identifier_source_column(self, bad: str) -> None:
+        with pytest.raises(ValueError, match="source_column"):
+            JoinColumnPair(source_column=bad, target_column="id")
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            "1leading_digit",
+            "id space",
+            "id.x",
+        ],
+    )
+    def test_rejects_non_identifier_target_column(self, bad: str) -> None:
+        with pytest.raises(ValueError, match="target_column"):
+            JoinColumnPair(source_column="user_id", target_column=bad)
+
+    def test_accepts_dollar_sign_in_identifier(self) -> None:
+        # Postgres column shape — `row$id` is valid unquoted. Matches
+        # the alphabet used by `Entity.identity`.
+        pair = JoinColumnPair(source_column="row$id", target_column="id$")
+        assert pair.source_column == "row$id"
+
+    def test_two_pairs_with_same_columns_are_equal(self) -> None:
+        a = JoinColumnPair(source_column="user_id", target_column="id")
+        b = JoinColumnPair(source_column="user_id", target_column="id")
+        assert a == b
+
+
+# ----- CanonicalJoin ---------------------------------------------------------
+
+
+def _pair(src: str = "user_id", tgt: str = "id") -> JoinColumnPair:
+    return JoinColumnPair(source_column=src, target_column=tgt)
+
+
+def _make_join(**overrides: object) -> CanonicalJoin:
+    defaults: dict[str, object] = {
+        "name": "customer_orders",
+        "description": "",
+        "source_entity": "order",
+        "target_entity": "customer",
+        "on": (_pair(),),
+        "origin": "manual",
+    }
+    defaults.update(overrides)
+    return CanonicalJoin(**defaults)  # type: ignore[arg-type]
+
+
+class TestCanonicalJoinHappyPath:
+    def test_constructs_with_defaults(self) -> None:
+        join = _make_join()
+        assert join.name == "customer_orders"
+        assert join.source_entity == "order"
+        assert join.target_entity == "customer"
+        assert len(join.on) == 1
+        assert join.origin == "manual"
+
+    def test_origin_defaults_to_manual(self) -> None:
+        # YAML hand-edited files omit origin; the default makes that
+        # ergonomic without breaking the closed-Literal invariant.
+        join = CanonicalJoin(
+            name="customer_orders",
+            description="",
+            source_entity="order",
+            target_entity="customer",
+            on=(_pair(),),
+        )
+        assert join.origin == "manual"
+
+    def test_is_frozen(self) -> None:
+        join = _make_join()
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            join.name = "other"  # type: ignore[misc]
+
+    def test_two_equal_joins_compare_equal(self) -> None:
+        # Frozen + tuple-typed `on` means equality is field-wise.
+        a = _make_join()
+        b = _make_join()
+        assert a == b
+
+
+class TestCanonicalJoinComposite:
+    def test_accepts_composite_on_list(self) -> None:
+        # Composite-PK joins (junction tables, natural keys) need
+        # multiple `on` pairs. Length-N tuple supported from day one.
+        join = _make_join(
+            on=(
+                _pair("org_id", "id"),
+                _pair("user_id", "id"),
+            ),
+        )
+        assert len(join.on) == 2
+        assert join.on[0].source_column == "org_id"
+        assert join.on[1].source_column == "user_id"
+
+    def test_on_is_a_tuple(self) -> None:
+        # Tuple, not list — preserves hashability + frozen invariant.
+        join = _make_join()
+        assert isinstance(join.on, tuple)
+
+
+class TestCanonicalJoinValidation:
+    @pytest.mark.parametrize(
+        "bad_name",
+        [
+            "",
+            "1starts_with_digit",
+            "has space",
+            "has-hyphen",
+            "has.dot",
+        ],
+    )
+    def test_rejects_non_identifier_name(self, bad_name: str) -> None:
+        with pytest.raises(ValueError, match="name"):
+            _make_join(name=bad_name)
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            "1starts_with_digit",
+            "has space",
+        ],
+    )
+    def test_rejects_non_identifier_source_entity(self, bad: str) -> None:
+        with pytest.raises(ValueError, match="source_entity"):
+            _make_join(source_entity=bad)
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            "1starts_with_digit",
+            "has-hyphen",
+        ],
+    )
+    def test_rejects_non_identifier_target_entity(self, bad: str) -> None:
+        with pytest.raises(ValueError, match="target_entity"):
+            _make_join(target_entity=bad)
+
+    def test_rejects_self_join(self) -> None:
+        # Self-joins (manager_of_user, etc.) are deferred to wk-15
+        # alongside grain-aware metrics. Refusing at the dataclass
+        # layer makes the deferral concrete.
+        with pytest.raises(ValueError, match="self-joins"):
+            _make_join(source_entity="user", target_entity="user")
+
+    def test_rejects_empty_on(self) -> None:
+        # Cross joins are not canonical. The dataclass refuses construction;
+        # the YAML parser surfaces a guided error instead.
+        with pytest.raises(ValueError, match="at least one"):
+            _make_join(on=())
+
+    @pytest.mark.parametrize(
+        "bad_origin",
+        [
+            "",
+            "approved",  # not in Literal
+            "imported",  # close but wrong
+            "DBT_IMPORT",  # case-sensitive
+            None,
+        ],
+    )
+    def test_rejects_unknown_origin(self, bad_origin: object) -> None:
+        with pytest.raises(ValueError, match="origin"):
+            _make_join(origin=bad_origin)
+
+    def test_accepts_all_three_valid_origins(self) -> None:
+        # `dbt_import` is RESERVED at the — the dataclass accepts it,
+        # but suggest/apply pipelines refuse to produce it because the
+        # dbt-relationships importer doesn't ship until wk-15. Lock the
+        # symmetry with `Entity.origin` here so the schema stays
+        # consistent across the semantic-layer surface.
+        for origin in ("manual", "suggested", "dbt_import"):
+            _make_join(origin=origin)

@@ -37,6 +37,7 @@ from schemabrain.core.entity import (
     SingleTableBinding,
 )
 from schemabrain.core.example_query import ExampleQuery
+from schemabrain.core.join import CanonicalJoin, JoinColumnPair
 from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
 
 # Re-export so existing `from schemabrain.core.store import
@@ -85,8 +86,26 @@ __all__ = ["DbtOwnedEntityError", "SQLiteStore", "SchemaVersionMismatchError"]
 #         SQL layer because "manual cannot overwrite dbt_import" is
 #         a row-vs-row predicate SQLite triggers don't express
 #         cleanly.
+#   "9" → added `canonical_joins` table for the canonical-join
+#         graph. PRIMARY KEY is `(source_connection_id, name)` — name
+#         is human-meaningful and unique per source; multiple canonical
+#         joins between the same `(source_entity, target_entity)` pair
+#         are explicitly supported (billing/shipping address case).
+#         FK CASCADE on `entities` for BOTH source_entity + target_entity
+#         so deleting an entity sweeps every canonical join that
+#         referenced it. SQL-layer CHECK on `origin` includes
+#         `dbt_import` from day one (reserved at the — producer lands
+#         wk-15) for schema symmetry with `entities.origin`. `on_columns`
+#         stored as JSON-serialised list of `[src_col, tgt_col]` pairs
+#         (same shape pattern as dbt-import's upstream-sources storage).
+#         Index `idx_canonical_joins_by_pair` keyed
+#         `(source_connection_id, target_entity, source_entity, name)`
+#         covers BOTH arms of `resolve_canonical_joins`'s `UNION ALL`
+#         direction-insensitive lookup as 3-column point seeks; the
+#         self-join refusal in the dataclass keeps `UNION ALL` safe
+#         without DISTINCT.
 # Older stores raise SchemaVersionMismatchError; pre-alpha users re-create.
-_SCHEMA_VERSION = "8"
+_SCHEMA_VERSION = "9"
 _MEMORY_PATH = ":memory:"
 
 # 1 USD = 1_000_000 micros. Storing the ledger as INTEGER micros avoids
@@ -343,6 +362,59 @@ _DDL_STATEMENTS: tuple[str, ...] = (
             ON DELETE CASCADE
     )
     """,
+    # Canonical-join graph — the substrate. `(source_connection_id,
+    # name)` is the PK so name is the public handle (e.g.
+    # `order_billing_address`). The `(source_entity, target_entity)` pair
+    # is NOT unique — multiple canonical joins between the same pair are
+    # explicit (the billing/shipping case). Both entity references FK
+    # back to `entities`; CASCADE on entity deletion sweeps every join
+    # that touched the dropped entity. CHECK on `origin` covers all three
+    # values including `dbt_import` reserved for wk-15.
+    #
+    # `on_columns_json` carries the equi-join column pairs as JSON to
+    # support composite-key joins without a side table — same pattern
+    # dbt-import uses for `upstream_sources`. No SQL-level JSON queries
+    # exist at v1/v2; a future "which canonical joins reference column
+    # X?" query would need either `json_each` or a side-table refactor.
+    #
+    # `idx_canonical_joins_by_pair` covers BOTH arms of the direction-
+    # insensitive `UNION ALL` in `resolve_canonical_joins`. Column order
+    # `(source_connection_id, target_entity, source_entity, name)`
+    # serves: (a) the seek arm `target_entity = a AND source_entity = b`
+    # directly, and (b) the symmetric arm `target_entity = b AND
+    # source_entity = a` after a swap of values at query time — both
+    # arms are 3-column point seeks. Symmetry is provided by the
+    # `UNION ALL` rewrite at the query layer, not by double-indexing.
+    """
+    CREATE TABLE IF NOT EXISTS canonical_joins (
+        source_connection_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        source_entity TEXT NOT NULL,
+        target_entity TEXT NOT NULL,
+        on_columns_json TEXT NOT NULL,
+        origin TEXT NOT NULL
+            CHECK (origin IN ('manual', 'suggested', 'dbt_import')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (source_connection_id, name),
+        FOREIGN KEY (source_connection_id, source_entity)
+            REFERENCES entities (source_connection_id, name)
+            ON DELETE CASCADE,
+        FOREIGN KEY (source_connection_id, target_entity)
+            REFERENCES entities (source_connection_id, name)
+            ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_canonical_joins_by_pair
+        ON canonical_joins (
+            source_connection_id,
+            target_entity,
+            source_entity,
+            name
+        )
+    """,
 )
 
 
@@ -362,6 +434,62 @@ def _row_to_entity(row: sqlite3.Row) -> Entity:
             qualified_table=f"{row['binding_schema']}.{row['binding_table']}"
         ),
         identity=row["identity"],
+        origin=row["origin"],
+    )
+
+
+def _row_to_example_query(row: sqlite3.Row) -> ExampleQuery:
+    """Reconstruct an `ExampleQuery` from a row.
+
+    Shared by `list_example_queries` (the per-table reader) and
+    `list_all_example_queries` (the bulk reader the mining
+    pipeline drives).
+    """
+    return ExampleQuery(
+        schema_name=row["schema_name"],
+        table_name=row["table_name"],
+        sql_text=row["sql_text"],
+        observation_count=row["observation_count"],
+        first_seen_at=row["first_seen_at"],
+        last_seen_at=row["last_seen_at"],
+        source=row["source"],
+        sensitivity=row["sensitivity"],
+        pii_categories=_decode_pii_categories(row["pii_categories"]),
+    )
+
+
+def _row_to_canonical_join(row: sqlite3.Row) -> CanonicalJoin:
+    """Reconstruct a `CanonicalJoin` from a `canonical_joins` row.
+
+    `on_columns_json` is a JSON list of `[src, tgt]` pairs. The
+    `JoinColumnPair` constructor re-validates identifier shape on each
+    pair so a corrupt row surfaces here, not in an MCP-tool caller
+    several layers up.
+
+    Wraps `json.JSONDecodeError` / `TypeError` / `ValueError` from a
+    corrupt or hand-edited `on_columns_json` blob into a structured
+    `RuntimeError` that names the join so an operator debugging "why
+    is `internal_error` showing up on `resolve_join`?" can trace the
+    bad row directly. Without this wrap, the JSON error would surface
+    as a bare exception in the MCP server's `_wrap_internal_error`
+    catch-all with no row identifier in the message.
+    """
+    try:
+        raw_pairs = json.loads(row["on_columns_json"])
+        on_pairs = tuple(
+            JoinColumnPair(source_column=src, target_column=tgt) for src, tgt in raw_pairs
+        )
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"corrupt canonical_joins row for join {row['name']!r}: "
+            f"on_columns_json is not a valid [[src, tgt], ...] array ({exc})"
+        ) from exc
+    return CanonicalJoin(
+        name=row["name"],
+        description=row["description"],
+        source_entity=row["source_entity"],
+        target_entity=row["target_entity"],
+        on=on_pairs,
         origin=row["origin"],
     )
 
@@ -1279,6 +1407,40 @@ class SQLiteStore:
             )
         return len(rows)
 
+    def list_all_example_queries(
+        self,
+        *,
+        source_connection_id: str,
+    ) -> list[ExampleQuery]:
+        """Return every example query row for `source_connection_id`.
+
+        Returns the FULL row set — duplicates expected when a single
+        SQL statement touched multiple indexed tables (the schema
+        carries one row per `(sql_text, table_touched)` pair). Callers
+        that want distinct statements dedupe in memory by `sql_text`.
+
+        Ordered alphabetically by `(schema_name, table_name, sql_text)`
+        for stable iteration across runs. Empty result is the right
+        answer for a store that has not been mined yet — the joins
+        suggester falls back to FK evidence alone in that case.
+
+        Symmetric with `list_all_foreign_keys` (bulk reader for
+        graph-construction callers). Unlike `list_example_queries`,
+        there is no `limit` parameter — the v0.5 pg_stat_statements
+        cap (~5000 statements x ~4 tables/statement = ~20k rows max)
+        is small enough that pagination is not yet warranted.
+        """
+        conn = self._require_conn()
+        rows = conn.execute(
+            "SELECT schema_name, table_name, sql_text, observation_count, "
+            "first_seen_at, last_seen_at, source, sensitivity, pii_categories "
+            "FROM example_queries "
+            "WHERE source_connection_id = ? "
+            "ORDER BY schema_name, table_name, sql_text",
+            (source_connection_id,),
+        ).fetchall()
+        return [_row_to_example_query(row) for row in rows]
+
     def list_example_queries(
         self,
         schema: str,
@@ -1320,20 +1482,7 @@ class SQLiteStore:
             "LIMIT ?",
             (source_connection_id, schema, table, limit),
         ).fetchall()
-        return [
-            ExampleQuery(
-                schema_name=row["schema_name"],
-                table_name=row["table_name"],
-                sql_text=row["sql_text"],
-                observation_count=row["observation_count"],
-                first_seen_at=row["first_seen_at"],
-                last_seen_at=row["last_seen_at"],
-                source=row["source"],
-                sensitivity=row["sensitivity"],
-                pii_categories=_decode_pii_categories(row["pii_categories"]),
-            )
-            for row in rows
-        ]
+        return [_row_to_example_query(row) for row in rows]
 
     def list_tables(self, *, source_connection_id: str | None = None) -> list[tuple[str, str]]:
         conn = self._require_conn()
@@ -1457,6 +1606,163 @@ class SQLiteStore:
                 (source_connection_id,),
             ).fetchall()
         return [_row_to_entity(row) for row in rows]
+
+    # ----- Canonical joins ------------------------------------------
+    #
+    # The the semantic-layer substrate. Naming + persistence shape
+    # match `Entity` deliberately so future surfaces (audit log, drift
+    # detection, multi-hop query planning at v2) compose against a
+    # consistent shape.
+
+    def write_canonical_join(self, join: CanonicalJoin, *, source_connection_id: str) -> None:
+        """Idempotent upsert of one `CanonicalJoin`.
+
+        Both `source_entity` and `target_entity` MUST already exist in
+        the `entities` table for this source — the FK constraints
+        enforce that at SQLite layer. Callers (the suggest pipeline and
+        `joins apply` CLI) surface a guided error if either entity is
+        missing.
+
+        Single-statement UPSERT keyed on `(source_connection_id, name)`
+        — preserves `created_at` across re-writes while `updated_at`
+        advances every write.
+
+        Composite-key joins (multiple `on` pairs) serialise the `on`
+        list to JSON; the dataclass guarantees non-empty + identifier-
+        shaped column names, so the persisted JSON is always
+        round-trippable.
+
+        Note: unlike `write_entity`, this method does NOT yet enforce
+        a dbt-import ownership guard. No `dbt_import` join producer
+        exists at this release — the dbt-relationships importer lands at
+        v1 wk-15. When that producer lands, add a `DbtOwnedJoinError`
+        guard symmetric with `DbtOwnedEntityError` so manual/suggested
+        writes can't overwrite dbt-imported joins.
+        """
+        on_columns_json = json.dumps([[pair.source_column, pair.target_column] for pair in join.on])
+        conn = self._require_conn()
+        with conn:
+            now = int(time.time())
+            conn.execute(
+                "INSERT INTO canonical_joins ("
+                "source_connection_id, name, description, "
+                "source_entity, target_entity, on_columns_json, origin, "
+                "created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (source_connection_id, name) DO UPDATE SET "
+                "description = excluded.description, "
+                "source_entity = excluded.source_entity, "
+                "target_entity = excluded.target_entity, "
+                "on_columns_json = excluded.on_columns_json, "
+                "origin = excluded.origin, "
+                "updated_at = excluded.updated_at",
+                (
+                    source_connection_id,
+                    join.name,
+                    join.description,
+                    join.source_entity,
+                    join.target_entity,
+                    on_columns_json,
+                    join.origin,
+                    now,
+                    now,
+                ),
+            )
+
+    def get_canonical_join(self, name: str, *, source_connection_id: str) -> CanonicalJoin | None:
+        """Return the canonical join named `name`, or `None` if absent."""
+        conn = self._require_conn()
+        row = conn.execute(
+            "SELECT name, description, source_entity, target_entity, "
+            "on_columns_json, origin FROM canonical_joins "
+            "WHERE source_connection_id = ? AND name = ?",
+            (source_connection_id, name),
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_canonical_join(row)
+
+    def list_canonical_joins(
+        self, *, source_connection_id: str | None = None
+    ) -> list[CanonicalJoin]:
+        """Return all canonical joins, ordered alphabetically by name.
+
+        `source_connection_id=None` lists across sources; the CLI
+        `joins list` command depends on the alpha order so output is
+        stable across runs.
+        """
+        conn = self._require_conn()
+        if source_connection_id is None:
+            rows = conn.execute(
+                "SELECT name, description, source_entity, target_entity, "
+                "on_columns_json, origin FROM canonical_joins "
+                "ORDER BY name, source_connection_id"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT name, description, source_entity, target_entity, "
+                "on_columns_json, origin FROM canonical_joins "
+                "WHERE source_connection_id = ? ORDER BY name",
+                (source_connection_id,),
+            ).fetchall()
+        return [_row_to_canonical_join(row) for row in rows]
+
+    def resolve_canonical_joins(
+        self,
+        entity_a: str,
+        entity_b: str,
+        *,
+        source_connection_id: str,
+    ) -> list[CanonicalJoin]:
+        """Return every canonical join between entities `a` and `b`.
+
+        Direction-insensitive: matches rows where `(source_entity,
+        target_entity)` is either `(a, b)` or `(b, a)`. The caller
+        (`resolve_join` MCP tool) implements the ambiguity-refusal
+        logic against this list — 0 rows → no canonical join,
+        2+ rows → ambiguous (name-disambiguator path).
+
+        Each row preserves its STORED direction; the caller does not
+        flip columns based on the input order. This keeps the
+        agent-facing `sql_skeleton` aligned with how the join was
+        originally confirmed (the user picked the direction at
+        `joins apply` time and that direction is canonical).
+
+        Ordered alphabetically by `name` for determinism across runs.
+
+        Implementation: `UNION ALL` of two 3-column point seeks against
+        `idx_canonical_joins_by_pair`. The single-OR form attempted in
+        an earlier revision degraded to a range scan over all joins
+        for the source under SQLite 3.x's OR planner — `EXPLAIN QUERY
+        PLAN` confirmed it. The `UNION ALL` rewrite hits the index
+        directly for both arms. Safe to use without `DISTINCT` because
+        the `CanonicalJoin` dataclass refuses self-joins, so a single
+        stored row cannot match both arms.
+        """
+        conn = self._require_conn()
+        select_cols = (
+            "SELECT name, description, source_entity, target_entity, "
+            "on_columns_json, origin FROM canonical_joins "
+        )
+        rows = conn.execute(
+            f"{select_cols}"
+            "WHERE source_connection_id = ? "
+            "  AND source_entity = ? AND target_entity = ? "
+            "UNION ALL "
+            f"{select_cols}"
+            "WHERE source_connection_id = ? "
+            "  AND source_entity = ? AND target_entity = ? "
+            "ORDER BY name",
+            (
+                source_connection_id,
+                entity_a,
+                entity_b,
+                source_connection_id,
+                entity_b,
+                entity_a,
+            ),
+        ).fetchall()
+        return [_row_to_canonical_join(row) for row in rows]
 
     def close(self) -> None:
         if self._conn is not None:

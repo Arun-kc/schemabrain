@@ -46,17 +46,23 @@ from schemabrain.mcp.envelope import (
 from schemabrain.mcp.find_relevant_tables import find_relevant_tables_impl
 from schemabrain.mcp.get_example_queries import get_example_queries_impl
 from schemabrain.mcp.list_entities import list_entities_impl
+from schemabrain.mcp.resolve_join import resolve_join_impl
 from schemabrain.mcp.shapes import (
+    AmbiguousJoinError,
+    CanonicalJoinInfo,
     ColumnDetail,
     ColumnNotFoundError,
     EntityDetail,
     EntityNotFoundError,
     EntitySummary,
     ExampleQueriesResult,
+    JoinNameMismatchError,
+    NoCanonicalJoinError,
     SuggestJoinsResult,
     TableDescription,
     TableHit,
     TableNotFoundError,
+    UnknownJoinNameError,
 )
 from schemabrain.mcp.suggest_joins import suggest_joins_impl
 
@@ -71,7 +77,9 @@ _SERVER_INSTRUCTIONS = (
     "FK-graph paths between tables, `get_example_queries` for real SQL "
     "patterns from query logs. Semantic-layer tools: `list_entities` to "
     "survey defined entities, `describe_entity` for one entity's full "
-    "column shape with PII sensitivity. Every tool returns a "
+    "column shape with PII sensitivity, `resolve_join` to return the "
+    "canonical SQL JOIN between two entities (with ambiguity refusal "
+    "when multiple canonical joins exist). Every tool returns a "
     "`ToolResponse` envelope (status / data / error / confidence / "
     "follow_up_hints) per the agent-UX charter v1.1."
 )
@@ -552,6 +560,132 @@ def build_server(
             confidence="HIGH",
             provenance=Provenance(source="schema"),
             follow_up_hints=["describe_table", "describe_column"],
+        )
+
+    @app.tool(
+        description=(
+            "Use this when you have two entity names and need the "
+            "canonical SQL join between them. Returns a ready-to-paste "
+            "JOIN clause with column mapping. Use `suggest_joins` "
+            "instead when you only have physical table names. Don't "
+            "use when you need to discover what entities exist — call "
+            "`list_entities` first."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
+    def resolve_join(
+        entity_a: Annotated[
+            str,
+            Field(
+                description=(
+                    "The first entity to join, by name (e.g. "
+                    "`customer`). Order doesn't matter — `resolve_join` "
+                    "is direction-insensitive; the response preserves "
+                    "the direction the join was originally confirmed in."
+                ),
+            ),
+        ],
+        entity_b: Annotated[
+            str,
+            Field(
+                description=(
+                    "The second entity to join, by name (e.g. `order`). "
+                    "Both entities must exist; call `list_entities` if "
+                    "unsure."
+                ),
+            ),
+        ],
+        name: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "When 2+ canonical joins exist between the entity "
+                    "pair (billing vs shipping address, primary vs "
+                    "secondary user, etc.), pass the canonical-join "
+                    "name to disambiguate. Leave null to receive an "
+                    "ambiguity-refusal response listing the available "
+                    "names."
+                ),
+            ),
+        ] = None,
+    ) -> ToolResponse[CanonicalJoinInfo]:
+        try:
+            info = resolve_join_impl(
+                store=store,
+                source_connection_id=source_connection_id,
+                entity_a=entity_a,
+                entity_b=entity_b,
+                name=name,
+            )
+        except ValueError as exc:
+            return _malformed_name_response(exc, suggested_tool="list_entities")
+        except EntityNotFoundError as exc:
+            return _unknown_name_response(exc, suggested_tool="list_entities", suggested_args=None)
+        except NoCanonicalJoinError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="no_canonical_join",
+                    message=str(exc),
+                    recovery=Recovery(suggested_tool="suggest_joins"),
+                ),
+            )
+        except AmbiguousJoinError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="ambiguous_join",
+                    message=str(exc),
+                    recovery=Recovery(
+                        suggested_tool="resolve_join",
+                        suggested_args={
+                            "entity_a": entity_a,
+                            "entity_b": entity_b,
+                            "name": exc.candidate_names[0],
+                        },
+                    ),
+                ),
+            )
+        except JoinNameMismatchError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="join_name_mismatch",
+                    message=str(exc),
+                    recovery=Recovery(
+                        suggested_tool="resolve_join",
+                        suggested_args={
+                            "entity_a": entity_a,
+                            "entity_b": entity_b,
+                            "name": exc.canonical_name,
+                        },
+                    ),
+                ),
+            )
+        except UnknownJoinNameError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="unknown_join_name",
+                    message=str(exc),
+                    recovery=Recovery(
+                        suggested_tool="resolve_join",
+                        suggested_args={
+                            "entity_a": entity_a,
+                            "entity_b": entity_b,
+                            "name": exc.candidate_names[0],
+                        },
+                    ),
+                ),
+            )
+        except Exception as exc:
+            return _wrap_internal_error(exc)
+        return ToolResponse[CanonicalJoinInfo](
+            status="success",
+            data=info,
+            confidence="HIGH",
+            provenance=Provenance(source="schema"),
+            follow_up_hints=["describe_entity"],
         )
 
     return app

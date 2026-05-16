@@ -61,6 +61,7 @@ refuses cross-origin overwrites.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import os
@@ -121,6 +122,16 @@ from schemabrain.imports.dbt import (
     plan_dbt_import,
 )
 from schemabrain.indexer import IndexReporter, NullReporter, dry_run_index, index
+from schemabrain.joins.suggest import (
+    JoinCandidate,
+    JoinGraphReport,
+    detect_cycles_in_join_graph,
+    suggest_canonical_joins,
+)
+from schemabrain.joins.yaml_grammar import (
+    CanonicalJoinParseError,
+    parse_canonical_join_yaml_file,
+)
 from schemabrain.logging_config import configure_logging
 from schemabrain.mcp.server import run_stdio
 from schemabrain.mining.pipeline import mine_queries
@@ -279,6 +290,32 @@ def main(argv: list[str] | None = None) -> int:
         # `required=True` blocks the fall-through, but a structurally
         # unreachable branch is cheaper than a guarded assertion.
         parser.error(f"unknown import action: {args.import_action}")  # pragma: no cover
+    if args.command == "joins":
+        if args.joins_action == "suggest":
+            return _cmd_joins_suggest(
+                positional_url=args.source,
+                url_env=args.url_env,
+                store_path=args.store_path,
+                dry_run=args.dry_run,
+                out_dir=args.out_dir,
+                apply=args.apply,
+                top_k=args.top_k,
+                report_path=args.report_path,
+            )
+        if args.joins_action == "apply":
+            return _cmd_joins_apply(
+                yaml_path=args.yaml_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+                store_path=args.store_path,
+            )
+        if args.joins_action == "list":
+            return _cmd_joins_list(
+                store_path=args.store_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+            )
+        parser.error(f"unknown joins action: {args.joins_action}")  # pragma: no cover
     # argparse `required=True` on subparsers prevents reaching here, but
     # leaving an explicit branch is cheaper than a guarded assertion.
     parser.error(f"unknown command: {args.command}")  # pragma: no cover
@@ -680,6 +717,136 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional path. If set, the run writes a JSON report of the "
         "plan (bucket counts + per-model details) to this path. Works "
         "with both dry-run and apply.",
+    )
+
+    # `joins` — canonical-join-graph commands. Mirrors `entities` shape:
+    # `suggest` (3 modes: dry-run / out-dir / apply, plus --report),
+    # `apply` (single file OR directory of YAMLs), `list` (verification
+    # path after `apply`). No `joins inspect` at v1 — that's Q15
+    # (`schemabrain inspect`) territory.
+    p_joins = sub.add_parser(
+        "joins",
+        help="Manage canonical-join definitions (the canonical-join semantic-layer graph).",
+    )
+    joins_sub = p_joins.add_subparsers(dest="joins_action", required=True)
+
+    p_joins_suggest = joins_sub.add_parser(
+        "suggest",
+        help="Mine FK + query-log evidence; print, write, or apply candidates.",
+    )
+    p_joins_suggest.add_argument(
+        "--source",
+        default=None,
+        help="The same source URL passed to `index`. DEPRECATED when "
+        "the URL contains a password; prefer --url-env.",
+    )
+    p_joins_suggest.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL. "
+        "Preferred over --source so credentials never appear in argv.",
+    )
+    p_joins_suggest.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    # Three output modes, mutually exclusive (argparse enforces). Same
+    # shape as `entities suggest` so users learn the pattern once.
+    joins_mode = p_joins_suggest.add_mutually_exclusive_group(required=True)
+    joins_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print ranked candidates (provenance + on-columns) to "
+        "stdout. No files written, no store writes. Best mode for "
+        "previewing what the suggester sees.",
+    )
+    joins_mode.add_argument(
+        "--out-dir",
+        dest="out_dir",
+        default=None,
+        help="Directory to write one YAML file per candidate "
+        "(<candidate_name>.yaml). Each file is `joins apply`-ready: "
+        "edit description / name, then apply per file or as a "
+        "directory.",
+    )
+    joins_mode.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write candidates directly to the local store with "
+        "origin='suggested'. Skips the review step — use --out-dir if "
+        "you want a chance to edit before committing.",
+    )
+    p_joins_suggest.add_argument(
+        "--top-k",
+        dest="top_k",
+        type=int,
+        default=None,
+        help="Maximum number of candidates to keep (default: unlimited). "
+        "Ranked by (confidence DESC, query-log frequency DESC, name ASC).",
+    )
+    p_joins_suggest.add_argument(
+        "--report",
+        dest="report_path",
+        default=None,
+        help="Optional path. If set, the run writes a JSON report "
+        "covering bucket counts + structural cycle analysis (per "
+        "the design) to this path. Works with every mode.",
+    )
+
+    p_joins_apply = joins_sub.add_parser(
+        "apply",
+        help="Load a canonical-join YAML file (or directory) into the local store.",
+    )
+    p_joins_apply.add_argument(
+        "yaml_path",
+        help="Path to a canonical-join YAML file, OR a directory of "
+        "YAML files (each file ending in `.yaml`/`.yml`). Multi-file "
+        "apply lands each file independently; an error in one file "
+        "skips that file and reports it in the summary.",
+    )
+    p_joins_apply.add_argument(
+        "--source",
+        default=None,
+        help="The same source URL passed to `index`. DEPRECATED when "
+        "the URL contains a password; prefer --url-env.",
+    )
+    p_joins_apply.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL.",
+    )
+    p_joins_apply.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+
+    p_joins_list = joins_sub.add_parser(
+        "list",
+        help="List canonical joins in the local store. The verification path after `joins apply`.",
+    )
+    p_joins_list.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_joins_list.add_argument(
+        "--source",
+        default=None,
+        help="Filter listing to one source (the same URL passed to "
+        "`index`). Without this flag, lists across every source.",
+    )
+    p_joins_list.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL.",
     )
 
     return parser
@@ -1814,6 +1981,434 @@ def _write_import_dbt_report(
             {"entity_name": f.entity_name, "message": f.message} for f in result.write_failures
         ]
     path.write_text(json.dumps(report, indent=2))
+
+
+def _cmd_joins_suggest(
+    *,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+    dry_run: bool,
+    out_dir: str | None,
+    apply: bool,
+    top_k: int | None,
+    report_path: str | None,
+) -> int:
+    """Mine canonical-join candidates from FK + query-log evidence.
+
+    Three output modes — exactly one must be true (argparse enforces
+    via `add_mutually_exclusive_group(required=True)`):
+
+      - `dry_run`: print ranked candidates to stdout, no writes
+      - `out_dir`: write one `.yaml` file per candidate to a directory
+        (each file is `joins apply`-ready)
+      - `apply`: write candidates straight to the store with
+        `origin='suggested'`
+
+    `--report PATH` works alongside any mode — emits a JSON report
+    with bucket counts + structural cycle analysis (per the design).
+
+    Exit codes:
+      0: success
+      1: user-input class (parse error in store, FK violation)
+      2: structural (missing URL, unwritable store, unwritable report)
+    """
+    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if source_url is None:
+        return 2
+    if _resolve_url(source_url) is None:  # pragma: no cover — defensive
+        return 2
+    source_id = _make_source_id(source_url)
+
+    try:
+        with SQLiteStore(store_path) as store:
+            candidates = suggest_canonical_joins(store=store, source_connection_id=source_id)
+            if top_k is not None:
+                candidates = candidates[:top_k]
+
+            apply_summary: dict[str, int] = {"written": 0, "skipped": 0}
+            apply_failures: list[tuple[str, str]] = []
+            if apply:
+                for candidate in candidates:
+                    try:
+                        store.write_canonical_join(
+                            candidate.to_canonical_join(),
+                            source_connection_id=source_id,
+                        )
+                        apply_summary["written"] += 1
+                    except sqlite3.IntegrityError as exc:  # pragma: no cover — suggester drops entity-less candidates upstream; this catches a TOCTOU entity-delete race
+                        apply_summary["skipped"] += 1
+                        apply_failures.append((candidate.name, str(exc)))
+
+            existing_joins = store.list_canonical_joins(source_connection_id=source_id)
+            # Pass the full entity-name set so the cycle report's
+            # `isolated_entities` field reflects real isolation (entities
+            # that exist but don't appear in any canonical join), rather
+            # than the always-empty set the analyser computes from the
+            # join list alone.
+            all_entity_names = {e.name for e in store.list_entities(source_connection_id=source_id)}
+            cycle_report = detect_cycles_in_join_graph(
+                existing_joins, all_entity_names=all_entity_names
+            )
+
+    except OSError as e:  # pragma: no cover — store-path-unwritable path is covered by `joins list` OSError test below
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+
+    # Render per mode.
+    if dry_run:
+        _render_joins_suggest_dry_run(candidates)
+    elif out_dir is not None:
+        if not candidates:
+            # Mirror the dry-run diagnostic — without this guard the
+            # `--out-dir` path silently creates an empty directory
+            # with a `_suggestion_metadata.json` containing `{}`,
+            # leaving the operator with no signal about why zero
+            # files landed.
+            print(
+                "(no canonical-join candidates surfaced; check that "
+                "entities are defined and FK / query-log evidence "
+                "exists — `--out-dir` not written)",
+                file=sys.stderr,
+            )
+        else:
+            try:
+                _write_joins_out_dir(candidates, out_dir=out_dir)
+            except OSError as e:
+                # Partial write: the loop in `_write_joins_out_dir`
+                # writes files one-at-a-time and may leave some on
+                # disk before raising. Flag the inconsistency so the
+                # operator doesn't run `joins apply` on a half-written
+                # directory.
+                print(
+                    f"error: cannot write candidates to {out_dir!r} "
+                    f"(directory may contain a partial set — DO NOT "
+                    f"run `joins apply` on it): {e}",
+                    file=sys.stderr,
+                )
+                return 2
+    elif (
+        apply
+    ):  # pragma: no branch — argparse mutex group enforces exactly one of (dry_run, out_dir, apply)
+        _render_joins_apply_summary(
+            candidates, apply_summary=apply_summary, failures=apply_failures
+        )
+
+    if report_path is not None:
+        try:
+            _write_joins_suggest_report(
+                Path(report_path),
+                candidates=candidates,
+                cycle_report=cycle_report,
+                apply_summary=apply_summary if apply else None,
+            )
+        except OSError as e:
+            print(
+                f"error: cannot write report to {report_path!r}: {e}",
+                file=sys.stderr,
+            )
+            return 2
+
+    # Cycles are NOT a refusal at v1 (per the design) — surface as a
+    # stderr note so the operator sees them without forcing a decision.
+    if cycle_report.cycles:
+        print(
+            f"note: {len(cycle_report.cycles)} cycle(s) detected in the "
+            f"canonical-join graph (legal but worth reviewing). Run "
+            f"`schemabrain joins suggest --report PATH` for details.",
+            file=sys.stderr,
+        )
+
+    return 1 if apply_failures else 0
+
+
+def _cmd_joins_apply(
+    *,
+    yaml_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+) -> int:
+    """Load canonical-join YAML files into the local store.
+
+    `yaml_path` may be a single file OR a directory. Directory mode
+    loads every `*.yaml`/`*.yml` in the immediate children, applies
+    each, and surfaces a summary. A parse/FK error in one file does
+    NOT block the rest — failures aggregate into the summary; exit
+    code is 1 if any file failed.
+
+    Exit codes:
+      0: every file applied cleanly
+      1: at least one file failed (parse / FK violation / etc.)
+      2: structural (URL missing, unwritable store)
+    """
+    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if source_url is None:
+        return 2
+    if _resolve_url(source_url) is None:  # pragma: no cover — defensive
+        return 2
+    source_id = _make_source_id(source_url)
+
+    path = Path(yaml_path)
+    if path.is_dir():
+        yaml_files = sorted(
+            p for p in path.iterdir() if p.is_file() and p.suffix.lower() in (".yaml", ".yml")
+        )
+        if not yaml_files:
+            print(
+                f"error: no `.yaml`/`.yml` files found in directory {yaml_path!r}",
+                file=sys.stderr,
+            )
+            return 1
+    elif path.is_file():
+        yaml_files = [path]
+    else:
+        print(
+            f"error: {yaml_path!r} is not a file or directory",
+            file=sys.stderr,
+        )
+        return 1
+
+    applied: list[str] = []
+    failures: list[tuple[str, str]] = []
+
+    try:
+        with SQLiteStore(store_path) as store:
+            for yaml_file in yaml_files:
+                try:
+                    join = parse_canonical_join_yaml_file(yaml_file)
+                except (
+                    FileNotFoundError,
+                    IsADirectoryError,
+                ) as exc:  # pragma: no cover — directory listing already filters non-files; race-only path
+                    failures.append((str(yaml_file), str(exc)))
+                    continue
+                except CanonicalJoinParseError as exc:
+                    failures.append((str(yaml_file), str(exc)))
+                    continue
+
+                # Force origin to "manual" for the apply path — even if
+                # the YAML carries origin: suggested. The hand-author
+                # who runs `joins apply` is overriding any prior
+                # suggestion provenance with explicit confirmation.
+                manual_join = dataclasses.replace(join, origin="manual")
+                try:
+                    store.write_canonical_join(manual_join, source_connection_id=source_id)
+                    applied.append(manual_join.name)
+                except sqlite3.IntegrityError as exc:
+                    # The likely cause is the FK to `entities` failing
+                    # because one endpoint isn't defined. The unlikely
+                    # case is a CHECK constraint violation (e.g.,
+                    # invalid `origin` value) — but the YAML parser
+                    # rejects those before this point. Include the
+                    # raw SQLite error so an operator can distinguish
+                    # FK violation from CHECK violation if a future
+                    # code path bypasses the YAML guard.
+                    failures.append(
+                        (
+                            str(yaml_file),
+                            f"entity {manual_join.source_entity!r} or "
+                            f"{manual_join.target_entity!r} not present "
+                            f"in the store for this source (or a database "
+                            f"constraint was violated: {exc}). Run "
+                            f"`schemabrain entities apply` first.",
+                        )
+                    )
+    except OSError as e:  # pragma: no cover — store-path-unwritable variant covered via `joins list` OSError test
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+
+    for name in applied:
+        print(f"applied canonical join: {name}")
+    for file_str, message in failures:
+        print(f"error in {file_str}: {message}", file=sys.stderr)
+
+    return 1 if failures else 0
+
+
+def _cmd_joins_list(
+    *,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """List canonical joins in the store, pretty-printed.
+
+    With `--source` / `--url-env` filter to one source. Without
+    either, lists every join across every source. The verification
+    path after `joins apply`.
+
+    Exit codes:
+      0: success (empty list is success, not an error)
+      2: structural (unwritable store path or URL-source mismatch)
+    """
+    source_id: str | None = None
+    if positional_url is not None or url_env is not None:
+        source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+        if source_url is None:
+            return 2
+        # _resolve_url defensively re-validates; never None when
+        # _resolve_url_source returned non-None.
+        if _resolve_url(source_url) is None:  # pragma: no cover
+            return 2  # pragma: no cover
+        source_id = _make_source_id(source_url)
+
+    try:
+        with SQLiteStore(store_path) as store:
+            joins = store.list_canonical_joins(source_connection_id=source_id)
+    except OSError as e:
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+
+    if not joins:
+        print("(no canonical joins in the store)")
+        return 0
+
+    for join in joins:
+        on_summary = ", ".join(f"{p.source_column} ↔ {p.target_column}" for p in join.on)
+        print(
+            f"{join.name}  "
+            f"{join.source_entity} → {join.target_entity}  "
+            f"[{on_summary}]  origin={join.origin}"
+        )
+    return 0
+
+
+def _render_joins_suggest_dry_run(
+    candidates: list[JoinCandidate],
+) -> None:
+    """Print one candidate per stanza to stdout — paste-clean format
+    that survives shell pipes.
+
+    The output is a sequence of YAML-like blocks (one per candidate)
+    with provenance fields prefixed `# ` so the body remains
+    `joins apply`-compatible if a user dumps the output to a file.
+    """
+    if not candidates:
+        print(
+            "(no canonical-join candidates surfaced; check that "
+            "entities are defined and FK / query-log evidence exists)"
+        )
+        return
+    for candidate in candidates:
+        _print_candidate_yaml(candidate)
+
+
+def _print_candidate_yaml(candidate: JoinCandidate) -> None:
+    """Emit one candidate as a YAML stanza with provenance comments."""
+    print("---")
+    print(f"# confidence: {candidate.confidence}")
+    print(f"# evidence: {list(candidate.evidence)}")
+    if candidate.fk_name is not None:
+        print(f"# fk_name: {candidate.fk_name}")
+    print(f"# query_log_frequency: {candidate.query_log_frequency}")
+    print(f"# rationale: {candidate.rationale}")
+    print("version: 1")
+    print(f"name: {candidate.name}")
+    print('description: ""')
+    print(f"source_entity: {candidate.source_entity}")
+    print(f"target_entity: {candidate.target_entity}")
+    print('"on":')  # quoted to dodge YAML 1.1 bool coercion when re-parsed
+    for pair in candidate.on:
+        print(f"  - source: {pair.source_column}")
+        print(f"    target: {pair.target_column}")
+
+
+def _write_joins_out_dir(
+    candidates: list[JoinCandidate],
+    *,
+    out_dir: str,
+) -> None:
+    """Write one YAML file per candidate to `out_dir`.
+
+    Filenames are `<candidate_name>.yaml`. Each file is
+    `joins apply`-ready (clean YAML body); the provenance metadata
+    rides in a sibling `_suggestion_metadata.json` that the apply
+    path doesn't read but a reviewer can.
+
+    Raises `OSError` if the directory can't be created or any file
+    can't be written.
+    """
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    metadata: dict[str, dict[str, object]] = {}
+    for candidate in candidates:
+        # Clean YAML — no provenance comments (those rode in --dry-run
+        # output). The body is what `joins apply` expects.
+        file_path = out_path / f"{candidate.name}.yaml"
+        body_lines = [
+            "version: 1",
+            f"name: {candidate.name}",
+            'description: ""',
+            f"source_entity: {candidate.source_entity}",
+            f"target_entity: {candidate.target_entity}",
+            '"on":',
+        ]
+        for pair in candidate.on:
+            body_lines.append(f"  - source: {pair.source_column}")
+            body_lines.append(f"    target: {pair.target_column}")
+        file_path.write_text("\n".join(body_lines) + "\n", encoding="utf-8")
+        metadata[candidate.name] = {
+            "confidence": candidate.confidence,
+            "evidence": list(candidate.evidence),
+            "fk_name": candidate.fk_name,
+            "query_log_frequency": candidate.query_log_frequency,
+            "rationale": candidate.rationale,
+        }
+    metadata_path = out_path / "_suggestion_metadata.json"
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _render_joins_apply_summary(
+    candidates: list[JoinCandidate],
+    *,
+    apply_summary: dict[str, int],
+    failures: list[tuple[str, str]],
+) -> None:
+    """Print a terse summary after `joins suggest --apply`."""
+    print(
+        f"applied {apply_summary['written']} canonical join(s) "
+        f"({apply_summary['skipped']} skipped) of {len(candidates)} candidate(s)"
+    )
+    for (
+        name,
+        message,
+    ) in failures:  # pragma: no cover — suggester drops entity-less candidates upstream; this loop body only fires under TOCTOU race
+        print(f"  skipped {name}: {message}", file=sys.stderr)
+
+
+def _write_joins_suggest_report(
+    path: Path,
+    *,
+    candidates: list[JoinCandidate],
+    cycle_report: JoinGraphReport,
+    apply_summary: dict[str, int] | None,
+) -> None:
+    """Write a JSON report covering candidates + cycles + apply summary."""
+    report: dict[str, object] = {
+        "candidates": [
+            {
+                "name": c.name,
+                "source_entity": c.source_entity,
+                "target_entity": c.target_entity,
+                "on": [{"source": p.source_column, "target": p.target_column} for p in c.on],
+                "confidence": c.confidence,
+                "evidence": list(c.evidence),
+                "fk_name": c.fk_name,
+                "query_log_frequency": c.query_log_frequency,
+                "rationale": c.rationale,
+            }
+            for c in candidates
+        ],
+        "graph_analysis": {
+            "cycles": [list(c) for c in cycle_report.cycles],
+            "isolated_entities": list(cycle_report.isolated_entities),
+            "max_path_length": cycle_report.max_path_length,
+        },
+    }
+    if apply_summary is not None:
+        report["apply_summary"] = dict(apply_summary)
+    path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
 
 def _cmd_fixture_path(name: str) -> int:

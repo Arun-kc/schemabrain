@@ -293,6 +293,46 @@ schemabrain import dbt $(schemabrain fixture-path ecommerce_manifest.json) \
 
 ---
 
+## Canonical joins (alpha)
+
+Where `entities suggest` infers WHAT to query, `joins suggest` infers
+HOW two entities CONNECT. The canonical-join graph is the persisted
+answer to "how do entity A and entity B join?" — mined from FK
+constraints (always present) and query-log evidence (when
+`mine-queries` has populated `example_queries`).
+
+```bash
+# Mine canonical-join candidates from your indexed schema
+schemabrain joins suggest \
+    --url-env DATABASE_URL \
+    --store-path ./schemabrain.db \
+    --dry-run
+
+# Write candidate YAMLs to a directory for review-before-apply
+schemabrain joins suggest --url-env DATABASE_URL --out-dir ./join-candidates
+
+# Apply hand-authored or reviewed canonical-join YAML files
+schemabrain joins apply ./join-candidates --url-env DATABASE_URL --store-path ./schemabrain.db
+
+# Verify what landed
+schemabrain joins list --store-path ./schemabrain.db
+```
+
+| Mode | Behaviour |
+|---|---|
+| `--dry-run` | Prints ranked candidates with provenance to stdout (paste-clean YAML stanzas). No writes. |
+| `--out-dir DIR` | Writes one `<candidate_name>.yaml` per candidate plus a metadata sidecar. Edit before `joins apply`. |
+| `--apply` | Writes candidates straight to the store with `origin='suggested'`. |
+| `--report PATH` | Emits a JSON report covering candidates + cycle analysis (legal cycles surfaced as a note, never a refusal). Works with every mode. |
+
+Once applied, the agent-facing `resolve_join` MCP tool returns the
+canonical join with a paste-ready `JOIN ... ON ...` skeleton.
+Multi-canonical-per-pair (billing vs shipping address, primary vs
+secondary user) is supported: pass `name=<canonical_name>` to
+disambiguate, or get a structured ambiguity refusal listing both.
+
+---
+
 ## Roadmap
 
 **v0.5 — finish schema intelligence (shipped):**

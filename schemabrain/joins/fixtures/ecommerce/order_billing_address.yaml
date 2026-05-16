@@ -1,0 +1,13 @@
+# One half of the multi-canonical-per-pair demonstration —
+# `order` and `address` are joined by TWO distinct canonical joins
+# (billing and shipping). `resolve_join("order", "address")` without
+# a `name` argument returns an `ambiguous_join` refusal listing both.
+
+version: 1
+name: order_billing_address
+description: Links each order to the address it was billed to.
+source_entity: order
+target_entity: address
+"on":
+  - source: billing_address_id
+    target: id

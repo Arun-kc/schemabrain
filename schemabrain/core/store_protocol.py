@@ -26,6 +26,7 @@ from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
 from schemabrain.core.entity import Entity
 from schemabrain.core.example_query import ExampleQuery
+from schemabrain.core.join import CanonicalJoin
 from schemabrain.core.models import ForeignKey, IncomingForeignKey, Table
 
 
@@ -248,6 +249,34 @@ class Store(Protocol):
         """
         ...
 
+    def list_all_example_queries(
+        self,
+        *,
+        source_connection_id: str,
+    ) -> list[ExampleQuery]:
+        """Return every example query row for `source_connection_id`.
+
+        Bulk reader symmetric with `list_all_foreign_keys`. Drives the
+        the canonical-join mining pipeline, which needs to walk every
+        recorded SQL statement to extract equi-join predicates.
+
+        IMPORTANT — duplicate semantics: the `example_queries` table
+        carries one row per `(sql_text, table_touched)` pair. A single
+        SQL statement that touched N indexed tables produces N rows
+        with identical `sql_text` and identical `observation_count`
+        (the write path in `mining/pipeline.py` guarantees this).
+        Implementations MUST return the full row set including these
+        duplicates — callers that want distinct statements MUST
+        dedupe in memory by `sql_text` (the join-mining pipeline at
+        `joins/suggest.py::_load_aggregated_query_log` does so).
+
+        Ordered alphabetically by `(schema_name, table_name, sql_text)`
+        for stable iteration across runs. Empty result is the right
+        answer for an un-mined store — callers fall back to FK
+        evidence alone in that case.
+        """
+        ...
+
     def list_example_queries(
         self,
         schema: str,
@@ -322,5 +351,73 @@ class Store(Protocol):
         source filter, only that source's entities are returned. The
         MCP `list_entities` tool depends on the alphabetical ordering
         so the agent sees a stable list across repeat calls.
+        """
+        ...
+
+    # ----- Canonical joins ------------------------------------------
+    #
+    # The the semantic-layer substrate. Multiple canonical joins
+    # between the same `(source_entity, target_entity)` pair are
+    # explicitly supported — `name` is the disambiguator. Implementations
+    # MUST enforce the FK to `entities` on both source + target so a
+    # canonical join cannot orphan past an entity deletion.
+
+    def write_canonical_join(self, join: CanonicalJoin, *, source_connection_id: str) -> None:
+        """Upsert one CanonicalJoin into the store.
+
+        Implementations MUST:
+          - Reject writes where `source_entity` or `target_entity` is
+            not present in the `entities` table for this source. The
+            store-level FK is the canonical enforcement layer.
+          - Preserve `created_at` semantics across rewrites of the same
+            `(source_connection_id, name)`.
+          - Round-trip the `on` column list via JSON or equivalent —
+            composite-key joins (length >= 2) must survive store
+            re-reads byte-identical.
+          - Accept all three `JoinOrigin` values (`manual`, `suggested`,
+            `dbt_import`). `dbt_import` is reserved for v1 wk-15; the
+            store layer doesn't refuse it — refusal lives in the
+            upstream suggest/apply pipelines that don't yet know how
+            to produce dbt-derived joins.
+        """
+        ...
+
+    def get_canonical_join(self, name: str, *, source_connection_id: str) -> CanonicalJoin | None:
+        """Return the canonical join named `name`, or `None` if absent."""
+        ...
+
+    def list_canonical_joins(
+        self, *, source_connection_id: str | None = None
+    ) -> list[CanonicalJoin]:
+        """Return all canonical joins, ordered deterministically by name.
+
+        `source_connection_id=None` lists across sources. The CLI
+        `joins list` command and the cycle-detection report
+        depend on the alphabetical ordering for stable output.
+        """
+        ...
+
+    def resolve_canonical_joins(
+        self,
+        entity_a: str,
+        entity_b: str,
+        *,
+        source_connection_id: str,
+    ) -> list[CanonicalJoin]:
+        """Return every canonical join between `entity_a` and `entity_b`.
+
+        Direction-insensitive: rows where `(source_entity,
+        target_entity)` is either `(entity_a, entity_b)` or
+        `(entity_b, entity_a)` are returned. The caller — the
+        `resolve_join` MCP tool — implements ambiguity refusal against
+        this list (0 rows = no canonical join; 2+ rows = ambiguous,
+        name-disambiguator path).
+
+        Each row preserves its STORED direction — implementations MUST
+        NOT flip columns based on input order so the agent-facing
+        `sql_skeleton` aligns with how the join was originally
+        confirmed.
+
+        Ordered alphabetically by `name` for determinism.
         """
         ...

@@ -1,0 +1,18 @@
+# ONE example canonical-join definition for the bundled Schema Brain
+# ecommerce demo. Schema Brain is a generic semantic layer; this is
+# a starter pack, NOT a template every user should adopt verbatim.
+#
+# To apply:
+#   schemabrain joins apply schemabrain/joins/fixtures/ecommerce/ \
+#     --source $DATABASE_URL --store-path ./schemabrain.db
+#
+# Requires the matching entity definitions to be applied first.
+
+version: 1
+name: customer_orders
+description: Links each order to the customer who placed it.
+source_entity: order
+target_entity: customer
+"on":
+  - source: user_id
+    target: id

@@ -23,11 +23,14 @@ from __future__ import annotations
 from pathlib import Path
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent
-# Sibling package root for cross-module fixtures (currently only
-# `schemabrain/imports/fixtures/`). The resolver searches across both
-# `eval/` and `imports/` so the user-facing `fixture-path` CLI doesn't
-# leak the internal directory layout.
+# Sibling package roots for cross-module fixtures. The resolver
+# searches across `eval/`, `imports/`, and `joins/` so the user-facing
+# `fixture-path` CLI doesn't leak the internal directory layout.
 _IMPORTS_FIXTURES_DIR: Path = _PACKAGE_ROOT.parent / "imports" / "fixtures"
+# Bundled canonical-join example pack (wk-13). Files live at
+# `joins/fixtures/ecommerce/*.yaml` — one directory deeper than the
+# other bundled fixtures so the per-vertical grouping is explicit.
+_JOINS_FIXTURES_DIR: Path = _PACKAGE_ROOT.parent / "joins" / "fixtures" / "ecommerce"
 
 # Module-private — internal layout of the wheel is not a public API
 # contract. Callers outside the package go through `resolve_bundled_path`
@@ -45,7 +48,20 @@ _BUNDLED_DIRS: tuple[Path, ...] = (
     _BUNDLED_FIXTURES_DIR,
     _BUNDLED_GOLDEN_DIR,
     _IMPORTS_FIXTURES_DIR,
+    _JOINS_FIXTURES_DIR,
 )
+
+
+def bundled_joins_fixture_dir() -> Path:
+    """Return the absolute path to the bundled canonical-join example pack.
+
+    The pack is a directory of YAML files (one canonical join per file)
+    consumable by `schemabrain joins apply <dir>`. Distinct from
+    `resolve_bundled_path` because joins are applied AS A SET, not as
+    individual files — a `directory` is the natural unit of
+    composition.
+    """
+    return _JOINS_FIXTURES_DIR
 
 
 def resolve_bundled_path(name: str) -> Path:
@@ -115,6 +131,7 @@ def list_bundled_files() -> list[str]:
 
 
 __all__ = [
+    "bundled_joins_fixture_dir",
     "list_bundled_files",
     "resolve_bundled_path",
 ]
