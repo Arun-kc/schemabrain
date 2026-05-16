@@ -38,13 +38,23 @@ from schemabrain.core.entity import (
 )
 from schemabrain.core.example_query import ExampleQuery
 from schemabrain.core.join import CanonicalJoin, JoinColumnPair
+from schemabrain.core.metric import (
+    DbtOwnedMetricError,
+    Metric,
+    MetricMeasure,
+)
 from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
 
 # Re-export so existing `from schemabrain.core.store import
-# DbtOwnedEntityError` imports keep working. The exception now lives
-# in `core.entity` (a Protocol-contract concern, not a SQLite concern)
-# but the historical import path stays valid.
-__all__ = ["DbtOwnedEntityError", "SQLiteStore", "SchemaVersionMismatchError"]
+# DbtOwnedEntityError` imports keep working. The exceptions now live
+# in `core.entity` / `core.metric` (Protocol-contract concerns, not
+# SQLite concerns) but the historical import path stays valid.
+__all__ = [
+    "DbtOwnedEntityError",
+    "DbtOwnedMetricError",
+    "SQLiteStore",
+    "SchemaVersionMismatchError",
+]
 
 # Bump the schema version when the on-disk DDL set changes.
 # History:
@@ -104,8 +114,20 @@ __all__ = ["DbtOwnedEntityError", "SQLiteStore", "SchemaVersionMismatchError"]
 #         direction-insensitive lookup as 3-column point seeks; the
 #         self-join refusal in the dataclass keeps `UNION ALL` safe
 #         without DISTINCT.
+#  "10" → added `cardinality TEXT` (nullable) on `canonical_joins`
+#         + added `metrics` table for the metric model. Cardinality is
+#         consumed by the metric compiler to decide fan-out warnings;
+#         NULL is permitted for back-compat with joins authored before
+#         the column existed (compiler treats NULL as `many_to_many`
+#         worst-case). `metrics` mirrors `entities` in shape — `(source_
+#         connection_id, name)` PK, FK CASCADE on the anchor `entities`
+#         row, SQL-layer CHECK on `origin` and `measure_agg`. Time grains
+#         storage uses the canonical-sorted comma-separated convention
+#         from `example_queries.pii_categories`; empty string when
+#         `time_dimension IS NULL`. `idx_metrics_by_entity` covers the
+#         `WHERE entity = ?` lookup the future audit layer will hit.
 # Older stores raise SchemaVersionMismatchError; pre-alpha users re-create.
-_SCHEMA_VERSION = "9"
+_SCHEMA_VERSION = "10"
 _MEMORY_PATH = ":memory:"
 
 # 1 USD = 1_000_000 micros. Storing the ledger as INTEGER micros avoids
@@ -395,6 +417,10 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         on_columns_json TEXT NOT NULL,
         origin TEXT NOT NULL
             CHECK (origin IN ('manual', 'suggested', 'dbt_import')),
+        cardinality TEXT
+            CHECK (cardinality IS NULL OR cardinality IN (
+                'one_to_one', 'one_to_many', 'many_to_one', 'many_to_many'
+            )),
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (source_connection_id, name),
@@ -414,6 +440,46 @@ _DDL_STATEMENTS: tuple[str, ...] = (
             source_entity,
             name
         )
+    """,
+    # Metrics — the value side of the semantic layer. Mirrors `entities`
+    # in shape: `(source_connection_id, name)` PK so name is the public
+    # handle, FK CASCADE on the anchor entity row so a delete sweeps
+    # every metric that depended on it. CHECK on `measure_agg` mirrors
+    # the closed `AggFunction` Literal in `schemabrain.core.metric`;
+    # CHECK on `origin` mirrors `entities.origin`. `time_grains` stored
+    # as a canonical-sorted comma-separated string (`"day,week,month"`),
+    # empty string when `time_dimension IS NULL` — the parallel-emptiness
+    # invariant is enforced by the dataclass on read AND by upstream
+    # writers that already validated the dataclass before calling
+    # `write_metric`. `idx_metrics_by_entity` covers the future audit
+    # layer's `WHERE entity = ?` lookup the metric → entity drift check
+    # will drive.
+    """
+    CREATE TABLE IF NOT EXISTS metrics (
+        source_connection_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        entity TEXT NOT NULL,
+        measure_agg TEXT NOT NULL
+            CHECK (measure_agg IN (
+                'sum', 'count', 'count_distinct', 'avg', 'min', 'max'
+            )),
+        measure_column TEXT NOT NULL,
+        time_dimension TEXT,
+        time_grains TEXT NOT NULL DEFAULT '',
+        origin TEXT NOT NULL
+            CHECK (origin IN ('manual', 'suggested', 'dbt_import')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (source_connection_id, name),
+        FOREIGN KEY (source_connection_id, entity)
+            REFERENCES entities (source_connection_id, name)
+            ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_metrics_by_entity
+        ON metrics (source_connection_id, entity, name)
     """,
 )
 
@@ -490,6 +556,33 @@ def _row_to_canonical_join(row: sqlite3.Row) -> CanonicalJoin:
         source_entity=row["source_entity"],
         target_entity=row["target_entity"],
         on=on_pairs,
+        origin=row["origin"],
+        cardinality=row["cardinality"],
+    )
+
+
+def _row_to_metric(row: sqlite3.Row) -> Metric:
+    """Reconstruct a `Metric` from a `metrics` row.
+
+    `time_grains` is stored as a sorted comma-separated string with `''`
+    meaning the empty set (the same shape pattern as
+    `example_queries.pii_categories`). The `Metric` constructor
+    re-runs all invariants (identifier shape, paired-emptiness on the
+    time fields, canonical grain order, enum membership) — a corrupt
+    row surfaces here, not in an MCP-tool caller several layers up.
+    """
+    stored_grains = row["time_grains"]
+    time_grains = tuple(stored_grains.split(",")) if stored_grains else ()
+    return Metric(
+        name=row["name"],
+        description=row["description"],
+        entity=row["entity"],
+        measure=MetricMeasure(
+            agg=row["measure_agg"],
+            column=row["measure_column"],
+        ),
+        time_dimension=row["time_dimension"],
+        time_grains=time_grains,  # type: ignore[arg-type]
         origin=row["origin"],
     )
 
@@ -1647,14 +1740,15 @@ class SQLiteStore:
                 "INSERT INTO canonical_joins ("
                 "source_connection_id, name, description, "
                 "source_entity, target_entity, on_columns_json, origin, "
-                "created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "cardinality, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (source_connection_id, name) DO UPDATE SET "
                 "description = excluded.description, "
                 "source_entity = excluded.source_entity, "
                 "target_entity = excluded.target_entity, "
                 "on_columns_json = excluded.on_columns_json, "
                 "origin = excluded.origin, "
+                "cardinality = excluded.cardinality, "
                 "updated_at = excluded.updated_at",
                 (
                     source_connection_id,
@@ -1664,6 +1758,7 @@ class SQLiteStore:
                     join.target_entity,
                     on_columns_json,
                     join.origin,
+                    join.cardinality,
                     now,
                     now,
                 ),
@@ -1674,7 +1769,7 @@ class SQLiteStore:
         conn = self._require_conn()
         row = conn.execute(
             "SELECT name, description, source_entity, target_entity, "
-            "on_columns_json, origin FROM canonical_joins "
+            "on_columns_json, origin, cardinality FROM canonical_joins "
             "WHERE source_connection_id = ? AND name = ?",
             (source_connection_id, name),
         ).fetchone()
@@ -1695,13 +1790,13 @@ class SQLiteStore:
         if source_connection_id is None:
             rows = conn.execute(
                 "SELECT name, description, source_entity, target_entity, "
-                "on_columns_json, origin FROM canonical_joins "
+                "on_columns_json, origin, cardinality FROM canonical_joins "
                 "ORDER BY name, source_connection_id"
             ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT name, description, source_entity, target_entity, "
-                "on_columns_json, origin FROM canonical_joins "
+                "on_columns_json, origin, cardinality FROM canonical_joins "
                 "WHERE source_connection_id = ? ORDER BY name",
                 (source_connection_id,),
             ).fetchall()
@@ -1742,7 +1837,7 @@ class SQLiteStore:
         conn = self._require_conn()
         select_cols = (
             "SELECT name, description, source_entity, target_entity, "
-            "on_columns_json, origin FROM canonical_joins "
+            "on_columns_json, origin, cardinality FROM canonical_joins "
         )
         rows = conn.execute(
             f"{select_cols}"
@@ -1763,6 +1858,138 @@ class SQLiteStore:
             ),
         ).fetchall()
         return [_row_to_canonical_join(row) for row in rows]
+
+    # ----- Metrics --------------------------------------------------
+    #
+    # The value side of the semantic layer. Same shape pattern as
+    # `Entity` / `CanonicalJoin` — name-keyed, FK-anchored on entities,
+    # closed-grammar agg + grain enforced at the SQL CHECK layer and
+    # re-checked on read by the dataclass. The dbt-owned write guard
+    # mirrors `write_entity`'s behaviour: a manual or LLM-suggested
+    # write over a `dbt_import` row raises `DbtOwnedMetricError`.
+
+    def write_metric(self, metric: Metric, *, source_connection_id: str) -> None:
+        """Idempotent upsert of one `Metric`.
+
+        The anchor entity (`metric.entity`) MUST already exist in the
+        `entities` table for this source — the FK constraint enforces
+        that at the SQLite layer. Callers (the apply pipeline + CLI)
+        surface a guided error if the entity is missing.
+
+        dbt-owned write guard: writing a manual / suggested metric over
+        an existing `dbt_import` row raises `DbtOwnedMetricError`. Same
+        check shape as `write_entity` — a SELECT-then-INSERT against
+        the existing row's origin. Re-importing the same metric via
+        `dbt_import → dbt_import` is the intended idempotent path and
+        is permitted.
+
+        Single-statement UPSERT keyed on `(source_connection_id, name)`
+        — preserves `created_at` across re-writes while `updated_at`
+        advances every write.
+
+        `time_grains` serialises to a sorted comma-separated string;
+        the dataclass guarantees canonical sort + uniqueness so the
+        persisted shape is deterministic and round-trips byte-identical.
+        """
+        stored_grains = ",".join(metric.time_grains) if metric.time_grains else ""
+        conn = self._require_conn()
+        with conn:
+            existing = conn.execute(
+                "SELECT origin FROM metrics "
+                "WHERE source_connection_id = ? AND name = ?",
+                (source_connection_id, metric.name),
+            ).fetchone()
+            if (
+                existing is not None
+                and existing["origin"] == "dbt_import"
+                and metric.origin != "dbt_import"
+            ):
+                raise DbtOwnedMetricError(
+                    f"metric {metric.name!r} is owned by dbt import "
+                    f"(origin='dbt_import'); manual / suggested writes refused. "
+                    f"Edit the upstream dbt model and re-run "
+                    f"`schemabrain import dbt --include-metrics`."
+                )
+            now = int(time.time())
+            # `created_at` is deliberately omitted from the UPDATE set
+            # so the original insertion timestamp survives every UPSERT
+            # — same asymmetry as `write_entity` / `write_canonical_join`.
+            # `entity` is deliberately omitted from the DO UPDATE SET.
+            # The anchor entity is structurally part of what a metric
+            # IS — a `total_revenue` metric re-anchored from `order` to
+            # `customer` is a different metric, not an update. A
+            # caller wanting to change the anchor must delete the
+            # metric and re-create. (Mirrors the discipline used for
+            # `entities.name` and `canonical_joins.name`, which are
+            # part of the PK and cannot mutate either.)
+            conn.execute(
+                "INSERT INTO metrics ("
+                "source_connection_id, name, description, "
+                "entity, measure_agg, measure_column, "
+                "time_dimension, time_grains, origin, "
+                "created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (source_connection_id, name) DO UPDATE SET "
+                "description = excluded.description, "
+                "measure_agg = excluded.measure_agg, "
+                "measure_column = excluded.measure_column, "
+                "time_dimension = excluded.time_dimension, "
+                "time_grains = excluded.time_grains, "
+                "origin = excluded.origin, "
+                "updated_at = excluded.updated_at",
+                (
+                    source_connection_id,
+                    metric.name,
+                    metric.description,
+                    metric.entity,
+                    metric.measure.agg,
+                    metric.measure.column,
+                    metric.time_dimension,
+                    stored_grains,
+                    metric.origin,
+                    now,
+                    now,
+                ),
+            )
+
+    def get_metric(self, name: str, *, source_connection_id: str) -> Metric | None:
+        """Return the metric named `name`, or `None` if absent."""
+        conn = self._require_conn()
+        row = conn.execute(
+            "SELECT name, description, entity, measure_agg, measure_column, "
+            "time_dimension, time_grains, origin FROM metrics "
+            "WHERE source_connection_id = ? AND name = ?",
+            (source_connection_id, name),
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_metric(row)
+
+    def list_metrics(
+        self, *, source_connection_id: str | None = None
+    ) -> list[Metric]:
+        """Return all metrics, ordered alphabetically by name.
+
+        `source_connection_id=None` lists across sources; ordering is
+        `(name, source_connection_id)` so cross-source results are
+        deterministic. The CLI `metrics list` command depends on the
+        alphabetical order for stable output across runs.
+        """
+        conn = self._require_conn()
+        if source_connection_id is None:
+            rows = conn.execute(
+                "SELECT name, description, entity, measure_agg, measure_column, "
+                "time_dimension, time_grains, origin FROM metrics "
+                "ORDER BY name, source_connection_id"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT name, description, entity, measure_agg, measure_column, "
+                "time_dimension, time_grains, origin FROM metrics "
+                "WHERE source_connection_id = ? ORDER BY name",
+                (source_connection_id,),
+            ).fetchall()
+        return [_row_to_metric(row) for row in rows]
 
     def close(self) -> None:
         if self._conn is not None:
