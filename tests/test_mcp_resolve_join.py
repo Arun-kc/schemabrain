@@ -373,8 +373,12 @@ class TestSqlSkeleton:
             entity_b="customer",
         )
         store.close()
-        # Target table name + alias + ON predicate.
-        assert info.sql_skeleton == ("JOIN public.users AS customer ON order.user_id = customer.id")
+        # Target table name + alias + ON predicate. Identifiers are
+        # double-quoted so reserved-keyword aliases (`order`) survive
+        # paste-into-Postgres.
+        assert info.sql_skeleton == (
+            'JOIN "public"."users" AS "customer" ON "order"."user_id" = "customer"."id"'
+        )
 
     def test_composite_predicate_renders_with_and(self, tmp_path: Path) -> None:
         store = _seed_orders_customer(tmp_path)
@@ -399,5 +403,5 @@ class TestSqlSkeleton:
         )
         store.close()
         assert " AND " in info.sql_skeleton
-        assert "order.org_id = customer.org_id" in info.sql_skeleton
-        assert "order.user_id = customer.id" in info.sql_skeleton
+        assert '"order"."org_id" = "customer"."org_id"' in info.sql_skeleton
+        assert '"order"."user_id" = "customer"."id"' in info.sql_skeleton

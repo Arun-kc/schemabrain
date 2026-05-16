@@ -27,6 +27,7 @@ from schemabrain.core.embedding import ColumnEmbedding
 from schemabrain.core.entity import Entity
 from schemabrain.core.example_query import ExampleQuery
 from schemabrain.core.join import CanonicalJoin
+from schemabrain.core.metric import Metric
 from schemabrain.core.models import ForeignKey, IncomingForeignKey, Table
 
 
@@ -419,5 +420,52 @@ class Store(Protocol):
         confirmed.
 
         Ordered alphabetically by `name` for determinism.
+        """
+        ...
+
+    # ----- Metrics --------------------------------------------------
+    #
+    # The value side of the semantic layer. Implementations MUST raise
+    # `DbtOwnedMetricError` from `write_metric` when a non-`dbt_import`
+    # metric is written over an existing `dbt_import` row — the same
+    # contract `write_entity` enforces for entities.
+
+    def write_metric(self, metric: Metric, *, source_connection_id: str) -> None:
+        """Upsert one Metric into the store.
+
+        Implementations MUST:
+          - Reject overwriting an existing `origin="dbt_import"` row
+            with a non-`dbt_import` metric; raise `DbtOwnedMetricError`
+            (a `ValueError` subclass, defined in
+            `schemabrain.core.metric`).
+          - Allow `dbt_import → dbt_import` (idempotent re-import is
+            the intended `schemabrain import dbt --include-metrics`
+            re-run path).
+          - Allow `dbt_import` to overwrite an existing `manual` or
+            `suggested` metric — the dbt import is the source of
+            truth and takes ownership.
+          - Allow `manual ↔ manual` and `suggested → manual` (user
+            confirmation of an LLM suggestion).
+          - Preserve `created_at` semantics across rewrites of the
+            same `(source_connection_id, name)`.
+          - Enforce the anchor-entity foreign key — writes referencing
+            an entity not yet in the store MUST fail.
+          - Round-trip `time_grains` as a canonical-sorted comma-
+            separated string; empty string when `time_dimension is
+            None`. The dataclass invariant (paired-emptiness +
+            canonical order) is the source of truth.
+        """
+        ...
+
+    def get_metric(self, name: str, *, source_connection_id: str) -> Metric | None:
+        """Return the metric named `name`, or `None` if absent."""
+        ...
+
+    def list_metrics(self, *, source_connection_id: str | None = None) -> list[Metric]:
+        """Return all metrics, ordered deterministically by name.
+
+        `source_connection_id=None` lists across sources. The CLI
+        `metrics list` command depends on alphabetical ordering for
+        stable output across runs.
         """
         ...

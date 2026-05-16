@@ -11,3 +11,4 @@ target_entity: address
 "on":
   - source: billing_address_id
     target: id
+cardinality: many_to_one

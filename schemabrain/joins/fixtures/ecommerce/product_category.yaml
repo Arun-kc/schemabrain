@@ -9,3 +9,4 @@ target_entity: category
 "on":
   - source: category_id
     target: id
+cardinality: many_to_one

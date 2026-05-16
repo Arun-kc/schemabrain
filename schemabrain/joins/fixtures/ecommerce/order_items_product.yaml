@@ -6,3 +6,4 @@ target_entity: product
 "on":
   - source: product_id
     target: id
+cardinality: many_to_one

@@ -221,7 +221,7 @@ class TestEndToEnd:
                 entity_b="customer",
             )
         assert info.name == "customer_orders"
-        assert "ON order.user_id = customer.id" in info.sql_skeleton
+        assert 'ON "order"."user_id" = "customer"."id"' in info.sql_skeleton
 
     def test_ambiguity_refusal_on_billing_shipping_pair(self, tmp_path: Path) -> None:
         # The the design's poster child — without `name`,

@@ -87,6 +87,11 @@ ErrorKind = Literal[
     "ambiguous_join",
     "unknown_join_name",
     "join_name_mismatch",
+    # metric surface:
+    "unknown_metric",
+    "unreachable_entity",
+    "invalid_time_grain",
+    "grain_mismatch",
 ]
 
 # The subset of ErrorKinds that semantically support v1.1 Recovery

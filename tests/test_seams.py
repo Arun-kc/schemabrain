@@ -33,6 +33,7 @@ from schemabrain.core.embedding import ColumnEmbedding
 from schemabrain.core.entity import Entity
 from schemabrain.core.example_query import ExampleQuery
 from schemabrain.core.join import CanonicalJoin
+from schemabrain.core.metric import Metric
 from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
 from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.anthropic_client import (
@@ -512,6 +513,15 @@ class TestStoreProtocolSeamUsable:
                 *,
                 source_connection_id: str,
             ) -> list[CanonicalJoin]:
+                return []
+
+            def write_metric(self, metric: Metric, *, source_connection_id: str) -> None:
+                pass
+
+            def get_metric(self, name: str, *, source_connection_id: str) -> Metric | None:
+                return None
+
+            def list_metrics(self, *, source_connection_id: str | None = None) -> list[Metric]:
                 return []
 
         store = _InMemoryStore()

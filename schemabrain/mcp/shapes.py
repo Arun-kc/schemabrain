@@ -6,7 +6,7 @@ per-tool modules stay focused on logic only.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -459,3 +459,69 @@ class CanonicalJoinInfo(BaseModel):
     on: list[JoinColumnPairInfo] = Field(min_length=1)
     sql_skeleton: str
     token_estimate: int
+
+
+# ----- metric shapes --------------------------------------------------------
+#
+# The boundary between the agent (caller of `get_metric`) and the
+# Schema Brain compiler. The Pydantic shapes here are the wire format
+# FastMCP exposes; the compiler's `RequestedFilter` dataclass is the
+# internal IR — there's a one-to-one mapping between them.
+
+
+class MetricFilterArg(BaseModel):
+    """One filter predicate the agent wants applied to `get_metric`.
+
+    `column` is `<entity>.<column>` form. `op` is the closed set the
+    compiler supports. `value` is null for the unary operators
+    `is_null` / `not_null`, a list for `in` / `not_in`, and a scalar
+    otherwise. The compiler validates op/value coherence in `resolve`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    column: str
+    op: Literal[
+        "eq",
+        "ne",
+        "lt",
+        "lte",
+        "gt",
+        "gte",
+        "in",
+        "not_in",
+        "is_null",
+        "not_null",
+    ]
+    value: Any = None
+
+
+class MetricResult(BaseModel):
+    """Return shape for `get_metric` (success path).
+
+    `rows` is the materialised result set — one dict per row, keyed by
+    column alias. `sql_skeleton` is the parameterised SQL emitted by
+    the compiler (with `:p_*` placeholders); `sql_params` carries the
+    bound values. An agent can audit or compose against either.
+
+    `fingerprint` is reserved for the audit layer (future PR). It's
+    stubbed here as `"fp-stub"` so the wire shape is locked from day
+    one; when the real fingerprint formula activates, no consumer-
+    side change is needed.
+
+    `fan_out_join_names` surfaces the canonical-join names whose
+    cardinality means the result rows may be inflated by JOIN expansion
+    (one_to_many or many_to_many from the metric anchor). Empty when
+    no fan-out joins were traversed.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    rows: list[dict[str, Any]]
+    row_count: int
+    sql_skeleton: str
+    sql_params: dict[str, Any]
+    fingerprint: str
+    token_estimate: int
+    required_joins: list[str]
+    fan_out_join_names: list[str]

@@ -563,3 +563,93 @@ class TestEntityCascade:
             joins = store.list_canonical_joins(source_connection_id=SOURCE_A)
         assert got is None
         assert joins == []
+
+
+# ----- cardinality round-trip -----------------------------------------------
+
+
+class TestCardinalityRoundTrip:
+    def test_none_cardinality_round_trips(self, tmp_path: Path) -> None:
+        # Joins authored before the cardinality column existed still
+        # round-trip cleanly with `cardinality=None` — the
+        # back-compat invariant the dataclass default codifies.
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_customer_order_pair(store)
+            store.write_canonical_join(_customer_orders_join(), source_connection_id=SOURCE_A)
+            got = store.get_canonical_join("customer_orders", source_connection_id=SOURCE_A)
+        assert got is not None
+        assert got.cardinality is None
+
+    @pytest.mark.parametrize(
+        "cardinality",
+        ["one_to_one", "one_to_many", "many_to_one", "many_to_many"],
+    )
+    def test_explicit_cardinality_round_trips(self, tmp_path: Path, cardinality: str) -> None:
+        # All four cardinality literals survive write → read. The
+        # metric compiler consumes this field to decide fan-out
+        # warnings on the get_metric result envelope.
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_customer_order_pair(store)
+            join = CanonicalJoin(
+                name="customer_orders",
+                description="",
+                source_entity="order",
+                target_entity="customer",
+                on=(JoinColumnPair(source_column="user_id", target_column="id"),),
+                cardinality=cardinality,  # type: ignore[arg-type]
+            )
+            store.write_canonical_join(join, source_connection_id=SOURCE_A)
+            got = store.get_canonical_join("customer_orders", source_connection_id=SOURCE_A)
+        assert got is not None
+        assert got.cardinality == cardinality
+
+    def test_cardinality_visible_in_list(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_customer_order_pair(store)
+            join = CanonicalJoin(
+                name="customer_orders",
+                description="",
+                source_entity="order",
+                target_entity="customer",
+                on=(JoinColumnPair(source_column="user_id", target_column="id"),),
+                cardinality="many_to_one",
+            )
+            store.write_canonical_join(join, source_connection_id=SOURCE_A)
+            rows = store.list_canonical_joins(source_connection_id=SOURCE_A)
+        assert len(rows) == 1
+        assert rows[0].cardinality == "many_to_one"
+
+    def test_cardinality_visible_in_resolve(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_customer_order_pair(store)
+            join = CanonicalJoin(
+                name="customer_orders",
+                description="",
+                source_entity="order",
+                target_entity="customer",
+                on=(JoinColumnPair(source_column="user_id", target_column="id"),),
+                cardinality="one_to_many",
+            )
+            store.write_canonical_join(join, source_connection_id=SOURCE_A)
+            resolved = store.resolve_canonical_joins(
+                "order", "customer", source_connection_id=SOURCE_A
+            )
+        assert len(resolved) == 1
+        assert resolved[0].cardinality == "one_to_many"
+
+    def test_upsert_overwrites_cardinality(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_customer_order_pair(store)
+            store.write_canonical_join(_customer_orders_join(), source_connection_id=SOURCE_A)
+            updated = CanonicalJoin(
+                name="customer_orders",
+                description="",
+                source_entity="order",
+                target_entity="customer",
+                on=(JoinColumnPair(source_column="user_id", target_column="id"),),
+                cardinality="many_to_one",
+            )
+            store.write_canonical_join(updated, source_connection_id=SOURCE_A)
+            got = store.get_canonical_join("customer_orders", source_connection_id=SOURCE_A)
+        assert got is not None
+        assert got.cardinality == "many_to_one"

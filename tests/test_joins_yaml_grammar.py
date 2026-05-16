@@ -461,3 +461,69 @@ target_entity: b
 """.strip()
         with pytest.raises(CanonicalJoinParseError, match=r"on\[0\]\.target must be"):
             parse_canonical_join_yaml(text)
+
+
+class TestCardinalityField:
+    @pytest.mark.parametrize(
+        "cardinality",
+        ["one_to_one", "one_to_many", "many_to_one", "many_to_many"],
+    )
+    def test_cardinality_carries_through(self, cardinality: str) -> None:
+        # `cardinality` is optional at the grammar layer (older rows
+        # have `None`); when populated the parser validates the closed
+        # Literal before delegating to the dataclass.
+        text = f"""
+version: 1
+name: customer_orders
+source_entity: order
+target_entity: customer
+on:
+  - source: user_id
+    target: id
+cardinality: {cardinality}
+""".strip()
+        join = parse_canonical_join_yaml(text)
+        assert join.cardinality == cardinality
+
+    def test_cardinality_absent_yields_none(self) -> None:
+        # Hand-authored YAML pre-dating wk-15 lacks the field; we keep
+        # the round-trip valid by treating absence as `None`.
+        text = """
+version: 1
+name: customer_orders
+source_entity: order
+target_entity: customer
+on:
+  - source: user_id
+    target: id
+""".strip()
+        join = parse_canonical_join_yaml(text)
+        assert join.cardinality is None
+
+    def test_unknown_cardinality_rejected(self) -> None:
+        text = """
+version: 1
+name: customer_orders
+source_entity: order
+target_entity: customer
+on:
+  - source: user_id
+    target: id
+cardinality: many_per_few
+""".strip()
+        with pytest.raises(CanonicalJoinParseError, match="cardinality"):
+            parse_canonical_join_yaml(text)
+
+    def test_non_string_cardinality_rejected(self) -> None:
+        text = """
+version: 1
+name: customer_orders
+source_entity: order
+target_entity: customer
+on:
+  - source: user_id
+    target: id
+cardinality: 42
+""".strip()
+        with pytest.raises(CanonicalJoinParseError, match="cardinality"):
+            parse_canonical_join_yaml(text)

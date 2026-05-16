@@ -2211,10 +2211,13 @@ class TestServeSubcommand:
 
         captured: dict[str, object] = {}
 
-        def _capture_run_stdio(*, store, source_connection_id, embedder) -> None:
+        def _capture_run_stdio(
+            *, store, source_connection_id, embedder, metric_executor=None
+        ) -> None:
             captured["store_is_sqlite_store"] = isinstance(store, SQLiteStore)
             captured["source_connection_id"] = source_connection_id
             captured["embedder_is_callable"] = hasattr(embedder, "embed")
+            captured["metric_executor_provided"] = metric_executor is not None
 
         monkeypatch.setattr("schemabrain.cli.run_stdio", _capture_run_stdio)
 

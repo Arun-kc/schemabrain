@@ -1,0 +1,9 @@
+version: 1
+name: order_count
+description: Number of orders placed per requested grain.
+entity: order
+measure:
+  agg: count
+  column: id
+time_dimension: order.placed_at
+time_grains: [day, week, month]

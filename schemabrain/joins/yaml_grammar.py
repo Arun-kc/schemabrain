@@ -35,8 +35,10 @@ from typing import Any
 import yaml
 
 from schemabrain.core.join import (
+    _VALID_CARDINALITIES,
     _VALID_ORIGINS,
     CanonicalJoin,
+    Cardinality,
     JoinColumnPair,
     JoinOrigin,
 )
@@ -76,7 +78,16 @@ _Yaml12SafeLoader.add_implicit_resolver(
 # schema/version bump silently changes the parser surface, so the
 # frozensets are the single source of truth.
 _ALLOWED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
-    {"version", "name", "description", "source_entity", "target_entity", "on", "origin"}
+    {
+        "version",
+        "name",
+        "description",
+        "source_entity",
+        "target_entity",
+        "on",
+        "origin",
+        "cardinality",
+    }
 )
 _REQUIRED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
     {"version", "name", "source_entity", "target_entity", "on"}
@@ -138,6 +149,7 @@ def parse_canonical_join_yaml(text: str) -> CanonicalJoin:
     target_entity = _require_str(data, "target_entity")
     on = _parse_on_list(data["on"])
     origin = _parse_origin(data.get("origin", "manual"))
+    cardinality = _parse_cardinality(data.get("cardinality"))
 
     # The dataclass `__post_init__` re-runs identifier-shape +
     # self-join + empty-on + origin-enum checks. Re-wrap any failure
@@ -153,6 +165,7 @@ def parse_canonical_join_yaml(text: str) -> CanonicalJoin:
             target_entity=target_entity,
             on=on,
             origin=origin,
+            cardinality=cardinality,
         )
     except ValueError as exc:
         raise CanonicalJoinParseError(f"canonical-join validation failed: {exc}") from exc
@@ -320,4 +333,23 @@ def _parse_origin(raw: Any) -> JoinOrigin:
         )
     # The Literal narrowing happens via the runtime check above; mypy
     # sees a `str`, but the value is provably one of the three.
+    return raw  # type: ignore[return-value]
+
+
+def _parse_cardinality(raw: Any) -> Cardinality | None:
+    # Optional field. Absent (None on the YAML mapping) → None on the
+    # dataclass — the back-compat shape for joins authored before
+    # cardinality landed. Anything present must be a string in the
+    # closed Literal set.
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise CanonicalJoinParseError(
+            f"cardinality must be a string (got {type(raw).__name__}: {raw!r})"
+        )
+    if raw not in _VALID_CARDINALITIES:
+        raise CanonicalJoinParseError(
+            f"cardinality must be one of {sorted(_VALID_CARDINALITIES)} (got {raw!r})"
+        )
+    # Literal narrowing via runtime check.
     return raw  # type: ignore[return-value]

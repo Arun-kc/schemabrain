@@ -60,33 +60,33 @@ def _eq(
     )
 
 
-class TestSchemaVersionBumpToV9:
-    """Pre-alpha contract: a store written by a v8 Schema Brain raises
+class TestSchemaVersionBumpToV10:
+    """Pre-alpha contract: a store written by a v9 Schema Brain raises
     `SchemaVersionMismatchError` on open. Per project convention only
     the current N-1 version-bump test is retained — the prior
-    `TestSchemaVersionBumpToV8` class (added at the v7→v8 bump) was
-    removed when this class was added at the v8→v9 bump (canonical-join
-    graph introduction).
+    `TestSchemaVersionBumpToV9` class (added at the v8→v9 bump) was
+    removed when this class was added at the v9→v10 bump (cardinality
+    column on canonical_joins + metrics table).
     """
 
-    def test_fresh_store_has_schema_version_9(self, tmp_path: Path) -> None:
+    def test_fresh_store_has_schema_version_10(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "sb.db") as store:
             row = (
                 store._require_conn()
                 .execute("SELECT value FROM schemabrain_meta WHERE key = 'schema_version'")
                 .fetchone()
             )
-            assert row["value"] == "9"
+            assert row["value"] == "10"
 
-    def test_opening_a_v8_store_raises(self, tmp_path: Path) -> None:
+    def test_opening_a_v9_store_raises(self, tmp_path: Path) -> None:
         db_path = tmp_path / "sb.db"
         store = SQLiteStore(db_path)
         store._require_conn().execute(
-            "UPDATE schemabrain_meta SET value = '8' WHERE key = 'schema_version'"
+            "UPDATE schemabrain_meta SET value = '9' WHERE key = 'schema_version'"
         )
         store._require_conn().commit()
         store.close()
-        with pytest.raises(SchemaVersionMismatchError, match=r"8.*9|9.*8"):
+        with pytest.raises(SchemaVersionMismatchError, match=r"9.*10|10.*9"):
             SQLiteStore(db_path)
 
     def test_unique_index_exists(self, tmp_path: Path) -> None:

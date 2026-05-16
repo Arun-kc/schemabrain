@@ -226,3 +226,53 @@ class TestCanonicalJoinValidation:
         # consistent across the semantic-layer surface.
         for origin in ("manual", "suggested", "dbt_import"):
             _make_join(origin=origin)
+
+
+# ----- Cardinality -----------------------------------------------------------
+
+
+class TestCanonicalJoinCardinality:
+    def test_cardinality_defaults_to_none(self) -> None:
+        # Joins authored before the cardinality column was added do
+        # not carry one. Default `None` keeps those rows valid on
+        # round-trip; the compiler treats `None` as `many_to_many`
+        # (worst-case → fan-out warning).
+        join = _make_join()
+        assert join.cardinality is None
+
+    @pytest.mark.parametrize(
+        "cardinality",
+        ["one_to_one", "one_to_many", "many_to_one", "many_to_many"],
+    )
+    def test_accepts_all_four_cardinality_literals(self, cardinality: str) -> None:
+        join = _make_join(cardinality=cardinality)
+        assert join.cardinality == cardinality
+
+    @pytest.mark.parametrize(
+        "bad_cardinality",
+        [
+            "",
+            "1_to_1",
+            "ONE_TO_MANY",  # case-sensitive
+            "to_one",
+            "many",
+            "1:1",
+        ],
+    )
+    def test_rejects_unknown_cardinality(self, bad_cardinality: str) -> None:
+        with pytest.raises(ValueError, match="cardinality"):
+            _make_join(cardinality=bad_cardinality)
+
+    def test_cardinality_participates_in_equality(self) -> None:
+        # Frozen + new field — two joins with same fields but different
+        # cardinality are unequal. Catches accidental field-omission
+        # bugs in `_row_to_canonical_join` that would silently drop the
+        # column on round-trip.
+        a = _make_join(cardinality="one_to_many")
+        b = _make_join(cardinality="many_to_one")
+        assert a != b
+
+    def test_explicit_none_equal_to_default(self) -> None:
+        a = _make_join()
+        b = _make_join(cardinality=None)
+        assert a == b

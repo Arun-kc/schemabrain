@@ -50,6 +50,14 @@ from typing import Literal, get_args
 JoinOrigin = Literal["manual", "suggested", "dbt_import"]
 _VALID_ORIGINS: frozenset[str] = frozenset(get_args(JoinOrigin))
 
+# Closed set of cardinality values. Optional on the dataclass — joins
+# authored before the cardinality column landed don't carry one, and
+# the metric compiler treats `None` as `many_to_many` (worst-case →
+# emits fan-out warning). The set matches the dimensional-modelling
+# convention used by dbt's semantic layer.
+Cardinality = Literal["one_to_one", "one_to_many", "many_to_one", "many_to_many"]
+_VALID_CARDINALITIES: frozenset[str] = frozenset(get_args(Cardinality))
+
 # Postgres unquoted identifier shape — same alphabet as
 # `Entity.name` and `Entity.identity` so a canonical join's
 # columns satisfy the same identifier invariants the bound
@@ -98,6 +106,7 @@ class CanonicalJoin:
     target_entity: str
     on: tuple[JoinColumnPair, ...]
     origin: JoinOrigin = "manual"
+    cardinality: Cardinality | None = None
 
     def __post_init__(self) -> None:
         if not _IDENT_RE.fullmatch(self.name):
@@ -123,4 +132,12 @@ class CanonicalJoin:
         if self.origin not in _VALID_ORIGINS:
             raise ValueError(
                 f"origin must be one of {sorted(_VALID_ORIGINS)} (got {self.origin!r})"
+            )
+        # `None` is valid (the back-compat shape for joins authored
+        # before this column existed); any string value must be in
+        # the closed Literal set.
+        if self.cardinality is not None and self.cardinality not in _VALID_CARDINALITIES:
+            raise ValueError(
+                f"cardinality must be None or one of "
+                f"{sorted(_VALID_CARDINALITIES)} (got {self.cardinality!r})"
             )
