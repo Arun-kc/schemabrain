@@ -65,6 +65,7 @@ _SIBLING_TOOLS = frozenset(
         "get_example_queries",
         "list_entities",
         "describe_entity",
+        "resolve_join",
     }
 )
 
@@ -194,6 +195,10 @@ _HAPPY_PATH_ARGS: dict[str, dict[str, object]] = {
     # against `ToolResponse`.
     "list_entities": {},
     "describe_entity": {"name": "customer"},
+    # No canonical join seeded → returns the `unknown_name` envelope
+    # (entity `customer` doesn't exist in the lint store). The
+    # response still round-trips through `ToolResponse`.
+    "resolve_join": {"entity_a": "customer", "entity_b": "order"},
 }
 
 

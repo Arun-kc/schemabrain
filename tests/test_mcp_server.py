@@ -128,6 +128,7 @@ class TestToolRegistry:
             "get_example_queries",
             "list_entities",
             "describe_entity",
+            "resolve_join",
         }
 
     def test_descriptions_lead_with_use_this_when(self, server_with_one_table) -> None:

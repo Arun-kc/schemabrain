@@ -361,3 +361,101 @@ class EntityDetail(BaseModel):
     origin: Origin
     columns: list[EntityColumn]
     token_estimate: int
+
+
+# ----- canonical-join shapes (wk-13) ----------------------------------------
+
+
+class NoCanonicalJoinError(LookupError):
+    """Raised by `resolve_join_impl` when no canonical join exists
+    between the requested entity pair.
+
+    Distinct from `EntityNotFoundError` (one or both entities don't
+    exist) so the MCP wrapper can route to different error kinds —
+    `no_canonical_join` vs `unknown_name`.
+    """
+
+
+class AmbiguousJoinError(LookupError):
+    """Raised by `resolve_join_impl` when 2+ canonical joins exist
+    between the entity pair and no `name` arg was passed to
+    disambiguate.
+
+    Carries the list of candidate join names on `.candidate_names` so
+    the MCP wrapper can surface them in the recovery hint.
+    """
+
+    def __init__(self, message: str, *, candidate_names: tuple[str, ...]) -> None:
+        super().__init__(message)
+        self.candidate_names = candidate_names
+
+
+class JoinNameMismatchError(LookupError):
+    """Raised by `resolve_join_impl` when exactly one canonical join
+    exists between the entity pair, but the caller passed a `name`
+    arg that doesn't match it.
+
+    Carries `.canonical_name` so the recovery message can show the
+    one actually-canonical name.
+    """
+
+    def __init__(self, message: str, *, canonical_name: str) -> None:
+        super().__init__(message)
+        self.canonical_name = canonical_name
+
+
+class UnknownJoinNameError(LookupError):
+    """Raised by `resolve_join_impl` when 2+ canonical joins exist
+    between the entity pair and the `name` arg doesn't match any of
+    them.
+
+    Carries `.candidate_names` so the recovery message can list all
+    available names.
+    """
+
+    def __init__(self, message: str, *, candidate_names: tuple[str, ...]) -> None:
+        super().__init__(message)
+        self.candidate_names = candidate_names
+
+
+class JoinColumnPairInfo(BaseModel):
+    """One equi-join column pair in `CanonicalJoinInfo`. Mirrors the
+    persisted `JoinColumnPair` shape but as Pydantic (not dataclass)
+    so it serialises cleanly through the MCP envelope.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    source_column: str
+    target_column: str
+
+
+class CanonicalJoinInfo(BaseModel):
+    """Return shape for `resolve_join`.
+
+    `source_entity` / `target_entity` preserve the STORED direction —
+    the `resolve_join` lookup is direction-insensitive, but the
+    response orients per how the user originally confirmed the join
+    so the `sql_skeleton` field renders predictably.
+
+    `sql_skeleton` is a ready-to-paste `JOIN <target> AS <alias> ON
+    ...` clause. Composite-key joins render with `AND`-joined column
+    predicates. The agent doesn't need a second round-trip to
+    `describe_entity` to learn the physical table — the skeleton
+    embeds it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    description: str
+    source_entity: str
+    target_entity: str
+    # Mirror of the persisted `CanonicalJoin.on` non-empty invariant
+    # at the Pydantic envelope layer. Without `min_length=1`, a
+    # `CanonicalJoinInfo` constructed from a raw dict (test, future
+    # deserialiser) could carry an empty pair list while the persisted
+    # row never can.
+    on: list[JoinColumnPairInfo] = Field(min_length=1)
+    sql_skeleton: str
+    token_estimate: int
