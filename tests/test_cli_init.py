@@ -937,6 +937,107 @@ class TestWizardRenderer:
         # full pipeline shape, not the count of outcomes seen).
         assert "Stopped at stage 4 of 5" in captured.err
 
+    def test_stage_context_no_op_for_fast_stages(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Fast stages (source_check, wire_host, next_step) skip the
+        # spinner entirely — early-return before touching the console.
+        from schemabrain.cli import _wizard_stage_context
+
+        class _StubConsole:
+            is_terminal = True
+
+            def status(self, *_a: object, **_kw: object) -> None:  # pragma: no cover - guard
+                raise AssertionError("status should not be called for fast stages")
+
+        monkeypatch.setattr("schemabrain.cli._stderr_console", lambda: _StubConsole())
+
+        class _FakeStage:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        for name in ("source_check", "wire_host", "next_step"):
+            with _wizard_stage_context(_FakeStage(name)):
+                pass
+
+    def test_stage_context_no_op_when_stderr_is_not_tty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Non-TTY stderr (CI logs, redirected output) skips the spinner
+        # so log scrapers don't get carriage-return noise.
+        from schemabrain.cli import _wizard_stage_context
+
+        class _NonTtyConsole:
+            is_terminal = False
+
+            def status(self, *_a: object, **_kw: object) -> None:  # pragma: no cover - guard
+                raise AssertionError("status should not be called when not a TTY")
+
+        monkeypatch.setattr("schemabrain.cli._stderr_console", lambda: _NonTtyConsole())
+
+        class _FakeStage:
+            name = "index"
+
+        with _wizard_stage_context(_FakeStage()):
+            pass
+
+    def test_stage_context_invokes_status_on_tty_for_slow_stages(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # On a TTY, slow stages (index, entities) get the spinner via
+        # console.status with the dots spinner.
+        from schemabrain.cli import _wizard_stage_context
+
+        captured: dict[str, object] = {}
+
+        class _RecordingStatus:
+            def __enter__(self) -> _RecordingStatus:
+                captured["entered"] = True
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                captured["exited"] = True
+
+        class _TtyConsole:
+            is_terminal = True
+
+            def status(self, text: str, *, spinner: str) -> _RecordingStatus:
+                captured["text"] = text
+                captured["spinner"] = spinner
+                return _RecordingStatus()
+
+        monkeypatch.setattr("schemabrain.cli._stderr_console", lambda: _TtyConsole())
+
+        class _FakeStage:
+            name = "index"
+
+        with _wizard_stage_context(_FakeStage()):
+            pass
+
+        assert captured["entered"] is True
+        assert captured["exited"] is True
+        assert captured["spinner"] == "dots"
+        assert "Index schema" in str(captured["text"])
+
+    def test_stage_context_unknown_stage_name_skips_spinner(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A stage whose `name` attribute is missing (defensive) falls
+        # into the no-op path rather than crashing.
+        from schemabrain.cli import _wizard_stage_context
+
+        class _GuardConsole:
+            is_terminal = True
+
+            def status(self, *_a: object, **_kw: object) -> None:  # pragma: no cover - guard
+                raise AssertionError("status should not be called for unknown stage")
+
+        monkeypatch.setattr("schemabrain.cli._stderr_console", lambda: _GuardConsole())
+
+        class _BareStage:
+            pass
+
+        with _wizard_stage_context(_BareStage()):
+            pass
+
     def test_failure_panel_omitted_on_clean_run(self, capsys: pytest.CaptureFixture[str]) -> None:
         # Clean (non-aborted) runs must NOT render the failure panel —
         # the closing block carries the next-step copy instead.

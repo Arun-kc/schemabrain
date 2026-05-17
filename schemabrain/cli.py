@@ -61,6 +61,7 @@ refuses cross-origin overwrites.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import hashlib
 import json
@@ -68,7 +69,7 @@ import os
 import sqlite3
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from urllib.parse import urlparse
@@ -3410,8 +3411,16 @@ def _cmd_init(
     )
 
     interactive = _stderr_is_interactive_tty()
+    host_display = _host_display_name(effective_host)
+    console = _stderr_console()
+    # Print the header BEFORE the wizard runs so the user sees the
+    # banner immediately and the stage-context spinner has a place to
+    # land. The header re-prints on a conflict-overwrite retry isn't
+    # an issue because the loop is a no-op on the second turn (the
+    # spinner re-runs are the visible artifact).
+    _render_wizard_header(host_display=host_display, console=console)
     while True:
-        result = run_default_wizard(cfg)
+        result = run_default_wizard(cfg, stage_context=_wizard_stage_context)
         # The only interactive recovery path is the entry-exists case
         # at stage 4 — the wizard reports it as a `failed` outcome at
         # the `wire_host` stage with a message containing "entry
@@ -3430,11 +3439,11 @@ def _cmd_init(
             ):
                 cfg = _dc_replace(cfg, assume_yes=True)
                 continue
-            _stderr_console().print("[yellow]cancelled[/] no changes made.")
+            console.print("[yellow]cancelled[/] no changes made.")
             return 0
         break
 
-    _render_wizard_result(result, host_display=_host_display_name(effective_host))
+    _render_wizard_after(result, host_display=host_display, console=console)
     if result.aborted:
         return 2
     if (
@@ -3748,6 +3757,40 @@ def _format_duration(seconds: float) -> str:
     return f"{seconds:.1f}s"
 
 
+# Stages whose handlers commonly take long enough to need a visible
+# "I'm working" cue. Stages 1, 4, 5 are fast enough that a spinner
+# would flash and clear before the eye registers it; stages 2 and 3
+# routinely take 5-30s on real schemas.
+_SPINNER_STAGES: frozenset[str] = frozenset({"index", "entities"})
+
+
+@contextlib.contextmanager
+def _wizard_stage_context(stage: object) -> Iterator[None]:
+    """Context manager wrapping each wizard stage handler with a spinner.
+
+    Only the slow async stages (`index`, `entities`) get a spinner,
+    and only when stderr is a TTY — CI logs and redirected output
+    fall through to no-op so log scrapers don't get carriage-return
+    confusion. The orchestrator passes this factory to `run_wizard`
+    via its `stage_context` kwarg.
+
+    Typed as `object` for the stage parameter so this module doesn't
+    import `WizardStage` at module-import time (matches the lazy-import
+    discipline elsewhere).
+    """
+    name: str = getattr(stage, "name", "") or ""
+    if name not in _SPINNER_STAGES:
+        yield
+        return
+    console = _stderr_console()
+    if not console.is_terminal:
+        yield
+        return
+    label = _stage_display_name(name)
+    with console.status(f"[cyan]{label}…[/]", spinner="dots"):
+        yield
+
+
 def _host_display_name(host: str) -> str:
     """Map the kebab-case host identifier to a human display string.
 
@@ -3762,6 +3805,25 @@ def _host_display_name(host: str) -> str:
     }.get(host, host)
 
 
+def _render_wizard_header(*, host_display: str | None, console: object) -> None:
+    """Print the two-line wordmark + orientation banner.
+
+    Split out of `_render_wizard_result` so the CLI can print this
+    line BEFORE the wizard starts running — without it the user
+    stares at a blank terminal during slow stages (index, entities)
+    before seeing anything at all.
+    """
+    console.print()  # type: ignore[attr-defined]
+    console.print("[bold cyan]Schema Brain[/]")  # type: ignore[attr-defined]
+    if host_display:
+        console.print(  # type: ignore[attr-defined]
+            f"[dim]Activating Schema Brain for {host_display}. ~30s.[/]"
+        )
+    else:
+        console.print("[dim]Activating Schema Brain. ~30s.[/]")  # type: ignore[attr-defined]
+    console.print()  # type: ignore[attr-defined]
+
+
 def _render_wizard_result(result: object, *, host_display: str | None = None) -> None:
     """Render the multi-stage outcome of a wizard run.
 
@@ -3773,6 +3835,11 @@ def _render_wizard_result(result: object, *, host_display: str | None = None) ->
     "Claude Desktop"). When provided, the orientation line mentions
     it; when None, a generic orientation is rendered. The caller
     derives this from `args.host` via `_host_display_name`.
+
+    This entry point composes `_render_wizard_header` +
+    `_render_wizard_after` so tests can keep using the single
+    function. Production CLI flow calls them separately to land the
+    header before the wizard runs.
 
     Layout:
 
@@ -3794,17 +3861,27 @@ def _render_wizard_result(result: object, *, host_display: str | None = None) ->
     if not isinstance(result, WizardResult):
         raise TypeError(f"_render_wizard_result expected WizardResult, got {type(result).__name__}")
     console = _stderr_console()
+    _render_wizard_header(host_display=host_display, console=console)
+    _render_wizard_after(result, host_display=host_display, console=console)
+
+
+def _render_wizard_after(result: object, *, host_display: str | None, console: object) -> None:
+    """Render everything that follows the wizard's header — stage list,
+    host install detail, closing block (clean run) or failure panel (abort).
+
+    Split from `_render_wizard_result` so the CLI can call this after
+    the wizard finishes — the header runs first (immediate feedback)
+    and the spinner-driven stage-context callback fills the gap until
+    the wizard returns.
+    """
+    from schemabrain.setup.wizard import WizardResult
+
+    if not isinstance(result, WizardResult):
+        raise TypeError(f"_render_wizard_after expected WizardResult, got {type(result).__name__}")
     # The wizard always has 5 stages even on early abort — using
     # `len(result.outcomes)` for the denominator would render "of 2"
     # on a stage-2 abort, misleading the user about the pipeline shape.
     total = _WIZARD_TOTAL_STAGES
-    console.print()
-    console.print("[bold cyan]Schema Brain[/]")
-    if host_display:
-        console.print(f"[dim]Activating Schema Brain for {host_display}. ~30s.[/]")
-    else:
-        console.print("[dim]Activating Schema Brain. ~30s.[/]")
-    console.print()
     for outcome in result.outcomes:
         # Indent stage header consistently with the existing init
         # rendering (2 spaces) so the eye reads top-to-bottom. A

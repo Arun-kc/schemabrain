@@ -31,10 +31,12 @@ shows and what the wizard recorded.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, get_args
@@ -219,16 +221,32 @@ class WizardResult:
 # ----- orchestrator ---------------------------------------------------------
 
 
+StageContext = Callable[["WizardStage"], AbstractContextManager[None]]
+
+
+@contextlib.contextmanager
+def _null_stage_context(_stage: WizardStage) -> Iterator[None]:
+    """Default `stage_context` — runs each handler with no extra side effects."""
+    yield
+
+
 def run_wizard(
     config: WizardConfig,
     *,
     stages: Sequence[WizardStage] | None = None,
+    stage_context: StageContext | None = None,
 ) -> WizardResult:
     """Run the wizard pipeline against `config`.
 
     `stages` is dependency-injected so tests can drive the state
     machine without standing up a real database. Production callers
     use `run_default_wizard`, which binds `DEFAULT_STAGES`.
+
+    `stage_context` is an optional context-manager factory invoked
+    around each handler call. The CLI uses it to display a spinner
+    while slow stages (index, entities) run; tests omit it. The
+    callable receives the `WizardStage` so it can specialise on
+    `stage.name` (e.g. only show a spinner for known-slow stages).
 
     Stage handlers MUST NOT raise — the contract is that they
     translate every exception into a `StageOutcome(status="failed",
@@ -238,6 +256,9 @@ def run_wizard(
     `failed` line.
     """
     actual_stages = stages if stages is not None else DEFAULT_STAGES
+    actual_stage_context: StageContext = (
+        stage_context if stage_context is not None else _null_stage_context
+    )
     ctx = WizardContext(config=config)
     for stage in actual_stages:
         # Measure each handler ourselves rather than trust the handler
@@ -245,7 +266,8 @@ def run_wizard(
         # gives every stage a consistent timing surface for the
         # renderer + future --json output mode.
         started_at = time.perf_counter()
-        outcome = stage.handler(ctx)
+        with actual_stage_context(stage):
+            outcome = stage.handler(ctx)
         elapsed = time.perf_counter() - started_at
         outcome = replace(outcome, duration_s=elapsed)
         ctx.outcomes.append(outcome)
@@ -262,9 +284,11 @@ def run_wizard(
     )
 
 
-def run_default_wizard(config: WizardConfig) -> WizardResult:
+def run_default_wizard(
+    config: WizardConfig, *, stage_context: StageContext | None = None
+) -> WizardResult:
     """Production entry point: run the wizard with the canonical stages."""
-    return run_wizard(config)
+    return run_wizard(config, stage_context=stage_context)
 
 
 # ----- helper -------------------------------------------------------------

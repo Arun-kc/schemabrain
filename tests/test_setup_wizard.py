@@ -419,6 +419,35 @@ class TestRunWizardStateMachine:
         durations = [round(o.duration_s, 2) for o in result.outcomes]
         assert durations == [0.42, 0.08, 1.10, 0.05, 0.05]
 
+    def test_stage_context_wraps_every_handler(self, base_config: WizardConfig) -> None:
+        # The orchestrator MUST invoke the `stage_context` factory for
+        # every stage (not just the slow ones) — the CLI's factory
+        # internally decides whether to render a spinner. Centralising
+        # that decision avoids leaking spinner-stage knowledge into
+        # the orchestrator.
+        import contextlib
+        from collections.abc import Iterator
+
+        seen: list[str] = []
+
+        @contextlib.contextmanager
+        def _recording_context(stage: wizard.WizardStage) -> Iterator[None]:
+            seen.append(stage.name)
+            yield
+
+        stages = [_ok_stage(i, f"stage{i}") for i in range(1, 6)]
+        run_wizard(base_config, stages=stages, stage_context=_recording_context)
+
+        assert seen == ["stage1", "stage2", "stage3", "stage4", "stage5"]
+
+    def test_stage_context_default_is_no_op_passthrough(self, base_config: WizardConfig) -> None:
+        # Omitting `stage_context` keeps the wizard backward-compatible —
+        # handlers run exactly as before.
+        stages = [_ok_stage(i, f"stage{i}") for i in range(1, 6)]
+        result = run_wizard(base_config, stages=stages)
+        assert result.aborted is False
+        assert len(result.outcomes) == 5
+
     def test_run_wizard_preserves_duration_on_abort(
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
