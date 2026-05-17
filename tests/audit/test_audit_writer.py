@@ -39,7 +39,7 @@ class TestBuildAuditRow:
             "status": "success",
             "refusal_reason": None,
             "cost_class": "small",
-            "pii_categories": "",
+            "pii_categories": frozenset(),
             "ast_shape_hash": None,
             "rule_id": None,
             "fingerprint_version": FINGERPRINT_VERSION,

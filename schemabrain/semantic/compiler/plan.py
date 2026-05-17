@@ -24,6 +24,7 @@ from typing import Any, Literal
 
 from schemabrain.core.join import Cardinality, JoinColumnPair
 from schemabrain.core.metric import Metric, TimeGrain
+from schemabrain.pii import PIICategory
 
 # Closed set of operators the compiler supports at v1. `is_null` and
 # `not_null` are unary (value is ignored at emit time); `in` / `not_in`
@@ -182,17 +183,22 @@ class PiiBlockedError(MetricCompilerError):
     metric would touch (the propagation result of all column tags).
     `blocked_categories` is the subset that triggered the refusal
     (the intersection with the server's blocked set). Both are
-    sorted tuples for deterministic wire serialisation; the audit
-    row stores `attempted_categories` so the audit trail shows
-    *what was touched*, not just *that something was blocked*.
+    sorted tuples of `PIICategory` Literal values for deterministic
+    wire serialisation; the audit row stores `attempted_categories`
+    so the audit trail shows *what was touched*, not just *that
+    something was blocked*.
+
+    Both kwargs are required — defaulting to empty tuples would let
+    a future caller silently produce a malformed audit row (refused
+    status with empty pii_categories).
     """
 
     def __init__(
         self,
         message: str,
         *,
-        attempted_categories: tuple[str, ...] = (),
-        blocked_categories: tuple[str, ...] = (),
+        attempted_categories: tuple[PIICategory, ...],
+        blocked_categories: tuple[PIICategory, ...],
     ) -> None:
         super().__init__(message)
         self.attempted_categories = attempted_categories

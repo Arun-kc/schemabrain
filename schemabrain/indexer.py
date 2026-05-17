@@ -450,6 +450,20 @@ def index(
         llm_cost_usd=pipeline.spent_usd if pipeline is not None else 0.0,
         embeddings_generated=embeddings_generated,
     )
+    # Silent-failure protection for the `--no-pii-classify` partial
+    # state: classifier is off for re-profiled tables but unchanged
+    # tables retain whatever heuristic tags exist from a prior run.
+    # Without this warning the partial mix is invisible.
+    if no_pii_classify and tables_unchanged > 0:
+        import sys as _sys
+
+        print(
+            f"warning: --no-pii-classify wiped tags for re-profiled tables, "
+            f"but {tables_unchanged} unchanged table(s) retain any PII tags "
+            f"from prior runs. Re-index those tables explicitly (e.g. by "
+            f"forcing a column change) to wipe their tags too.",
+            file=_sys.stderr,
+        )
     reporter.on_finish(result=result)
     return result
 

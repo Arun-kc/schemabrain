@@ -1592,16 +1592,20 @@ def _cmd_serve(
     audit is disabled for the run.
     """
     import os as _os
+    from typing import cast as _cast
 
     from schemabrain.audit.writer import AuditWriter
     from schemabrain.observability import JsonlEventBus, NullEventBus
-    from schemabrain.pii import PII_CATEGORIES
+    from schemabrain.pii import PII_CATEGORIES, PIICategory
 
     # Parse `--pii-block CATEGORIES`. Empty string disables enforcement.
     # Unknown category names abort startup with a clear error listing
     # the 12 valid values — a typo in the operator config should
-    # NOT silently fall through to "no PII protection."
-    pii_block: frozenset[str] = frozenset()
+    # NOT silently fall through to "no PII protection." After the
+    # guard passes, cast the validated set to `frozenset[PIICategory]`
+    # so the type narrows across the build_server / run_stdio
+    # boundary without a `type: ignore` at the call site.
+    pii_block: frozenset[PIICategory] = frozenset()
     if pii_block_csv:
         requested = frozenset(c.strip() for c in pii_block_csv.split(",") if c.strip())
         unknown = requested - PII_CATEGORIES
@@ -1612,7 +1616,7 @@ def _cmd_serve(
                 file=sys.stderr,
             )
             return 2
-        pii_block = requested
+        pii_block = _cast(frozenset[PIICategory], requested)
 
     if pii_block and no_audit:
         # Honest disclosure: enforcement still happens (the agent sees
@@ -1620,7 +1624,7 @@ def _cmd_serve(
         # mcp_audit. Operators relying on audit for compliance need
         # to know this combination is observable-but-not-persistent.
         print(
-            "warning: --pii-block active without --audit: refusals will be "
+            "warning: --pii-block active with --no-audit: refusals will be "
             "enforced but not persisted to mcp_audit.",
             file=sys.stderr,
         )

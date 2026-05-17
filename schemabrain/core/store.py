@@ -45,6 +45,7 @@ from schemabrain.core.metric import (
     MetricMeasure,
 )
 from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
+from schemabrain.pii.categories import ColumnPiiTag
 
 # Re-export so existing `from schemabrain.core.store import
 # DbtOwnedEntityError` imports keep working. The exceptions now live
@@ -527,15 +528,15 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         PRIMARY KEY (source_connection_id, qualified_table, column_name)
     )
     """,
-    # Covering index for the bulk-lookup `get_column_pii_tags` issues:
-    # `WHERE source_connection_id = ? AND qualified_table = ? AND
-    # column_name IN (...)`. PK leads with `source_connection_id` then
-    # `qualified_table` so the IN clause filters within an already-
-    # narrowed range scan.
-    """
-    CREATE INDEX IF NOT EXISTS idx_column_pii_tags_table
-        ON column_pii_tags (source_connection_id, qualified_table)
-    """,
+    # No secondary index needed: the PRIMARY KEY
+    # `(source_connection_id, qualified_table, column_name)` already
+    # serves `get_column_pii_tags`'s lookup shape — the query's
+    # equality prefix on `(source_connection_id, qualified_table)`
+    # plus an `IN (...)` filter on `column_name` resolves to a
+    # bounded PK range scan with the IN values applied in-index.
+    # A secondary index on `(source_connection_id, qualified_table)`
+    # would be a strict subset of the PK prefix; the planner would
+    # never choose it.
 )
 
 
@@ -2048,7 +2049,7 @@ class SQLiteStore:
         *,
         source_connection_id: str,
         qualified_table: str,
-        tags: Mapping[str, tuple[str, frozenset[str]]],
+        tags: Mapping[str, ColumnPiiTag],
     ) -> None:
         """Replace all PII tags for `qualified_table` atomically.
 
@@ -2081,6 +2082,11 @@ class SQLiteStore:
                 (source_connection_id, qualified_table),
             )
             if not tags:
+                # Empty-tags shape is the `--no-pii-classify` wipe
+                # contract. Returning from inside `with conn:` still
+                # triggers __exit__ which commits the DELETE — the
+                # transaction is NOT left open. Python's sqlite3
+                # context manager finalises on any control-flow exit.
                 return
             conn.executemany(
                 "INSERT INTO column_pii_tags "
@@ -2106,7 +2112,7 @@ class SQLiteStore:
         source_connection_id: str,
         qualified_table: str,
         columns: Iterable[str],
-    ) -> dict[str, tuple[str, frozenset[str]]]:
+    ) -> dict[str, ColumnPiiTag]:
         """Bulk-fetch PII tags for `columns` on `qualified_table`.
 
         Returns a mapping `column_name → (sensitivity, categories)`

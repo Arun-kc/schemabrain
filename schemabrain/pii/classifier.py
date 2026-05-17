@@ -41,9 +41,6 @@ from typing import Final
 
 from schemabrain.pii.categories import PIICategory, Sensitivity
 
-# Matching is case-insensitive against the column name.
-_CASE_INSENSITIVE: Final[int] = re.IGNORECASE
-
 
 def _kw(*alternatives: str) -> re.Pattern[str]:
     """Compile a keyword pattern with non-alphanumeric boundaries.
@@ -57,7 +54,7 @@ def _kw(*alternatives: str) -> re.Pattern[str]:
     underscores INSIDE an alternative are kept verbatim.
     """
     alts = "|".join(f"(?:{a})" for a in alternatives)
-    return re.compile(rf"(?<![A-Za-z0-9])(?:{alts})(?![A-Za-z0-9])", _CASE_INSENSITIVE)
+    return re.compile(rf"(?<![A-Za-z0-9])(?:{alts})(?![A-Za-z0-9])", re.IGNORECASE)
 
 
 # Rule table — `(compiled_regex, frozenset[PIICategory])`. Order is
@@ -78,6 +75,24 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
         _kw("first_name", "last_name", "middle_name", "full_name", "given_name", "family_name"),
         frozenset({"contact"}),
     ),
+    # Bare name variants — common ecommerce/CRM shapes (`user_name`,
+    # `customer_name`, `display_name`, `legal_name`). The `name`
+    # alternative covers the bare column too.
+    (
+        _kw(
+            "name",
+            "user_name",
+            "customer_name",
+            "display_name",
+            "legal_name",
+            "contact_name",
+        ),
+        frozenset({"contact"}),
+    ),
+    (
+        _kw("dob", "date_of_birth", "birth_date", "birthdate"),
+        frozenset({"contact"}),
+    ),
     (_kw("zip", "zip_code", "postal_code"), frozenset({"contact"})),
     (_kw("city", "state", "country"), frozenset({"contact"})),
     # ---- financial ----
@@ -94,10 +109,26 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
     ),
     (_kw("cvv", "cvc"), frozenset({"payment_card"})),
     (_kw("iban"), frozenset({"payment_card"})),
+    (
+        _kw("account_number", "bank_account", "routing_number", "sort_code"),
+        frozenset({"payment_card"}),
+    ),
     # ---- health ----
     (_kw("diagnosis", "medication", "treatment"), frozenset({"health"})),
     (_kw("icd9", "icd_9", "icd10", "icd_10", "cpt_code"), frozenset({"health"})),
     (_kw("phi", "mrn", "medical_record"), frozenset({"health"})),
+    (
+        _kw(
+            "allergy",
+            "blood_type",
+            "prescription",
+            "lab_result",
+            "symptom",
+            "bmi",
+            "vital_sign",
+        ),
+        frozenset({"health"}),
+    ),
     # ---- genetic ----
     (_kw("genome", "genotype", "dna_seq", "rsid"), frozenset({"genetic"})),
     # ---- biometric ----
@@ -111,7 +142,13 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
         frozenset({"behavioral"}),
     ),
     # ---- online_identifier ----
-    (_kw("ip_address"), frozenset({"online_identifier"})),
+    # ECJ ruling treats IP addresses as personal data under GDPR;
+    # bare `ip`, `client_ip`, `remote_ip`, `src_ip`, and `ip_addr` are
+    # all common web-app column shapes that must classify.
+    (
+        _kw("ip", "ip_addr", "ip_address", "client_ip", "remote_ip", "src_ip"),
+        frozenset({"online_identifier"}),
+    ),
     (
         _kw("cookie_id", "device_id", "idfa", "gaid"),
         frozenset({"online_identifier"}),
@@ -127,6 +164,7 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
         _kw("token", "refresh_token", "access_token", "session_id"),
         frozenset({"credential"}),
     ),
+    (_kw("pass_hash", "pw_hash"), frozenset({"credential"})),
     # ---- government_id ----
     (_kw("ssn", "tin", "nino"), frozenset({"government_id"})),
     (_kw("passport"), frozenset({"government_id"})),
@@ -135,6 +173,10 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
         frozenset({"government_id"}),
     ),
     (_kw("tax_id"), frozenset({"government_id"})),
+    (
+        _kw("national_id", "aadhar", "aadhaar", "voter_id", "ein"),
+        frozenset({"government_id"}),
+    ),
     # ---- location ----
     (_kw("lat", "latitude", "lon", "lng", "longitude"), frozenset({"location"})),
     (_kw("geolocation", "gps", "coords", "coord"), frozenset({"location"})),
@@ -153,6 +195,17 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
             "political_view",
             "political_affiliation",
             "trade_union",
+        ),
+        frozenset({"demographic_protected"}),
+    ),
+    (
+        _kw(
+            "gender",
+            "sex",
+            "disability",
+            "marital_status",
+            "nationality",
+            "veteran_status",
         ),
         frozenset({"demographic_protected"}),
     ),

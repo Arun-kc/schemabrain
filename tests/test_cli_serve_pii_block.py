@@ -162,7 +162,7 @@ class TestPiiBlockNoAuditCoexistenceWarning:
             ]
         )
         stderr = capsys.readouterr().err
-        assert "--pii-block active without --audit" in stderr
+        assert "--pii-block active with --no-audit" in stderr
 
     def test_pii_block_with_audit_no_warning(
         self,
@@ -188,4 +188,4 @@ class TestPiiBlockNoAuditCoexistenceWarning:
             ]
         )
         stderr = capsys.readouterr().err
-        assert "--pii-block active without --audit" not in stderr
+        assert "--pii-block active with --no-audit" not in stderr

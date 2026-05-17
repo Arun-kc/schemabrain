@@ -246,6 +246,37 @@ class TestPiiBlockedRefusal:
             store.close()
 
 
+class TestEmptyTagTableWarning:
+    def test_warning_fires_when_no_tags_for_source(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Reset the dedup set so this test runs cleanly even if other
+        # tests already consumed the once-per-source budget.
+        from schemabrain.mcp import get_metric as _gm
+
+        _gm._empty_tag_table_warned.clear()
+
+        store = SQLiteStore(tmp_path / "sb.db")
+        try:
+            _seed_table_and_entity(store)
+            # Deliberately do NOT classify any column.
+            _write_metric(store, name="m1", column="email", agg="count")
+            executor = _FakeExecutor()
+            get_metric_impl(
+                store=store,
+                executor=executor,
+                source_connection_id=SRC,
+                name="m1",
+            )
+            stderr = capsys.readouterr().err
+            assert "no PII tags found" in stderr
+            assert SRC in stderr
+        finally:
+            store.close()
+
+
 class TestAuditRowReadsPiiCategories:
     """build_audit_row's pii_categories extraction across both paths.
 
@@ -271,7 +302,9 @@ class TestAuditRowReadsPiiCategories:
             source_connection_id=SRC,
             response=envelope,
         )
-        assert row["pii_categories"] == "contact,financial"
+        # build_audit_row now carries the typed frozenset through the
+        # draft; CSV encoding happens at AuditWriter.write time.
+        assert row["pii_categories"] == frozenset({"contact", "financial"})
         assert row["refusal_reason"] is None
         assert row["cost_class"] == "small"
 
@@ -290,7 +323,7 @@ class TestAuditRowReadsPiiCategories:
             source_connection_id=SRC,
             response=envelope,
         )
-        assert row["pii_categories"] == "contact"
+        assert row["pii_categories"] == frozenset({"contact"})
         assert row["refusal_reason"] == "pii_blocked"
         assert row["cost_class"] == "refused"
 

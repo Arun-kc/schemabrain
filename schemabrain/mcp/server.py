@@ -77,6 +77,7 @@ from schemabrain.observability import (
     NullEventBus,
     instrument,
 )
+from schemabrain.pii import PIICategory
 from schemabrain.semantic.compiler import (
     AmbiguousJoinError as CompilerAmbiguousJoinError,
 )
@@ -164,7 +165,7 @@ def build_server(
     event_bus: EventBus | None = None,
     server_session_id: str | None = None,
     audit_writer: AuditWriter | None = None,
-    pii_block: frozenset[str] = frozenset(),
+    pii_block: frozenset[PIICategory] = frozenset(),
 ) -> FastMCP:
     """Build (but do not run) a configured `FastMCP` app.
 
@@ -853,7 +854,7 @@ def build_server(
                 filters=filters,
                 time_grain=time_grain,
                 limit=limit,
-                pii_block=pii_block,  # type: ignore[arg-type]
+                pii_block=pii_block,
             )
         except PiiBlockedError as exc:
             return ToolResponse(
@@ -1053,7 +1054,7 @@ def run_stdio(
     event_bus: EventBus | None = None,
     server_session_id: str | None = None,
     audit_writer: AuditWriter | None = None,
-    pii_block: frozenset[str] = frozenset(),
+    pii_block: frozenset[PIICategory] = frozenset(),
 ) -> None:
     """Build the server and run it forever on stdio.
 

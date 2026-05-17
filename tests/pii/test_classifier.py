@@ -42,6 +42,14 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("city", frozenset({"contact"})),
     ("state", frozenset({"contact"})),
     ("country", frozenset({"contact"})),
+    ("name", frozenset({"contact"})),
+    ("user_name", frozenset({"contact"})),
+    ("customer_name", frozenset({"contact"})),
+    ("display_name", frozenset({"contact"})),
+    ("legal_name", frozenset({"contact"})),
+    ("dob", frozenset({"contact"})),
+    ("date_of_birth", frozenset({"contact"})),
+    ("birth_date", frozenset({"contact"})),
     # financial
     ("salary", frozenset({"financial"})),
     ("wage", frozenset({"financial"})),
@@ -58,6 +66,10 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("cvv", frozenset({"payment_card"})),
     ("cvc", frozenset({"payment_card"})),
     ("iban", frozenset({"payment_card"})),
+    ("account_number", frozenset({"payment_card"})),
+    ("bank_account", frozenset({"payment_card"})),
+    ("routing_number", frozenset({"payment_card"})),
+    ("sort_code", frozenset({"payment_card"})),
     # health
     ("diagnosis", frozenset({"health"})),
     ("medication", frozenset({"health"})),
@@ -68,6 +80,13 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("phi", frozenset({"health"})),
     ("mrn", frozenset({"health"})),
     ("medical_record", frozenset({"health"})),
+    ("allergy", frozenset({"health"})),
+    ("blood_type", frozenset({"health"})),
+    ("prescription", frozenset({"health"})),
+    ("lab_result", frozenset({"health"})),
+    ("symptom", frozenset({"health"})),
+    ("bmi", frozenset({"health"})),
+    ("vital_sign", frozenset({"health"})),
     # genetic
     ("genome", frozenset({"genetic"})),
     ("genotype", frozenset({"genetic"})),
@@ -86,7 +105,12 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("clickstream", frozenset({"behavioral"})),
     ("event_log", frozenset({"behavioral"})),
     # online_identifier
+    ("ip", frozenset({"online_identifier"})),
+    ("ip_addr", frozenset({"online_identifier"})),
     ("ip_address", frozenset({"online_identifier"})),
+    ("client_ip", frozenset({"online_identifier"})),
+    ("remote_ip", frozenset({"online_identifier"})),
+    ("src_ip", frozenset({"online_identifier"})),
     ("cookie_id", frozenset({"online_identifier"})),
     ("device_id", frozenset({"online_identifier"})),
     ("idfa", frozenset({"online_identifier"})),
@@ -103,6 +127,8 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("refresh_token", frozenset({"credential"})),
     ("access_token", frozenset({"credential"})),
     ("session_id", frozenset({"credential"})),
+    ("pass_hash", frozenset({"credential"})),
+    ("pw_hash", frozenset({"credential"})),
     # government_id
     ("ssn", frozenset({"government_id"})),
     ("tin", frozenset({"government_id"})),
@@ -111,6 +137,11 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("driver_license", frozenset({"government_id"})),
     ("dl_number", frozenset({"government_id"})),
     ("tax_id", frozenset({"government_id"})),
+    ("national_id", frozenset({"government_id"})),
+    ("aadhar", frozenset({"government_id"})),
+    ("aadhaar", frozenset({"government_id"})),
+    ("voter_id", frozenset({"government_id"})),
+    ("ein", frozenset({"government_id"})),
     # location
     ("lat", frozenset({"location"})),
     ("latitude", frozenset({"location"})),
@@ -129,6 +160,12 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("political_party", frozenset({"demographic_protected"})),
     ("political_affiliation", frozenset({"demographic_protected"})),
     ("trade_union", frozenset({"demographic_protected"})),
+    ("gender", frozenset({"demographic_protected"})),
+    ("sex", frozenset({"demographic_protected"})),
+    ("disability", frozenset({"demographic_protected"})),
+    ("marital_status", frozenset({"demographic_protected"})),
+    ("nationality", frozenset({"demographic_protected"})),
+    ("veteran_status", frozenset({"demographic_protected"})),
 )
 
 
@@ -232,7 +269,7 @@ class TestRuleTableInvariants:
         # If you add or remove a rule, update RULE_COUNT in the
         # classifier and bump this assertion alongside. Pinning the
         # count makes accidental rule churn visible at PR review time.
-        assert RULE_COUNT == 33
+        assert RULE_COUNT == 40
 
     def test_every_category_has_at_least_one_rule(self) -> None:
         # Every category in PII_CATEGORIES must be producible by at

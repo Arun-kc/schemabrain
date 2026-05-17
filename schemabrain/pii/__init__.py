@@ -18,6 +18,7 @@ from __future__ import annotations
 from schemabrain.pii.categories import (
     PII_CATEGORIES,
     SENSITIVITIES,
+    ColumnPiiTag,
     PIICategory,
     Sensitivity,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "PII_CATEGORIES",
     "RULE_COUNT",
     "SENSITIVITIES",
+    "ColumnPiiTag",
     "PIICategory",
     "Sensitivity",
     "classify_column",

@@ -30,21 +30,29 @@ defense-in-depth.
 
 from __future__ import annotations
 
-from typing import Any
+import sys
+from typing import Any, cast
 
 from schemabrain.core.metric import _VALID_GRAINS, TimeGrain
 from schemabrain.core.store_protocol import Store
 from schemabrain.mcp._helpers import _with_token_estimate
 from schemabrain.mcp.metric_executor import MetricExecutor
 from schemabrain.mcp.shapes import MetricFilterArg, MetricResult
-from schemabrain.pii import PIICategory, propagate
+from schemabrain.pii import PIICategory, Sensitivity, propagate
 from schemabrain.semantic.compiler import (
     InvalidTimeGrainError,
+    MalformedColumnError,
     PiiBlockedError,
     RequestedFilter,
     emit_sql,
     resolve_metric_plan,
 )
+from schemabrain.semantic.compiler.plan import MetricPlan
+
+# One-shot stderr warnings for silent-failure protections — keyed on
+# `(source_connection_id, tool)` so a single misconfiguration doesn't
+# flood logs across many repeated calls.
+_empty_tag_table_warned: set[str] = set()
 
 # Placeholder fingerprint stamped on the MetricResult before the
 # `@instrument` decorator overwrites it with the real `mcp_audit` row's
@@ -153,9 +161,9 @@ def _resolve_pii_categories(
     *,
     store: Store,
     source_connection_id: str,
-    plan: Any,
+    plan: MetricPlan,
     pii_block: frozenset[PIICategory],
-) -> tuple[str, ...]:
+) -> tuple[PIICategory, ...]:
     """Look up tags for every column the plan touches, propagate,
     enforce `pii_block` policy, and return a sorted category tuple.
 
@@ -172,6 +180,18 @@ def _resolve_pii_categories(
     SQL per table (a metric anchored on one entity issues exactly
     one lookup at v1 — joins are not part of v1's compiler emission
     for this PR's surface).
+
+    Silent-failure protections:
+      - When the entire `column_pii_tags` lookup yields zero hits
+        across all qualified tables touched, emit a one-shot stderr
+        warning per `source_connection_id`: the operator may have
+        skipped classification or never indexed this source, and
+        without a warning the empty `pii_categories` audit field
+        looks identical to a clean "no PII touched" call.
+      - When `time_dimension` is set but malformed (no `.`), raise
+        `MalformedColumnError` so the server maps it to a clear
+        envelope kind instead of letting an `IndexError` fall
+        through to `internal_error`.
     """
     by_table: dict[str, set[str]] = {}
 
@@ -179,7 +199,14 @@ def _resolve_pii_categories(
     by_table.setdefault(anchor_table, set()).add(plan.metric.measure.column)
     if plan.metric.time_dimension is not None:
         # Form is "<entity>.<column>"; the column belongs to the
-        # anchor entity's table per the v1 metric model.
+        # anchor entity's table per the v1 metric model. Guarded
+        # split — a malformed value (no dot) would otherwise raise
+        # IndexError and surface as internal_error with no breadcrumb.
+        if "." not in plan.metric.time_dimension:
+            raise MalformedColumnError(
+                f"metric.time_dimension must be '<entity>.<column>' form, "
+                f"got {plan.metric.time_dimension!r}"
+            )
         time_column = plan.metric.time_dimension.split(".", 1)[1]
         by_table[anchor_table].add(time_column)
 
@@ -188,37 +215,55 @@ def _resolve_pii_categories(
     for predicate in plan.filter_predicates:
         by_table.setdefault(predicate.column.qualified_table, set()).add(predicate.column.column)
 
-    per_column: list[tuple[str, frozenset[str]]] = []
+    per_column: list[tuple[Sensitivity, frozenset[PIICategory]]] = []
+    total_hits = 0
     for qualified_table, columns in by_table.items():
         tags = store.get_column_pii_tags(
             source_connection_id=source_connection_id,
             qualified_table=qualified_table,
             columns=columns,
         )
+        total_hits += len(tags)
         # Columns absent from `tags` are untagged → treat as
         # ("public", frozenset()), per the propagation helper's
         # empty-input contract. Iterating `columns` (not `tags`)
         # ensures we account for the absent ones explicitly.
         for col in columns:
-            sensitivity, categories = tags.get(col, ("public", frozenset()))
-            per_column.append((sensitivity, categories))
+            tag: tuple[Sensitivity, frozenset[PIICategory]] = tags.get(col, ("public", frozenset()))
+            per_column.append(tag)
+
+    if total_hits == 0 and source_connection_id not in _empty_tag_table_warned:
+        _empty_tag_table_warned.add(source_connection_id)
+        print(
+            f"schemabrain get_metric: no PII tags found for any column "
+            f"touched by source {source_connection_id!r}. Run "
+            f"`schemabrain index` without `--no-pii-classify` to "
+            f"populate tags; otherwise --pii-block enforcement is a "
+            f"no-op and audit rows record pii_categories=''.",
+            file=sys.stderr,
+        )
 
     _, propagated = propagate(per_column)
 
     if pii_block:
         blocked = propagated & pii_block
         if blocked:
-            attempted_tuple = tuple(sorted(propagated))
-            blocked_tuple = tuple(sorted(blocked))
+            attempted_tuple = cast(tuple[PIICategory, ...], tuple(sorted(propagated)))
+            blocked_tuple = cast(tuple[PIICategory, ...], tuple(sorted(blocked)))
+            # Message intentionally omits the operator's `--pii-block`
+            # set — exposing the exact policy lets an adversarial
+            # agent map the full enforcement envelope by probing
+            # multiple metrics. The blocked subset stays internal to
+            # the audit row (which the agent never sees) and the
+            # PiiBlockedError instance fields.
             raise PiiBlockedError(
                 f"get_metric refused: metric touches PII categories "
-                f"{list(attempted_tuple)} which intersect server policy "
-                f"--pii-block {list(blocked_tuple)}",
+                f"{list(attempted_tuple)} that this server policy blocks",
                 attempted_categories=attempted_tuple,
                 blocked_categories=blocked_tuple,
             )
 
-    return tuple(sorted(propagated))
+    return cast(tuple[PIICategory, ...], tuple(sorted(propagated)))
 
 
 def _serialise_params(params: dict[str, Any]) -> dict[str, Any]:

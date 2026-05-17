@@ -266,6 +266,64 @@ class TestDroppedTableCleanup:
             store.close()
 
 
+class TestNoPiiClassifyPartialStateWarning:
+    def test_warning_fires_when_unchanged_tables_retain_tags(
+        self,
+        capsys,
+    ) -> None:
+        # First run with classification — tags populated on both tables.
+        source = _FakeDataSource([_users_table(), _orders_table()])
+        profiler = _CountingProfiler()
+        store = SQLiteStore(":memory:")
+        try:
+            index(
+                source=source,
+                profiler=profiler,
+                store=store,
+                source_connection_id=SOURCE_ID,
+            )
+            capsys.readouterr()  # discard first-run stderr
+            # Second run with --no-pii-classify on the SAME schema —
+            # both tables hit the "unchanged" branch. The classifier
+            # never runs. The warning must surface so operators see
+            # the partial state.
+            index(
+                source=source,
+                profiler=profiler,
+                store=store,
+                source_connection_id=SOURCE_ID,
+                no_pii_classify=True,
+            )
+            stderr = capsys.readouterr().err
+            assert "--no-pii-classify wiped tags for re-profiled tables" in stderr
+            assert "2 unchanged table(s) retain" in stderr
+        finally:
+            store.close()
+
+    def test_no_warning_when_all_tables_re_profiled(
+        self,
+        capsys,
+    ) -> None:
+        # Fresh store + --no-pii-classify on first index → every table
+        # is "changed" (col_added for every column), zero unchanged.
+        # Warning must NOT fire.
+        source = _FakeDataSource([_users_table()])
+        profiler = _CountingProfiler()
+        store = SQLiteStore(":memory:")
+        try:
+            index(
+                source=source,
+                profiler=profiler,
+                store=store,
+                source_connection_id=SOURCE_ID,
+                no_pii_classify=True,
+            )
+            stderr = capsys.readouterr().err
+            assert "--no-pii-classify wiped tags" not in stderr
+        finally:
+            store.close()
+
+
 class TestUnchangedTableTagsSurvive:
     def test_reindex_unchanged_schema_preserves_tags(self) -> None:
         source = _FakeDataSource([_users_table()])

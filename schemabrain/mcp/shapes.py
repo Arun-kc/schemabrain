@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from schemabrain.core.entity import Origin
 from schemabrain.core.example_query import ExampleQuerySource
-from schemabrain.pii.categories import Sensitivity
+from schemabrain.pii.categories import PIICategory, Sensitivity
 
 
 class TableNotFoundError(LookupError):
@@ -531,4 +531,4 @@ class MetricResult(BaseModel):
     # tagged column was touched (or no classifier was ever run). The
     # audit row reads this to populate `mcp_audit.pii_categories`
     # and to derive `FingerprintInput.pii_tags_touched`.
-    pii_categories: tuple[str, ...] = ()
+    pii_categories: tuple[PIICategory, ...] = ()

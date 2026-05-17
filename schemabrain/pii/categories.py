@@ -60,3 +60,10 @@ PII_CATEGORIES: frozenset[PIICategory] = frozenset(
         "demographic_protected",
     }
 )
+
+# Per-column tag pair carried across the classifier → store → compiler
+# → audit chain. Aliasing the tuple shape in one place so every layer
+# (Store Protocol, SQLiteStore, get_metric, audit writer) agrees on the
+# Literal-narrowed types — and a future change to the pair shape lands
+# in exactly one declaration site.
+ColumnPiiTag = tuple[Sensitivity, frozenset[PIICategory]]
