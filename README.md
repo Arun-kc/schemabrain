@@ -147,55 +147,52 @@ docker exec -i sb-pg psql -U postgres -d postgres \
 
 For your own database, skip docker and use your real `postgresql+psycopg://` URL.
 
-### 3. Index it
+### 3. Run the activation wizard
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
 export DATABASE_URL="postgresql+psycopg://postgres:local@localhost:5432/postgres"
 
-schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db
-```
-
-`--url-env` keeps the password out of `ps`, shell history, and journald.
-The older `schemabrain index "<url>"` form still works for backwards
-compatibility, but emits a deprecation warning when the URL contains a
-password.
-
-Expect ~30–60 seconds of silence on the first run, then:
-
-```
-Indexed 6 table(s): 6 changed, 0 unchanged, 0 removed.
-Columns: +24/~0/-0. LLM: 24 descriptions ($0.0074). Embeddings: 24
-```
-
-### 4. Wire into Claude Desktop
-
-```bash
 schemabrain init --url-env DATABASE_URL --store-path ./schemabrain.db
 ```
 
-That's it. `init` detects your Claude Desktop config, writes a
-`schemabrain` MCP server entry that uses `--url-env` (so your
-password never lands in argv), pins the snippet to the installed
-schemabrain version, and resolves the store path to absolute. A
-`.bak` of any existing config is preserved on first overwrite, and
-other MCP servers you've configured are left untouched.
+That's it. `init` is a five-stage wizard that takes you from "I have a
+Postgres database" to "Claude Desktop can answer questions about it"
+in one command:
+
+```
+Schema Brain init — activation wizard
+
+  [1/5] Source check
+        ✓ source reachable + read-only
+  [2/5] Index schema
+        ✓ 6 tables, 24 columns indexed
+  [3/5] Curate entities
+        ↷ ANTHROPIC_API_KEY not set; entity suggestion skipped
+        export ANTHROPIC_API_KEY=sk-ant-... and then run
+        `schemabrain entities suggest --apply`
+  [4/5] Wire host
+        ✓ wrote schemabrain entry to ~/Library/.../claude_desktop_config.json
+        wrote: ~/Library/.../claude_desktop_config.json
+  [5/5] Next
+        ✓ restart your MCP host, then ask: "list the entities Schema Brain knows about"
+```
+
+What each stage does:
+- **Source check** — validates the URL is reachable + verifies the session is read-only on Postgres.
+- **Index schema** — introspects every user-visible table, fingerprints columns, persists to `./schemabrain.db`. Free by default; pass `--enrich` to add LLM column descriptions (typically $0.10–$2.00 for a 50-table schema).
+- **Curate entities** — proposes domain entities via Claude Sonnet 4.6 and writes them into the store. Skips gracefully if `ANTHROPIC_API_KEY` isn't set, or pass `--no-entities` to opt out. Cap LLM spend with `--entities-max-cost-usd N`.
+- **Wire host** — writes a `schemabrain` MCP entry into Claude Desktop's config (uses `--url-env` so passwords never land in argv, pins the version, resolves paths to absolute). Backs up any existing config on first overwrite. Other MCP servers are left untouched.
+- **Next** — prints the question to ask first.
+
+**Re-running is safe.** Identical inputs → no-op for each stage. Already-indexed source → stage 2 skips with "already indexed". Already-curated entities → stage 3 skips with "already curated". Different existing host entry → wizard prompts (interactive) or refuses without `--yes`.
+
+**For Claude Code:** add `--host claude-code` to shell out to `claude mcp add` instead of editing JSON directly (Claude Code's supported registration path).
+
+**For Cursor / Continue / Windsurf / anything else:** `schemabrain init --print-only` prints the snippet without writing — paste into your host's MCP config. Template paths for the major hosts are printed alongside.
 
 Quit Claude Desktop fully (Cmd+Q) and relaunch. Ask it:
 
 > list the entities Schema Brain knows about
-
-**For Claude Code:** `--host claude-code` shells out to `claude mcp add`
-instead of editing JSON directly (Claude Code's supported registration
-path).
-
-**For Cursor / Continue / Windsurf / anything else:**
-`schemabrain init --print-only` prints the snippet without writing —
-paste into your host's MCP config. Template paths for the major hosts
-are printed alongside.
-
-**Re-running is safe.** Identical inputs → no-op. Different existing
-entry → init refuses unless you pass `--yes`.
 
 **Confirm it's wired:**
 

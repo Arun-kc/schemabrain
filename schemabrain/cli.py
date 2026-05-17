@@ -351,6 +351,9 @@ def main(argv: list[str] | None = None) -> int:
             host=args.host,
             env_var=args.env_var,
             skip_index=args.skip_index,
+            no_entities=args.no_entities,
+            enrich=args.enrich,
+            entities_max_cost_usd=args.entities_max_cost_usd,
             assume_yes=args.assume_yes,
             print_only=args.print_only,
         )
@@ -395,6 +398,23 @@ def main(argv: list[str] | None = None) -> int:
     # argparse `required=True` on subparsers prevents reaching here, but
     # leaving an explicit branch is cheaper than a guarded assertion.
     parser.error(f"unknown command: {args.command}")  # pragma: no cover
+
+
+def _positive_float(value: str) -> float:
+    """argparse `type=` converter for "must be a positive float".
+
+    `float(value)` alone would accept `0` and negatives, which then
+    crash deep inside `CostCeilingGuard.__init__`. Reject at the
+    argparse layer so the user sees a clean usage error instead of a
+    traceback.
+    """
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"must be a number; got {value!r}") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive value; got {parsed}")
+    return parsed
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1133,8 +1153,34 @@ def _build_parser() -> argparse.ArgumentParser:
         "--skip-index",
         dest="skip_index",
         action="store_true",
-        help="Don't require the store to have any entities indexed. Pass this when "
-        "you've indexed in a different session or plan to index later.",
+        help="Skip the wizard's index stage. Pass this when you've already "
+        "indexed in a different session or plan to index later.",
+    )
+    p_init.add_argument(
+        "--no-entities",
+        dest="no_entities",
+        action="store_true",
+        help="Skip the wizard's entity-suggestion stage. The wizard still "
+        "wires the MCP host; you can curate entities later via "
+        "`schemabrain entities suggest --apply`.",
+    )
+    p_init.add_argument(
+        "--enrich",
+        dest="enrich",
+        action="store_true",
+        help="Run column-level LLM enrichment during the index stage. Requires "
+        "ANTHROPIC_API_KEY and incurs LLM cost (typically $0.10-$2.00 for a "
+        "50-table schema). Default off; the wizard is cost-free out of the box.",
+    )
+    p_init.add_argument(
+        "--entities-max-cost-usd",
+        dest="entities_max_cost_usd",
+        type=_positive_float,
+        default=None,
+        help="Cost ceiling for the entity-suggestion stage (USD). Must be "
+        "positive. Defaults to $SCHEMABRAIN_MAX_LLM_COST_USD or the package "
+        "default. The pipeline aborts cleanly if the next call would exceed "
+        "this cap.",
     )
     p_init.add_argument(
         "--yes",
@@ -3295,72 +3341,106 @@ def _cmd_init(
     host: str,
     env_var: str,
     skip_index: bool,
+    no_entities: bool,
+    enrich: bool,
+    entities_max_cost_usd: float | None,
     assume_yes: bool,
     print_only: bool,
 ) -> int:
-    """Run `schemabrain init` and render the outcome.
+    """Run the activation wizard and render the multi-stage outcome.
+
+    The wizard executes five stages: validate the source, index the
+    schema, suggest entities, wire the MCP host, print the next-step
+    hint. See `schemabrain.setup.wizard` for the per-stage contracts.
 
     Exit codes:
-      - 0: snippet written / shell-out succeeded / printed (manual)
-      - 1: claude-code shell-out failed (the snippet IS still
-        printed so the user can fall back to running the command
-        themselves)
-      - 2: operational refusal (URL flag conflict, source unreachable,
-        store empty without --skip-index, host config dir missing, etc.)
+      - 0: wizard reached stage 5 (whether or not stage 3 was
+        skipped or failed — entity curation is best-effort)
+      - 1: stage 4 succeeded but Claude Code's `claude mcp add`
+        shell-out failed (the snippet is still printable from the
+        rendered output so the user can fall back to running it)
+      - 2: the wizard aborted before reaching stage 5 (stage 1, 2,
+        or 4 failed, or the URL flags were malformed)
+
+    Interactive recovery: if stage 4 fails because a different
+    schemabrain entry already exists in the host config, the user
+    is prompted to confirm an overwrite. Declining returns 0 with
+    no changes.
 
     `--print-only` is an alias for `--host manual` — when either is
-    set, init never writes; the snippet renders to stdout.
+    set, stage 4 never writes; the snippet renders to stdout.
     """
-    from schemabrain.setup.init_flow import InitRefusal, init
+    from dataclasses import replace as _dc_replace
+    from typing import get_args as _get_args
+
+    from schemabrain.setup.hosts import HostName
+    from schemabrain.setup.wizard import WizardConfig, run_default_wizard
 
     effective_host = "manual" if print_only else host
+    # `WizardConfig.__post_init__` enforces the host literal; argparse
+    # narrows the input to the documented `choices`, but the manual
+    # override path still benefits from a clean error on a typo.
+    valid_hosts = _get_args(HostName)
+    if effective_host not in valid_hosts:
+        _render_guided(
+            GuidedError(
+                kind="init_invalid_host",
+                message=f"unknown --host {effective_host!r}",
+                why="schemabrain init wires one of a fixed list of MCP hosts",
+                fix=f"pass --host one of {sorted(valid_hosts)}",
+                next_step="run `schemabrain init --help` to see the choices",
+            )
+        )
+        return 2
     source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
     if source_url is None:
         # _resolve_url_source already rendered a guided error.
         return 2
-    effective_skip_index = skip_index
-    effective_assume_yes = assume_yes
+
+    cfg = WizardConfig(
+        source_url=source_url,
+        store_path=Path(store_path),
+        host=effective_host,
+        env_var_name=env_var,
+        skip_index=skip_index,
+        no_entities=no_entities,
+        enrich=enrich,
+        entities_max_cost_usd=entities_max_cost_usd,
+        assume_yes=assume_yes,
+    )
+
     interactive = _stderr_is_interactive_tty()
     while True:
-        try:
-            result = init(
-                source_url=source_url,
-                store_path=Path(store_path),
-                host=effective_host,  # type: ignore[arg-type]
-                env_var_name=env_var,
-                skip_index=effective_skip_index,
-                assume_yes=effective_assume_yes,
-            )
-        except InitRefusal as refusal:
-            # Two refusal kinds have an interactive recovery: the
-            # entry-exists case (user can confirm overwrite) and the
-            # empty-store case (user can confirm "skip indexing for
-            # now, I'll do it later"). Anything else surfaces as a
-            # plain guided error and exits 2.
-            if interactive and refusal.error.kind == "init_entry_exists":
-                if _prompt_yes_no(
-                    "Overwrite the existing schemabrain entry?",
-                    default=False,
-                ):
-                    effective_assume_yes = True
-                    continue
-                _stderr_console().print("[yellow]cancelled[/] no changes made.")
-                return 0
-            if interactive and refusal.error.kind == "init_store_empty":
-                if _prompt_yes_no(
-                    "Continue without indexing now? "
-                    "(you'll need to run `schemabrain index` before agents can query)",
-                    default=False,
-                ):
-                    effective_skip_index = True
-                    continue
-                _render_guided(refusal.error)
-                return 2
-            _render_guided(refusal.error)
-            return 2
+        result = run_default_wizard(cfg)
+        # The only interactive recovery path is the entry-exists case
+        # at stage 4 — the wizard reports it as a `failed` outcome at
+        # the `wire_host` stage with a message containing "entry
+        # already exists". Other aborts surface to the renderer.
+        aborted_at = result.aborted_at
+        if (
+            interactive
+            and aborted_at is not None
+            and aborted_at.name == "wire_host"
+            and "entry already exists" in aborted_at.message.lower()
+            and not cfg.assume_yes
+        ):
+            if _prompt_yes_no(
+                "Overwrite the existing schemabrain entry?",
+                default=False,
+            ):
+                cfg = _dc_replace(cfg, assume_yes=True)
+                continue
+            _stderr_console().print("[yellow]cancelled[/] no changes made.")
+            return 0
         break
-    _render_init_result(result)
-    if result.state == "shell_out_failed":
+
+    _render_wizard_result(result)
+    if result.aborted:
+        return 2
+    if (
+        result.host_install_result is not None
+        and result.host_install_result.state == "shell_out_failed"
+    ):
         return 1
     return 0
 
@@ -3625,107 +3705,179 @@ def _redact_env_args(cmd: tuple[str, ...]) -> list[str]:
     return out
 
 
-def _render_init_result(result: object) -> None:
-    """Render the outcome of a successful init run.
+_STAGE_GLYPHS: dict[str, str] = {
+    "done": "[green]✓[/]",
+    "skipped": "[yellow]↷[/]",
+    "failed": "[red]✗[/]",
+}
 
-    Caller is `_cmd_init`, which has already validated the type.
-    Typed as `object` here so the cli module doesn't import the
-    init_flow types at parse time (preserves the lazy-init-flow-
-    import discipline the rest of `_cmd_init` follows).
+# Total stage count for the wizard pipeline. Used as the abort
+# denominator ("stage N of 5") so an early abort still labels the
+# pipeline shape correctly. Must stay in sync with `DEFAULT_STAGES`.
+_WIZARD_TOTAL_STAGES: int = 5
+
+
+def _redact_stderr_credentials(stderr_text: str) -> str:
+    """Strip embedded credentials from a captured stderr blob.
+
+    `claude mcp add`'s stderr is currently safe (it doesn't echo
+    argv), but the helper is defense-in-depth: if a future version
+    of the Claude Code CLI starts including the redacted env value
+    in its error path, we want the redaction to apply automatically.
+    The regex matches any `<scheme>://user:pass@host/db`-style URL
+    and replaces the credentials portion.
+    """
+    import re
+
+    return re.sub(
+        r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^@\s]+@",
+        r"\1<redacted>@",
+        stderr_text,
+    )
+
+
+def _render_wizard_result(result: object) -> None:
+    """Render the multi-stage outcome of a wizard run.
+
+    Caller is `_cmd_init`. Typed as `object` here so the cli module
+    doesn't import the wizard types at parse time, matching the
+    lazy-import discipline elsewhere in the module.
+
+    Layout:
+
+      Schema Brain init — activation wizard
+
+        [N/5] <stage display name>
+              <glyph> <message>
+              <indented next_step, if present>
+
+    After the stage list, additional context lines render the host
+    install detail (path + backup, redacted shell-out argv on
+    failure, paste-ready JSON snippet for manual mode), and a
+    closing block prints either the next-step hint (clean run) or
+    "wizard aborted at stage N of 5" (abort).
+    """
+    from schemabrain.setup.wizard import WizardResult
+
+    if not isinstance(result, WizardResult):
+        raise TypeError(f"_render_wizard_result expected WizardResult, got {type(result).__name__}")
+    console = _stderr_console()
+    # The wizard always has 5 stages even on early abort — using
+    # `len(result.outcomes)` for the denominator would render "of 2"
+    # on a stage-2 abort, misleading the user about the pipeline shape.
+    total = _WIZARD_TOTAL_STAGES
+    console.print()
+    console.print("[bold]Schema Brain init[/] — activation wizard")
+    console.print()
+    for outcome in result.outcomes:
+        # Indent stage header consistently with the existing init
+        # rendering (2 spaces) so the eye reads top-to-bottom.
+        console.print(f"  [{outcome.stage}/5] {_stage_display_name(outcome.name)}")
+        glyph = _STAGE_GLYPHS.get(outcome.status, outcome.status)
+        console.print(f"        {glyph} {outcome.message}")
+        if outcome.next_step:
+            console.print(f"        [dim]{outcome.next_step}[/]")
+        # Stage-4 follow-up details (config path, backup, manual
+        # snippet) render after the stage's own line.
+        if outcome.name == "wire_host" and outcome.status == "done":
+            _render_wire_host_detail(result.host_install_result, console)
+    console.print()
+
+    if result.aborted:
+        aborted = result.aborted_at
+        console.print(
+            f"[red]wizard aborted at stage {aborted.stage if aborted else '?'} of {total}.[/]"
+        )
+        if (
+            aborted is not None
+            and aborted.name == "wire_host"
+            and result.host_install_result is None
+        ):
+            # Stage-4 abort without any host_install_result means
+            # init refused before it built a snippet — nothing to
+            # print beyond the per-stage failure message above.
+            return
+        # Stages 1/2 aborts: nothing extra needed (their messages
+        # already point the user at recovery).
+        return
+
+    # Clean run — print the closing next-step hint inline with the
+    # stage-5 message style.
+    host_result = result.host_install_result
+    if host_result is not None and host_result.state == "shell_out_failed":
+        # Stage 4 succeeded as a wizard stage (shell-out attempted)
+        # but the underlying `claude mcp add` failed. The user needs
+        # the fallback copy-paste argv.
+        console.print(
+            "  [dim]Note:[/] `claude mcp add` failed; you can run the redacted "
+            "command above with real credentials to register manually."
+        )
+
+
+def _stage_display_name(name: str) -> str:
+    """Map the wizard's stable stage names to friendlier display strings."""
+    return {
+        "source_check": "Source check",
+        "index": "Index schema",
+        "entities": "Curate entities",
+        "wire_host": "Wire host",
+        "next_step": "Next",
+    }.get(name, name)
+
+
+def _render_wire_host_detail(host_result: object, console: object) -> None:
+    """Render the post-stage-4 context lines for the host install.
+
+    Shows the config path + backup for `written`, nothing for
+    `unchanged`, the redacted argv for `shell_out_failed`, and the
+    paste-ready JSON snippet to stdout for `printed_only`.
     """
     from schemabrain.setup.init_flow import InitResult
 
-    if not isinstance(result, InitResult):
-        raise TypeError(f"_render_init_result expected InitResult, got {type(result).__name__}")
-    console = _stderr_console()
-    if result.state == "written":
-        console.print(f"[green]✓[/] wrote schemabrain entry to {result.config_path}")
-        if result.backup_made:
-            backup = (
-                result.config_path.parent / (result.config_path.name + ".bak")
-                if result.config_path is not None
-                else None
+    if not isinstance(host_result, InitResult):
+        return  # pragma: no cover — defensive; stage-4 always populates this on `done`
+
+    if host_result.state == "written" and host_result.config_path is not None:
+        console.print(f"        [dim]wrote:[/] {host_result.config_path}")  # type: ignore[attr-defined]
+        if host_result.backup_made:
+            backup = host_result.config_path.parent / (host_result.config_path.name + ".bak")
+            console.print(f"        [dim]backup:[/] {backup}")  # type: ignore[attr-defined]
+    elif host_result.state == "shell_out_failed":
+        if host_result.shell_out_command:
+            console.print()  # type: ignore[attr-defined]
+            console.print(  # type: ignore[attr-defined]
+                "        " + " ".join(_redact_env_args(host_result.shell_out_command))
             )
-            console.print(f"  [dim]backup:[/] {backup}")
-        console.print()
-        if result.skip_index:
-            # Store was empty + user opted in (--skip-index or interactive
-            # acceptance); the "list entities" question would return nothing
-            # without an index run first.
-            console.print(
-                "  [dim]Before querying:[/] run "
-                "`schemabrain index --url-env $VAR --store-path $PATH`"
+            console.print(  # type: ignore[attr-defined]
+                "        [dim]env values redacted above; re-run `schemabrain init` "
+                "to register with real credentials.[/]"
             )
-            console.print(
-                "  [dim]Then:[/] restart Claude Desktop and ask:  "
-                '"list the entities Schema Brain knows about"'
+        if host_result.shell_out_stderr:
+            safe_stderr = _redact_stderr_credentials(host_result.shell_out_stderr)
+            console.print(  # type: ignore[attr-defined]
+                f"        [dim]stderr:[/] {safe_stderr}"
             )
-        else:
-            console.print(
-                "  [dim]Next:[/] restart Claude Desktop, then ask:  "
-                '"list the entities Schema Brain knows about"'
-            )
-    elif result.state == "unchanged":
-        console.print(
-            f"[green]✓[/] schemabrain entry already configured in {result.config_path}; no changes"
-        )
-    elif result.state == "shell_out_succeeded":
-        console.print("[green]✓[/] registered schemabrain with Claude Code")
-        console.print()
-        console.print(
-            "  [dim]Next:[/] restart Claude Code, then ask:  "
-            '"list the entities Schema Brain knows about"'
-        )
-    elif result.state == "shell_out_failed":
-        console.print("[red]✗[/] `claude mcp add` failed; you can run it manually:")
-        if result.shell_out_command:
-            console.print()
-            console.print("  " + " ".join(_redact_env_args(result.shell_out_command)))
-            console.print()
-            console.print(
-                "  [dim]Note:[/] env values are redacted above. To re-run with real "
-                "credentials, prefer `schemabrain init` (which reads them from your env)."
-            )
-        if result.shell_out_stderr:
-            console.print(f"\n  [dim]stderr:[/] {result.shell_out_stderr}")
-    else:
-        # state == "printed_only" — manual / --print-only
+    elif host_result.state == "printed_only":
         import json as _json
 
-        # Header to stderr — paste-target-safe (stdout stays clean
-        # JSON for `> snippet.json` piping). Flush after each stream
-        # switch so terminal users see header → JSON → footer in
-        # source order rather than interleaved by buffering.
-        console.print("[bold]Schema Brain init[/] — manual mode.")
-        console.print()
-        console.print("Add this to your MCP host's config:")
-        console.print()
-        console.file.flush()
-        # Snippet to stdout — the user wants a paste-ready JSON block,
-        # so this lands on stdout not stderr.
-        entry = {"mcpServers": {"schemabrain": result.snippet.to_mcp_entry()}}
+        console.print()  # type: ignore[attr-defined]
+        console.print("        Add this to your MCP host's config:")  # type: ignore[attr-defined]
+        console.print()  # type: ignore[attr-defined]
+        console.file.flush()  # type: ignore[attr-defined]
+        entry = {"mcpServers": {"schemabrain": host_result.snippet.to_mcp_entry()}}
         sys.stdout.write(_json.dumps(entry, indent=2))
         sys.stdout.write("\n")
         sys.stdout.flush()
-        console.print()
-        # `soft_wrap=True` keeps the long paths on one line each so
-        # users can copy-paste without the terminal's auto-wrap
-        # breaking the path mid-word (e.g. "Application Support").
-        console.print("  [dim]Common config paths:[/]", soft_wrap=True)
+        console.print()  # type: ignore[attr-defined]
+        console.print("        [dim]Common config paths:[/]", soft_wrap=True)  # type: ignore[attr-defined]
         for line in (
-            "    Claude Desktop (macOS):   ~/Library/Application Support/Claude/claude_desktop_config.json",
-            "    Claude Desktop (Windows): %APPDATA%\\Claude\\claude_desktop_config.json",
-            "    Cursor:                   ~/.cursor/mcp.json",
-            "    Continue:                 ~/.continue/config.json",
-            "    Windsurf:                 ~/.codeium/windsurf/mcp_config.json",
+            "          Claude Desktop (macOS):   ~/Library/Application Support/Claude/claude_desktop_config.json",
+            "          Claude Desktop (Windows): %APPDATA%\\Claude\\claude_desktop_config.json",
+            "          Cursor:                   ~/.cursor/mcp.json",
+            "          Continue:                 ~/.continue/config.json",
+            "          Windsurf:                 ~/.codeium/windsurf/mcp_config.json",
         ):
-            console.print(line, soft_wrap=True, highlight=False)
-        console.print()
-        console.print(
-            "  [dim]After saving the file, restart your host and ask:[/]  "
-            '"list the entities Schema Brain knows about"',
-            soft_wrap=True,
-        )
+            console.print(line, soft_wrap=True, highlight=False)  # type: ignore[attr-defined]
 
 
 def _cmd_fixture_path(name: str) -> int:
