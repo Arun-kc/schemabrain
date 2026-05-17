@@ -258,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             store_path=args.store_path,
             events_path=args.events_path,
             no_events=args.no_events,
+            no_audit=args.no_audit,
         )
     if args.command == "fixture-path":
         return _cmd_fixture_path(args.name)
@@ -593,6 +594,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable event emission entirely (no JSONL file is written, "
         "no server_start/stop events). Useful for CI runs that don't want "
         "a stray events file in $HOME.",
+    )
+    p_serve.add_argument(
+        "--no-audit",
+        dest="no_audit",
+        action="store_true",
+        help="Disable the mcp_audit table writer for this `serve` "
+        "process. No audit rows land; the table stays as it was. The "
+        "tools still respond — only the durable per-call record is "
+        "suppressed. Use for CI runs or test contexts where audit "
+        "writes would clutter a shared store.",
     )
 
     p_mine = sub.add_parser(
@@ -1518,6 +1529,7 @@ def _cmd_serve(
     store_path: str,
     events_path: str | None = None,
     no_events: bool = False,
+    no_audit: bool = False,
 ) -> int:
     """Run the MCP server on stdio against the local store.
 
@@ -1532,9 +1544,16 @@ def _cmd_serve(
     at the resolved path (flag > env > default `~/.schemabrain/events.jsonl`)
     and pass it through. When `no_events` is True, a `NullEventBus` is
     used and no JSONL file is written.
+
+    `no_audit` controls the `mcp_audit` table writer. When False
+    (default), an `AuditWriter` is constructed against the same store
+    file and each MCP tool call writes one row. When True (or when
+    construction fails — same fallback discipline as the events bus),
+    audit is disabled for the run.
     """
     import os as _os
 
+    from schemabrain.audit.writer import AuditWriter
     from schemabrain.observability import JsonlEventBus, NullEventBus
 
     source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
@@ -1583,6 +1602,25 @@ def _cmd_serve(
 
     metric_executor = EngineMetricExecutor(engine)
 
+    # Construct the audit writer alongside the bus — same fallback
+    # posture: an OSError during construction (read-only store dir,
+    # missing parent perms) demotes to no-audit + stderr warning. The
+    # serve process is more useful without audit than not at all.
+    audit_writer: AuditWriter | None
+    if no_audit:
+        audit_writer = None
+    else:
+        try:
+            audit_writer = AuditWriter(Path(store_path).expanduser())
+        except OSError as exc:
+            print(
+                f"schemabrain serve: cannot initialise audit writer at "
+                f"{store_path}: {exc}. Continuing with audit disabled. "
+                f"Pass --no-audit to suppress this warning.",
+                file=sys.stderr,
+            )
+            audit_writer = None
+
     try:
         with SQLiteStore(store_path) as store:
             run_stdio(
@@ -1591,6 +1629,7 @@ def _cmd_serve(
                 embedder=fastembed_default(),
                 metric_executor=metric_executor,
                 event_bus=bus,
+                audit_writer=audit_writer,
             )
     except OSError as e:
         # Unwritable directory, missing parent, etc. Surface as a

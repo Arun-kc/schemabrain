@@ -147,6 +147,59 @@ schemabrain tail --events-path /tmp/my-events.jsonl
 schemabrain serve --no-events --url-env DATABASE_URL --store-path ./schemabrain.db
 ```
 
+## Audit log (alpha)
+
+Alongside the lossy JSONL bus, every MCP tool call writes one row to
+the `mcp_audit` table inside the local SQLite store. The table is
+append-only by three independent mechanisms — SQL triggers, a
+write-only writer connection, and a per-row sha256 chain hash that
+makes coherent tampering detectable against any external archive that
+captured a prior hash.
+
+The shape, the privacy guarantee, and the regulatory backing for the
+PII taxonomy are documented in
+[ADR 0001](adr/0001-audit-row-and-pii-taxonomy.md). Per that ADR, the
+fingerprint primitive carries no row content, no column values, and
+no identifying schema info — only structural metadata.
+
+### Inspecting the table
+
+```bash
+# Verify the chain is intact (exit 0 = clean, exit 1 = mismatch).
+schemabrain audit verify
+
+# Walk every row past the first mismatch — forensic mode.
+schemabrain audit verify --full
+
+# List recent rows (pretty table).
+schemabrain audit list
+
+# List with filters.
+schemabrain audit list --since 1h --status error --tool describe_table
+
+# Machine-readable output.
+schemabrain audit list --json | jq '.tool_name'
+```
+
+### Durability
+
+The audit writer uses WAL + `synchronous=NORMAL` — the same posture
+as the rest of the SQLite store. A crash within milliseconds of a
+write can lose the last few rows; the chain hash still keeps the rest
+of the table tamper-evident. Stricter fsync-on-write durability lives
+on the roadmap.
+
+### Opting out
+
+```bash
+# No audit writes for this serve process.
+schemabrain serve --no-audit --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+If the writer cannot be constructed (read-only volume, missing parent
+permissions), `serve` falls back to no-audit with a stderr warning —
+the server is more useful without audit than not at all.
+
 ## Integrating with existing observability stacks
 
 For now, the recommendation is to tail `events.jsonl` and ship the
