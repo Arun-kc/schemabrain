@@ -192,6 +192,26 @@ def profiling_pg_url(pg_url: str) -> str:
                     "VALUES ('a', 'b'), ('c', 'd');"
                 )
             )
+            # Regression table for the `%`-in-identifier bug: psycopg's
+            # pyformat paramstyle treats `%` as a parameter marker, so
+            # routing identifier-only SQL through `text()` double-escapes
+            # any `%` baked into a column name (`%` -> `%%` -> `%%%%`)
+            # and the query dies in Postgres parse. Real example:
+            # BIRD's California Schools DB has columns like
+            # `Percent (%) Eligible Free (K-12)`.
+            conn.execute(
+                text(
+                    'CREATE TABLE profiling."pct_columns" '
+                    '("Win %" INT, "Percent (%) Eligible" TEXT, "no_percent" INT);'
+                )
+            )
+            conn.execute(
+                text(
+                    'INSERT INTO profiling."pct_columns" '
+                    '("Win %", "Percent (%) Eligible", "no_percent") '
+                    "VALUES (50, 'yes', 1), (75, 'no', 2), (NULL, 'yes', 3);"
+                )
+            )
     finally:
         engine.dispose()
     return pg_url

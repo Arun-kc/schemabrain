@@ -195,6 +195,35 @@ class TestProfileTableEdgeCases:
         assert stats["x;DROP"].sample_values == ("b", "d")
         assert stats_again["select"].sample_values == ("a", "c")
 
+    def test_percent_in_column_name(self, profiling_pg_url: str) -> None:
+        # Regression: psycopg's pyformat paramstyle treats `%` as a
+        # parameter marker. Routing identifier-only SQL through `text()`
+        # double-escapes any `%` baked into a column name
+        # (`%` -> `%%` -> `%%%%`) and Postgres dies in parse. The fix
+        # is `conn.exec_driver_sql(sql)` — bypasses SQLAlchemy's
+        # parameter handling entirely, appropriate because the
+        # profiler SQL has zero bind parameters. Real example:
+        # BIRD's California Schools DB has columns like
+        # `Percent (%) Eligible Free (K-12)`.
+        table = _make_table(
+            "profiling",
+            "pct_columns",
+            [("Win %", "INT"), ("Percent (%) Eligible", "TEXT"), ("no_percent", "INT")],
+        )
+        with PostgresProfiler(profiling_pg_url) as profiler:
+            stats = profiler.profile_table(table)
+        # Counts must round-trip — the bug previously raised
+        # `psycopg.errors.SyntaxError` before we got here.
+        assert stats["Win %"].total_rows == 3
+        assert stats["Win %"].null_count == 1
+        assert stats["Win %"].distinct_count == 2
+        assert stats["Percent (%) Eligible"].total_rows == 3
+        assert stats["Percent (%) Eligible"].null_count == 0
+        assert stats["Percent (%) Eligible"].distinct_count == 2
+        assert stats["no_percent"].total_rows == 3
+        # Samples path must also work — same bug exists in `_fetch_samples`.
+        assert set(stats["Percent (%) Eligible"].sample_values) == {"yes", "no"}
+
     def test_unknown_table_raises(self, profiling_pg_url: str) -> None:
         table = _make_table("profiling", "no_such_table", [("id", "BIGINT")])
         with PostgresProfiler(profiling_pg_url) as profiler, pytest.raises(TableNotFoundError):
