@@ -1234,6 +1234,47 @@ class TestWizardRenderer:
         assert _host_display_name("claude-code") == "Claude Code"
         assert _host_display_name("manual") == "manual mode"
 
+    def test_format_path_replaces_home_with_tilde(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from schemabrain.cli import _format_path_for_terminal
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+        nested = tmp_path / "Library" / "config.json"
+        assert _format_path_for_terminal(nested) == "~/Library/config.json"
+
+    def test_format_path_returns_short_paths_unchanged(self) -> None:
+        from schemabrain.cli import _format_path_for_terminal
+
+        # A path well under the soft cap renders as-is (after the
+        # tilde substitution — short relative paths skip both).
+        assert _format_path_for_terminal(Path("/tmp/short.json")) == "/tmp/short.json"
+
+    def test_format_path_left_truncates_long_paths(self) -> None:
+        from schemabrain.cli import _format_path_for_terminal
+
+        # 100+ char macOS-style path falls past the 60-char soft cap.
+        # The result must (a) start with `…/`, (b) preserve the last
+        # 3 path components, (c) be visibly shorter than the input.
+        long_path = Path(
+            "/Users/someverylongname/Library/Application Support/Claude/claude_desktop_config.json"
+        )
+        result = _format_path_for_terminal(long_path)
+        assert result.startswith("…/")
+        assert result.endswith("claude_desktop_config.json")
+        assert "Application Support/Claude/claude_desktop_config.json" in result
+        assert len(result) < len(str(long_path))
+
+    def test_format_path_skips_truncation_for_shallow_long_path(self) -> None:
+        from schemabrain.cli import _format_path_for_terminal
+
+        # A path with ≤3 components can't be left-truncated meaningfully —
+        # render whatever the home-substitution produced.
+        shallow = Path("/" + "x" * 100 + ".json")  # one component, longer than the cap
+        result = _format_path_for_terminal(shallow)
+        # No `…/` prefix because there's nothing to trim.
+        assert "…/" not in result
+
     def test_host_display_name_unknown_returns_input(self) -> None:
         # Defensive: the literal is enforced at WizardConfig
         # construction time, but the renderer's lookup falls through to

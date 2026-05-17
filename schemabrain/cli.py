@@ -3757,6 +3757,40 @@ def _format_duration(seconds: float) -> str:
     return f"{seconds:.1f}s"
 
 
+def _format_path_for_terminal(path: Path, *, max_width: int = 60) -> str:
+    """Compact a filesystem path for terminal display.
+
+    Macos Claude Desktop config paths run ~100 characters which wraps
+    on 80-col terminals. The compacted form replaces HOME with `~`
+    and, when still too long, left-truncates to `…/last/three/parts`
+    so the meaningful tail of the path stays visible.
+
+    `max_width` is a soft cap — the truncated form may exceed it if
+    the deepest 3 components themselves are huge (rare). The
+    expectation is "shorter than a wrapping render"; pixel-perfect
+    width policing is the terminal's job.
+    """
+    try:
+        home = Path.home()
+        if path.is_absolute() and path.is_relative_to(home):
+            display = "~/" + str(path.relative_to(home))
+        else:
+            display = str(path)
+    except (OSError, ValueError):  # pragma: no cover — defensive (Windows shares, no HOME)
+        display = str(path)
+    if len(display) <= max_width:
+        return display
+    # Keep the last 3 path components — usually parent/parent/file.json
+    # — so the user can identify what was touched without reading the
+    # whole path. Using `Path.parts` ensures the separator is platform-correct.
+    parts = path.parts
+    if len(parts) <= 3:
+        # Path has 3 or fewer components — left-truncation can't shorten it.
+        return display
+    tail = Path(*parts[-3:])
+    return "…/" + str(tail)
+
+
 # Stages whose handlers commonly take long enough to need a visible
 # "I'm working" cue. Stages 1, 4, 5 are fast enough that a spinner
 # would flash and clear before the eye registers it; stages 2 and 3
@@ -4015,9 +4049,11 @@ def _render_wire_host_detail(host_result: object, console: object) -> None:
         return  # pragma: no cover — defensive; stage-4 always populates this on `done`
 
     if host_result.state == "written" and host_result.config_path is not None:
-        console.print(f"        [dim]wrote:[/] {host_result.config_path}")  # type: ignore[attr-defined]
+        wrote = _format_path_for_terminal(host_result.config_path)
+        console.print(f"        [dim]wrote:[/] {wrote}")  # type: ignore[attr-defined]
         if host_result.backup_made:
-            backup = host_result.config_path.parent / (host_result.config_path.name + ".bak")
+            backup_path = host_result.config_path.parent / (host_result.config_path.name + ".bak")
+            backup = _format_path_for_terminal(backup_path)
             console.print(f"        [dim]backup:[/] {backup}")  # type: ignore[attr-defined]
     elif host_result.state == "shell_out_failed":
         if host_result.shell_out_command:
