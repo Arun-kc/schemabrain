@@ -243,7 +243,9 @@ jobs:
               - 'Dockerfile'
               - '.dockerignore'
               - 'pyproject.toml'
+              - 'uv.lock'
               - 'schemabrain/**'
+              - '.github/workflows/ci.yml'
 
       - name: Set up Buildx
         if: steps.filter.outputs.docker == 'true'

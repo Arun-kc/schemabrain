@@ -86,6 +86,7 @@ from schemabrain.connectors.postgres import PostgresDataSource
 from schemabrain.core.metric import DbtOwnedMetricError
 from schemabrain.core.models import Table
 from schemabrain.core.store import DbtOwnedEntityError, SQLiteStore
+from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.anthropic_client import (
     anthropic_haiku_45_client,
     anthropic_sonnet_46_client,
@@ -1551,6 +1552,10 @@ def _cmd_index_dry_run(
     will_enrich = not no_enrich
     will_embed = will_enrich and not no_embed
     started = time.monotonic()
+    # Pre-init so the post-try render path can read `freshness` even
+    # if a future maintainer adds a catch-all except above; today the
+    # only matching `except` clauses return before reaching the render.
+    freshness: dict[str, object] | None = None
     try:
         try:
             with (
@@ -1565,15 +1570,12 @@ def _cmd_index_dry_run(
                     will_embed=will_embed,
                     reporter=reporter,
                 )
-                freshness = (
-                    _compute_freshness_audit(
+                if since_ts is not None:
+                    freshness = _compute_freshness_audit(
                         store=store,
                         source_connection_id=source_id,
                         since_ts=since_ts,
                     )
-                    if since_ts is not None
-                    else None
-                )
         finally:
             reporter.close()
     except OperationalError as e:
@@ -1614,19 +1616,19 @@ _FRESHNESS_AVG_COST_PER_COLUMN_USD = 0.0003
 
 def _compute_freshness_audit(
     *,
-    store: SQLiteStore,
+    store: Store,
     source_connection_id: str,
     since_ts: int,
 ) -> dict[str, object]:
     """Count cached columns belonging to tables last indexed before `since_ts`.
 
     Returns a dict with `stale_tables`, `stale_columns`, `cost_usd`.
-    The store is queried via its public `count_stale_tables_and_columns`
-    method so this helper stays decoupled from the SQLite layer. It
-    answers a different question than `dry_run_index` ("what is stale
-    in the cache" vs "what has drifted in the source") and the two
-    outputs can disagree (a stale cached table may not have any
-    source-side drift).
+    Typed against the `Store` Protocol so any future backend (in-memory
+    mock, hosted backend) participates without a CLI change. The
+    underlying query answers a different question than `dry_run_index`
+    ("what is stale in the cache" vs "what has drifted in the source")
+    and the two outputs can disagree (a stale cached table may not
+    have any source-side drift).
     """
     stale_tables, stale_cols = store.count_stale_tables_and_columns(
         source_connection_id=source_connection_id,
@@ -3648,15 +3650,24 @@ def _cmd_audit_verify(*, store_path: str, full: bool) -> int:
     return 1
 
 
+# Audit rows with `occurred_at` newer than this threshold render in
+# compact `HH:MM:SS` form; older ones keep the full ISO string.
+_AUDIT_RECENT_THRESHOLD_SECS: int = 24 * 3600
+
+
 def _format_audit_occurred_at(iso: str, *, now: datetime) -> str:
     """Compact recent timestamps; keep older ones in full ISO form.
 
     Audit rows accumulate at high rate during active sessions; the full
     `YYYY-MM-DDTHH:MM:SS.ffffffZ` form dominates a terminal row. Within
-    24 hours of `now` the date is implied, so `HH:MM:SS` is enough to
-    distinguish rows for an operator scanning a live audit. Beyond 24
-    hours the full ISO string carries again — date matters when a row
-    could be from yesterday or last week.
+    `_AUDIT_RECENT_THRESHOLD_SECS` of `now` the date is implied, so
+    `HH:MM:SS` is enough to distinguish rows for an operator scanning a
+    live audit. Beyond that the full ISO string carries again — date
+    matters when a row could be from yesterday or last week.
+
+    Future timestamps (clock skew, test-seeded rows) keep the full ISO
+    form deliberately. A compact "14:30:00" with no date would mislead
+    the operator into reading a future row as today's.
 
     Malformed timestamps (defensive — the writer never emits them) fall
     through to the raw string so the table still renders something
@@ -3666,7 +3677,8 @@ def _format_audit_occurred_at(iso: str, *, now: datetime) -> str:
         parsed = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
     except ValueError:
         return iso
-    if abs((now - parsed).total_seconds()) < 24 * 3600:
+    delta_secs = (now - parsed).total_seconds()
+    if 0 <= delta_secs < _AUDIT_RECENT_THRESHOLD_SECS:
         return parsed.strftime("%H:%M:%S")
     return iso
 

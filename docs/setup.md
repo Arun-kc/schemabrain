@@ -81,14 +81,20 @@ and `linux/arm64`.
 ```bash
 # Persist the SQLite store and the events log to ~/.schemabrain on the
 # host. The container writes there as a non-root user (uid 1000); the
-# directory must be writable by that uid, or you can `chmod 777` it
-# once if you do not care.
+# directory must be writable by that uid. Either chown the directory
+# to uid 1000 (`sudo chown 1000:1000 ~/.schemabrain`) or run the
+# container with `--user $(id -u)` to match your own uid.
 mkdir -p ~/.schemabrain
+
+# Export the URL first so the password never lands in shell history or
+# in argv. Same discipline as the non-Docker setup. `-e DATABASE_URL`
+# without a value passes the env var through to the container.
+export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"
 
 # Run `schemabrain index` with the connection URL passed via env var.
 # `-i` is not needed for index (no stdio); it IS needed for serve.
 docker run --rm \
-    -e DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname" \
+    -e DATABASE_URL \
     -e ANTHROPIC_API_KEY \
     -v ~/.schemabrain:/data \
     ghcr.io/arun-kc/schemabrain:latest \

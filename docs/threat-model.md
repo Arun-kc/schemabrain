@@ -79,7 +79,7 @@ and the audit log that records every call.
   the deprecation warning, not a mitigation.
 - Direct filesystem access to `~/.schemabrain/` allows reading the store and
   audit log. We set the events file to mode `0600` (see
-  [schemabrain/observability/events.py](../schemabrain/observability/events.py));
+  [schemabrain/observability/bus.py](../schemabrain/observability/bus.py));
   the store relies on OS umask. Operators on shared machines should rely on
   full-disk encryption and per-user home directories.
 
@@ -168,7 +168,7 @@ LLM credit (Anthropic side) and database load (Postgres side).
 - A pathological agent can still issue thousands of cheap read-side calls
   in a session. The audit log records each one; the events file shows the
   pattern in `schemabrain tail`. Rate limiting on the MCP tool surface
-  itself is on the post-v1 roadmap.
+  itself is a planned enhancement.
 
 ## Asset 4: Adversarial schema names
 

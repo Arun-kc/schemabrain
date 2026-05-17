@@ -13,6 +13,7 @@ Splits into two layers:
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 
@@ -37,20 +38,21 @@ class TestStoreCountStaleTablesAndColumns:
 
     def test_old_rows_are_counted(self, tmp_path: Path) -> None:
         store_path = tmp_path / "store.db"
+        SQLiteStore(store_path).close()  # init the schema
+        # Two stale tables with 3 + 2 columns; one fresh table with 1
+        # column. Stale-side aggregate should be (2 tables, 5 columns).
+        _seed_table_with_columns(
+            store_path, schema="public", name="orders", indexed_at=100, columns=("id", "ts", "amt")
+        )
+        _seed_table_with_columns(
+            store_path, schema="public", name="customers", indexed_at=200, columns=("id", "email")
+        )
+        _seed_table_with_columns(
+            store_path, schema="public", name="items", indexed_at=9000, columns=("id",)
+        )
+
         store = SQLiteStore(store_path)
         try:
-            # Two stale tables with 3 + 2 columns; one fresh table with 1
-            # column. Stale-side aggregate should be (2 tables, 5 columns).
-            _seed_table_with_columns(
-                store, schema="public", name="orders", indexed_at=100, columns=("id", "ts", "amt")
-            )
-            _seed_table_with_columns(
-                store, schema="public", name="customers", indexed_at=200, columns=("id", "email")
-            )
-            _seed_table_with_columns(
-                store, schema="public", name="items", indexed_at=9000, columns=("id",)
-            )
-
             tables, columns = store.count_stale_tables_and_columns(
                 source_connection_id="src1",
                 since_ts=1000,
@@ -61,25 +63,26 @@ class TestStoreCountStaleTablesAndColumns:
 
     def test_other_source_ids_are_excluded(self, tmp_path: Path) -> None:
         store_path = tmp_path / "store.db"
+        SQLiteStore(store_path).close()
+        _seed_table_with_columns(
+            store_path,
+            schema="public",
+            name="orders",
+            indexed_at=100,
+            columns=("id",),
+            source_connection_id="src1",
+        )
+        _seed_table_with_columns(
+            store_path,
+            schema="public",
+            name="orders",
+            indexed_at=100,
+            columns=("id",),
+            source_connection_id="src2",
+        )
+
         store = SQLiteStore(store_path)
         try:
-            _seed_table_with_columns(
-                store,
-                schema="public",
-                name="orders",
-                indexed_at=100,
-                columns=("id",),
-                source_connection_id="src1",
-            )
-            _seed_table_with_columns(
-                store,
-                schema="public",
-                name="orders",
-                indexed_at=100,
-                columns=("id",),
-                source_connection_id="src2",
-            )
-
             tables, columns = store.count_stale_tables_and_columns(
                 source_connection_id="src1",
                 since_ts=1000,
@@ -144,7 +147,7 @@ class TestSinceArgparseSurface:
 
 
 def _seed_table_with_columns(
-    store: SQLiteStore,
+    store_path: Path,
     *,
     schema: str,
     name: str,
@@ -152,25 +155,32 @@ def _seed_table_with_columns(
     columns: tuple[str, ...],
     source_connection_id: str = "src1",
 ) -> None:
-    """Insert a tables row + columns rows directly via the store's connection.
+    """Insert a tables row + columns rows via a fresh sqlite3 connection.
 
     Bypasses the normal `index()` write path so tests can control the
     `indexed_at` value precisely. Real indexing always stamps "now"
     which would make freshness assertions time-sensitive.
+
+    Opens its own `sqlite3.Connection` against `store_path` rather than
+    reaching into a live `SQLiteStore`'s private connection. The caller
+    must `SQLiteStore(store_path).close()` once before the first seed
+    so the schema exists.
     """
-    conn = store._conn
-    assert conn is not None
-    conn.execute(
-        "INSERT INTO tables (schema_name, name, source_connection_id, indexed_at) "
-        "VALUES (?, ?, ?, ?)",
-        (schema, name, source_connection_id, indexed_at),
-    )
-    for idx, col_name in enumerate(columns):
+    conn = sqlite3.connect(str(store_path))
+    try:
         conn.execute(
-            "INSERT INTO columns ("
-            "schema_name, table_name, name, source_connection_id, data_type, "
-            "nullable, ordinal_position, default_expr, is_primary_key"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (schema, name, col_name, source_connection_id, "text", 1, idx, None, 0),
+            "INSERT INTO tables (schema_name, name, source_connection_id, indexed_at) "
+            "VALUES (?, ?, ?, ?)",
+            (schema, name, source_connection_id, indexed_at),
         )
-    conn.commit()
+        for idx, col_name in enumerate(columns):
+            conn.execute(
+                "INSERT INTO columns ("
+                "schema_name, table_name, name, source_connection_id, data_type, "
+                "nullable, ordinal_position, default_expr, is_primary_key"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (schema, name, col_name, source_connection_id, "text", 1, idx, None, 0),
+            )
+        conn.commit()
+    finally:
+        conn.close()

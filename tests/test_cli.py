@@ -1,6 +1,7 @@
 """Tests for the schemabrain CLI."""
 
 import tomllib
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1715,8 +1716,6 @@ class TestIndexDryRun:
         # Dry-run with --since at a far-future ts: every cached row
         # has `indexed_at` before "now + 1 year", so the freshness
         # audit reports the full cached set.
-        from datetime import UTC, datetime, timedelta
-
         future = (datetime.now(UTC) + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
         exit_code = main(
             [
@@ -1754,8 +1753,6 @@ class TestIndexDryRun:
             ]
         )
         capsys.readouterr()
-
-        from datetime import UTC, datetime, timedelta
 
         past = (datetime.now(UTC) - timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
         main(

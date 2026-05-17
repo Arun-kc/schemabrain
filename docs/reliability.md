@@ -111,7 +111,7 @@ already runs.
 ## Error budget policy
 
 If a target burns more than 50 % of its error budget in a rolling
-seven-day window, the next PR shipped is a reliability fix, not a
+seven-day window, the next release ships a reliability fix, not a
 feature. This is a discipline-by-convention policy at the current
 release; once a hosted variant exists, the budget burn becomes a
 hard gate on the deployment pipeline.

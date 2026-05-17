@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from schemabrain.audit.writer import AuditWriter, build_audit_row
+from schemabrain.cli import _format_audit_occurred_at
 from schemabrain.cli import main as cli_main
 from schemabrain.core.store import SQLiteStore
 
@@ -411,28 +413,24 @@ class TestFormatAuditOccurredAt:
     """Direct coverage on the timestamp helper so age branches are exercised."""
 
     def test_recent_returns_hhmmss(self) -> None:
-        from datetime import UTC, datetime
-
-        from schemabrain.cli import _format_audit_occurred_at
-
         now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC)
         iso = "2026-05-17T11:30:45.123456Z"  # 29 min 15s before `now`
         assert _format_audit_occurred_at(iso, now=now) == "11:30:45"
 
     def test_old_returns_full_iso(self) -> None:
-        from datetime import UTC, datetime
-
-        from schemabrain.cli import _format_audit_occurred_at
-
         now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC)
         iso = "2026-05-15T11:30:45.123456Z"  # 2 days before `now`
         assert _format_audit_occurred_at(iso, now=now) == iso
 
+    def test_future_timestamp_returns_full_iso(self) -> None:
+        # Future timestamps (clock skew, test seeds) MUST NOT compact;
+        # a bare HH:MM:SS with no date would mislead the operator into
+        # reading a future row as today's.
+        now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC)
+        iso = "2026-05-17T14:00:00.000000Z"  # 2 hours in the future
+        assert _format_audit_occurred_at(iso, now=now) == iso
+
     def test_malformed_iso_returns_raw(self) -> None:
-        from datetime import UTC, datetime
-
-        from schemabrain.cli import _format_audit_occurred_at
-
         now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC)
         bogus = "not-a-timestamp"
         assert _format_audit_occurred_at(bogus, now=now) == bogus
