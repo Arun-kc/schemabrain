@@ -153,6 +153,59 @@ class TestInitCliPrintOnly:
         assert "Common config paths" in captured.err
         assert "restart your host" in captured.err
 
+    def test_print_only_emits_manual_mode_header(
+        self,
+        seeded_store: Path,
+        stub_uvx: None,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Polish: render the "Schema Brain init — manual mode." header
+        # + "Add this to your MCP host's config:" so the JSON block has
+        # a labelled top, not just naked output.
+        main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(seeded_store),
+                "--print-only",
+            ]
+        )
+        captured = capsys.readouterr()
+        assert "Schema Brain init" in captured.err
+        assert "manual mode" in captured.err
+        assert "Add this to your MCP host's config" in captured.err
+
+    def test_print_only_config_paths_render_unwrapped(
+        self,
+        seeded_store: Path,
+        stub_uvx: None,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Polish: the "Common config paths" block must keep each path
+        # on a single line so users can copy-paste without rich's
+        # auto-wrap splitting "Application Support" mid-path.
+        main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(seeded_store),
+                "--print-only",
+            ]
+        )
+        captured = capsys.readouterr()
+        # The macOS path is the longest and the one rich was wrapping;
+        # asserting the full token appears on one line guards against
+        # regression to the auto-wrap default.
+        assert "~/Library/Application Support/Claude/claude_desktop_config.json" in captured.err
+        # Defensive: the wrapped form (with a line break inside the
+        # path) must NOT appear.
+        assert "~/Library/Application \nSupport" not in captured.err
+        assert "Application\nSupport" not in captured.err
+
 
 class TestInitCliClaudeDesktop:
     def test_writes_config_and_exits_zero(

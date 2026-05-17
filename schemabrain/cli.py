@@ -3179,24 +3179,39 @@ def _render_init_result(result: object) -> None:
         # state == "printed_only" — manual / --print-only
         import json as _json
 
+        # Header to stderr — paste-target-safe (stdout stays clean
+        # JSON for `> snippet.json` piping). Flush after each stream
+        # switch so terminal users see header → JSON → footer in
+        # source order rather than interleaved by buffering.
+        console.print("[bold]Schema Brain init[/] — manual mode.")
+        console.print()
+        console.print("Add this to your MCP host's config:")
+        console.print()
+        console.file.flush()
         # Snippet to stdout — the user wants a paste-ready JSON block,
         # so this lands on stdout not stderr.
         entry = {"mcpServers": {"schemabrain": result.snippet.to_mcp_entry()}}
         sys.stdout.write(_json.dumps(entry, indent=2))
         sys.stdout.write("\n")
+        sys.stdout.flush()
         console.print()
-        console.print(
-            "  [dim]Common config paths:[/]\n"
-            "    Claude Desktop (macOS):   ~/Library/Application Support/Claude/claude_desktop_config.json\n"
-            "    Claude Desktop (Windows): %APPDATA%\\Claude\\claude_desktop_config.json\n"
-            "    Cursor:                   ~/.cursor/mcp.json\n"
-            "    Continue:                 ~/.continue/config.json\n"
-            "    Windsurf:                 ~/.codeium/windsurf/mcp_config.json"
-        )
+        # `soft_wrap=True` keeps the long paths on one line each so
+        # users can copy-paste without the terminal's auto-wrap
+        # breaking the path mid-word (e.g. "Application Support").
+        console.print("  [dim]Common config paths:[/]", soft_wrap=True)
+        for line in (
+            "    Claude Desktop (macOS):   ~/Library/Application Support/Claude/claude_desktop_config.json",
+            "    Claude Desktop (Windows): %APPDATA%\\Claude\\claude_desktop_config.json",
+            "    Cursor:                   ~/.cursor/mcp.json",
+            "    Continue:                 ~/.continue/config.json",
+            "    Windsurf:                 ~/.codeium/windsurf/mcp_config.json",
+        ):
+            console.print(line, soft_wrap=True, highlight=False)
         console.print()
         console.print(
             "  [dim]After saving the file, restart your host and ask:[/]  "
-            '"list the entities Schema Brain knows about"'
+            '"list the entities Schema Brain knows about"',
+            soft_wrap=True,
         )
 
 
