@@ -329,6 +329,14 @@ def main(argv: list[str] | None = None) -> int:
                 url_env=args.url_env,
             )
         parser.error(f"unknown joins action: {args.joins_action}")  # pragma: no cover
+    if args.command == "doctor":
+        return _cmd_doctor(
+            positional_url=args.source,
+            url_env=args.url_env,
+            store_path=args.store_path,
+            host=args.host,
+            json_output=args.json,
+        )
     if args.command == "metrics":
         if args.metrics_action == "apply":
             return _cmd_metrics_apply(
@@ -951,6 +959,45 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="VARNAME",
         default=None,
         help="Name of the environment variable that holds the source URL.",
+    )
+
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="Run health checks against the host config, store, and (optionally) source",
+    )
+    p_doctor.add_argument(
+        "--source",
+        default=None,
+        help="Source URL to probe (SELECT 1 + read-only session check on Postgres). "
+        "DEPRECATED when the URL contains a password; prefer --url-env. "
+        "Optional — if neither --source nor --url-env is given, source checks are skipped.",
+    )
+    p_doctor.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL "
+        "(e.g. --url-env DATABASE_URL). Preferred over --source so credentials "
+        "never appear in argv. Mutually exclusive with --source.",
+    )
+    p_doctor.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_doctor.add_argument(
+        "--host",
+        choices=("claude-desktop", "claude-code", "manual"),
+        default="claude-desktop",
+        help="Which host config to check. Use `manual` to skip host-config checks "
+        "(default: claude-desktop)",
+    )
+    p_doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON to stdout instead of the human-readable "
+        "report to stderr. Useful for CI/monitoring scripts.",
     )
 
     return parser
@@ -2823,6 +2870,51 @@ def _write_joins_suggest_report(
     if apply_summary is not None:
         report["apply_summary"] = dict(apply_summary)
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+
+def _cmd_doctor(
+    *,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+    host: str,
+    json_output: bool,
+) -> int:
+    """Run `schemabrain doctor` and render the result.
+
+    Source URL is OPTIONAL — when both `positional_url` and `url_env`
+    are None, source-related checks are skipped (config-only mode).
+    When one is supplied, the standard `_resolve_url_source` helper
+    refuses on conflict or unset env var with the same guided errors
+    every other source-using subcommand emits, returning exit code 2.
+
+    Exit code semantics (Decision 9):
+      - 0: doctor ran; no `fail` outcomes
+      - 1: doctor ran; at least one `fail` outcome
+      - 2: operational refusal before doctor could run (e.g. --source
+        + --url-env conflict, --url-env names an unset variable)
+    """
+    from schemabrain.setup.doctor_flow import doctor, render_doctor, render_doctor_json
+
+    source_url: str | None = None
+    if positional_url is not None or url_env is not None:
+        source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+        if source_url is None:
+            # Guided error already rendered to stderr.
+            return 2
+    result = doctor(
+        source_url=source_url,
+        store_path=Path(store_path),
+        host=host,  # type: ignore[arg-type]
+    )
+    if json_output:
+        # JSON to stdout — clean pipe target.
+        sys.stdout.write(render_doctor_json(result))
+    else:
+        # Human-readable to stderr so users can pipe stdout cleanly
+        # in mixed-output scripts.
+        render_doctor(result, console=_stderr_console())
+    return result.exit_code
 
 
 def _cmd_fixture_path(name: str) -> int:
