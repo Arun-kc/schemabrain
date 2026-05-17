@@ -243,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
             no_embed=args.no_embed,
             quiet=args.quiet,
             dry_run=args.dry_run,
+            since=args.since,
             no_pii_classify=args.no_pii_classify,
         )
     if args.command == "eval":
@@ -538,6 +539,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "calls, no embeddings, no fastembed init. ANTHROPIC_API_KEY "
         "is NOT required. Note: estimate ignores --enable-sonnet "
         "tier routing and reports Haiku pricing only.",
+    )
+    p_index.add_argument(
+        "--since",
+        default=None,
+        help="Only meaningful with --dry-run. Adds a freshness audit "
+        "line to the preview: count of cached columns whose owning "
+        "table was last indexed before this point in time, with an "
+        "estimated cost to refresh them. Accepts a compact duration "
+        "('30s', '5m', '2h', '14d') or an ISO 8601 timestamp with "
+        "timezone ('2026-05-01T00:00:00Z'). Lets operators preview "
+        "the cost of catching up after a long pause before committing "
+        "to a real re-index.",
     )
 
     p_eval = sub.add_parser(
@@ -1315,8 +1328,16 @@ def _cmd_index(
     no_embed: bool,
     quiet: bool = False,
     dry_run: bool = False,
+    since: str | None = None,
     no_pii_classify: bool = False,
 ) -> int:
+    if since is not None and not dry_run:
+        print(
+            "error: --since requires --dry-run (it is meaningful only "
+            "when previewing, not when actually indexing)",
+            file=sys.stderr,
+        )
+        return 2
     if no_pii_classify:
         # One-shot startup warning: operators who opted out of
         # classification need a visible reminder that downstream
@@ -1347,6 +1368,7 @@ def _cmd_index(
             no_enrich=no_enrich,
             no_embed=no_embed,
             quiet=quiet,
+            since=since,
         )
 
     # API key check happens BEFORE the store opens — failing fast on
@@ -1492,6 +1514,7 @@ def _cmd_index_dry_run(
     no_enrich: bool,
     no_embed: bool,
     quiet: bool,
+    since: str | None = None,
 ) -> int:
     """`schemabrain index --dry-run` — preview without doing.
 
@@ -1507,7 +1530,22 @@ def _cmd_index_dry_run(
     still surface through the guided-error translators. That's the
     right behavior: a dry-run that can't reach the source isn't a
     successful dry-run.
+
+    When `since` is supplied, a separate freshness-audit line follows
+    the standard dry-run summary. The audit counts cached columns
+    whose owning table was last indexed before the cutoff and
+    estimates the cost to refresh them.
     """
+    from schemabrain.observability import parse_since
+
+    since_ts: int | None = None
+    if since is not None:
+        try:
+            since_ts = int(parse_since(since).timestamp())
+        except ValueError as exc:
+            print(f"error: --since: {exc}", file=sys.stderr)
+            return 2
+
     source_id = _make_source_id(url)
     reporter = _build_index_reporter(quiet=quiet)
     will_enrich = not no_enrich
@@ -1527,6 +1565,15 @@ def _cmd_index_dry_run(
                     will_embed=will_embed,
                     reporter=reporter,
                 )
+                freshness = (
+                    _compute_freshness_audit(
+                        store=store,
+                        source_connection_id=source_id,
+                        since_ts=since_ts,
+                    )
+                    if since_ts is not None
+                    else None
+                )
         finally:
             reporter.close()
     except OperationalError as e:
@@ -1540,12 +1587,56 @@ def _cmd_index_dry_run(
         f"{result.summary(dry_run=True)} | source={canonical} store={store_path} in {elapsed:.1f}s",
         file=sys.stderr,
     )
+    if freshness is not None:
+        # Freshness audit always renders when --since was supplied,
+        # even when zero columns are stale — silence on a zero result
+        # would leave operators wondering whether the flag took effect.
+        print(
+            f"Stale since {since}: {freshness['stale_columns']} columns "
+            f"across {freshness['stale_tables']} tables "
+            f"(estimated refresh ${freshness['cost_usd']:.4f})",
+            file=sys.stderr,
+        )
     if result.tables_seen == 0:
         print(
             "warning: source has no user-visible tables — dry-run produced an empty diff",
             file=sys.stderr,
         )
     return 0
+
+
+# Per-column estimated refresh cost when computing `--since` freshness
+# audit. Same constant the indexer's `dry_run_index` uses for its main
+# cost line; kept here as a local alias to avoid importing a private
+# module symbol from the indexer.
+_FRESHNESS_AVG_COST_PER_COLUMN_USD = 0.0003
+
+
+def _compute_freshness_audit(
+    *,
+    store: SQLiteStore,
+    source_connection_id: str,
+    since_ts: int,
+) -> dict[str, object]:
+    """Count cached columns belonging to tables last indexed before `since_ts`.
+
+    Returns a dict with `stale_tables`, `stale_columns`, `cost_usd`.
+    The store is queried via its public `count_stale_tables_and_columns`
+    method so this helper stays decoupled from the SQLite layer. It
+    answers a different question than `dry_run_index` ("what is stale
+    in the cache" vs "what has drifted in the source") and the two
+    outputs can disagree (a stale cached table may not have any
+    source-side drift).
+    """
+    stale_tables, stale_cols = store.count_stale_tables_and_columns(
+        source_connection_id=source_connection_id,
+        since_ts=since_ts,
+    )
+    return {
+        "stale_tables": stale_tables,
+        "stale_columns": stale_cols,
+        "cost_usd": stale_cols * _FRESHNESS_AVG_COST_PER_COLUMN_USD,
+    }
 
 
 def _cmd_eval(
