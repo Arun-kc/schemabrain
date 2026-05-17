@@ -344,6 +344,66 @@ disambiguate, or get a structured ambiguity refusal listing both.
 
 ---
 
+## Watch what the agent does (alpha)
+
+When the MCP server is running, every tool call is appended as one
+JSON line to a local events file. `schemabrain tail` reads it in
+real time so you can see exactly what the agent is asking for,
+what answers it got, and what got refused.
+
+```bash
+# In one terminal — the server, which now writes to
+# ~/.schemabrain/events.jsonl by default
+schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db
+
+# In another terminal — the live activity stream
+schemabrain tail
+```
+
+Sample output:
+
+```
+14:32:07.114  find_relevant_tables  query='customer churn last quarter'
+              → matches=3 in 47ms
+
+14:32:08.221  describe_table        qualified_name='public.users'
+              → columns=12 tokens=380 in 12ms
+
+14:32:08.890  suggest_joins         tables=['public.users', 'public.orders']
+              → paths=1 in 6ms
+```
+
+Flags:
+
+- `--since DURATION` — replay events newer than `30s`/`5m`/`2h`/`1d`,
+  or an ISO 8601 timestamp with timezone. Default: 5m.
+- `--follow` / `--no-follow` — keep streaming (default) vs print
+  history and exit.
+- `--json` — emit raw JSONL, pipe-friendly for `jq`/`awk`.
+- `--events-path PATH` — point at a non-default file. Honours
+  `$SCHEMABRAIN_EVENTS_PATH` when the flag is absent.
+
+`schemabrain serve --no-events` disables emission entirely (no JSONL
+file is written). The events file is bounded by a 10 MiB rotation —
+on overflow the active file moves to `<path>.1` and a fresh active
+file starts. Tail follows the active file via inode tracking, so
+rotation is transparent.
+
+**A note on what gets logged.** The events file is local-only. Tool
+arguments are written after passing through a redactor that strips
+connection URLs, truncates strings larger than 2 KiB, replaces
+`get_metric` filter values with `<value>`, and replaces email-shaped
+strings with `<email>`. The redactor is conservative-but-incomplete
+by design — treat the events file as the same trust boundary as
+your shell history. Don't paste it into a public issue without
+review.
+
+See [docs/observability.md](docs/observability.md) for the full
+event shape, the redactor rules, and tips for shipping events into
+existing observability stacks.
+
+---
+
 ## Roadmap
 
 **v0.5 — finish schema intelligence (shipped):**
