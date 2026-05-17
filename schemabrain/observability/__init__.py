@@ -28,6 +28,7 @@ from schemabrain.observability.extractors import (
     default_result_extractor,
     get_result_extractor,
 )
+from schemabrain.observability.instrument import instrument, now_iso_utc
 from schemabrain.observability.redactor import EventRedactor
 
 __all__ = [
@@ -41,4 +42,6 @@ __all__ = [
     "ServerEventSubtype",
     "default_result_extractor",
     "get_result_extractor",
+    "instrument",
+    "now_iso_utc",
 ]

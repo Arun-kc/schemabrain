@@ -25,6 +25,7 @@ stdio (the transport Claude Desktop and most local-MCP clients use).
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
@@ -69,6 +70,12 @@ from schemabrain.mcp.shapes import (
     UnknownJoinNameError,
 )
 from schemabrain.mcp.suggest_joins import suggest_joins_impl
+from schemabrain.observability import (
+    EventBus,
+    EventRedactor,
+    NullEventBus,
+    instrument,
+)
 from schemabrain.semantic.compiler import (
     AmbiguousJoinError as CompilerAmbiguousJoinError,
 )
@@ -152,6 +159,8 @@ def build_server(
     source_connection_id: str,
     embedder: Embedder,
     metric_executor: MetricExecutor | None = None,
+    event_bus: EventBus | None = None,
+    server_session_id: str | None = None,
 ) -> FastMCP:
     """Build (but do not run) a configured `FastMCP` app.
 
@@ -166,8 +175,26 @@ def build_server(
     `index`. Passing `None` registers `get_metric` but every call
     raises `internal_error` with "executor not configured" — a
     structural mistake on the operator side.
+
+    `event_bus` is the observability sink — each tool call emits one
+    Event on success and on failure. Defaults to `NullEventBus`
+    (no-op) so tests and callers that don't care don't pay the cost.
+    `server_session_id` is a UUID identifying this server process
+    so a tail reader can group events across a single `serve` run;
+    a fresh UUID4 is generated when not supplied.
     """
     app = FastMCP(_SERVER_NAME, instructions=_SERVER_INSTRUCTIONS)
+    _bus = event_bus if event_bus is not None else NullEventBus()
+    _session_id = server_session_id or str(uuid.uuid4())
+    _redactor = EventRedactor()
+
+    def _trace(name: str):
+        return instrument(
+            tool_name=name,
+            bus=_bus,
+            redactor=_redactor,
+            server_session_id=_session_id,
+        )
 
     @app.tool(
         description=(
@@ -182,6 +209,7 @@ def build_server(
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
+    @_trace("find_relevant_tables")
     def find_relevant_tables(
         query: Annotated[
             str,
@@ -247,6 +275,7 @@ def build_server(
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
+    @_trace("describe_table")
     def describe_table(
         qualified_name: Annotated[
             str,
@@ -298,6 +327,7 @@ def build_server(
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
+    @_trace("describe_column")
     def describe_column(
         qualified_name: Annotated[
             str,
@@ -370,6 +400,7 @@ def build_server(
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
+    @_trace("get_example_queries")
     def get_example_queries(
         qualified_name: Annotated[
             str,
@@ -436,6 +467,7 @@ def build_server(
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
+    @_trace("suggest_joins")
     def suggest_joins(
         tables: Annotated[
             list[str],
@@ -504,6 +536,7 @@ def build_server(
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
+    @_trace("list_entities")
     def list_entities() -> ToolResponse[list[EntitySummary]]:
         try:
             summaries = list_entities_impl(
@@ -545,6 +578,7 @@ def build_server(
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
+    @_trace("describe_entity")
     def describe_entity(
         name: Annotated[
             str,
@@ -596,6 +630,7 @@ def build_server(
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
+    @_trace("resolve_join")
     def resolve_join(
         entity_a: Annotated[
             str,
@@ -724,6 +759,7 @@ def build_server(
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
+    @_trace("get_metric")
     def get_metric(
         name: Annotated[
             str,
