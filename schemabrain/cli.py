@@ -260,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
             events_path=args.events_path,
             no_events=args.no_events,
             no_audit=args.no_audit,
+            pii_block_csv=args.pii_block,
         )
     if args.command == "fixture-path":
         return _cmd_fixture_path(args.name)
@@ -617,6 +618,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "tools still respond — only the durable per-call record is "
         "suppressed. Use for CI runs or test contexts where audit "
         "writes would clutter a shared store.",
+    )
+    p_serve.add_argument(
+        "--pii-block",
+        dest="pii_block",
+        default="",
+        help="Comma-separated PIICategory list whose presence in a "
+        "compiled get_metric plan triggers a refused envelope "
+        "(refusal_reason='pii_blocked'). Example: "
+        "--pii-block contact,health. Unknown category names abort "
+        "startup with an error listing the 12 valid values. Empty "
+        "(default) disables enforcement — PII tags still flow to "
+        "the audit row.",
     )
 
     p_mine = sub.add_parser(
@@ -1556,6 +1569,7 @@ def _cmd_serve(
     events_path: str | None = None,
     no_events: bool = False,
     no_audit: bool = False,
+    pii_block_csv: str = "",
 ) -> int:
     """Run the MCP server on stdio against the local store.
 
@@ -1581,6 +1595,35 @@ def _cmd_serve(
 
     from schemabrain.audit.writer import AuditWriter
     from schemabrain.observability import JsonlEventBus, NullEventBus
+    from schemabrain.pii import PII_CATEGORIES
+
+    # Parse `--pii-block CATEGORIES`. Empty string disables enforcement.
+    # Unknown category names abort startup with a clear error listing
+    # the 12 valid values — a typo in the operator config should
+    # NOT silently fall through to "no PII protection."
+    pii_block: frozenset[str] = frozenset()
+    if pii_block_csv:
+        requested = frozenset(c.strip() for c in pii_block_csv.split(",") if c.strip())
+        unknown = requested - PII_CATEGORIES
+        if unknown:
+            print(
+                f"error: --pii-block contains unknown category names: "
+                f"{sorted(unknown)}. Valid categories: {sorted(PII_CATEGORIES)}.",
+                file=sys.stderr,
+            )
+            return 2
+        pii_block = requested
+
+    if pii_block and no_audit:
+        # Honest disclosure: enforcement still happens (the agent sees
+        # the refusal envelope), but the refused row never lands in
+        # mcp_audit. Operators relying on audit for compliance need
+        # to know this combination is observable-but-not-persistent.
+        print(
+            "warning: --pii-block active without --audit: refusals will be "
+            "enforced but not persisted to mcp_audit.",
+            file=sys.stderr,
+        )
 
     source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
     if source_url is None:
@@ -1663,6 +1706,7 @@ def _cmd_serve(
                 metric_executor=metric_executor,
                 event_bus=bus,
                 audit_writer=audit_writer,
+                pii_block=pii_block,
             )
     except OSError as e:
         # Unwritable directory, missing parent, etc. Surface as a

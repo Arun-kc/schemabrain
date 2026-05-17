@@ -232,6 +232,12 @@ class ToolError(BaseModel):
     kind: ErrorKind
     message: str
     recovery: Recovery
+    # Categories that triggered a refusal. Sorted tuple so the wire
+    # form is deterministic for any caller; empty tuple when the
+    # refusal carries no PII context. Today only `pii_blocked`
+    # populates this; the other two refusal kinds (`policy_blocked`,
+    # `allowlist_violation`) and every non-refusal kind keep `()`.
+    pii_categories: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _validate_recovery_fields_match_kind(self) -> ToolError:
@@ -244,6 +250,11 @@ class ToolError(BaseModel):
             if self.recovery.widening_hint is not None:
                 raise ValueError(
                     f"Recovery.widening_hint is only valid for refusal "
+                    f"kinds ({sorted(REFUSAL_KINDS)}); got kind={self.kind!r}"
+                )
+            if self.pii_categories:
+                raise ValueError(
+                    f"ToolError.pii_categories is only valid for refusal "
                     f"kinds ({sorted(REFUSAL_KINDS)}); got kind={self.kind!r}"
                 )
         return self

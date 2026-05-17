@@ -175,13 +175,28 @@ class GrainMismatchError(MetricCompilerError):
 
 
 class PiiBlockedError(MetricCompilerError):
-    """Reserved for a future PR PII redaction work.
+    """Raised when a metric touches columns whose PII categories
+    intersect the server's `--pii-block` policy set.
 
-    Claimed in the error-kind Literal. v1 wires the check in
-    `resolve.py` but `EntityColumn.pii_sensitivity` is hardcoded
-    `"public"` for all columns today, so the check never fires.
-    At a future PR the same check activates without code changes here.
+    `attempted_categories` carries the full set of categories the
+    metric would touch (the propagation result of all column tags).
+    `blocked_categories` is the subset that triggered the refusal
+    (the intersection with the server's blocked set). Both are
+    sorted tuples for deterministic wire serialisation; the audit
+    row stores `attempted_categories` so the audit trail shows
+    *what was touched*, not just *that something was blocked*.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        attempted_categories: tuple[str, ...] = (),
+        blocked_categories: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.attempted_categories = attempted_categories
+        self.blocked_categories = blocked_categories
 
 
 # ----- IR --------------------------------------------------------------------

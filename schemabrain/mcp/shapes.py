@@ -526,3 +526,9 @@ class MetricResult(BaseModel):
     token_estimate: int
     required_joins: list[str]
     fan_out_join_names: list[str]
+    # Sorted tuple of PIICategory values produced by propagating the
+    # tags of every column the metric touched. Empty tuple when no
+    # tagged column was touched (or no classifier was ever run). The
+    # audit row reads this to populate `mcp_audit.pii_categories`
+    # and to derive `FingerprintInput.pii_tags_touched`.
+    pii_categories: tuple[str, ...] = ()

@@ -88,9 +88,11 @@ def build_audit_row(
     The writer fills in `id`, `occurred_at`, `fingerprint`, and
     `chain_hash`. The remaining fields come from this function:
     `tool_name` + `source_connection_id` from the decorator's closure,
-    `status` from the response envelope, and v1 constants for the
-    refusal / PII / AST / rule fields (no v1 tool populates these;
-    they're nullable in the schema until v2 brings real values).
+    `status` from the response envelope, and PII categories pulled
+    from either `response.data.pii_categories` (success path —
+    today only `MetricResult` carries the field) or
+    `response.error.pii_categories` (refusal path — populated by the
+    `pii_blocked` refusal envelope).
     """
     raw_status = getattr(response, "status", None)
     if raw_status not in _ALLOWED_STATUSES:
@@ -103,18 +105,71 @@ def build_audit_row(
         status = "error"
     else:
         status = raw_status
+
+    pii_categories = _extract_pii_categories(response)
+    refusal_reason = _extract_refusal_reason(response, status)
+
     return {
         "source_connection_id": source_connection_id,
         "caller_id": None,
         "tool_name": tool_name,
         "status": status,
-        "refusal_reason": None,
-        "cost_class": "small",
-        "pii_categories": "",
+        "refusal_reason": refusal_reason,
+        "cost_class": "refused" if status == "refused" else "small",
+        "pii_categories": pii_categories,
         "ast_shape_hash": None,
         "rule_id": None,
         "fingerprint_version": FINGERPRINT_VERSION,
     }
+
+
+def _extract_pii_categories(response: Any) -> str:
+    """Read `pii_categories` from the response (success or refusal path).
+
+    Success-side: `response.data.pii_categories` is the propagated
+    set when present (today only `MetricResult` carries it).
+    Refusal-side: `response.error.pii_categories` is the attempted-
+    set populated by the `pii_blocked` refusal envelope. Either is
+    a sorted tuple of category strings; the audit column stores them
+    as a comma-separated form (same convention as
+    `example_queries.pii_categories`).
+
+    Returns `""` when neither path produces a value — the schema
+    column defaults to `''` for "no PII touched."
+    """
+    data = getattr(response, "data", None)
+    if data is not None:
+        categories = getattr(data, "pii_categories", None)
+        if categories:
+            return ",".join(categories)
+    error = getattr(response, "error", None)
+    if error is not None:
+        categories = getattr(error, "pii_categories", None)
+        if categories:
+            return ",".join(categories)
+    return ""
+
+
+def _extract_refusal_reason(response: Any, status: str) -> str | None:
+    """Map a refused envelope's `error.kind` to the audit row's
+    `refusal_reason`.
+
+    Non-refused responses always carry `refusal_reason=None`.
+    Refused responses today only emit `pii_blocked`; the other
+    five refusal kinds in ADR 0001 (`allowlist_violation`,
+    `fragment_unsafe`, `cost_cap_exceeded`,
+    `ambiguous_resolution`, `schema_drift`) land in future PRs and
+    extend the mapping below.
+    """
+    if status != "refused":
+        return None
+    error = getattr(response, "error", None)
+    if error is None:
+        return None
+    kind = getattr(error, "kind", None)
+    if kind == "pii_blocked":
+        return "pii_blocked"
+    return None
 
 
 def _now_iso_utc() -> str:
@@ -221,13 +276,18 @@ class AuditWriter:
             conn = self._require_conn()
             occurred_at = _now_iso_utc()
 
-            # Compute fingerprint over the v1 input set. The PII /
-            # AST / refusal fields are all v1-constant; v2 widens
-            # them through `build_audit_row` rather than touching
-            # the writer.
+            # Compute fingerprint over the v1 input set. PII tags
+            # touched now varies per call (PR #36 populated this from
+            # the get_metric propagation step); the AST shape and
+            # rule id are still v1-constant pending v2 query-shape
+            # fingerprinting + rule resolution.
+            pii_categories_str = draft["pii_categories"]
+            pii_tags_touched = (
+                frozenset(pii_categories_str.split(",")) if pii_categories_str else frozenset()
+            )
             fp_input = FingerprintInput(
                 ast_shape_hash=draft["ast_shape_hash"],
-                pii_tags_touched=frozenset(),
+                pii_tags_touched=pii_tags_touched,  # type: ignore[arg-type]
                 refusal_reason=draft["refusal_reason"],
                 cost_class=draft["cost_class"],
                 rule_id=draft["rule_id"],
