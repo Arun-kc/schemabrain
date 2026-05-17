@@ -400,6 +400,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.error(f"unknown command: {args.command}")  # pragma: no cover
 
 
+def _positive_float(value: str) -> float:
+    """argparse `type=` converter for "must be a positive float".
+
+    `float(value)` alone would accept `0` and negatives, which then
+    crash deep inside `CostCeilingGuard.__init__`. Reject at the
+    argparse layer so the user sees a clean usage error instead of a
+    traceback.
+    """
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"must be a number; got {value!r}") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive value; got {parsed}")
+    return parsed
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="schemabrain",
@@ -1158,11 +1175,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_init.add_argument(
         "--entities-max-cost-usd",
         dest="entities_max_cost_usd",
-        type=float,
+        type=_positive_float,
         default=None,
-        help="Cost ceiling for the entity-suggestion stage (USD). Defaults to "
-        "$SCHEMABRAIN_MAX_LLM_COST_USD or the package default. The pipeline "
-        "aborts cleanly if the next call would exceed this cap.",
+        help="Cost ceiling for the entity-suggestion stage (USD). Must be "
+        "positive. Defaults to $SCHEMABRAIN_MAX_LLM_COST_USD or the package "
+        "default. The pipeline aborts cleanly if the next call would exceed "
+        "this cap.",
     )
     p_init.add_argument(
         "--yes",
@@ -3352,9 +3370,28 @@ def _cmd_init(
     `--print-only` is an alias for `--host manual` — when either is
     set, stage 4 never writes; the snippet renders to stdout.
     """
+    from dataclasses import replace as _dc_replace
+    from typing import get_args as _get_args
+
+    from schemabrain.setup.hosts import HostName
     from schemabrain.setup.wizard import WizardConfig, run_default_wizard
 
     effective_host = "manual" if print_only else host
+    # `WizardConfig.__post_init__` enforces the host literal; argparse
+    # narrows the input to the documented `choices`, but the manual
+    # override path still benefits from a clean error on a typo.
+    valid_hosts = _get_args(HostName)
+    if effective_host not in valid_hosts:
+        _render_guided(
+            GuidedError(
+                kind="init_invalid_host",
+                message=f"unknown --host {effective_host!r}",
+                why="schemabrain init wires one of a fixed list of MCP hosts",
+                fix=f"pass --host one of {sorted(valid_hosts)}",
+                next_step="run `schemabrain init --help` to see the choices",
+            )
+        )
+        return 2
     source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
     if source_url is None:
         # _resolve_url_source already rendered a guided error.
@@ -3363,7 +3400,7 @@ def _cmd_init(
     cfg = WizardConfig(
         source_url=source_url,
         store_path=Path(store_path),
-        host=effective_host,  # type: ignore[arg-type]
+        host=effective_host,
         env_var_name=env_var,
         skip_index=skip_index,
         no_entities=no_entities,
@@ -3391,7 +3428,7 @@ def _cmd_init(
                 "Overwrite the existing schemabrain entry?",
                 default=False,
             ):
-                cfg = _replace_wizard_assume_yes(cfg)
+                cfg = _dc_replace(cfg, assume_yes=True)
                 continue
             _stderr_console().print("[yellow]cancelled[/] no changes made.")
             return 0
@@ -3406,26 +3443,6 @@ def _cmd_init(
     ):
         return 1
     return 0
-
-
-def _replace_wizard_assume_yes(cfg: object) -> object:
-    """Return a copy of `cfg` with `assume_yes=True`.
-
-    Wrapped as a helper so the interactive-recovery loop reads
-    cleanly. The frozen-dataclass replace pattern is the only way to
-    flip a single field without mutating shared state. Return type
-    is `object` to keep the wizard's types out of the cli module's
-    static surface; the caller knows it gets a `WizardConfig` back.
-    """
-    from dataclasses import replace as _replace
-
-    from schemabrain.setup.wizard import WizardConfig
-
-    if not isinstance(cfg, WizardConfig):  # pragma: no cover - defensive
-        raise TypeError(
-            f"_replace_wizard_assume_yes expected WizardConfig, got {type(cfg).__name__}"
-        )
-    return _replace(cfg, assume_yes=True)
 
 
 def _cmd_tail(
@@ -3694,6 +3711,30 @@ _STAGE_GLYPHS: dict[str, str] = {
     "failed": "[red]✗[/]",
 }
 
+# Total stage count for the wizard pipeline. Used as the abort
+# denominator ("stage N of 5") so an early abort still labels the
+# pipeline shape correctly. Must stay in sync with `DEFAULT_STAGES`.
+_WIZARD_TOTAL_STAGES: int = 5
+
+
+def _redact_stderr_credentials(stderr_text: str) -> str:
+    """Strip embedded credentials from a captured stderr blob.
+
+    `claude mcp add`'s stderr is currently safe (it doesn't echo
+    argv), but the helper is defense-in-depth: if a future version
+    of the Claude Code CLI starts including the redacted env value
+    in its error path, we want the redaction to apply automatically.
+    The regex matches any `<scheme>://user:pass@host/db`-style URL
+    and replaces the credentials portion.
+    """
+    import re
+
+    return re.sub(
+        r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^@\s]+@",
+        r"\1<redacted>@",
+        stderr_text,
+    )
+
 
 def _render_wizard_result(result: object) -> None:
     """Render the multi-stage outcome of a wizard run.
@@ -3721,7 +3762,10 @@ def _render_wizard_result(result: object) -> None:
     if not isinstance(result, WizardResult):
         raise TypeError(f"_render_wizard_result expected WizardResult, got {type(result).__name__}")
     console = _stderr_console()
-    total = len(result.outcomes)
+    # The wizard always has 5 stages even on early abort — using
+    # `len(result.outcomes)` for the denominator would render "of 2"
+    # on a stage-2 abort, misleading the user about the pipeline shape.
+    total = _WIZARD_TOTAL_STAGES
     console.print()
     console.print("[bold]Schema Brain init[/] — activation wizard")
     console.print()
@@ -3794,12 +3838,10 @@ def _render_wire_host_detail(host_result: object, console: object) -> None:
         return  # pragma: no cover — defensive; stage-4 always populates this on `done`
 
     if host_result.state == "written" and host_result.config_path is not None:
-        backup = host_result.config_path.parent / (host_result.config_path.name + ".bak")
+        console.print(f"        [dim]wrote:[/] {host_result.config_path}")  # type: ignore[attr-defined]
         if host_result.backup_made:
-            console.print(f"        [dim]wrote:[/] {host_result.config_path}")  # type: ignore[attr-defined]
+            backup = host_result.config_path.parent / (host_result.config_path.name + ".bak")
             console.print(f"        [dim]backup:[/] {backup}")  # type: ignore[attr-defined]
-        else:
-            console.print(f"        [dim]wrote:[/] {host_result.config_path}")  # type: ignore[attr-defined]
     elif host_result.state == "shell_out_failed":
         if host_result.shell_out_command:
             console.print()  # type: ignore[attr-defined]
@@ -3811,8 +3853,9 @@ def _render_wire_host_detail(host_result: object, console: object) -> None:
                 "to register with real credentials.[/]"
             )
         if host_result.shell_out_stderr:
+            safe_stderr = _redact_stderr_credentials(host_result.shell_out_stderr)
             console.print(  # type: ignore[attr-defined]
-                f"        [dim]stderr:[/] {host_result.shell_out_stderr}"
+                f"        [dim]stderr:[/] {safe_stderr}"
             )
     elif host_result.state == "printed_only":
         import json as _json

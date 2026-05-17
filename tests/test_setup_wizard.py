@@ -125,6 +125,70 @@ class TestStageOutcome:
                 message="m",
             )
 
+    def test_failed_outcome_requires_next_step(self) -> None:
+        # The dead-end-failure invariant: every `failed` outcome must
+        # carry a recovery hint so the renderer's dim next-step line
+        # always points the user somewhere actionable.
+        with pytest.raises(ValueError, match="must include next_step"):
+            StageOutcome(
+                stage=1,
+                name="x",
+                status="failed",
+                message="boom",
+            )
+
+    def test_failed_outcome_with_empty_next_step_rejected(self) -> None:
+        with pytest.raises(ValueError, match="must include next_step"):
+            StageOutcome(
+                stage=1,
+                name="x",
+                status="failed",
+                message="boom",
+                next_step="",
+            )
+
+
+class TestWizardConfigInvariants:
+    def _build(self, **overrides: object) -> WizardConfig:
+        fields: dict[str, object] = {
+            "source_url": "sqlite:///:memory:",
+            "store_path": Path("/tmp/test.db"),  # nosec B108 — never opened
+            "host": "manual",
+            "env_var_name": "SCHEMABRAIN_DATABASE_URL",
+            "skip_index": False,
+            "no_entities": False,
+            "enrich": False,
+            "entities_max_cost_usd": None,
+            "assume_yes": False,
+        }
+        fields.update(overrides)
+        return WizardConfig(**fields)  # type: ignore[arg-type]
+
+    def test_rejects_unknown_host(self) -> None:
+        with pytest.raises(ValueError, match="host must be one of"):
+            self._build(host="anthropic-desktop")  # type: ignore[arg-type]
+
+    def test_accepts_each_valid_host(self) -> None:
+        for host in ("claude-desktop", "claude-code", "manual"):
+            cfg = self._build(host=host)
+            assert cfg.host == host
+
+    def test_rejects_zero_entities_max_cost(self) -> None:
+        with pytest.raises(ValueError, match="entities_max_cost_usd"):
+            self._build(entities_max_cost_usd=0)
+
+    def test_rejects_negative_entities_max_cost(self) -> None:
+        with pytest.raises(ValueError, match="entities_max_cost_usd"):
+            self._build(entities_max_cost_usd=-1.0)
+
+    def test_accepts_none_entities_max_cost(self) -> None:
+        cfg = self._build(entities_max_cost_usd=None)
+        assert cfg.entities_max_cost_usd is None
+
+    def test_accepts_positive_entities_max_cost(self) -> None:
+        cfg = self._build(entities_max_cost_usd=0.5)
+        assert cfg.entities_max_cost_usd == 0.5
+
 
 # ----- WizardResult.aborted_at --------------------------------------------
 
@@ -141,7 +205,13 @@ class TestWizardResultAbortedAt:
         assert result.aborted_at is None
 
     def test_aborted_at_returns_first_failure(self) -> None:
-        first_fail = StageOutcome(stage=2, name="b", status="failed", message="boom")
+        first_fail = StageOutcome(
+            stage=2,
+            name="b",
+            status="failed",
+            message="boom",
+            next_step="re-run",
+        )
         result = WizardResult(
             outcomes=(
                 StageOutcome(stage=1, name="a", status="done", message="ok"),
@@ -297,6 +367,7 @@ class TestRunWizardStateMachine:
                     name=_n,
                     status=status,
                     message=f"{_n} {status}",
+                    next_step="recover" if status == "failed" else None,
                 )
 
             return WizardStage(stage=stage_num, name=name, handler=handler, abort_on_fail=True)
@@ -418,7 +489,11 @@ class TestStageSourceCheck:
         outcome = wizard._stage_source_check(ctx)
 
         assert outcome.status == "failed"
-        assert outcome.next_step is None
+        # `_failed_from_refusal` substitutes the default diagnostic
+        # hint when the GuidedError carries `next_step=None`, because
+        # `failed` outcomes are required to expose a recovery path.
+        assert outcome.next_step is not None
+        assert "schemabrain doctor" in outcome.next_step
 
 
 # ----- _stage_index --------------------------------------------------------
@@ -704,6 +779,28 @@ class TestPeekStoreTableCount:
         assert isinstance(outcome, StageOutcome)
         assert outcome.status == "failed"
         assert "v10" in outcome.message
+
+    def test_returns_failed_outcome_on_os_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # SQLiteStore's `mkdir(parents=True, exist_ok=True)` on the
+        # parent can raise OSError on a read-only filesystem. The
+        # peek must not let that escape — stage handlers MUST NOT
+        # raise.
+        store_path = tmp_path / "unreadable.db"
+        store_path.touch()
+
+        def _raise_os(*_a: object, **_kw: object) -> None:
+            raise OSError("read-only filesystem")
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore.__init__", _raise_os)
+
+        outcome = wizard._peek_store_table_count(store_path, "src")
+
+        assert isinstance(outcome, StageOutcome)
+        assert outcome.status == "failed"
+        assert "store unreadable" in outcome.message
+        assert outcome.stage == 2
 
 
 class TestRunIndexerSmoke:
@@ -992,13 +1089,116 @@ class TestStageEntities:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
 
-        empty = wizard._EntityApplyResult(applied_count=0, cost_usd=0.0021, llm_model="x")
+        empty = wizard._EntityApplyResult(
+            applied_count=0,
+            cost_usd=0.0021,
+            llm_model="x",
+            candidates_proposed=0,
+        )
         monkeypatch.setattr(wizard, "_run_entity_suggestion", lambda **_kw: empty)
 
         outcome = wizard._stage_entities(WizardContext(config=cfg))
 
         assert outcome.status == "failed"
         assert "0 candidates" in outcome.message
+
+    def test_failed_when_all_candidates_rejected(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # All candidates collided with existing entities — applied=0
+        # but candidates_proposed > 0. Message must surface that the
+        # LLM did produce candidates so the user understands the failure.
+        cfg = _pg_config(base_config)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        result = wizard._EntityApplyResult(
+            applied_count=0,
+            cost_usd=0.01,
+            llm_model="x",
+            candidates_proposed=5,
+            skip_reason="DbtOwnedEntityError at 'orders'",
+        )
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", lambda **_kw: result)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "5 candidates" in outcome.message
+        assert "none could be applied" in outcome.message
+
+    def test_partial_apply_surfaces_count_and_reason(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The C-1 silent-failure fix: when writes started failing
+        # mid-loop, the stage outcome must report both the partial
+        # count and the reason the rest were dropped.
+        cfg = _pg_config(base_config)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        result = wizard._EntityApplyResult(
+            applied_count=3,
+            cost_usd=0.008,
+            llm_model="sonnet-4.6",
+            candidates_proposed=8,
+            skip_reason="IntegrityError at 'ghost'",
+        )
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", lambda **_kw: result)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "3 of 8" in outcome.message
+        assert "5 skipped" in outcome.message
+        assert "IntegrityError at 'ghost'" in outcome.message
+        assert outcome.next_step is not None
+
+    def test_partial_apply_with_no_skip_reason(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Defensive: applied < proposed with no skip_reason recorded
+        # still surfaces partial state (loop ran out cleanly somehow).
+        cfg = _pg_config(base_config)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        result = wizard._EntityApplyResult(
+            applied_count=2,
+            cost_usd=0.003,
+            llm_model="x",
+            candidates_proposed=4,
+            skip_reason=None,
+        )
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", lambda **_kw: result)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "2 of 4" in outcome.message
+        # No skip_reason → no suffix in parentheses beyond cost.
+        assert "skipped:" not in outcome.message
+
+    def test_singular_entity_pluralization(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `applied_count == 1` produces "1 entity" not "1 entities".
+        cfg = _pg_config(base_config)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        result = wizard._EntityApplyResult(
+            applied_count=1,
+            cost_usd=0.001,
+            llm_model="x",
+            candidates_proposed=1,
+        )
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", lambda **_kw: result)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "1 entity created" in outcome.message
 
 
 class TestResolveEntitiesCostCap:
@@ -1021,6 +1221,33 @@ class TestResolveEntitiesCostCap:
         assert (
             wizard._resolve_entities_cost_cap(None) == wizard._WIZARD_ENTITIES_DEFAULT_COST_CAP_USD
         )
+
+    def test_malformed_env_emits_stderr_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("SCHEMABRAIN_MAX_LLM_COST_USD", "junk")
+        wizard._resolve_entities_cost_cap(None)
+        captured = capsys.readouterr()
+        assert "SCHEMABRAIN_MAX_LLM_COST_USD" in captured.err
+        assert "not a valid number" in captured.err
+
+    def test_zero_env_falls_back_to_default_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("SCHEMABRAIN_MAX_LLM_COST_USD", "0")
+        result = wizard._resolve_entities_cost_cap(None)
+        assert result == wizard._WIZARD_ENTITIES_DEFAULT_COST_CAP_USD
+        captured = capsys.readouterr()
+        assert "must be positive" in captured.err
+
+    def test_negative_env_falls_back_to_default_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("SCHEMABRAIN_MAX_LLM_COST_USD", "-0.5")
+        result = wizard._resolve_entities_cost_cap(None)
+        assert result == wizard._WIZARD_ENTITIES_DEFAULT_COST_CAP_USD
+        captured = capsys.readouterr()
+        assert "must be positive" in captured.err
 
 
 class TestPeekEntityCount:
@@ -1051,6 +1278,24 @@ class TestPeekEntityCount:
 
         assert isinstance(outcome, StageOutcome)
         assert outcome.status == "failed"
+        assert outcome.stage == 3
+
+    def test_returns_failed_outcome_on_os_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store_path = tmp_path / "unreadable_entity.db"
+        store_path.touch()
+
+        def _raise_os(*_a: object, **_kw: object) -> None:
+            raise OSError("read-only filesystem")
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore.__init__", _raise_os)
+
+        outcome = wizard._peek_entity_count(store_path, "src")
+
+        assert isinstance(outcome, StageOutcome)
+        assert outcome.status == "failed"
+        assert "store unreadable" in outcome.message
         assert outcome.stage == 3
 
 

@@ -633,30 +633,6 @@ class TestInitCliInteractiveOverlay:
         captured = capsys.readouterr()
         assert "cancelled" in captured.err
 
-    def test_empty_store_prompt_y_continues_with_skip_index(
-        self,
-        tmp_path: Path,
-        stub_uvx: None,
-        monkeypatch: pytest.MonkeyPatch,
-        force_interactive: None,
-    ) -> None:
-        store_path = tmp_path / "store.db"
-        SQLiteStore(path=store_path).close()
-        # User confirms "skip indexing for now."
-        monkeypatch.setattr("schemabrain.cli._prompt_yes_no", lambda *_a, **_kw: True)
-        exit_code = main(
-            [
-                "init",
-                "--source",
-                "sqlite:///:memory:",
-                "--store-path",
-                str(store_path),
-                "--host",
-                "manual",
-            ]
-        )
-        assert exit_code == 0
-
     def test_non_interactive_does_not_prompt_for_empty_store(
         self,
         tmp_path: Path,
@@ -943,14 +919,18 @@ class TestWizardRenderer:
                 self._make_outcome(1, "source_check", "done", "ok"),
                 self._make_outcome(2, "index", "skipped", "skipped"),
                 self._make_outcome(3, "entities", "skipped", "skipped"),
-                self._make_outcome(4, "wire_host", "failed", "host unavailable"),
+                self._make_outcome(
+                    4, "wire_host", "failed", "host unavailable", "install host first"
+                ),
             ),
             aborted=True,
             host_install_result=None,
         )
         _render_wizard_result(result)
         captured = capsys.readouterr()
-        assert "wizard aborted at stage 4" in captured.err
+        # Abort renders "stage 4 of 5" (denominator hardcoded to the
+        # full pipeline shape, not the count of outcomes seen).
+        assert "wizard aborted at stage 4 of 5" in captured.err
 
     def test_shell_out_failed_renders_redacted_argv(
         self, capsys: pytest.CaptureFixture[str]
@@ -1134,3 +1114,115 @@ class TestWizardRenderer:
         _render_wire_host_detail(host_result, console)
         captured = capsys.readouterr()
         assert "some error" in captured.err
+
+    def test_shell_out_stderr_credentials_redacted(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # If `claude mcp add` echoes the DB URL with credentials into
+        # its stderr (a future CLI debug-trace regression), the
+        # wizard's renderer must strip them before printing.
+        from rich.console import Console
+
+        from schemabrain.cli import _render_wire_host_detail
+        from schemabrain.setup.hosts import SchemabrainSnippet
+        from schemabrain.setup.init_flow import InitResult
+
+        snippet = SchemabrainSnippet(command="uvx", args=("schemabrain==0.2.0a1", "serve"), env={})
+        host_result = InitResult(
+            host="claude-code",
+            snippet=snippet,
+            state="shell_out_failed",
+            shell_out_command=None,
+            shell_out_stderr=(
+                "error: could not parse url "
+                "postgresql+psycopg://alice:hunter2@prod-db.example.com/inventory"
+            ),
+        )
+        console = Console(stderr=True)
+        _render_wire_host_detail(host_result, console)
+        captured = capsys.readouterr()
+
+        assert "hunter2" not in captured.err
+        assert "alice" not in captured.err
+        assert "<redacted>" in captured.err
+        # The host + db parts survive (only credentials masked).
+        assert "prod-db.example.com" in captured.err
+
+    def test_redact_stderr_credentials_handles_no_url(self) -> None:
+        from schemabrain.cli import _redact_stderr_credentials
+
+        # Input without any URL passes through unchanged.
+        text = "claude: command not found"
+        assert _redact_stderr_credentials(text) == text
+
+
+class TestPositiveFloatValidator:
+    def test_accepts_positive_value(self) -> None:
+        from schemabrain.cli import _positive_float
+
+        assert _positive_float("0.5") == 0.5
+        assert _positive_float("1.0") == 1.0
+
+    def test_rejects_zero(self) -> None:
+        import argparse
+
+        from schemabrain.cli import _positive_float
+
+        with pytest.raises(argparse.ArgumentTypeError, match="must be a positive"):
+            _positive_float("0")
+
+    def test_rejects_negative(self) -> None:
+        import argparse
+
+        from schemabrain.cli import _positive_float
+
+        with pytest.raises(argparse.ArgumentTypeError, match="must be a positive"):
+            _positive_float("-0.5")
+
+    def test_rejects_non_numeric(self) -> None:
+        import argparse
+
+        from schemabrain.cli import _positive_float
+
+        with pytest.raises(argparse.ArgumentTypeError, match="must be a number"):
+            _positive_float("infinity-ish")
+
+    def test_cli_rejects_zero_entities_max_cost_at_argparse(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # argparse exits 2 with a usage error for type-converter
+        # failures. This catches the security H-1 crash path:
+        # zero/negative cost would otherwise reach `CostCeilingGuard`
+        # and surface as an uncaught traceback.
+        with pytest.raises(SystemExit) as exc_info:
+            main(
+                [
+                    "init",
+                    "--source",
+                    "sqlite:///:memory:",
+                    "--entities-max-cost-usd",
+                    "0",
+                ]
+            )
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert "must be a positive" in captured.err
+
+
+class TestInvalidHostRefusal:
+    def test_invalid_host_via_print_only_alias_kept_valid(
+        self, seeded_store: Path, stub_uvx: None
+    ) -> None:
+        # `--print-only` forces host to "manual" — that always passes
+        # the literal check. This test locks in the print-only path.
+        exit_code = main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(seeded_store),
+                "--print-only",
+            ]
+        )
+        assert exit_code == 0

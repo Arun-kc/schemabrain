@@ -32,6 +32,7 @@ shows and what the wizard recorded.
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,7 +40,6 @@ from typing import TYPE_CHECKING, Literal, get_args
 
 from sqlalchemy.exc import OperationalError
 
-from schemabrain.enrichment.pipeline import CostCapExceeded
 from schemabrain.errors import GuidedError
 from schemabrain.setup.hosts import HostName, is_postgres_url
 from schemabrain.setup.init_flow import (
@@ -58,6 +58,7 @@ if TYPE_CHECKING:
 StageStatus = Literal["done", "skipped", "failed"]
 
 _VALID_STATUSES: frozenset[str] = frozenset(get_args(StageStatus))
+_VALID_HOSTS: frozenset[str] = frozenset(get_args(HostName))
 
 # Stage 4 is the only stage that produces side-data the CLI cares about
 # beyond a `StageOutcome` (the `InitResult` that describes what was
@@ -95,6 +96,17 @@ class StageOutcome:
             raise ValueError(
                 f"StageOutcome.status must be one of {sorted(_VALID_STATUSES)}; got {self.status!r}"
             )
+        # A `failed` outcome without a recovery hint leaves the user
+        # at a dead end. The renderer's dim next-step line simply
+        # doesn't render when `next_step` is None, so the failure
+        # message stands alone — useful only to someone who already
+        # knows what to do. Enforce a recovery pointer on every
+        # failure outcome.
+        if self.status == "failed" and not self.next_step:
+            raise ValueError(
+                "StageOutcome with status='failed' must include next_step "
+                "pointing the user at a recovery action"
+            )
 
 
 @dataclass(frozen=True)
@@ -116,6 +128,17 @@ class WizardConfig:
     enrich: bool
     entities_max_cost_usd: float | None
     assume_yes: bool
+
+    def __post_init__(self) -> None:
+        if self.host not in _VALID_HOSTS:
+            raise ValueError(
+                f"WizardConfig.host must be one of {sorted(_VALID_HOSTS)}; got {self.host!r}"
+            )
+        if self.entities_max_cost_usd is not None and self.entities_max_cost_usd <= 0:
+            raise ValueError(
+                "WizardConfig.entities_max_cost_usd must be a positive value "
+                f"or None; got {self.entities_max_cost_usd!r}"
+            )
 
 
 @dataclass
@@ -243,14 +266,19 @@ def _failed_from_refusal(
 
     Preserves the guided-error's user-facing `message` + `next_step`
     so the wizard renderer surfaces the same recovery hint the
-    standalone `init` would.
+    standalone `init` would. The `StageOutcome` invariant requires a
+    non-empty `next_step` on `failed`, so the diagnostic fallback
+    kicks in for refusals that don't carry one (some `GuidedError`s
+    set `next_step=None` because the `error.fix` field carries the
+    operator-facing detail).
     """
     return StageOutcome(
         stage=stage,
         name=name,
         status="failed",
         message=error.message,
-        next_step=error.next_step,
+        next_step=error.next_step
+        or "run `schemabrain doctor --source $URL` for a deeper diagnostic",
     )
 
 
@@ -341,6 +369,8 @@ def _stage_index(ctx: WizardContext) -> StageOutcome:
                 name="index",
                 status="skipped",
                 message=f"already indexed: {existing} table(s) present for this source",
+                next_step="run `schemabrain index` directly to refresh "
+                "if the source schema has changed",
             )
 
     api_key: str | None = None
@@ -354,6 +384,12 @@ def _stage_index(ctx: WizardContext) -> StageOutcome:
                 message="--enrich passed but ANTHROPIC_API_KEY is not set",
                 next_step="export ANTHROPIC_API_KEY=sk-ant-... or re-run without --enrich",
             )
+
+    # Lazy-import the pipeline's exception type. Importing it at
+    # module scope would pull in `enrichment.pipeline` (and its
+    # transitive deps) on every wizard import, even for callers that
+    # never reach stage 2.
+    from schemabrain.enrichment.pipeline import CostCapExceeded
 
     try:
         result = _run_indexer(cfg=cfg, source_id=source_id, api_key=api_key)
@@ -394,10 +430,15 @@ def _stage_index(ctx: WizardContext) -> StageOutcome:
 def _peek_store_table_count(store_path: Path, source_id: str) -> int | StageOutcome:
     """Open the store read-only and count tables for `source_id`.
 
-    Returns the count on success, or a `StageOutcome(failed)` carrying
-    a guided error message when the store's schema version doesn't
-    match this installation's expectation. The caller treats the
-    failure as terminal for stage 2.
+    Returns the count on success, or a `StageOutcome(failed)` on:
+
+    - schema-version mismatch — the store was created by a different
+      schemabrain release
+    - `OSError` — the store path's parent is unwritable or the file
+      is unreadable (SQLiteStore's `mkdir(parents=True, exist_ok=True)`
+      on the parent can raise here)
+
+    The caller treats either failure as terminal for stage 2.
     """
     from schemabrain.core.store import SchemaVersionMismatchError, SQLiteStore
 
@@ -412,6 +453,14 @@ def _peek_store_table_count(store_path: Path, source_id: str) -> int | StageOutc
             message=str(exc),
             next_step=f"delete {store_path} and re-run, "
             "or install the matching schemabrain version",
+        )
+    except OSError as exc:
+        return StageOutcome(
+            stage=2,
+            name="index",
+            status="failed",
+            message=f"store unreadable: {exc}",
+            next_step=f"check filesystem permissions on {store_path.parent}",
         )
 
 
@@ -569,6 +618,8 @@ def _stage_entities(ctx: WizardContext) -> StageOutcome:
                 name="entities",
                 status="skipped",
                 message=f"already curated: {existing} entity/ies present for this source",
+                next_step="run `schemabrain entities suggest --apply` directly "
+                "to re-curate from a fresh prompt",
             )
 
     max_cost = _resolve_entities_cost_cap(cfg.entities_max_cost_usd)
@@ -611,16 +662,47 @@ def _stage_entities(ctx: WizardContext) -> StageOutcome:
             stage=3,
             name="entities",
             status="failed",
-            message=f"LLM returned 0 candidates (cost ${result.cost_usd:.4f})",
+            message=(
+                f"LLM returned {result.candidates_proposed} candidates but "
+                f"none could be applied (cost ${result.cost_usd:.4f})"
+            )
+            if result.candidates_proposed > 0
+            else f"LLM returned 0 candidates (cost ${result.cost_usd:.4f})",
             next_step="re-run `schemabrain entities suggest --dry-run` to inspect, "
             "or curate entities by hand via `schemabrain entities apply`",
+        )
+
+    if result.candidates_proposed > 0 and result.applied_count < result.candidates_proposed:
+        # Partial-success: writes started failing mid-loop. Surface
+        # the count + reason so the user can act, instead of letting
+        # "3 entities created" mask "5 of 8 were dropped".
+        suffix = (
+            f"; {result.candidates_proposed - result.applied_count} skipped: {result.skip_reason}"
+            if result.skip_reason
+            else ""
+        )
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="done",
+            message=(
+                f"{result.applied_count} of {result.candidates_proposed} "
+                f"entit{'y' if result.applied_count == 1 else 'ies'} created "
+                f"(cost ${result.cost_usd:.4f}{suffix})"
+            ),
+            next_step="inspect the skipped candidates with "
+            "`schemabrain entities suggest --dry-run` and apply manually if needed",
         )
 
     return StageOutcome(
         stage=3,
         name="entities",
         status="done",
-        message=f"{result.applied_count} entity/ies created (cost ${result.cost_usd:.4f})",
+        message=(
+            f"{result.applied_count} "
+            f"entit{'y' if result.applied_count == 1 else 'ies'} created "
+            f"(cost ${result.cost_usd:.4f})"
+        ),
     )
 
 
@@ -630,13 +712,18 @@ class _EntityApplyResult:
 
     `applied_count` is the number of entities that landed in the
     store (writes commit per call; a partial-success run reports
-    the count before the first failure). `cost_usd` and `llm_model`
-    come from the pipeline's `SuggestionResult`.
+    the count before the first failure). `candidates_proposed` is
+    what the LLM produced — when it exceeds `applied_count`, writes
+    started failing mid-loop and `skip_reason` carries the exception
+    name + the candidate that triggered it so the renderer can
+    surface partial state.
     """
 
     applied_count: int
     cost_usd: float
     llm_model: str
+    candidates_proposed: int = 0
+    skip_reason: str | None = None
 
 
 # Wizard-internal exception wrappers. The pipeline's
@@ -667,7 +754,8 @@ def _peek_entity_count(store_path: Path, source_id: str) -> int | StageOutcome:
     """Open the store read-only and count entities for `source_id`.
 
     Same shape as `_peek_store_table_count` — returns the count, or a
-    `StageOutcome(failed)` on schema-version mismatch.
+    `StageOutcome(failed)` on schema-version mismatch or `OSError`
+    from the store file being unreadable.
     """
     from schemabrain.core.store import SchemaVersionMismatchError, SQLiteStore
 
@@ -683,6 +771,14 @@ def _peek_entity_count(store_path: Path, source_id: str) -> int | StageOutcome:
             next_step=f"delete {store_path} and re-run, "
             "or install the matching schemabrain version",
         )
+    except OSError as exc:
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="failed",
+            message=f"store unreadable: {exc}",
+            next_step=f"check filesystem permissions on {store_path.parent}",
+        )
 
 
 def _resolve_entities_cost_cap(flag_value: float | None) -> float:
@@ -697,9 +793,27 @@ def _resolve_entities_cost_cap(flag_value: float | None) -> float:
     env_value = os.environ.get("SCHEMABRAIN_MAX_LLM_COST_USD")
     if env_value is not None:
         try:
-            return float(env_value)
+            parsed = float(env_value)
         except ValueError:
-            pass  # silently fall back to default — stage 3 is best-effort
+            # Surface the misconfiguration on stderr — silent fallback
+            # to a higher default is a cost surprise to the operator
+            # who set the env var deliberately.
+            print(
+                f"warning: SCHEMABRAIN_MAX_LLM_COST_USD={env_value!r} "
+                f"is not a valid number; using default "
+                f"${_WIZARD_ENTITIES_DEFAULT_COST_CAP_USD:.2f} cap.",
+                file=sys.stderr,
+            )
+            return _WIZARD_ENTITIES_DEFAULT_COST_CAP_USD
+        if parsed <= 0:
+            print(
+                f"warning: SCHEMABRAIN_MAX_LLM_COST_USD={env_value!r} "
+                f"must be positive; using default "
+                f"${_WIZARD_ENTITIES_DEFAULT_COST_CAP_USD:.2f} cap.",
+                file=sys.stderr,
+            )
+            return _WIZARD_ENTITIES_DEFAULT_COST_CAP_USD
+        return parsed
     return _WIZARD_ENTITIES_DEFAULT_COST_CAP_USD
 
 
@@ -757,10 +871,12 @@ def _run_entity_suggestion(
             raise _SuggestionParseAtWizard(str(exc)) from exc
 
         applied = 0
+        skip_reason: str | None = None
         for candidate in result.candidates:
             try:
                 store.write_entity(candidate.entity, source_connection_id=source_id)
-            except (DbtOwnedEntityError, IntegrityError):
+            except (DbtOwnedEntityError, IntegrityError) as exc:
+                skip_reason = f"{type(exc).__name__} at '{candidate.entity.name}'"
                 break
             applied += 1
 
@@ -768,6 +884,8 @@ def _run_entity_suggestion(
         applied_count=applied,
         cost_usd=result.total_cost_usd,
         llm_model=result.llm_model,
+        candidates_proposed=len(result.candidates),
+        skip_reason=skip_reason,
     )
 
 
