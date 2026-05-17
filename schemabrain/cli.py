@@ -256,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
             positional_url=args.source,
             url_env=args.url_env,
             store_path=args.store_path,
+            events_path=args.events_path,
+            no_events=args.no_events,
         )
     if args.command == "fixture-path":
         return _cmd_fixture_path(args.name)
@@ -559,6 +561,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "--store-path",
         default=_DEFAULT_STORE_PATH,
         help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_serve.add_argument(
+        "--events-path",
+        dest="events_path",
+        default=None,
+        help=f"Path to the JSONL events file the bus appends to "
+        f"(default: $SCHEMABRAIN_EVENTS_PATH or {_DEFAULT_EVENTS_PATH}). "
+        f"Use `schemabrain tail` to read it.",
+    )
+    p_serve.add_argument(
+        "--no-events",
+        dest="no_events",
+        action="store_true",
+        help="Disable event emission entirely (no JSONL file is written, "
+        "no server_start/stop events). Useful for CI runs that don't want "
+        "a stray events file in $HOME.",
     )
 
     p_mine = sub.add_parser(
@@ -1420,6 +1438,8 @@ def _cmd_serve(
     positional_url: str | None,
     url_env: str | None,
     store_path: str,
+    events_path: str | None = None,
+    no_events: bool = False,
 ) -> int:
     """Run the MCP server on stdio against the local store.
 
@@ -1428,13 +1448,30 @@ def _cmd_serve(
     handles concurrent reads from FastMCP's async tool dispatch. Tools
     are read-only (no writes occur at MCP call time), so SQLite's
     single-writer limit is never approached.
+
+    `events_path` / `no_events` control the observability bus. When
+    `no_events` is False (default), construct a `JsonlEventBus` rooted
+    at the resolved path (flag > env > default `~/.schemabrain/events.jsonl`)
+    and pass it through. When `no_events` is True, a `NullEventBus` is
+    used and no JSONL file is written.
     """
+    import os as _os
+
+    from schemabrain.observability import JsonlEventBus, NullEventBus
+
     source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
     if source_url is None:
         return 2
     if _resolve_url(source_url) is None:
         return 2
     source_id = _make_source_id(source_url)
+    if no_events:
+        bus = NullEventBus()
+    else:
+        resolved_events_path = (
+            events_path or _os.environ.get("SCHEMABRAIN_EVENTS_PATH") or _DEFAULT_EVENTS_PATH
+        )
+        bus = JsonlEventBus(Path(resolved_events_path).expanduser())
 
     # Construct the same default embedder the indexer used so query and
     # stored vectors are dimension-compatible. fastembed loads the ONNX
@@ -1461,6 +1498,7 @@ def _cmd_serve(
                 source_connection_id=source_id,
                 embedder=fastembed_default(),
                 metric_executor=metric_executor,
+                event_bus=bus,
             )
     except OSError as e:
         # Unwritable directory, missing parent, etc. Surface as a

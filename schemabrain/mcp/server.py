@@ -1026,6 +1026,8 @@ def run_stdio(
     source_connection_id: str,
     embedder: Embedder,
     metric_executor: MetricExecutor | None = None,
+    event_bus: EventBus | None = None,
+    server_session_id: str | None = None,
 ) -> None:
     """Build the server and run it forever on stdio.
 
@@ -1037,6 +1039,10 @@ def run_stdio(
     without it the tool returns `internal_error`. CLI `_cmd_serve`
     wires this from the same URL passed to `index`.
 
+    `event_bus` is the optional observability sink. When set, server
+    lifecycle events (server_start / server_stop) plus one event per
+    tool call land on the bus. Defaults to `NullEventBus` (no-op).
+
     Defensively configures stderr-only logging if no caller has done so
     already — stdout is the JSON-RPC wire here, and a stray log byte
     would corrupt the MCP frame. Skipped entirely when the CLI (or any
@@ -1046,15 +1052,41 @@ def run_stdio(
     import logging as _logging
 
     from schemabrain.logging_config import _HANDLER_NAME, configure_logging
+    from schemabrain.observability import Event, now_iso_utc
 
     pkg_logger = _logging.getLogger("schemabrain")
     already_configured = any(getattr(h, "name", None) == _HANDLER_NAME for h in pkg_logger.handlers)
     if not already_configured:
         configure_logging()
+    bus = event_bus if event_bus is not None else NullEventBus()
+    session_id = server_session_id or str(uuid.uuid4())
     app = build_server(
         store=store,
         source_connection_id=source_connection_id,
         embedder=embedder,
         metric_executor=metric_executor,
+        event_bus=bus,
+        server_session_id=session_id,
     )
-    app.run(transport="stdio")
+    bus.emit(
+        Event(
+            timestamp=now_iso_utc(),
+            server_session_id=session_id,
+            kind="server_event",
+            event_subtype="server_start",
+            message=f"schemabrain serve started (session {session_id})",
+        )
+    )
+    try:
+        app.run(transport="stdio")
+    finally:
+        bus.emit(
+            Event(
+                timestamp=now_iso_utc(),
+                server_session_id=session_id,
+                kind="server_event",
+                event_subtype="server_stop",
+                message=f"schemabrain serve stopped (session {session_id})",
+            )
+        )
+        bus.close()
