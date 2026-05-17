@@ -221,13 +221,20 @@ class WizardResult:
 # ----- orchestrator ---------------------------------------------------------
 
 
-StageContext = Callable[["WizardStage"], AbstractContextManager[None]]
+StageContext = Callable[[WizardStage], AbstractContextManager[None]]
 
 
 @contextlib.contextmanager
-def _null_stage_context(_stage: WizardStage) -> Iterator[None]:
+def _null_stage_context_impl(_stage: WizardStage) -> Iterator[None]:
     """Default `stage_context` — runs each handler with no extra side effects."""
     yield
+
+
+# Annotate explicitly so the conformance of the @contextmanager
+# decorator's `GeneratorContextManager` return to `StageContext`'s
+# wider `AbstractContextManager` bound is self-documenting (and would
+# fail-fast if a future change drifts the signature).
+_null_stage_context: StageContext = _null_stage_context_impl
 
 
 def run_wizard(

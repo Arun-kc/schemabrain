@@ -1390,6 +1390,39 @@ class TestWizardRenderer:
         # Thesis tagline closes the block.
         assert "The agent reads. It doesn't write." in captured.err
 
+    def _unchanged_host_result(self, tmp_path: Path) -> object:
+        from schemabrain.setup.hosts import SchemabrainSnippet
+        from schemabrain.setup.init_flow import InitResult
+
+        snippet = SchemabrainSnippet(command="uvx", args=("schemabrain==0.2.0a1", "serve"), env={})
+        return InitResult(
+            host="claude-desktop",
+            snippet=snippet,
+            state="unchanged",
+            config_path=tmp_path / "claude_desktop_config.json",
+            backup_made=False,
+        )
+
+    def test_closing_block_renders_on_unchanged_host(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Idempotent re-run: stage 4 detected no diff, host_result.state
+        # is "unchanged". The closing block must still render — it
+        # carries the actionable next-step copy regardless of whether
+        # the run made changes.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._unchanged_host_result(tmp_path),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        assert "Restart Claude Desktop" in captured.err
+        assert "The agent reads. It doesn't write." in captured.err
+
     def test_closing_block_renders_manual_copy_on_printed_only(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:

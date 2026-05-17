@@ -3769,6 +3769,13 @@ def _format_path_for_terminal(path: Path, *, max_width: int = 60) -> str:
     the deepest 3 components themselves are huge (rare). The
     expectation is "shorter than a wrapping render"; pixel-perfect
     width policing is the terminal's job.
+
+    The truncated form is intentionally NOT round-trippable: an
+    absolute path like `/Users/x/Library/Application Support/Claude/...`
+    renders as `…/Application Support/Claude/...` with the leading
+    `/Users/x` discarded. The result is a UI hint for identifying the
+    file at a glance, not a path the caller can pass to `Path()` to
+    recover the original location.
     """
     try:
         home = Path.home()
@@ -3810,14 +3817,25 @@ def _wizard_stage_context(stage: object) -> Iterator[None]:
 
     Typed as `object` for the stage parameter so this module doesn't
     import `WizardStage` at module-import time (matches the lazy-import
-    discipline elsewhere).
+    discipline elsewhere). The function relies on `stage.name` via
+    `getattr` with a defensive empty-string fallback.
+
+    Any failure constructing the `Console` (Rich initialisation bug,
+    upstream import error) falls through to no-op rather than
+    propagating — the spinner is a UX nicety, not a correctness
+    guarantee, and a wizard crash with the header already on screen
+    would be more confusing than no spinner.
     """
     name: str = getattr(stage, "name", "") or ""
     if name not in _SPINNER_STAGES:
         yield
         return
-    console = _stderr_console()
-    if not console.is_terminal:
+    try:
+        console = _stderr_console()
+        if not console.is_terminal:
+            yield
+            return
+    except Exception:  # pragma: no cover — defensive against Rich init failures
         yield
         return
     label = _stage_display_name(name)
@@ -3923,18 +3941,22 @@ def _render_wizard_after(result: object, *, host_display: str | None, console: o
         # name; 0.0s means peek-and-bypass (skipped) where rendering
         # "0.0s" would mislead.
         header = f"  [{outcome.stage}/5] {_stage_display_name(outcome.name)}"
-        if outcome.duration_s > 0:
+        # 50ms threshold: anything faster is below human-perception of
+        # "took time" AND would round to "0.0s" anyway. The orchestrator
+        # measures every stage including peek-and-bypass skips, so the
+        # naive `> 0` guard would render "(0.0s)" next to skipped lines.
+        if outcome.duration_s >= 0.05:
             header += f" [dim]({_format_duration(outcome.duration_s)})[/]"
-        console.print(header)
+        console.print(header)  # type: ignore[attr-defined]
         glyph = _STAGE_GLYPHS.get(outcome.status, outcome.status)
-        console.print(f"        {glyph} {outcome.message}")
+        console.print(f"        {glyph} {outcome.message}")  # type: ignore[attr-defined]
         if outcome.next_step:
-            console.print(f"        [dim]{outcome.next_step}[/]")
+            console.print(f"        [dim]{outcome.next_step}[/]")  # type: ignore[attr-defined]
         # Stage-4 follow-up details (config path, backup, manual
         # snippet) render after the stage's own line.
         if outcome.name == "wire_host" and outcome.status == "done":
             _render_wire_host_detail(result.host_install_result, console)
-    console.print()
+    console.print()  # type: ignore[attr-defined]
 
     if result.aborted:
         _render_abort_panel(result, total=total, console=console)
@@ -3943,19 +3965,19 @@ def _render_wizard_after(result: object, *, host_display: str | None, console: o
     # Clean run — print the closing block (rule + restart-or-snippet
     # prompt + tail/audit hints + thesis tagline). Skipped on
     # shell_out_failed (the existing Note covers the recovery — adding
-    # a "Restart Claude Code" line would contradict it).
+    # a "Restart Claude Code" line would contradict it). Any other
+    # non-failed state (today: written / unchanged / printed_only;
+    # future-proof against new states added to `InitResult.state`)
+    # gets the closing block so the user always sees the next-step
+    # copy, never a silent no-output succeed.
     host_result = result.host_install_result
     if host_result is not None and host_result.state == "shell_out_failed":
-        console.print(
+        console.print(  # type: ignore[attr-defined]
             "  [dim]Note:[/] `claude mcp add` failed; you can run the redacted "
             "command above with real credentials to register manually."
         )
         return
-    if host_result is not None and host_result.state in {
-        "written",
-        "unchanged",
-        "printed_only",
-    }:
+    if host_result is not None:
         _render_closing_block(host_result, host_display=host_display, console=console)
 
 
