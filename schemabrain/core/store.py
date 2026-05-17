@@ -126,8 +126,14 @@ __all__ = [
 #         from `example_queries.pii_categories`; empty string when
 #         `time_dimension IS NULL`. `idx_metrics_by_entity` covers the
 #         `WHERE entity = ?` lookup the future audit layer will hit.
+#   "11" → added `mcp_audit` table + 2 triggers (no-update, no-delete)
+#         + 2 indexes (occurred_at, fingerprint) per ADR 0001. The DDL
+#         lives in `schemabrain.audit.ddl` and is applied here so the
+#         single source of truth for the on-disk shape stays the
+#         `_SCHEMA_VERSION` constant. Empty on first open; every
+#         `@instrument`-wrapped tool call writes one row at runtime.
 # Older stores raise SchemaVersionMismatchError; pre-alpha users re-create.
-_SCHEMA_VERSION = "10"
+_SCHEMA_VERSION = "11"
 _MEMORY_PATH = ":memory:"
 
 # 1 USD = 1_000_000 micros. Storing the ledger as INTEGER micros avoids
@@ -2002,6 +2008,12 @@ class SQLiteStore:
                 "INSERT OR IGNORE INTO schemabrain_meta (key, value) VALUES (?, ?)",
                 ("schema_version", _SCHEMA_VERSION),
             )
+        # `mcp_audit` DDL is owned by the audit module so the audit
+        # surface stays co-located with its writer + verifier. The
+        # schema-version bump above keeps the on-disk shape in lock-step.
+        from schemabrain.audit.ddl import ensure_audit_schema
+
+        ensure_audit_schema(conn)
         stored = conn.execute(
             "SELECT value FROM schemabrain_meta WHERE key = ?", ("schema_version",)
         ).fetchone()
