@@ -150,6 +150,7 @@ from schemabrain.mining.pipeline import mine_queries
 from schemabrain.profiler.postgres import PostgresProfiler
 
 _DEFAULT_STORE_PATH = "./schemabrain.db"
+_DEFAULT_EVENTS_PATH = "~/.schemabrain/events.jsonl"
 # Default cap deliberately low — a first-time user's `schemabrain index`
 # should not be able to surprise-spend more than $1 against the LLM
 # vendor before they understand what's running. Override with
@@ -255,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
             positional_url=args.source,
             url_env=args.url_env,
             store_path=args.store_path,
+            events_path=args.events_path,
+            no_events=args.no_events,
         )
     if args.command == "fixture-path":
         return _cmd_fixture_path(args.name)
@@ -347,6 +350,13 @@ def main(argv: list[str] | None = None) -> int:
             skip_index=args.skip_index,
             assume_yes=args.assume_yes,
             print_only=args.print_only,
+        )
+    if args.command == "tail":
+        return _cmd_tail(
+            since=args.since,
+            follow=args.follow,
+            json_mode=args.json_mode,
+            events_path=args.events_path,
         )
     if args.command == "metrics":
         if args.metrics_action == "apply":
@@ -551,6 +561,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "--store-path",
         default=_DEFAULT_STORE_PATH,
         help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_serve.add_argument(
+        "--events-path",
+        dest="events_path",
+        default=None,
+        help=f"Path to the JSONL events file the bus appends to "
+        f"(default: $SCHEMABRAIN_EVENTS_PATH or {_DEFAULT_EVENTS_PATH}). "
+        f"Use `schemabrain tail` to read it.",
+    )
+    p_serve.add_argument(
+        "--no-events",
+        dest="no_events",
+        action="store_true",
+        help="Disable event emission entirely (no JSONL file is written, "
+        "no server_start/stop events). Useful for CI runs that don't want "
+        "a stray events file in $HOME.",
     )
 
     p_mine = sub.add_parser(
@@ -1072,6 +1098,46 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Alias for --host manual: print the snippet, write nothing.",
     )
 
+    p_tail = sub.add_parser(
+        "tail",
+        help="Stream MCP tool-call events from a running schemabrain serve process",
+    )
+    p_tail.add_argument(
+        "--since",
+        default="5m",
+        help="Replay events newer than this point. Accepts a compact duration "
+        "like '30s' / '5m' / '2h' / '1d', or an ISO 8601 timestamp with "
+        "timezone like '2026-05-17T10:00:00Z'. Default: 5m.",
+    )
+    follow_group = p_tail.add_mutually_exclusive_group()
+    follow_group.add_argument(
+        "--follow",
+        dest="follow",
+        action="store_true",
+        default=True,
+        help="Keep the process attached and print new events as they arrive (default).",
+    )
+    follow_group.add_argument(
+        "--no-follow",
+        dest="follow",
+        action="store_false",
+        help="Print history matching --since and exit.",
+    )
+    p_tail.add_argument(
+        "--json",
+        dest="json_mode",
+        action="store_true",
+        help="Emit raw JSON lines instead of the colored two-line record. "
+        "Pipe-friendly for jq / awk.",
+    )
+    p_tail.add_argument(
+        "--events-path",
+        dest="events_path",
+        default=None,
+        help=f"Path to the JSONL events file written by `schemabrain serve`. "
+        f"Default: $SCHEMABRAIN_EVENTS_PATH or {_DEFAULT_EVENTS_PATH}.",
+    )
+
     return parser
 
 
@@ -1372,6 +1438,8 @@ def _cmd_serve(
     positional_url: str | None,
     url_env: str | None,
     store_path: str,
+    events_path: str | None = None,
+    no_events: bool = False,
 ) -> int:
     """Run the MCP server on stdio against the local store.
 
@@ -1380,13 +1448,44 @@ def _cmd_serve(
     handles concurrent reads from FastMCP's async tool dispatch. Tools
     are read-only (no writes occur at MCP call time), so SQLite's
     single-writer limit is never approached.
+
+    `events_path` / `no_events` control the observability bus. When
+    `no_events` is False (default), construct a `JsonlEventBus` rooted
+    at the resolved path (flag > env > default `~/.schemabrain/events.jsonl`)
+    and pass it through. When `no_events` is True, a `NullEventBus` is
+    used and no JSONL file is written.
     """
+    import os as _os
+
+    from schemabrain.observability import JsonlEventBus, NullEventBus
+
     source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
     if source_url is None:
         return 2
     if _resolve_url(source_url) is None:
         return 2
     source_id = _make_source_id(source_url)
+    if no_events:
+        bus: JsonlEventBus | NullEventBus = NullEventBus()
+    else:
+        resolved_events_path = (
+            events_path or _os.environ.get("SCHEMABRAIN_EVENTS_PATH") or _DEFAULT_EVENTS_PATH
+        )
+        try:
+            bus = JsonlEventBus(Path(resolved_events_path).expanduser())
+        except OSError as exc:
+            # Bus construction fails when the parent dir can't be
+            # created (read-only volume, no write perms). The serve
+            # process is more useful WITHOUT observability than not
+            # at all, so fall back to a no-op bus and warn.
+            print(
+                f"schemabrain serve: cannot initialise events file at "
+                f"{resolved_events_path}: {exc}. Continuing with events "
+                f"disabled. Pass --no-events to suppress this warning, "
+                f"or --events-path PATH to point at a writable location.",
+                file=sys.stderr,
+            )
+            bus = NullEventBus()
 
     # Construct the same default embedder the indexer used so query and
     # stored vectors are dimension-compatible. fastembed loads the ONNX
@@ -1413,6 +1512,7 @@ def _cmd_serve(
                 source_connection_id=source_id,
                 embedder=fastembed_default(),
                 metric_executor=metric_executor,
+                event_bus=bus,
             )
     except OSError as e:
         # Unwritable directory, missing parent, etc. Surface as a
@@ -3064,6 +3164,63 @@ def _cmd_init(
     _render_init_result(result)
     if result.state == "shell_out_failed":
         return 1
+    return 0
+
+
+def _cmd_tail(
+    *,
+    since: str,
+    follow: bool,
+    json_mode: bool,
+    events_path: str | None,
+) -> int:
+    """Run `schemabrain tail`: stream events from the JSONL bus file."""
+    import json as _json
+    import os as _os
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    from rich.console import Console as _Console
+
+    from schemabrain.observability import (
+        TailOptions,
+        TailReader,
+        parse_since,
+        render_event_pretty,
+    )
+
+    resolved_path = (
+        events_path or _os.environ.get("SCHEMABRAIN_EVENTS_PATH") or _DEFAULT_EVENTS_PATH
+    )
+    path = _Path(resolved_path).expanduser()
+    try:
+        since_dt = parse_since(since)
+    except ValueError as exc:
+        print(f"error: {exc}", file=_sys.stderr)
+        return 2
+    options = TailOptions(
+        events_path=path,
+        since=since_dt,
+        follow=follow,
+        json_mode=json_mode,
+    )
+    if json_mode:
+        out = _sys.stdout
+        try:
+            with TailReader(options) as reader:
+                for event in reader.stream():
+                    out.write(_json.dumps(event, separators=(",", ":")) + "\n")
+                    out.flush()
+        except KeyboardInterrupt:
+            return 0
+        return 0
+    console = _Console()
+    try:
+        with TailReader(options) as reader:
+            for event in reader.stream():
+                render_event_pretty(event, console)
+    except KeyboardInterrupt:
+        return 0
     return 0
 
 
