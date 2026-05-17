@@ -225,6 +225,31 @@ revisit if real-world schemas ever rely on the pattern.
 Independent SQL validation (per `docs/setup.md`) remains the right
 backstop for production queries.
 
+## Scalability frontier
+
+Schema Brain has three known architectural ceilings. None trip on today's
+real workloads but each will trip on extreme or adversarial inputs. We
+publish them up front because an honest "here is where we will hurt" is a
+better trust signal than a vague "scales well."
+
+| Ceiling | Where it bites | Trigger | Containment plan |
+|---|---|---|---|
+| SQLite store | Indexed-schema size | ≥ 50,000 columns or > 1 GB store file | Swap to embedded DuckDB behind the existing `Store` Protocol |
+| Serial enrichment | `index` wall-clock | ≥ 5 hour `index` run on a single source | Add `--workers N` parallel mode; respect Anthropic 429 backoff |
+| In-process cosine retrieval | `find_relevant_tables` p95 | ≥ 100,000 column embeddings | Move to an embedded vector index (`hnswlib`) behind the existing `Retriever` Protocol |
+
+Each swap is localised to one implementation file behind a Protocol that
+already exists. The migration risk is bounded; the work is not free.
+
+What this looks like in practice: a 200-table production schema is well
+inside today's envelope (the cost-model table above extrapolates to
+~$0.50 and ~30 minutes). A 5,000-table data warehouse will hit one or
+two of these ceilings; the operator should expect to migrate to the
+swap path and we should expect to do that work.
+
+The detailed ceiling analysis — triggers, swap plan, risk discussion —
+lives in an internal memo that is not part of the OSS distribution.
+
 ## What's coming in v2 (substrate vs. safety layer)
 
 The headline direction is **SQL-boundary safety for AI agents**: parse what
