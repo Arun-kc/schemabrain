@@ -888,7 +888,7 @@ class TestWizardRenderer:
             next_step=next_step,
         )
 
-    def test_aborted_run_renders_abort_banner(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_aborted_run_renders_failure_panel(self, capsys: pytest.CaptureFixture[str]) -> None:
         from schemabrain.cli import _render_wizard_result
         from schemabrain.setup.wizard import WizardResult
 
@@ -907,7 +907,11 @@ class TestWizardRenderer:
         )
         _render_wizard_result(result)
         captured = capsys.readouterr()
-        assert "wizard aborted at stage 2" in captured.err
+        # Bordered panel — title carries the stage ordinal, body
+        # carries the failure message + recovery hint.
+        assert "Stopped at stage 2 of 5" in captured.err
+        assert "source unreachable mid-index" in captured.err
+        assert "verify the URL and retry" in captured.err
 
     def test_aborted_stage_4_without_host_install_result(
         self, capsys: pytest.CaptureFixture[str]
@@ -931,7 +935,30 @@ class TestWizardRenderer:
         captured = capsys.readouterr()
         # Abort renders "stage 4 of 5" (denominator hardcoded to the
         # full pipeline shape, not the count of outcomes seen).
-        assert "wizard aborted at stage 4 of 5" in captured.err
+        assert "Stopped at stage 4 of 5" in captured.err
+
+    def test_failure_panel_omitted_on_clean_run(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Clean (non-aborted) runs must NOT render the failure panel —
+        # the closing block carries the next-step copy instead.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=(
+                self._make_outcome(1, "source_check", "done", "ok"),
+                self._make_outcome(2, "index", "done", "indexed"),
+                self._make_outcome(3, "entities", "skipped", "skipped"),
+                self._make_outcome(4, "wire_host", "done", "wired"),
+                self._make_outcome(5, "next_step", "done", "Ready"),
+            ),
+            aborted=False,
+            host_install_result=self._printed_only_host_result(),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="manual mode")
+        captured = capsys.readouterr()
+        assert "Stopped at stage" not in captured.err
 
     def test_shell_out_failed_renders_redacted_argv(
         self, capsys: pytest.CaptureFixture[str]

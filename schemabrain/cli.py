@@ -3786,8 +3786,8 @@ def _render_wizard_result(result: object, *, host_display: str | None = None) ->
     After the stage list, additional context lines render the host
     install detail (path + backup, redacted shell-out argv on
     failure, paste-ready JSON snippet for manual mode), and a
-    closing block prints either the next-step hint (clean run) or
-    "wizard aborted at stage N of 5" (abort).
+    closing block prints either the next-step hint (clean run) or a
+    bordered failure panel (abort).
     """
     from schemabrain.setup.wizard import WizardResult
 
@@ -3826,21 +3826,7 @@ def _render_wizard_result(result: object, *, host_display: str | None = None) ->
     console.print()
 
     if result.aborted:
-        aborted = result.aborted_at
-        console.print(
-            f"[red]wizard aborted at stage {aborted.stage if aborted else '?'} of {total}.[/]"
-        )
-        if (
-            aborted is not None
-            and aborted.name == "wire_host"
-            and result.host_install_result is None
-        ):
-            # Stage-4 abort without any host_install_result means
-            # init refused before it built a snippet — nothing to
-            # print beyond the per-stage failure message above.
-            return
-        # Stages 1/2 aborts: nothing extra needed (their messages
-        # already point the user at recovery).
+        _render_abort_panel(result, total=total, console=console)
         return
 
     # Clean run — print the closing block (rule + restart-or-snippet
@@ -3860,6 +3846,32 @@ def _render_wizard_result(result: object, *, host_display: str | None = None) ->
         "printed_only",
     }:
         _render_closing_block(host_result, host_display=host_display, console=console)
+
+
+def _render_abort_panel(result: object, *, total: int, console: object) -> None:
+    """Render a bordered failure panel for aborted wizard runs.
+
+    Replaces the previous single red line ("wizard aborted at stage N
+    of M.") with a Rich Panel — visually contains the failure, the
+    title carries the stage ordinal, and the body shows the message +
+    recovery hint without ambiguity.
+    """
+    from rich.panel import Panel
+
+    from schemabrain.setup.wizard import WizardResult
+
+    if not isinstance(result, WizardResult):
+        return  # pragma: no cover — defensive; caller already narrowed
+    aborted = result.aborted_at
+    title = f"Stopped at stage {aborted.stage if aborted else '?'} of {total}"
+    body_lines: list[str] = []
+    if aborted is not None:
+        body_lines.append(aborted.message)
+        if aborted.next_step:
+            body_lines.append("")
+            body_lines.append(f"[dim]{aborted.next_step}[/]")
+    body = "\n".join(body_lines) if body_lines else "(no failure detail recorded)"
+    console.print(Panel(body, title=title, border_style="red", expand=False))  # type: ignore[attr-defined]
 
 
 def _render_closing_block(
