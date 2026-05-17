@@ -282,6 +282,12 @@ def main(argv: list[str] | None = None) -> int:
                 url_env=args.url_env,
                 store_path=args.store_path,
             )
+        if args.entity_action == "list":
+            return _cmd_entities_list(
+                store_path=args.store_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+            )
         if args.entity_action == "suggest":
             return _cmd_entities_suggest(
                 positional_url=args.source,
@@ -418,6 +424,24 @@ def _positive_float(value: str) -> float:
         raise argparse.ArgumentTypeError(f"must be a number; got {value!r}") from exc
     if parsed <= 0:
         raise argparse.ArgumentTypeError(f"must be a positive value; got {parsed}")
+    return parsed
+
+
+def _nonneg_int(value: str) -> int:
+    """argparse `type=` converter for "must be a non-negative int".
+
+    Bare `type=int` silently accepts negatives, which on `audit list`
+    bleeds through to SQLite's `LIMIT -1` (SQLite treats any negative
+    LIMIT as "unlimited"). The user asked for one row, the store
+    returned all of them. Gate at argparse so the error fires before
+    SQL ever sees the value.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"must be an integer; got {value!r}") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"must be non-negative; got {parsed!r}")
     return parsed
 
 
@@ -708,13 +732,38 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # `entities` is a subgroup for semantic-layer management.
-    # Two actions today: `apply` (file -> store loader) and `suggest`
-    # (LLM-suggest pipeline with three output modes).
+    # Three actions today: `apply` (file -> store loader), `list` (the
+    # verification path after apply — mirrors `joins list` and
+    # `metrics list`), and `suggest` (LLM-suggest pipeline with three
+    # output modes).
     p_entities = sub.add_parser(
         "entities",
         help="Manage semantic entity definitions",
     )
     entity_sub = p_entities.add_subparsers(dest="entity_action", required=True)
+
+    p_entities_list = entity_sub.add_parser(
+        "list",
+        help="List entities in the local store. The verification path after `entities apply`.",
+    )
+    p_entities_list.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_entities_list.add_argument(
+        "--source",
+        default=None,
+        help="Filter listing to one source (the same URL passed to "
+        "`index`). Without this flag, lists across every source.",
+    )
+    p_entities_list.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL.",
+    )
 
     p_apply = entity_sub.add_parser(
         "apply",
@@ -1304,7 +1353,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_audit_list.add_argument(
         "--limit",
-        type=int,
+        type=_nonneg_int,
         default=100,
         help="Maximum rows to return. Default 100.",
     )
@@ -2053,6 +2102,68 @@ def _cmd_entities_apply(
         return 2
 
     print(f"applied entity: {entity.name}")
+    return 0
+
+
+def _cmd_entities_list(
+    *,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """List entities in the store, pretty-printed.
+
+    With `--source` / `--url-env` filter to one source. Without
+    either, lists every entity across every source. The verification
+    path after `entities apply` — symmetric with `joins list` and
+    `metrics list` so the three semantic-layer surfaces share one
+    discovery shape.
+
+    Exit codes:
+      0: success (empty list is success, not an error)
+      2: structural (unwritable store path or URL-source mismatch)
+    """
+    source_id: str | None = None
+    if positional_url is not None or url_env is not None:
+        source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+        if source_url is None:
+            return 2
+        # `_resolve_url_source` already validated; the second call is
+        # defensive — same shape as `_cmd_joins_list` / `_cmd_metrics_list`.
+        if _resolve_url(source_url) is None:  # pragma: no cover
+            return 2  # pragma: no cover
+        source_id = _make_source_id(source_url)
+
+    try:
+        with SQLiteStore(store_path) as store:
+            entities = store.list_entities(source_connection_id=source_id)
+    except OSError as e:
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+    except ValueError as exc:
+        # Symmetric with `_cmd_metrics_list`: `list_entities` re-runs
+        # `Entity.__post_init__` invariants on each row, so a corrupt
+        # row (hand-edited store, invalid origin, non-identifier name)
+        # surfaces as a plain `ValueError`. Wrap with store-path
+        # context so the user sees "your store appears corrupt" rather
+        # than a raw traceback.
+        print(
+            f"error: failed to read entities from {store_path!r}: store appears corrupt ({exc})",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not entities:
+        print("(no entities in the store)")
+        return 0
+
+    for entity in entities:
+        print(
+            f"{entity.name}  "
+            f"table={entity.binding.qualified_table}  "
+            f"identity={entity.identity}  "
+            f"origin={entity.origin}"
+        )
     return 0
 
 
@@ -3605,6 +3716,71 @@ def _cmd_tail(
     return 0
 
 
+# Cap on the `schema_version` value we'll echo to stderr in
+# `_warn_on_schema_drift`. A crafted store file could stuff a multi-MB
+# string into `schemabrain_meta.value` and flood the operator's stderr
+# pipeline. 64 chars is generous headroom for any legitimate version
+# string (current "12"; a "v3.5.7-rc1+build.42" would still fit).
+_MAX_SCHEMA_VERSION_ECHO = 64
+
+
+def _warn_on_schema_drift(conn: sqlite3.Connection, path: Path) -> None:
+    """Emit a stderr warning when the store's schema_version diverges
+    from `SCHEMA_VERSION`, or when the version record is missing.
+
+    The two `audit` read paths (`list`, `verify`) deliberately bypass
+    `SQLiteStore` to open the file read-only — which means they also
+    bypass the strict `SchemaVersionMismatchError` that `SQLiteStore`
+    raises on drift. That's intentional for inspectors (history rows
+    stay readable even after an upgrade), but the user deserves to
+    know the column shapes they're seeing may not match the current
+    code's expectations. Warn-and-proceed, not error-and-refuse.
+
+    Three failure modes get distinct treatment:
+      - `schemabrain_meta` table absent or unreadable → silent return.
+        The caller's own audit query will hit the same DB error and
+        surface it to the user; a second message would be noise.
+      - Meta row missing (`schema_version` key not present in an
+        otherwise readable store) → warn. This is the case where the
+        audit table IS readable but the version record was deleted; the
+        operator deserves to know the column shape is unverifiable.
+      - Version mismatch → warn with stored vs expected.
+
+    Both call sites assign `conn.row_factory = sqlite3.Row` before
+    invoking this helper, so `row["value"]` is always the correct
+    accessor.
+    """
+    from schemabrain.core.store import SCHEMA_VERSION
+
+    try:
+        row = conn.execute(
+            "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
+        ).fetchone()
+    except sqlite3.DatabaseError:
+        return
+    if row is None:
+        print(
+            f"warning: store at {path} has no schema_version record — "
+            f"column shape may not match this build's expectations",
+            file=sys.stderr,
+        )
+        return
+    stored = row["value"]
+    if stored != SCHEMA_VERSION:
+        # Cap the echoed value: a crafted store could insert a multi-MB
+        # value here and flood stderr. `repr` (via `!r` below) escapes
+        # control chars in whatever we DO print.
+        if len(stored) > _MAX_SCHEMA_VERSION_ECHO:
+            stored = stored[:_MAX_SCHEMA_VERSION_ECHO] + "..."
+        print(
+            f"warning: store at {path} has schema_version={stored!r} "
+            f"but this build expects {SCHEMA_VERSION!r} — output may "
+            f"reflect a different column shape than the current code "
+            f"expects",
+            file=sys.stderr,
+        )
+
+
 def _cmd_audit_verify(*, store_path: str, full: bool) -> int:
     """Walk `mcp_audit`'s chain hash; report mismatches.
 
@@ -3631,12 +3807,16 @@ def _cmd_audit_verify(*, store_path: str, full: bool) -> int:
             file=_sys.stderr,
         )
         return 2
-    conn.row_factory = _sqlite3.Row
     try:
-        mismatches = list(walk_chain(conn, full=full))
-    except _sqlite3.DatabaseError as exc:
-        print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
-        return 2
+        # row_factory + drift-warn live inside the try so an
+        # unexpected raise from either still closes `conn`.
+        conn.row_factory = _sqlite3.Row
+        _warn_on_schema_drift(conn, path)
+        try:
+            mismatches = list(walk_chain(conn, full=full))
+        except _sqlite3.DatabaseError as exc:
+            print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
+            return 2
     finally:
         conn.close()
 
@@ -3738,22 +3918,26 @@ def _cmd_audit_list(
             file=_sys.stderr,
         )
         return 2
-    conn.row_factory = _sqlite3.Row
-    # Column list hardcoded; `where_sql` assembled from hardcoded clause
-    # fragments above (only `?` placeholders for user values). All
-    # user-supplied filter values flow through `params`. No user input
-    # enters the SQL string itself.
-    sql = (
-        "SELECT id, occurred_at, tool_name, status, cost_class, "  # nosec B608
-        "pii_categories, fingerprint, fingerprint_version "
-        f"FROM mcp_audit {where_sql} "
-        "ORDER BY id DESC LIMIT ?"
-    )
     try:
-        rows = list(conn.execute(sql, params))
-    except _sqlite3.DatabaseError as exc:
-        print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
-        return 2
+        # row_factory + drift-warn live inside the try so an
+        # unexpected raise from either still closes `conn`.
+        conn.row_factory = _sqlite3.Row
+        _warn_on_schema_drift(conn, path)
+        # Column list hardcoded; `where_sql` assembled from hardcoded
+        # clause fragments above (only `?` placeholders for user
+        # values). All user-supplied filter values flow through
+        # `params`. No user input enters the SQL string itself.
+        sql = (
+            "SELECT id, occurred_at, tool_name, status, cost_class, "  # nosec B608
+            "pii_categories, fingerprint, fingerprint_version "
+            f"FROM mcp_audit {where_sql} "
+            "ORDER BY id DESC LIMIT ?"
+        )
+        try:
+            rows = list(conn.execute(sql, params))
+        except _sqlite3.DatabaseError as exc:
+            print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
+            return 2
     finally:
         conn.close()
 

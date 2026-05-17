@@ -298,11 +298,11 @@ class TestSchemaVersion:
 
     def test_fresh_store_version_matches_module_constant(self, tmp_path: Path):
         # Permanent test: pin the on-disk schema_version against the
-        # `_SCHEMA_VERSION` constant the code uses, NOT against a
+        # `SCHEMA_VERSION` constant the code uses, NOT against a
         # hard-coded literal. Survives every schema bump without
         # editing, and catches the case where the constant is bumped
         # but the DDL block is forgotten (or vice versa).
-        from schemabrain.core.store import _SCHEMA_VERSION
+        from schemabrain.core.store import SCHEMA_VERSION
 
         with SQLiteStore(tmp_path / "store.db") as store:
             row = (
@@ -310,7 +310,7 @@ class TestSchemaVersion:
                 .execute("SELECT value FROM schemabrain_meta WHERE key = 'schema_version'")
                 .fetchone()
             )
-            assert row["value"] == _SCHEMA_VERSION
+            assert row["value"] == SCHEMA_VERSION
 
 
 SOURCE_X = "src_x"

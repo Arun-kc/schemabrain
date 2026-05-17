@@ -62,6 +62,26 @@ class TestAuditVerifyClean:
         exit_code = cli_main(["audit", "verify", "--store-path", str(store_path)])
         assert exit_code == 0
 
+    def test_schema_drift_warns_but_still_verifies(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`audit verify` must still walk the chain on a store with a
+        drifted schema_version — the chain-hash format is stable across
+        schema revisions — but warn so the user knows the surrounding
+        column shape may not match the current code's expectations."""
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=2)
+        c = sqlite3.connect(store_path)
+        c.execute("UPDATE schemabrain_meta SET value = '99' WHERE key = 'schema_version'")
+        c.commit()
+        c.close()
+        exit_code = cli_main(["audit", "verify", "--store-path", str(store_path)])
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "intact" in captured.out
+        assert "warning:" in captured.err
+        assert "schema_version" in captured.err
+
 
 class TestAuditVerifyTampered:
     def test_tampered_chain_exits_one(
@@ -293,6 +313,42 @@ class TestAuditList:
         rows = [json.loads(line) for line in capsys.readouterr().out.strip().split("\n")]
         assert len(rows) == 2
 
+    def test_negative_limit_rejected_with_clean_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A user passing `--limit -1` would historically be silently
+        translated to "no limit" by SQLite (its LIMIT clause treats any
+        negative value as unlimited), so a caller could pass `-1` and
+        exfiltrate every audit row when ostensibly asking for one. Gate
+        at argparse with a clear usage error.
+
+        `argparse` raises `SystemExit(2)` on `type=` rejection (it's a
+        parser-time error, not a handler-time refusal), so the test
+        catches `SystemExit` rather than reading a return code — same
+        pattern used elsewhere when arguments fail validation pre-dispatch.
+        """
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=3)
+        with pytest.raises(SystemExit) as exc_info:
+            cli_main(["audit", "list", "--store-path", str(store_path), "--limit", "-1"])
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "-1" in err
+        assert "non-negative" in err.lower()
+
+    def test_zero_limit_accepted_as_empty_result(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--limit 0` is a legitimate "show nothing" — the regression
+        gate must accept it and emit an empty result, not error."""
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=3)
+        exit_code = cli_main(
+            ["audit", "list", "--store-path", str(store_path), "--limit", "0", "--json"]
+        )
+        assert exit_code == 0
+        assert capsys.readouterr().out.strip() == ""
+
     def test_missing_store_path_returns_two(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -300,6 +356,80 @@ class TestAuditList:
         exit_code = cli_main(["audit", "list", "--store-path", str(nonexistent)])
         assert exit_code == 2
         assert "not found" in capsys.readouterr().err
+
+    def test_schema_drift_warns_but_proceeds(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A store written by a future schemabrain (or a tampered meta
+        row) should produce a stderr warning, NOT silently render rows
+        whose column shape the current code can't trust.
+
+        Warn-and-proceed: exit code 0, stderr contains the warning,
+        and the rows still render (operators inspecting a frozen audit
+        from a newer install must still be able to walk it)."""
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=1)
+        # Simulate drift: bump the recorded schema_version far past
+        # anything the current build will ever ship.
+        c = sqlite3.connect(store_path)
+        c.execute("UPDATE schemabrain_meta SET value = '99' WHERE key = 'schema_version'")
+        c.commit()
+        c.close()
+        exit_code = cli_main(["audit", "list", "--store-path", str(store_path)])
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "warning:" in captured.err
+        assert "schema_version" in captured.err
+        assert "'99'" in captured.err
+
+    def test_missing_meta_row_warns_with_distinct_message(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """When `schema_version` key is absent from `schemabrain_meta`
+        but the audit table is otherwise readable, the helper should
+        warn rather than silently proceed — the operator can't know
+        whether the column shape is trustworthy."""
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=1)
+        c = sqlite3.connect(store_path)
+        c.execute("DELETE FROM schemabrain_meta WHERE key = 'schema_version'")
+        c.commit()
+        c.close()
+        exit_code = cli_main(["audit", "list", "--store-path", str(store_path)])
+        assert exit_code == 0
+        err = capsys.readouterr().err
+        assert "warning:" in err
+        assert "no schema_version record" in err
+
+    def test_schema_drift_warning_bounded_on_giant_value(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A crafted store with a multi-MB `schema_version` value would
+        otherwise flood stderr. The helper caps the echoed value so the
+        warning stays bounded."""
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=1)
+        c = sqlite3.connect(store_path)
+        attack = "a" * 50_000
+        c.execute("UPDATE schemabrain_meta SET value = ? WHERE key = 'schema_version'", (attack,))
+        c.commit()
+        c.close()
+        exit_code = cli_main(["audit", "list", "--store-path", str(store_path)])
+        assert exit_code == 0
+        err = capsys.readouterr().err
+        # The full 50 KB payload must not survive into the warning.
+        assert len(err) < 2_000
+
+    def test_no_schema_drift_warning_on_normal_store(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A store at the current schema version must not emit the drift
+        warning — otherwise every healthy run looks like an incident."""
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=1)
+        exit_code = cli_main(["audit", "list", "--store-path", str(store_path)])
+        assert exit_code == 0
+        assert "warning:" not in capsys.readouterr().err
 
     def test_corrupt_db_file_returns_two_with_clean_error(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

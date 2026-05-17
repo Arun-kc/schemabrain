@@ -29,7 +29,7 @@ Determinism is enforced by:
 The output of every function in this module is a 64-character lowercase
 hex string. Callers MAY persist these strings as cache keys; if a
 serialization change ever produces a different hash for the same input,
-that is a breaking change and demands a `_SCHEMA_VERSION` bump in the
+that is a breaking change and demands a `SCHEMA_VERSION` bump in the
 store.
 """
 

@@ -45,6 +45,12 @@ _QUALIFIED_COLUMN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_$]*)\.([A-Za-z_][A-Za-
 _UNARY_OPS: frozenset[str] = frozenset({"is_null", "not_null"})
 _LIST_OPS: frozenset[str] = frozenset({"in", "not_in"})
 
+# Bound on echoed metric_name in `UnknownMetricError`. Three times
+# Postgres NAMEDATALEN-1 (3 * 63 = 189) is generous headroom for any
+# legitimate name while still capping an attacker-controlled echo at a
+# few hundred bytes. Parallel to `_MAX_ECHO_LEN` in `mcp/_helpers.py`.
+_MAX_METRIC_NAME_ECHO = 200
+
 
 def resolve_metric_plan(
     *,
@@ -71,8 +77,19 @@ def resolve_metric_plan(
     """
     metric = store.get_metric(metric_name, source_connection_id=source_connection_id)
     if metric is None:
+        # Bounded echo: a 100 KB metric_name from a prompt-injected
+        # agent would otherwise round-trip back into the caller's
+        # context window through this error string. Parallel to
+        # `_bounded_repr` in `mcp/_helpers.py`; inlined here rather
+        # than imported to dodge a circular dependency via
+        # `mcp/__init__` → `get_metric` → `semantic.compiler`.
+        echoed = (
+            metric_name
+            if len(metric_name) <= _MAX_METRIC_NAME_ECHO
+            else (metric_name[:_MAX_METRIC_NAME_ECHO] + "...")
+        )
         raise UnknownMetricError(
-            f"metric {metric_name!r} is not defined for this source; "
+            f"metric {echoed!r} is not defined for this source; "
             f"run `schemabrain metrics list` to see available metrics."
         )
 
