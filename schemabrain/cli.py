@@ -3434,7 +3434,7 @@ def _cmd_init(
             return 0
         break
 
-    _render_wizard_result(result)
+    _render_wizard_result(result, host_display=_host_display_name(effective_host))
     if result.aborted:
         return 2
     if (
@@ -3736,16 +3736,36 @@ def _redact_stderr_credentials(stderr_text: str) -> str:
     )
 
 
-def _render_wizard_result(result: object) -> None:
+def _host_display_name(host: str) -> str:
+    """Map the kebab-case host identifier to a human display string.
+
+    Used by the wizard renderer's orientation line. Unknown values
+    pass through so a future host added to the literal doesn't crash
+    the renderer before the lookup is updated.
+    """
+    return {
+        "claude-desktop": "Claude Desktop",
+        "claude-code": "Claude Code",
+        "manual": "manual mode",
+    }.get(host, host)
+
+
+def _render_wizard_result(result: object, *, host_display: str | None = None) -> None:
     """Render the multi-stage outcome of a wizard run.
 
     Caller is `_cmd_init`. Typed as `object` here so the cli module
     doesn't import the wizard types at parse time, matching the
     lazy-import discipline elsewhere in the module.
 
+    `host_display` is the human-readable host target (e.g.
+    "Claude Desktop"). When provided, the orientation line mentions
+    it; when None, a generic orientation is rendered. The caller
+    derives this from `args.host` via `_host_display_name`.
+
     Layout:
 
-      Schema Brain init — activation wizard
+      Schema Brain
+      Activating Schema Brain for Claude Desktop. ~30s.
 
         [N/5] <stage display name>
               <glyph> <message>
@@ -3767,7 +3787,11 @@ def _render_wizard_result(result: object) -> None:
     # on a stage-2 abort, misleading the user about the pipeline shape.
     total = _WIZARD_TOTAL_STAGES
     console.print()
-    console.print("[bold]Schema Brain init[/] — activation wizard")
+    console.print("[bold cyan]Schema Brain[/]")
+    if host_display:
+        console.print(f"[dim]Activating Schema Brain for {host_display}. ~30s.[/]")
+    else:
+        console.print("[dim]Activating Schema Brain. ~30s.[/]")
     console.print()
     for outcome in result.outcomes:
         # Indent stage header consistently with the existing init

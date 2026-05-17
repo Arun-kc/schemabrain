@@ -162,9 +162,9 @@ class TestInitCliPrintOnly:
         stub_uvx: None,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        # Polish: render the "Schema Brain init — manual mode." header
-        # + "Add this to your MCP host's config:" so the JSON block has
-        # a labelled top, not just naked output.
+        # Polish: render the Schema Brain wordmark + manual-mode
+        # orientation + "Add this to your MCP host's config:" so the
+        # JSON block has a labelled top, not just naked output.
         main(
             [
                 "init",
@@ -176,7 +176,7 @@ class TestInitCliPrintOnly:
             ]
         )
         captured = capsys.readouterr()
-        assert "Schema Brain init" in captured.err
+        assert "Schema Brain" in captured.err
         assert "manual mode" in captured.err
         assert "Add this to your MCP host's config" in captured.err
 
@@ -1055,6 +1055,65 @@ class TestWizardRenderer:
 
         with pytest.raises(TypeError, match="WizardResult"):
             _render_wizard_result("not a wizard result")
+
+    def test_wordmark_header_two_lines_with_host_display(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=(
+                self._make_outcome(1, "source_check", "done", "ok"),
+                self._make_outcome(2, "index", "skipped", "skipped"),
+                self._make_outcome(3, "entities", "skipped", "skipped"),
+                self._make_outcome(4, "wire_host", "done", "ok"),
+                self._make_outcome(5, "next_step", "done", "ok"),
+            ),
+            aborted=False,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        # Wordmark line stands alone (no "init" suffix), orientation
+        # line mentions the host target.
+        assert "Schema Brain" in captured.err
+        assert "Claude Desktop" in captured.err
+        # Orientation duration hint sets expectations.
+        assert "~" in captured.err
+
+    def test_wordmark_header_falls_back_when_host_display_unset(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=(self._make_outcome(1, "source_check", "done", "ok"),),
+            aborted=False,
+        )
+        # Renderer accepts a None / unset host_display (early-abort
+        # paths invoke render before stage 4 had a chance to set host).
+        _render_wizard_result(result)
+        captured = capsys.readouterr()
+        assert "Schema Brain" in captured.err
+        # Generic orientation — no host name promised.
+        assert "Claude Desktop" not in captured.err
+        assert "Claude Code" not in captured.err
+
+    def test_host_display_name_maps_kebab_to_title(self) -> None:
+        from schemabrain.cli import _host_display_name
+
+        assert _host_display_name("claude-desktop") == "Claude Desktop"
+        assert _host_display_name("claude-code") == "Claude Code"
+        assert _host_display_name("manual") == "manual mode"
+
+    def test_host_display_name_unknown_returns_input(self) -> None:
+        # Defensive: the literal is enforced at WizardConfig
+        # construction time, but the renderer's lookup falls through to
+        # the raw input rather than crashing.
+        from schemabrain.cli import _host_display_name
+
+        assert _host_display_name("future-host") == "future-host"
 
     def test_unknown_status_falls_through_glyph_lookup(
         self, capsys: pytest.CaptureFixture[str]
