@@ -152,9 +152,10 @@ class TestInitCliPrintOnly:
         captured = capsys.readouterr()
         # The wizard's renderer prints the common config paths block
         # next to the manual-mode (stage-4 `printed_only`) snippet,
-        # and stage-5 prints the restart-and-ask line.
+        # and the closing block points the user at the snippet they
+        # were just shown.
         assert "Common config paths" in captured.err
-        assert "restart your MCP host" in captured.err
+        assert "Add the snippet" in captured.err
 
     def test_print_only_emits_manual_mode_header(
         self,
@@ -162,9 +163,9 @@ class TestInitCliPrintOnly:
         stub_uvx: None,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        # Polish: render the "Schema Brain init — manual mode." header
-        # + "Add this to your MCP host's config:" so the JSON block has
-        # a labelled top, not just naked output.
+        # Polish: render the Schema Brain wordmark + manual-mode
+        # orientation + "Add this to your MCP host's config:" so the
+        # JSON block has a labelled top, not just naked output.
         main(
             [
                 "init",
@@ -176,7 +177,7 @@ class TestInitCliPrintOnly:
             ]
         )
         captured = capsys.readouterr()
-        assert "Schema Brain init" in captured.err
+        assert "Schema Brain" in captured.err
         assert "manual mode" in captured.err
         assert "Add this to your MCP host's config" in captured.err
 
@@ -887,7 +888,7 @@ class TestWizardRenderer:
             next_step=next_step,
         )
 
-    def test_aborted_run_renders_abort_banner(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_aborted_run_renders_failure_panel(self, capsys: pytest.CaptureFixture[str]) -> None:
         from schemabrain.cli import _render_wizard_result
         from schemabrain.setup.wizard import WizardResult
 
@@ -906,7 +907,11 @@ class TestWizardRenderer:
         )
         _render_wizard_result(result)
         captured = capsys.readouterr()
-        assert "wizard aborted at stage 2" in captured.err
+        # Bordered panel — title carries the stage ordinal, body
+        # carries the failure message + recovery hint.
+        assert "Stopped at stage 2 of 5" in captured.err
+        assert "source unreachable mid-index" in captured.err
+        assert "verify the URL and retry" in captured.err
 
     def test_aborted_stage_4_without_host_install_result(
         self, capsys: pytest.CaptureFixture[str]
@@ -930,7 +935,129 @@ class TestWizardRenderer:
         captured = capsys.readouterr()
         # Abort renders "stage 4 of 5" (denominator hardcoded to the
         # full pipeline shape, not the count of outcomes seen).
-        assert "wizard aborted at stage 4 of 5" in captured.err
+        assert "Stopped at stage 4 of 5" in captured.err
+
+    def test_stage_context_no_op_for_fast_stages(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Fast stages (source_check, wire_host, next_step) skip the
+        # spinner entirely — early-return before touching the console.
+        from schemabrain.cli import _wizard_stage_context
+
+        class _StubConsole:
+            is_terminal = True
+
+            def status(self, *_a: object, **_kw: object) -> None:  # pragma: no cover - guard
+                raise AssertionError("status should not be called for fast stages")
+
+        monkeypatch.setattr("schemabrain.cli._stderr_console", lambda: _StubConsole())
+
+        class _FakeStage:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        for name in ("source_check", "wire_host", "next_step"):
+            with _wizard_stage_context(_FakeStage(name)):
+                pass
+
+    def test_stage_context_no_op_when_stderr_is_not_tty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Non-TTY stderr (CI logs, redirected output) skips the spinner
+        # so log scrapers don't get carriage-return noise.
+        from schemabrain.cli import _wizard_stage_context
+
+        class _NonTtyConsole:
+            is_terminal = False
+
+            def status(self, *_a: object, **_kw: object) -> None:  # pragma: no cover - guard
+                raise AssertionError("status should not be called when not a TTY")
+
+        monkeypatch.setattr("schemabrain.cli._stderr_console", lambda: _NonTtyConsole())
+
+        class _FakeStage:
+            name = "index"
+
+        with _wizard_stage_context(_FakeStage()):
+            pass
+
+    def test_stage_context_invokes_status_on_tty_for_slow_stages(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # On a TTY, slow stages (index, entities) get the spinner via
+        # console.status with the dots spinner.
+        from schemabrain.cli import _wizard_stage_context
+
+        captured: dict[str, object] = {}
+
+        class _RecordingStatus:
+            def __enter__(self) -> _RecordingStatus:
+                captured["entered"] = True
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                captured["exited"] = True
+
+        class _TtyConsole:
+            is_terminal = True
+
+            def status(self, text: str, *, spinner: str) -> _RecordingStatus:
+                captured["text"] = text
+                captured["spinner"] = spinner
+                return _RecordingStatus()
+
+        monkeypatch.setattr("schemabrain.cli._stderr_console", lambda: _TtyConsole())
+
+        class _FakeStage:
+            name = "index"
+
+        with _wizard_stage_context(_FakeStage()):
+            pass
+
+        assert captured["entered"] is True
+        assert captured["exited"] is True
+        assert captured["spinner"] == "dots"
+        assert "Index schema" in str(captured["text"])
+
+    def test_stage_context_unknown_stage_name_skips_spinner(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A stage whose `name` attribute is missing (defensive) falls
+        # into the no-op path rather than crashing.
+        from schemabrain.cli import _wizard_stage_context
+
+        class _GuardConsole:
+            is_terminal = True
+
+            def status(self, *_a: object, **_kw: object) -> None:  # pragma: no cover - guard
+                raise AssertionError("status should not be called for unknown stage")
+
+        monkeypatch.setattr("schemabrain.cli._stderr_console", lambda: _GuardConsole())
+
+        class _BareStage:
+            pass
+
+        with _wizard_stage_context(_BareStage()):
+            pass
+
+    def test_failure_panel_omitted_on_clean_run(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Clean (non-aborted) runs must NOT render the failure panel —
+        # the closing block carries the next-step copy instead.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=(
+                self._make_outcome(1, "source_check", "done", "ok"),
+                self._make_outcome(2, "index", "done", "indexed"),
+                self._make_outcome(3, "entities", "skipped", "skipped"),
+                self._make_outcome(4, "wire_host", "done", "wired"),
+                self._make_outcome(5, "next_step", "done", "Ready"),
+            ),
+            aborted=False,
+            host_install_result=self._printed_only_host_result(),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="manual mode")
+        captured = capsys.readouterr()
+        assert "Stopped at stage" not in captured.err
 
     def test_shell_out_failed_renders_redacted_argv(
         self, capsys: pytest.CaptureFixture[str]
@@ -970,7 +1097,7 @@ class TestWizardRenderer:
                     "done",
                     "Claude Code registration failed; the snippet is printable below",
                 ),
-                self._make_outcome(5, "next_step", "done", "restart your MCP host"),
+                self._make_outcome(5, "next_step", "done", "Ready"),
             ),
             aborted=False,
             host_install_result=host_result,
@@ -1006,12 +1133,12 @@ class TestWizardRenderer:
         result = WizardResult(
             outcomes=(
                 self._make_outcome(1, "source_check", "done", "ok"),
-                self._make_outcome(2, "index", "done", "53 tables, 412 columns indexed"),
+                self._make_outcome(2, "index", "done", "53 tables · 412 columns indexed"),
                 self._make_outcome(3, "entities", "done", "8 entities created (cost $0.0123)"),
                 self._make_outcome(
                     4, "wire_host", "done", f"wrote schemabrain entry to {cfg_path}"
                 ),
-                self._make_outcome(5, "next_step", "done", "restart your MCP host"),
+                self._make_outcome(5, "next_step", "done", "Ready"),
             ),
             aborted=False,
             host_install_result=host_result,
@@ -1055,6 +1182,324 @@ class TestWizardRenderer:
 
         with pytest.raises(TypeError, match="WizardResult"):
             _render_wizard_result("not a wizard result")
+
+    def test_wordmark_header_two_lines_with_host_display(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=(
+                self._make_outcome(1, "source_check", "done", "ok"),
+                self._make_outcome(2, "index", "skipped", "skipped"),
+                self._make_outcome(3, "entities", "skipped", "skipped"),
+                self._make_outcome(4, "wire_host", "done", "ok"),
+                self._make_outcome(5, "next_step", "done", "ok"),
+            ),
+            aborted=False,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        # Wordmark line stands alone (no "init" suffix), orientation
+        # line mentions the host target.
+        assert "Schema Brain" in captured.err
+        assert "Claude Desktop" in captured.err
+        # Orientation duration hint sets expectations.
+        assert "~" in captured.err
+
+    def test_wordmark_header_falls_back_when_host_display_unset(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=(self._make_outcome(1, "source_check", "done", "ok"),),
+            aborted=False,
+        )
+        # Renderer accepts a None / unset host_display (early-abort
+        # paths invoke render before stage 4 had a chance to set host).
+        _render_wizard_result(result)
+        captured = capsys.readouterr()
+        assert "Schema Brain" in captured.err
+        # Generic orientation — no host name promised.
+        assert "Claude Desktop" not in captured.err
+        assert "Claude Code" not in captured.err
+
+    def test_host_display_name_maps_kebab_to_title(self) -> None:
+        from schemabrain.cli import _host_display_name
+
+        assert _host_display_name("claude-desktop") == "Claude Desktop"
+        assert _host_display_name("claude-code") == "Claude Code"
+        assert _host_display_name("manual") == "manual mode"
+
+    def test_format_path_replaces_home_with_tilde(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from schemabrain.cli import _format_path_for_terminal
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+        nested = tmp_path / "Library" / "config.json"
+        assert _format_path_for_terminal(nested) == "~/Library/config.json"
+
+    def test_format_path_returns_short_paths_unchanged(self) -> None:
+        from schemabrain.cli import _format_path_for_terminal
+
+        # A path well under the soft cap renders as-is (after the
+        # tilde substitution — short relative paths skip both).
+        assert _format_path_for_terminal(Path("/tmp/short.json")) == "/tmp/short.json"
+
+    def test_format_path_left_truncates_long_paths(self) -> None:
+        from schemabrain.cli import _format_path_for_terminal
+
+        # 100+ char macOS-style path falls past the 60-char soft cap.
+        # The result must (a) start with `…/`, (b) preserve the last
+        # 3 path components, (c) be visibly shorter than the input.
+        long_path = Path(
+            "/Users/someverylongname/Library/Application Support/Claude/claude_desktop_config.json"
+        )
+        result = _format_path_for_terminal(long_path)
+        assert result.startswith("…/")
+        assert result.endswith("claude_desktop_config.json")
+        assert "Application Support/Claude/claude_desktop_config.json" in result
+        assert len(result) < len(str(long_path))
+
+    def test_format_path_skips_truncation_for_shallow_long_path(self) -> None:
+        from schemabrain.cli import _format_path_for_terminal
+
+        # A path with ≤3 components can't be left-truncated meaningfully —
+        # render whatever the home-substitution produced.
+        shallow = Path("/" + "x" * 100 + ".json")  # one component, longer than the cap
+        result = _format_path_for_terminal(shallow)
+        # No `…/` prefix because there's nothing to trim.
+        assert "…/" not in result
+
+    def test_host_display_name_unknown_returns_input(self) -> None:
+        # Defensive: the literal is enforced at WizardConfig
+        # construction time, but the renderer's lookup falls through to
+        # the raw input rather than crashing.
+        from schemabrain.cli import _host_display_name
+
+        assert _host_display_name("future-host") == "future-host"
+
+    def test_renderer_shows_per_stage_duration(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Each stage's `duration_s` renders as a 1-decimal "X.Xs"
+        # string near the stage header so the operator sees how long
+        # each step spent without enabling verbose mode.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import StageOutcome, WizardResult
+
+        result = WizardResult(
+            outcomes=(
+                StageOutcome(
+                    stage=1,
+                    name="source_check",
+                    status="done",
+                    message="ok",
+                    duration_s=0.42,
+                ),
+                StageOutcome(
+                    stage=2,
+                    name="index",
+                    status="done",
+                    message="ok",
+                    duration_s=6.1,
+                ),
+            ),
+            aborted=False,
+        )
+        _render_wizard_result(result)
+        captured = capsys.readouterr()
+        assert "0.4s" in captured.err
+        assert "6.1s" in captured.err
+
+    def test_renderer_omits_duration_for_zero_value(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A 0.0s duration means the stage didn't actually do work (a
+        # skipped peek-and-bypass). Rendering "0.0s" next to a skipped
+        # stage would be misleading — the time spent on that line is
+        # effectively unmeasurable.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import StageOutcome, WizardResult
+
+        result = WizardResult(
+            outcomes=(
+                StageOutcome(
+                    stage=1,
+                    name="source_check",
+                    status="skipped",
+                    message="ok",
+                    duration_s=0.0,
+                ),
+            ),
+            aborted=False,
+        )
+        _render_wizard_result(result)
+        captured = capsys.readouterr()
+        assert "0.0s" not in captured.err
+
+    def _written_host_result(self, tmp_path: Path) -> object:
+        from schemabrain.setup.hosts import SchemabrainSnippet
+        from schemabrain.setup.init_flow import InitResult
+
+        snippet = SchemabrainSnippet(command="uvx", args=("schemabrain==0.2.0a1", "serve"), env={})
+        return InitResult(
+            host="claude-desktop",
+            snippet=snippet,
+            state="written",
+            config_path=tmp_path / "claude_desktop_config.json",
+            backup_made=False,
+        )
+
+    def _printed_only_host_result(self) -> object:
+        from schemabrain.setup.hosts import SchemabrainSnippet
+        from schemabrain.setup.init_flow import InitResult
+
+        snippet = SchemabrainSnippet(command="uvx", args=("schemabrain==0.2.0a1", "serve"), env={})
+        return InitResult(host="manual", snippet=snippet, state="printed_only")
+
+    def _full_clean_outcomes(self) -> tuple[object, ...]:
+        return (
+            self._make_outcome(1, "source_check", "done", "ok"),
+            self._make_outcome(2, "index", "done", "indexed"),
+            self._make_outcome(3, "entities", "skipped", "skipped"),
+            self._make_outcome(4, "wire_host", "done", "wired"),
+            self._make_outcome(5, "next_step", "done", "Ready"),
+        )
+
+    def test_closing_block_renders_on_written_host(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._written_host_result(tmp_path),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        # Automated host gets "Restart …, then ask:" copy.
+        assert "Restart Claude Desktop" in captured.err
+        # Tail + audit hints are part of the closing block.
+        assert "schemabrain tail" in captured.err
+        assert "schemabrain audit list" in captured.err
+        # Thesis tagline closes the block.
+        assert "The agent reads. It doesn't write." in captured.err
+
+    def _unchanged_host_result(self, tmp_path: Path) -> object:
+        from schemabrain.setup.hosts import SchemabrainSnippet
+        from schemabrain.setup.init_flow import InitResult
+
+        snippet = SchemabrainSnippet(command="uvx", args=("schemabrain==0.2.0a1", "serve"), env={})
+        return InitResult(
+            host="claude-desktop",
+            snippet=snippet,
+            state="unchanged",
+            config_path=tmp_path / "claude_desktop_config.json",
+            backup_made=False,
+        )
+
+    def test_closing_block_renders_on_unchanged_host(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Idempotent re-run: stage 4 detected no diff, host_result.state
+        # is "unchanged". The closing block must still render — it
+        # carries the actionable next-step copy regardless of whether
+        # the run made changes.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._unchanged_host_result(tmp_path),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        assert "Restart Claude Desktop" in captured.err
+        assert "The agent reads. It doesn't write." in captured.err
+
+    def test_closing_block_renders_manual_copy_on_printed_only(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._printed_only_host_result(),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="manual mode")
+        captured = capsys.readouterr()
+        # Manual mode never restarts a host — copy points at the
+        # snippet the user just received instead.
+        assert "Restart" not in captured.err
+        assert "Add the snippet" in captured.err
+        # Tail + audit hints + thesis tagline still apply.
+        assert "schemabrain tail" in captured.err
+        assert "The agent reads. It doesn't write." in captured.err
+
+    def test_closing_block_omitted_on_abort(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=(
+                self._make_outcome(1, "source_check", "done", "ok"),
+                self._make_outcome(2, "index", "failed", "boom", "verify the URL and retry"),
+            ),
+            aborted=True,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        # Aborted runs land in the failure path (commit 4 — panel);
+        # the clean-run closing block must not appear.
+        assert "The agent reads. It doesn't write." not in captured.err
+        assert "schemabrain tail" not in captured.err
+
+    def test_closing_block_omitted_on_shell_out_failed(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # `shell_out_failed` is a non-fatal stage-4 outcome (aborted=False)
+        # but the auto-register attempt didn't work — directing the user
+        # to "Restart Claude Code" would be misleading. The existing
+        # "register manually" Note covers the recovery; the clean-run
+        # closing block must defer to it.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.hosts import SchemabrainSnippet
+        from schemabrain.setup.init_flow import InitResult
+        from schemabrain.setup.wizard import WizardResult
+
+        snippet = SchemabrainSnippet(
+            command="uvx",
+            args=("schemabrain==0.2.0a1", "serve"),
+            env={"SCHEMABRAIN_DATABASE_URL": "postgresql://u:p@h/d"},
+        )
+        host_result = InitResult(
+            host="claude-code",
+            snippet=snippet,
+            state="shell_out_failed",
+            shell_out_command=("claude", "mcp", "add"),
+            shell_out_stderr="claude: command not found",
+        )
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=host_result,
+        )
+        _render_wizard_result(result, host_display="Claude Code")
+        captured = capsys.readouterr()
+        # The "register manually" Note still appears (covered by
+        # _render_wizard_result's existing shell_out_failed branch).
+        assert "register manually" in captured.err
+        # The clean-run thesis tagline does NOT — to avoid contradicting
+        # the recovery hint.
+        assert "The agent reads. It doesn't write." not in captured.err
 
     def test_unknown_status_falls_through_glyph_lookup(
         self, capsys: pytest.CaptureFixture[str]

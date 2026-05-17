@@ -61,6 +61,7 @@ refuses cross-origin overwrites.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import hashlib
 import json
@@ -68,7 +69,7 @@ import os
 import sqlite3
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from urllib.parse import urlparse
@@ -3410,8 +3411,16 @@ def _cmd_init(
     )
 
     interactive = _stderr_is_interactive_tty()
+    host_display = _host_display_name(effective_host)
+    console = _stderr_console()
+    # Print the header BEFORE the wizard runs so the user sees the
+    # banner immediately and the stage-context spinner has a place to
+    # land. The header re-prints on a conflict-overwrite retry isn't
+    # an issue because the loop is a no-op on the second turn (the
+    # spinner re-runs are the visible artifact).
+    _render_wizard_header(host_display=host_display, console=console)
     while True:
-        result = run_default_wizard(cfg)
+        result = run_default_wizard(cfg, stage_context=_wizard_stage_context)
         # The only interactive recovery path is the entry-exists case
         # at stage 4 — the wizard reports it as a `failed` outcome at
         # the `wire_host` stage with a message containing "entry
@@ -3430,11 +3439,11 @@ def _cmd_init(
             ):
                 cfg = _dc_replace(cfg, assume_yes=True)
                 continue
-            _stderr_console().print("[yellow]cancelled[/] no changes made.")
+            console.print("[yellow]cancelled[/] no changes made.")
             return 0
         break
 
-    _render_wizard_result(result)
+    _render_wizard_after(result, host_display=host_display, console=console)
     if result.aborted:
         return 2
     if (
@@ -3736,16 +3745,158 @@ def _redact_stderr_credentials(stderr_text: str) -> str:
     )
 
 
-def _render_wizard_result(result: object) -> None:
+def _format_duration(seconds: float) -> str:
+    """Format a wall-clock duration as a one-decimal `X.Xs` string.
+
+    Sub-second times still render with one decimal so a row of
+    durations stays visually aligned (0.4s next to 6.1s next to
+    0.0s). Larger values would benefit from "12.3s" / "1.5m"
+    formatting; we keep it simple at v1 since stages typically
+    complete well under 60 seconds.
+    """
+    return f"{seconds:.1f}s"
+
+
+def _format_path_for_terminal(path: Path, *, max_width: int = 60) -> str:
+    """Compact a filesystem path for terminal display.
+
+    Macos Claude Desktop config paths run ~100 characters which wraps
+    on 80-col terminals. The compacted form replaces HOME with `~`
+    and, when still too long, left-truncates to `…/last/three/parts`
+    so the meaningful tail of the path stays visible.
+
+    `max_width` is a soft cap — the truncated form may exceed it if
+    the deepest 3 components themselves are huge (rare). The
+    expectation is "shorter than a wrapping render"; pixel-perfect
+    width policing is the terminal's job.
+
+    The truncated form is intentionally NOT round-trippable: an
+    absolute path like `/Users/x/Library/Application Support/Claude/...`
+    renders as `…/Application Support/Claude/...` with the leading
+    `/Users/x` discarded. The result is a UI hint for identifying the
+    file at a glance, not a path the caller can pass to `Path()` to
+    recover the original location.
+    """
+    try:
+        home = Path.home()
+        if path.is_absolute() and path.is_relative_to(home):
+            display = "~/" + str(path.relative_to(home))
+        else:
+            display = str(path)
+    except (OSError, ValueError):  # pragma: no cover — defensive (Windows shares, no HOME)
+        display = str(path)
+    if len(display) <= max_width:
+        return display
+    # Keep the last 3 path components — usually parent/parent/file.json
+    # — so the user can identify what was touched without reading the
+    # whole path. Using `Path.parts` ensures the separator is platform-correct.
+    parts = path.parts
+    if len(parts) <= 3:
+        # Path has 3 or fewer components — left-truncation can't shorten it.
+        return display
+    tail = Path(*parts[-3:])
+    return "…/" + str(tail)
+
+
+# Stages whose handlers commonly take long enough to need a visible
+# "I'm working" cue. Stages 1, 4, 5 are fast enough that a spinner
+# would flash and clear before the eye registers it; stages 2 and 3
+# routinely take 5-30s on real schemas.
+_SPINNER_STAGES: frozenset[str] = frozenset({"index", "entities"})
+
+
+@contextlib.contextmanager
+def _wizard_stage_context(stage: object) -> Iterator[None]:
+    """Context manager wrapping each wizard stage handler with a spinner.
+
+    Only the slow async stages (`index`, `entities`) get a spinner,
+    and only when stderr is a TTY — CI logs and redirected output
+    fall through to no-op so log scrapers don't get carriage-return
+    confusion. The orchestrator passes this factory to `run_wizard`
+    via its `stage_context` kwarg.
+
+    Typed as `object` for the stage parameter so this module doesn't
+    import `WizardStage` at module-import time (matches the lazy-import
+    discipline elsewhere). The function relies on `stage.name` via
+    `getattr` with a defensive empty-string fallback.
+
+    Any failure constructing the `Console` (Rich initialisation bug,
+    upstream import error) falls through to no-op rather than
+    propagating — the spinner is a UX nicety, not a correctness
+    guarantee, and a wizard crash with the header already on screen
+    would be more confusing than no spinner.
+    """
+    name: str = getattr(stage, "name", "") or ""
+    if name not in _SPINNER_STAGES:
+        yield
+        return
+    try:
+        console = _stderr_console()
+        if not console.is_terminal:
+            yield
+            return
+    except Exception:  # pragma: no cover — defensive against Rich init failures
+        yield
+        return
+    label = _stage_display_name(name)
+    with console.status(f"[cyan]{label}…[/]", spinner="dots"):
+        yield
+
+
+def _host_display_name(host: str) -> str:
+    """Map the kebab-case host identifier to a human display string.
+
+    Used by the wizard renderer's orientation line. Unknown values
+    pass through so a future host added to the literal doesn't crash
+    the renderer before the lookup is updated.
+    """
+    return {
+        "claude-desktop": "Claude Desktop",
+        "claude-code": "Claude Code",
+        "manual": "manual mode",
+    }.get(host, host)
+
+
+def _render_wizard_header(*, host_display: str | None, console: object) -> None:
+    """Print the two-line wordmark + orientation banner.
+
+    Split out of `_render_wizard_result` so the CLI can print this
+    line BEFORE the wizard starts running — without it the user
+    stares at a blank terminal during slow stages (index, entities)
+    before seeing anything at all.
+    """
+    console.print()  # type: ignore[attr-defined]
+    console.print("[bold cyan]Schema Brain[/]")  # type: ignore[attr-defined]
+    if host_display:
+        console.print(  # type: ignore[attr-defined]
+            f"[dim]Activating Schema Brain for {host_display}. ~30s.[/]"
+        )
+    else:
+        console.print("[dim]Activating Schema Brain. ~30s.[/]")  # type: ignore[attr-defined]
+    console.print()  # type: ignore[attr-defined]
+
+
+def _render_wizard_result(result: object, *, host_display: str | None = None) -> None:
     """Render the multi-stage outcome of a wizard run.
 
     Caller is `_cmd_init`. Typed as `object` here so the cli module
     doesn't import the wizard types at parse time, matching the
     lazy-import discipline elsewhere in the module.
 
+    `host_display` is the human-readable host target (e.g.
+    "Claude Desktop"). When provided, the orientation line mentions
+    it; when None, a generic orientation is rendered. The caller
+    derives this from `args.host` via `_host_display_name`.
+
+    This entry point composes `_render_wizard_header` +
+    `_render_wizard_after` so tests can keep using the single
+    function. Production CLI flow calls them separately to land the
+    header before the wizard runs.
+
     Layout:
 
-      Schema Brain init — activation wizard
+      Schema Brain
+      Activating Schema Brain for Claude Desktop. ~30s.
 
         [N/5] <stage display name>
               <glyph> <message>
@@ -3754,64 +3905,146 @@ def _render_wizard_result(result: object) -> None:
     After the stage list, additional context lines render the host
     install detail (path + backup, redacted shell-out argv on
     failure, paste-ready JSON snippet for manual mode), and a
-    closing block prints either the next-step hint (clean run) or
-    "wizard aborted at stage N of 5" (abort).
+    closing block prints either the next-step hint (clean run) or a
+    bordered failure panel (abort).
     """
     from schemabrain.setup.wizard import WizardResult
 
     if not isinstance(result, WizardResult):
         raise TypeError(f"_render_wizard_result expected WizardResult, got {type(result).__name__}")
     console = _stderr_console()
+    _render_wizard_header(host_display=host_display, console=console)
+    _render_wizard_after(result, host_display=host_display, console=console)
+
+
+def _render_wizard_after(result: object, *, host_display: str | None, console: object) -> None:
+    """Render everything that follows the wizard's header — stage list,
+    host install detail, closing block (clean run) or failure panel (abort).
+
+    Split from `_render_wizard_result` so the CLI can call this after
+    the wizard finishes — the header runs first (immediate feedback)
+    and the spinner-driven stage-context callback fills the gap until
+    the wizard returns.
+    """
+    from schemabrain.setup.wizard import WizardResult
+
+    if not isinstance(result, WizardResult):
+        raise TypeError(f"_render_wizard_after expected WizardResult, got {type(result).__name__}")
     # The wizard always has 5 stages even on early abort — using
     # `len(result.outcomes)` for the denominator would render "of 2"
     # on a stage-2 abort, misleading the user about the pipeline shape.
     total = _WIZARD_TOTAL_STAGES
-    console.print()
-    console.print("[bold]Schema Brain init[/] — activation wizard")
-    console.print()
     for outcome in result.outcomes:
         # Indent stage header consistently with the existing init
-        # rendering (2 spaces) so the eye reads top-to-bottom.
-        console.print(f"  [{outcome.stage}/5] {_stage_display_name(outcome.name)}")
+        # rendering (2 spaces) so the eye reads top-to-bottom. A
+        # measured duration (>0.0s) renders dim next to the stage
+        # name; 0.0s means peek-and-bypass (skipped) where rendering
+        # "0.0s" would mislead.
+        header = f"  [{outcome.stage}/5] {_stage_display_name(outcome.name)}"
+        # 50ms threshold: anything faster is below human-perception of
+        # "took time" AND would round to "0.0s" anyway. The orchestrator
+        # measures every stage including peek-and-bypass skips, so the
+        # naive `> 0` guard would render "(0.0s)" next to skipped lines.
+        if outcome.duration_s >= 0.05:
+            header += f" [dim]({_format_duration(outcome.duration_s)})[/]"
+        console.print(header)  # type: ignore[attr-defined]
         glyph = _STAGE_GLYPHS.get(outcome.status, outcome.status)
-        console.print(f"        {glyph} {outcome.message}")
+        console.print(f"        {glyph} {outcome.message}")  # type: ignore[attr-defined]
         if outcome.next_step:
-            console.print(f"        [dim]{outcome.next_step}[/]")
+            console.print(f"        [dim]{outcome.next_step}[/]")  # type: ignore[attr-defined]
         # Stage-4 follow-up details (config path, backup, manual
         # snippet) render after the stage's own line.
         if outcome.name == "wire_host" and outcome.status == "done":
             _render_wire_host_detail(result.host_install_result, console)
-    console.print()
+    console.print()  # type: ignore[attr-defined]
 
     if result.aborted:
-        aborted = result.aborted_at
-        console.print(
-            f"[red]wizard aborted at stage {aborted.stage if aborted else '?'} of {total}.[/]"
-        )
-        if (
-            aborted is not None
-            and aborted.name == "wire_host"
-            and result.host_install_result is None
-        ):
-            # Stage-4 abort without any host_install_result means
-            # init refused before it built a snippet — nothing to
-            # print beyond the per-stage failure message above.
-            return
-        # Stages 1/2 aborts: nothing extra needed (their messages
-        # already point the user at recovery).
+        _render_abort_panel(result, total=total, console=console)
         return
 
-    # Clean run — print the closing next-step hint inline with the
-    # stage-5 message style.
+    # Clean run — print the closing block (rule + restart-or-snippet
+    # prompt + tail/audit hints + thesis tagline). Skipped on
+    # shell_out_failed (the existing Note covers the recovery — adding
+    # a "Restart Claude Code" line would contradict it). Any other
+    # non-failed state (today: written / unchanged / printed_only;
+    # future-proof against new states added to `InitResult.state`)
+    # gets the closing block so the user always sees the next-step
+    # copy, never a silent no-output succeed.
     host_result = result.host_install_result
     if host_result is not None and host_result.state == "shell_out_failed":
-        # Stage 4 succeeded as a wizard stage (shell-out attempted)
-        # but the underlying `claude mcp add` failed. The user needs
-        # the fallback copy-paste argv.
-        console.print(
+        console.print(  # type: ignore[attr-defined]
             "  [dim]Note:[/] `claude mcp add` failed; you can run the redacted "
             "command above with real credentials to register manually."
         )
+        return
+    if host_result is not None:
+        _render_closing_block(host_result, host_display=host_display, console=console)
+
+
+def _render_abort_panel(result: object, *, total: int, console: object) -> None:
+    """Render a bordered failure panel for aborted wizard runs.
+
+    Replaces the previous single red line ("wizard aborted at stage N
+    of M.") with a Rich Panel — visually contains the failure, the
+    title carries the stage ordinal, and the body shows the message +
+    recovery hint without ambiguity.
+    """
+    from rich.panel import Panel
+
+    from schemabrain.setup.wizard import WizardResult
+
+    if not isinstance(result, WizardResult):
+        return  # pragma: no cover — defensive; caller already narrowed
+    aborted = result.aborted_at
+    title = f"Stopped at stage {aborted.stage if aborted else '?'} of {total}"
+    body_lines: list[str] = []
+    if aborted is not None:
+        body_lines.append(aborted.message)
+        if aborted.next_step:
+            body_lines.append("")
+            body_lines.append(f"[dim]{aborted.next_step}[/]")
+    body = "\n".join(body_lines) if body_lines else "(no failure detail recorded)"
+    console.print(Panel(body, title=title, border_style="red", expand=False))  # type: ignore[attr-defined]
+
+
+def _render_closing_block(
+    host_result: object,
+    *,
+    host_display: str | None,
+    console: object,
+) -> None:
+    """Render the post-stage closing block for clean runs.
+
+    Layout:
+
+      ──────────────────────────────────────────────────────────────
+      Restart Claude Desktop, then ask:
+      > list the entities Schema Brain knows about
+
+      Inspect activity:  schemabrain tail --follow
+      Review the audit:  schemabrain audit list
+
+      The agent reads. It doesn't write. That's the whole point.
+
+    Manual mode swaps the restart line for "Add the snippet above to
+    your host config, then ask:" since there's nothing to restart yet.
+    """
+    from schemabrain.setup.init_flow import InitResult
+
+    if not isinstance(host_result, InitResult):
+        return  # pragma: no cover — defensive; caller already narrowed
+    console.print("[dim]" + "─" * 62 + "[/]")  # type: ignore[attr-defined]
+    if host_result.state == "printed_only":
+        console.print("Add the snippet above to your host config, then ask:")  # type: ignore[attr-defined]
+    else:
+        target = host_display or "your MCP host"
+        console.print(f"Restart {target}, then ask:")  # type: ignore[attr-defined]
+    console.print("[cyan]>[/] list the entities Schema Brain knows about")  # type: ignore[attr-defined]
+    console.print()  # type: ignore[attr-defined]
+    console.print("Inspect activity:  [bold]schemabrain tail --follow[/]")  # type: ignore[attr-defined]
+    console.print("Review the audit:  [bold]schemabrain audit list[/]")  # type: ignore[attr-defined]
+    console.print()  # type: ignore[attr-defined]
+    console.print("[dim]The agent reads. It doesn't write. That's the whole point.[/]")  # type: ignore[attr-defined]
 
 
 def _stage_display_name(name: str) -> str:
@@ -3838,9 +4071,11 @@ def _render_wire_host_detail(host_result: object, console: object) -> None:
         return  # pragma: no cover — defensive; stage-4 always populates this on `done`
 
     if host_result.state == "written" and host_result.config_path is not None:
-        console.print(f"        [dim]wrote:[/] {host_result.config_path}")  # type: ignore[attr-defined]
+        wrote = _format_path_for_terminal(host_result.config_path)
+        console.print(f"        [dim]wrote:[/] {wrote}")  # type: ignore[attr-defined]
         if host_result.backup_made:
-            backup = host_result.config_path.parent / (host_result.config_path.name + ".bak")
+            backup_path = host_result.config_path.parent / (host_result.config_path.name + ".bak")
+            backup = _format_path_for_terminal(backup_path)
             console.print(f"        [dim]backup:[/] {backup}")  # type: ignore[attr-defined]
     elif host_result.state == "shell_out_failed":
         if host_result.shell_out_command:

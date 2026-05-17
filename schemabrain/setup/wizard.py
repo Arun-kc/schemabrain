@@ -31,10 +31,13 @@ shows and what the wizard recorded.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+import time
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import AbstractContextManager
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, get_args
 
@@ -76,7 +79,10 @@ class StageOutcome:
     on. `status` is the tri-state outcome. `message` is the one-line
     human summary. `next_step` is an optional second line shown only
     when present — typically populated on `skipped` or `failed` to
-    point the user at the recovery action.
+    point the user at the recovery action. `duration_s` is the
+    wall-clock seconds the stage spent; the orchestrator overwrites
+    handler-returned values with a measured `perf_counter` delta so
+    handlers can leave it at its 0.0 default.
     """
 
     stage: int
@@ -84,6 +90,7 @@ class StageOutcome:
     status: StageStatus
     message: str
     next_step: str | None = None
+    duration_s: float = 0.0
 
     def __post_init__(self) -> None:
         if self.stage < 1:
@@ -96,6 +103,8 @@ class StageOutcome:
             raise ValueError(
                 f"StageOutcome.status must be one of {sorted(_VALID_STATUSES)}; got {self.status!r}"
             )
+        if self.duration_s < 0:
+            raise ValueError(f"StageOutcome.duration_s must be >= 0; got {self.duration_s}")
         # A `failed` outcome without a recovery hint leaves the user
         # at a dead end. The renderer's dim next-step line simply
         # doesn't render when `next_step` is None, so the failure
@@ -212,16 +221,39 @@ class WizardResult:
 # ----- orchestrator ---------------------------------------------------------
 
 
+StageContext = Callable[[WizardStage], AbstractContextManager[None]]
+
+
+@contextlib.contextmanager
+def _null_stage_context_impl(_stage: WizardStage) -> Iterator[None]:
+    """Default `stage_context` — runs each handler with no extra side effects."""
+    yield
+
+
+# Annotate explicitly so the conformance of the @contextmanager
+# decorator's `GeneratorContextManager` return to `StageContext`'s
+# wider `AbstractContextManager` bound is self-documenting (and would
+# fail-fast if a future change drifts the signature).
+_null_stage_context: StageContext = _null_stage_context_impl
+
+
 def run_wizard(
     config: WizardConfig,
     *,
     stages: Sequence[WizardStage] | None = None,
+    stage_context: StageContext | None = None,
 ) -> WizardResult:
     """Run the wizard pipeline against `config`.
 
     `stages` is dependency-injected so tests can drive the state
     machine without standing up a real database. Production callers
     use `run_default_wizard`, which binds `DEFAULT_STAGES`.
+
+    `stage_context` is an optional context-manager factory invoked
+    around each handler call. The CLI uses it to display a spinner
+    while slow stages (index, entities) run; tests omit it. The
+    callable receives the `WizardStage` so it can specialise on
+    `stage.name` (e.g. only show a spinner for known-slow stages).
 
     Stage handlers MUST NOT raise — the contract is that they
     translate every exception into a `StageOutcome(status="failed",
@@ -231,9 +263,20 @@ def run_wizard(
     `failed` line.
     """
     actual_stages = stages if stages is not None else DEFAULT_STAGES
+    actual_stage_context: StageContext = (
+        stage_context if stage_context is not None else _null_stage_context
+    )
     ctx = WizardContext(config=config)
     for stage in actual_stages:
-        outcome = stage.handler(ctx)
+        # Measure each handler ourselves rather than trust the handler
+        # to report its own duration. Centralising the measurement
+        # gives every stage a consistent timing surface for the
+        # renderer + future --json output mode.
+        started_at = time.perf_counter()
+        with actual_stage_context(stage):
+            outcome = stage.handler(ctx)
+        elapsed = time.perf_counter() - started_at
+        outcome = replace(outcome, duration_s=elapsed)
         ctx.outcomes.append(outcome)
         if outcome.status == "failed" and stage.abort_on_fail:
             return WizardResult(
@@ -248,9 +291,11 @@ def run_wizard(
     )
 
 
-def run_default_wizard(config: WizardConfig) -> WizardResult:
+def run_default_wizard(
+    config: WizardConfig, *, stage_context: StageContext | None = None
+) -> WizardResult:
     """Production entry point: run the wizard with the canonical stages."""
-    return run_wizard(config)
+    return run_wizard(config, stage_context=stage_context)
 
 
 # ----- helper -------------------------------------------------------------
@@ -295,15 +340,17 @@ def _stage_source_check(ctx: WizardContext) -> StageOutcome:
     cfg = ctx.config
     try:
         _validate_source_reachable(cfg.source_url)
-        if is_postgres_url(cfg.source_url):
+        is_postgres = is_postgres_url(cfg.source_url)
+        if is_postgres:
             _validate_source_read_only(cfg.source_url)
     except InitRefusal as refusal:
         return _failed_from_refusal(stage=1, name="source_check", error=refusal.error)
+    message = "Postgres reachable · session is read-only" if is_postgres else "source reachable"
     return StageOutcome(
         stage=1,
         name="source_check",
         status="done",
-        message="source reachable + read-only",
+        message=message,
     )
 
 
@@ -527,9 +574,15 @@ def _source_id_for(url: str) -> str:
 
 
 def _index_done_message(result: IndexResult, *, enrich: bool) -> str:
-    """Pick a one-line summary for a successful stage-2 outcome."""
+    """Pick a one-line summary for a successful stage-2 outcome.
+
+    The middle-dot separator matches the visual rhythm of the rest of
+    the wizard output (source-check + closing block both use it) and
+    reads more confidently than a comma — the numbers are facts, not
+    a list.
+    """
     cols = result.columns_added + result.columns_changed
-    base = f"{result.tables_seen} tables, {cols} columns indexed"
+    base = f"{result.tables_seen} tables · {cols} columns indexed"
     if enrich and result.descriptions_generated > 0:
         base += f" (enriched {result.descriptions_generated} columns, ${result.llm_cost_usd:.4f})"
     return base
@@ -953,12 +1006,18 @@ def _wire_host_message(result: InitResult) -> str:
 
 
 def _stage_next_step(ctx: WizardContext) -> StageOutcome:
-    """Closing stage — never fails; always renders the next-step hint."""
+    """Closing stage — never fails; emits a brief status line.
+
+    The renderer's closing block carries the actionable next-step
+    copy (restart prompt, example query, tail/audit hints, thesis
+    tagline), so this handler only signals that the wizard reached
+    the end successfully.
+    """
     return StageOutcome(
         stage=5,
         name="next_step",
         status="done",
-        message='restart your MCP host, then ask: "list the entities Schema Brain knows about"',
+        message="Ready",
     )
 
 

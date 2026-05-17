@@ -14,7 +14,7 @@ from schemabrain.cli import main as cli_main
 def _write_event(
     path: Path,
     *,
-    timestamp: str = "2026-05-17T12:00:00.000000Z",
+    timestamp: str | None = None,
     tool_name: str = "find_relevant_tables",
     status: str = "success",
     args: dict | None = None,
@@ -23,6 +23,12 @@ def _write_event(
     event_subtype: str | None = None,
     message: str | None = None,
 ) -> None:
+    # Default to "now" so `--since 1h`-style filters in tests resolve
+    # to a window that always includes events written immediately
+    # before the CLI runs. A hardcoded literal would only pass on the
+    # date it was authored, then silently degrade as time passed.
+    if timestamp is None:
+        timestamp = _now_iso()
     event: dict[str, object] = {
         "timestamp": timestamp,
         "server_session_id": "test-session",
