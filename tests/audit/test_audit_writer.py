@@ -4,8 +4,7 @@ Covers single-row writes (all 14 fields populated correctly), chain
 advancement across multiple writes, concurrent-write serialisation via
 the lock, idempotent close, and `_load_tail_chain_hash` recovery on a
 re-open. Also pins the v1-constant fields (`cost_class="small"`,
-`pii_categories=""`, refusal / AST / rule = None) per ADR 0001 and
-the design lock.
+`pii_categories=""`, refusal / AST / rule = None) per ADR 0001.
 """
 
 from __future__ import annotations
