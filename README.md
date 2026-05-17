@@ -404,6 +404,35 @@ existing observability stacks.
 
 ---
 
+## Tamper-evident audit log (alpha)
+
+Alongside the live JSONL tail, every MCP tool call writes one row to
+an append-only `mcp_audit` table inside the local SQLite store. The
+table is append-only by SQL trigger, by a write-only writer
+connection, and by a per-row sha256 chain hash — coherent tampering
+against any external archive that captured a prior hash is detectable.
+
+The audit row records what tool ran, when, against which source, with
+what envelope status, and a structural fingerprint. See
+[ADR 0001](docs/adr/0001-audit-row-and-pii-taxonomy.md) for the
+14-field shape, the regulatory backing for the PII taxonomy, and the
+privacy guarantee the fingerprint preserves.
+
+```bash
+# Verify the chain (exit 0 = clean, 1 = mismatch found).
+schemabrain audit verify
+
+# List recent rows with filters.
+schemabrain audit list --since 1h --status error
+```
+
+Disable for a `serve` run with `--no-audit`. If the writer can't be
+constructed (read-only volume, missing perms), `serve` falls back to
+no-audit with a stderr warning — the server is more useful without
+audit than not at all.
+
+---
+
 ## Roadmap
 
 **v0.5 — finish schema intelligence (shipped):**

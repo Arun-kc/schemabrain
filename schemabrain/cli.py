@@ -258,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             store_path=args.store_path,
             events_path=args.events_path,
             no_events=args.no_events,
+            no_audit=args.no_audit,
         )
     if args.command == "fixture-path":
         return _cmd_fixture_path(args.name)
@@ -358,6 +359,22 @@ def main(argv: list[str] | None = None) -> int:
             json_mode=args.json_mode,
             events_path=args.events_path,
         )
+    if args.command == "audit":
+        if args.audit_action == "verify":
+            return _cmd_audit_verify(
+                store_path=args.store_path,
+                full=args.full,
+            )
+        if args.audit_action == "list":
+            return _cmd_audit_list(
+                store_path=args.store_path,
+                since=args.since,
+                status=args.status,
+                tool=args.tool,
+                limit=args.limit,
+                json_mode=args.json_mode,
+            )
+        parser.error(f"unknown audit action: {args.audit_action}")  # pragma: no cover
     if args.command == "metrics":
         if args.metrics_action == "apply":
             return _cmd_metrics_apply(
@@ -577,6 +594,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable event emission entirely (no JSONL file is written, "
         "no server_start/stop events). Useful for CI runs that don't want "
         "a stray events file in $HOME.",
+    )
+    p_serve.add_argument(
+        "--no-audit",
+        dest="no_audit",
+        action="store_true",
+        help="Disable the mcp_audit table writer for this `serve` "
+        "process. No audit rows land; the table stays as it was. The "
+        "tools still respond — only the durable per-call record is "
+        "suppressed. Use for CI runs or test contexts where audit "
+        "writes would clutter a shared store.",
     )
 
     p_mine = sub.add_parser(
@@ -1138,6 +1165,68 @@ def _build_parser() -> argparse.ArgumentParser:
         f"Default: $SCHEMABRAIN_EVENTS_PATH or {_DEFAULT_EVENTS_PATH}.",
     )
 
+    p_audit = sub.add_parser(
+        "audit",
+        help="Inspect or verify the local mcp_audit table",
+    )
+    audit_sub = p_audit.add_subparsers(dest="audit_action", required=True)
+
+    p_audit_verify = audit_sub.add_parser(
+        "verify",
+        help="Recompute the chain hash for every mcp_audit row; report mismatches",
+    )
+    p_audit_verify.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_audit_verify.add_argument(
+        "--full",
+        action="store_true",
+        help="Walk every row and report all mismatches. Default stops "
+        "at the first mismatch for a fast yes/no integrity check.",
+    )
+
+    p_audit_list = audit_sub.add_parser(
+        "list",
+        help="List recent mcp_audit rows with optional filters",
+    )
+    p_audit_list.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_audit_list.add_argument(
+        "--since",
+        default=None,
+        help="Show rows newer than this point. Accepts a compact "
+        "duration like '30s' / '5m' / '2h' / '1d', or an ISO 8601 "
+        "timestamp with timezone like '2026-05-17T10:00:00Z'. Default: all.",
+    )
+    p_audit_list.add_argument(
+        "--status",
+        default=None,
+        choices=["success", "empty", "partial", "degraded", "error", "refused"],
+        help="Filter by Charter envelope status.",
+    )
+    p_audit_list.add_argument(
+        "--tool",
+        default=None,
+        help="Filter by tool_name (exact match, e.g. `describe_table`).",
+    )
+    p_audit_list.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Maximum rows to return. Default 100.",
+    )
+    p_audit_list.add_argument(
+        "--json",
+        dest="json_mode",
+        action="store_true",
+        help="Emit JSON lines instead of the rich-rendered table. Pipe-friendly for jq / awk.",
+    )
+
     return parser
 
 
@@ -1440,6 +1529,7 @@ def _cmd_serve(
     store_path: str,
     events_path: str | None = None,
     no_events: bool = False,
+    no_audit: bool = False,
 ) -> int:
     """Run the MCP server on stdio against the local store.
 
@@ -1454,9 +1544,16 @@ def _cmd_serve(
     at the resolved path (flag > env > default `~/.schemabrain/events.jsonl`)
     and pass it through. When `no_events` is True, a `NullEventBus` is
     used and no JSONL file is written.
+
+    `no_audit` controls the `mcp_audit` table writer. When False
+    (default), an `AuditWriter` is constructed against the same store
+    file and each MCP tool call writes one row. When True (or when
+    construction fails — same fallback discipline as the events bus),
+    audit is disabled for the run.
     """
     import os as _os
 
+    from schemabrain.audit.writer import AuditWriter
     from schemabrain.observability import JsonlEventBus, NullEventBus
 
     source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
@@ -1505,6 +1602,32 @@ def _cmd_serve(
 
     metric_executor = EngineMetricExecutor(engine)
 
+    # Construct the audit writer alongside the bus — same fallback
+    # posture: an OSError during construction (read-only store dir,
+    # missing parent perms) demotes to no-audit + stderr warning. The
+    # serve process is more useful without audit than not at all.
+    audit_writer: AuditWriter | None
+    if no_audit:
+        audit_writer = None
+    else:
+        try:
+            audit_writer = AuditWriter(Path(store_path).expanduser())
+        except Exception as exc:
+            # OSError (permissions / read-only volume) is the common
+            # case; SchemaVersionMismatchError, sqlite3.DatabaseError,
+            # and corrupted-chain ValueError from the tail-load path
+            # all want the same response — fall back to audit-disabled
+            # rather than crash serve. The exception class is included
+            # in the warning so the operator can distinguish causes.
+            print(
+                f"schemabrain serve: cannot initialise audit writer at "
+                f"{store_path}: {type(exc).__name__}: {exc}. "
+                f"Continuing with audit disabled. "
+                f"Pass --no-audit to suppress this warning.",
+                file=sys.stderr,
+            )
+            audit_writer = None
+
     try:
         with SQLiteStore(store_path) as store:
             run_stdio(
@@ -1513,6 +1636,7 @@ def _cmd_serve(
                 embedder=fastembed_default(),
                 metric_executor=metric_executor,
                 event_bus=bus,
+                audit_writer=audit_writer,
             )
     except OSError as e:
         # Unwritable directory, missing parent, etc. Surface as a
@@ -3221,6 +3345,164 @@ def _cmd_tail(
                 render_event_pretty(event, console)
     except KeyboardInterrupt:
         return 0
+    return 0
+
+
+def _cmd_audit_verify(*, store_path: str, full: bool) -> int:
+    """Walk `mcp_audit`'s chain hash; report mismatches.
+
+    Opens the store as a read-only cursor so a concurrent `serve`
+    process can keep writing audit rows. Exit code 0 means the chain
+    is intact (no mismatches found); 1 means at least one mismatch.
+    """
+    import sqlite3 as _sqlite3
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    from schemabrain.audit.verify import walk_chain
+
+    path = _Path(store_path).expanduser()
+    if not path.exists():
+        print(f"error: store file not found at {path}", file=_sys.stderr)
+        return 2
+
+    try:
+        conn = _sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except _sqlite3.DatabaseError as exc:
+        print(
+            f"error: cannot open {path} as a SQLite database: {exc}",
+            file=_sys.stderr,
+        )
+        return 2
+    conn.row_factory = _sqlite3.Row
+    try:
+        mismatches = list(walk_chain(conn, full=full))
+    except _sqlite3.DatabaseError as exc:
+        print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
+        return 2
+    finally:
+        conn.close()
+
+    if not mismatches:
+        print("audit chain intact")
+        return 0
+
+    for m in mismatches:
+        print(f"row {m.row_id}: chain mismatch  expected={m.expected_hex}  actual={m.actual_hex}")
+    print(f"\n{len(mismatches)} mismatch(es) reported.", file=_sys.stderr)
+    return 1
+
+
+def _cmd_audit_list(
+    *,
+    store_path: str,
+    since: str | None,
+    status: str | None,
+    tool: str | None,
+    limit: int,
+    json_mode: bool,
+) -> int:
+    """Print recent `mcp_audit` rows with optional filters."""
+    import json as _json
+    import sqlite3 as _sqlite3
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    from rich.console import Console as _Console
+    from rich.table import Table as _Table
+
+    from schemabrain.observability import parse_since
+
+    path = _Path(store_path).expanduser()
+    if not path.exists():
+        print(f"error: store file not found at {path}", file=_sys.stderr)
+        return 2
+
+    since_iso: str | None = None
+    if since is not None:
+        try:
+            since_iso = parse_since(since).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        except ValueError as exc:
+            print(f"error: {exc}", file=_sys.stderr)
+            return 2
+
+    where_clauses: list[str] = []
+    params: list[object] = []
+    if since_iso is not None:
+        where_clauses.append("occurred_at >= ?")
+        params.append(since_iso)
+    if status is not None:
+        where_clauses.append("status = ?")
+        params.append(status)
+    if tool is not None:
+        where_clauses.append("tool_name = ?")
+        params.append(tool)
+    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    params.append(limit)
+
+    try:
+        conn = _sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except _sqlite3.DatabaseError as exc:
+        print(
+            f"error: cannot open {path} as a SQLite database: {exc}",
+            file=_sys.stderr,
+        )
+        return 2
+    conn.row_factory = _sqlite3.Row
+    # Column list hardcoded; `where_sql` assembled from hardcoded clause
+    # fragments above (only `?` placeholders for user values). All
+    # user-supplied filter values flow through `params`. No user input
+    # enters the SQL string itself.
+    sql = (
+        "SELECT id, occurred_at, tool_name, status, cost_class, "  # nosec B608
+        "fingerprint, fingerprint_version "
+        f"FROM mcp_audit {where_sql} "
+        "ORDER BY id DESC LIMIT ?"
+    )
+    try:
+        rows = list(conn.execute(sql, params))
+    except _sqlite3.DatabaseError as exc:
+        print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
+        return 2
+    finally:
+        conn.close()
+
+    if json_mode:
+        for row in rows:
+            payload = {
+                "id": row["id"],
+                "occurred_at": row["occurred_at"],
+                "tool_name": row["tool_name"],
+                "status": row["status"],
+                "cost_class": row["cost_class"],
+                "fingerprint": bytes(row["fingerprint"]).hex(),
+                "fingerprint_version": row["fingerprint_version"],
+            }
+            print(_json.dumps(payload, separators=(",", ":")))
+        return 0
+
+    if not rows:
+        print("no audit rows matched the filters")
+        return 0
+
+    console = _Console()
+    table = _Table(title=f"mcp_audit (showing {len(rows)} rows)")
+    table.add_column("id", justify="right")
+    table.add_column("occurred_at")
+    table.add_column("tool")
+    table.add_column("status")
+    table.add_column("cost")
+    table.add_column("fingerprint (first 12)", overflow="fold")
+    for row in rows:
+        table.add_row(
+            str(row["id"]),
+            row["occurred_at"],
+            row["tool_name"],
+            row["status"],
+            row["cost_class"],
+            bytes(row["fingerprint"]).hex()[:12],
+        )
+    console.print(table)
     return 0
 
 

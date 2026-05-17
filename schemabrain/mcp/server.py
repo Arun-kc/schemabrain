@@ -32,6 +32,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from schemabrain.audit.writer import AuditWriter
 from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
 from schemabrain.mcp._helpers import _MAX_IDENT_LEN
@@ -161,6 +162,7 @@ def build_server(
     metric_executor: MetricExecutor | None = None,
     event_bus: EventBus | None = None,
     server_session_id: str | None = None,
+    audit_writer: AuditWriter | None = None,
 ) -> FastMCP:
     """Build (but do not run) a configured `FastMCP` app.
 
@@ -182,6 +184,13 @@ def build_server(
     `server_session_id` is a UUID identifying this server process
     so a tail reader can group events across a single `serve` run;
     a fresh UUID4 is generated when not supplied.
+
+    `audit_writer` is the optional `mcp_audit` table writer. When set,
+    every tool call writes one row before the bus emit; the row's
+    fingerprint hex is injected into `MetricResult.fingerprint` so
+    agents see a real hash rather than the v0 stub. Defaults to None
+    (no audit writes) so test contexts that don't care don't pay the
+    SQLite syscall cost.
     """
     app = FastMCP(_SERVER_NAME, instructions=_SERVER_INSTRUCTIONS)
     _bus = event_bus if event_bus is not None else NullEventBus()
@@ -194,6 +203,8 @@ def build_server(
             bus=_bus,
             redactor=_redactor,
             server_session_id=_session_id,
+            audit_writer=audit_writer,
+            source_connection_id=source_connection_id,
         )
 
     @app.tool(
@@ -1028,6 +1039,7 @@ def run_stdio(
     metric_executor: MetricExecutor | None = None,
     event_bus: EventBus | None = None,
     server_session_id: str | None = None,
+    audit_writer: AuditWriter | None = None,
 ) -> None:
     """Build the server and run it forever on stdio.
 
@@ -1042,6 +1054,10 @@ def run_stdio(
     `event_bus` is the optional observability sink. When set, server
     lifecycle events (server_start / server_stop) plus one event per
     tool call land on the bus. Defaults to `NullEventBus` (no-op).
+
+    `audit_writer` is the optional `mcp_audit` table writer. When set,
+    every tool call writes one row to the table. Closed in the finally
+    block so a clean shutdown finalises the chain.
 
     Defensively configures stderr-only logging if no caller has done so
     already — stdout is the JSON-RPC wire here, and a stray log byte
@@ -1067,6 +1083,7 @@ def run_stdio(
         metric_executor=metric_executor,
         event_bus=bus,
         server_session_id=session_id,
+        audit_writer=audit_writer,
     )
     bus.emit(
         Event(
@@ -1090,3 +1107,5 @@ def run_stdio(
             )
         )
         bus.close()
+        if audit_writer is not None:
+            audit_writer.close()

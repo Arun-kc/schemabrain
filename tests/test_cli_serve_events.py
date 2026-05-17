@@ -26,9 +26,12 @@ def _patch_run_stdio_capture(monkeypatch: pytest.MonkeyPatch) -> dict:
         metric_executor=None,
         event_bus=None,
         server_session_id=None,
+        audit_writer=None,
     ) -> None:
         captured["event_bus"] = event_bus
         captured["event_bus_type"] = type(event_bus).__name__
+        captured["audit_writer"] = audit_writer
+        captured["audit_writer_type"] = type(audit_writer).__name__
 
     monkeypatch.setattr("schemabrain.cli.run_stdio", _capture)
     return captured
