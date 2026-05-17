@@ -1,11 +1,11 @@
-"""`Event` frozen dataclass — the wire shape for the bus + tail + audit.
+"""`Event` frozen dataclass — the wire shape for the bus and tail.
 
 Each emitted event is one row. Two `kind`s share the same dataclass with
 disjoint fields; `__post_init__` enforces the union shape so a producer
 can't construct a malformed mix.
 
 Fields are intentionally aligned with the Charter response envelope
-(`status`, `error.kind`) so a future audit-table writer can copy
+(`status`, `error.kind`) so any durable-store consumer can copy
 straight through with zero shape conversion.
 """
 

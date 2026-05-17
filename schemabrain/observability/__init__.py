@@ -1,4 +1,4 @@
-"""Event-bus substrate powering the tail pane and future audit/OTel consumers.
+"""Event-bus substrate powering the tail pane.
 
 Three modules live here:
 
@@ -10,9 +10,9 @@ Three modules live here:
                    name, with a safe default.
 
 The bus emits each `Event` as one JSON line. The same shape is read by
-the `schemabrain tail` CLI and (once it lands) the audit-table writer.
-Emission is best-effort: a disk-full or permission failure logs once
-to stderr and drops the event rather than failing the tool call.
+the `schemabrain tail` CLI. Emission is best-effort: a disk-full or
+permission failure logs once to stderr and drops the event rather
+than failing the tool call.
 """
 
 from __future__ import annotations
