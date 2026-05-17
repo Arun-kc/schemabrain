@@ -31,11 +31,15 @@ shows and what the wizard recorded.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, get_args
+from typing import TYPE_CHECKING, Literal, get_args
 
+from sqlalchemy.exc import OperationalError
+
+from schemabrain.enrichment.pipeline import CostCapExceeded
 from schemabrain.errors import GuidedError
 from schemabrain.setup.hosts import HostName, is_postgres_url
 from schemabrain.setup.init_flow import (
@@ -45,6 +49,9 @@ from schemabrain.setup.init_flow import (
     _validate_source_read_only,
     init,
 )
+
+if TYPE_CHECKING:
+    from schemabrain.indexer import IndexResult
 
 # ----- public types ---------------------------------------------------------
 
@@ -278,17 +285,209 @@ def _stage_source_check(ctx: WizardContext) -> StageOutcome:
 def _stage_index(ctx: WizardContext) -> StageOutcome:
     """Run cache-aware indexing into the local store.
 
-    Stub at this commit — returns a `skipped` outcome so the
-    orchestrator's state machine is exercisable end-to-end. Real
-    indexing wiring lands in the next commit.
+    Decision tree:
+
+      1. `cfg.skip_index` set → emit `skipped` (user opt-out).
+      2. Non-Postgres source → emit `failed`. Indexing only supports
+         Postgres sources today; SQLite remains the local-store
+         format, not a source format.
+      3. Store already has tables for this `source_id` → emit
+         `skipped` (idempotent re-run).
+      4. `cfg.enrich` set but `ANTHROPIC_API_KEY` missing → emit
+         `failed` so the user can fix the env or drop `--enrich`.
+      5. Otherwise, run the indexer pipeline and emit `done`.
+
+    Exceptions from the indexer (cost-cap, source operational
+    errors, unwritable store) are caught here and translated into
+    `failed` outcomes. The wizard never lets the indexer's raw
+    exception propagate — the stage-handler contract is "always
+    return a `StageOutcome`".
     """
+    cfg = ctx.config
+
+    if cfg.skip_index:
+        return StageOutcome(
+            stage=2,
+            name="index",
+            status="skipped",
+            message="--skip-index set; not running indexer",
+            next_step="run `schemabrain index --url-env $VAR` later to populate the store",
+        )
+
+    if not is_postgres_url(cfg.source_url):
+        return StageOutcome(
+            stage=2,
+            name="index",
+            status="failed",
+            message="indexing only supports Postgres sources today",
+            next_step="re-run with a Postgres URL, "
+            "or pass --skip-index to wire the host without indexing",
+        )
+
+    source_id = _source_id_for(cfg.source_url)
+
+    if cfg.store_path.exists():
+        existing = _peek_store_table_count(cfg.store_path, source_id)
+        if isinstance(existing, StageOutcome):
+            return existing  # schema-version mismatch surfaced as failed
+        if existing > 0:
+            return StageOutcome(
+                stage=2,
+                name="index",
+                status="skipped",
+                message=f"already indexed: {existing} table(s) present for this source",
+            )
+
+    api_key: str | None = None
+    if cfg.enrich:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return StageOutcome(
+                stage=2,
+                name="index",
+                status="failed",
+                message="--enrich passed but ANTHROPIC_API_KEY is not set",
+                next_step="export ANTHROPIC_API_KEY=sk-ant-... or re-run without --enrich",
+            )
+
+    try:
+        result = _run_indexer(cfg=cfg, source_id=source_id, api_key=api_key)
+    except OperationalError as exc:
+        first_line = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        return StageOutcome(
+            stage=2,
+            name="index",
+            status="failed",
+            message=f"source unreachable during index: {first_line}",
+            next_step="verify the URL and that the database is reachable",
+        )
+    except CostCapExceeded as exc:
+        return StageOutcome(
+            stage=2,
+            name="index",
+            status="failed",
+            message=str(exc),
+            next_step="re-run with a higher --max-cost-usd, or without --enrich",
+        )
+    except OSError as exc:
+        return StageOutcome(
+            stage=2,
+            name="index",
+            status="failed",
+            message=f"store unwritable: {exc}",
+            next_step="check filesystem permissions on the store path and re-run",
+        )
+
     return StageOutcome(
         stage=2,
         name="index",
-        status="skipped",
-        message="indexing handler not yet wired",
-        next_step="run `schemabrain index --url-env $VAR` separately for now",
+        status="done",
+        message=_index_done_message(result, enrich=cfg.enrich),
     )
+
+
+def _peek_store_table_count(store_path: Path, source_id: str) -> int | StageOutcome:
+    """Open the store read-only and count tables for `source_id`.
+
+    Returns the count on success, or a `StageOutcome(failed)` carrying
+    a guided error message when the store's schema version doesn't
+    match this installation's expectation. The caller treats the
+    failure as terminal for stage 2.
+    """
+    from schemabrain.core.store import SchemaVersionMismatchError, SQLiteStore
+
+    try:
+        with SQLiteStore(path=store_path) as store:
+            return len(store.list_tables(source_connection_id=source_id))
+    except SchemaVersionMismatchError as exc:
+        return StageOutcome(
+            stage=2,
+            name="index",
+            status="failed",
+            message=str(exc),
+            next_step=f"delete {store_path} and re-run, "
+            "or install the matching schemabrain version",
+        )
+
+
+def _run_indexer(*, cfg: WizardConfig, source_id: str, api_key: str | None) -> IndexResult:
+    """Build the indexer's dependencies and run one pass.
+
+    Lazy-imports the heavy connector/profiler/pipeline/embedder
+    modules so importing `wizard` is cheap for callers that never
+    reach stage 2 (e.g. the eventual `--json` output mode).
+
+    The cost cap on enrichment here is intentionally generous —
+    indexing-time enrichment is a power-user surface guarded by the
+    `--enrich` opt-in. Stage 3's `--entities-max-cost-usd` is the
+    user-visible cost knob for the wizard's overall LLM spend.
+    """
+    from schemabrain.connectors.postgres import PostgresDataSource
+    from schemabrain.core.store import SQLiteStore
+    from schemabrain.enrichment.anthropic_client import anthropic_haiku_45_client
+    from schemabrain.enrichment.embeddings import fastembed_default
+    from schemabrain.enrichment.pipeline import EnrichmentPipeline
+    from schemabrain.indexer import NullReporter, index
+    from schemabrain.profiler.postgres import PostgresProfiler
+
+    embedder = None
+    with (
+        PostgresDataSource(cfg.source_url) as source,
+        PostgresProfiler(cfg.source_url) as profiler,
+        SQLiteStore(cfg.store_path) as store,
+    ):
+        pipeline: EnrichmentPipeline | None = None
+        if cfg.enrich and api_key is not None:
+            pipeline = EnrichmentPipeline(
+                client=anthropic_haiku_45_client(api_key=api_key),
+                cryptic_client=None,
+                max_cost_usd=_WIZARD_INDEX_ENRICH_CAP_USD,
+                default_concurrency=_WIZARD_INDEX_CONCURRENCY,
+                cryptic_concurrency=_WIZARD_INDEX_CRYPTIC_CONCURRENCY,
+                store=store,
+                source_connection_id=source_id,
+            )
+            embedder = fastembed_default()
+        return index(
+            source=source,
+            profiler=profiler,
+            store=store,
+            source_connection_id=source_id,
+            pipeline=pipeline,
+            embedder=embedder,
+            reporter=NullReporter(),
+            no_pii_classify=False,
+        )
+
+
+def _source_id_for(url: str) -> str:
+    """Stable short identifier for a source DB.
+
+    Lazy-imports `cli._make_source_id` to avoid a module-level import
+    cycle (cli imports wizard from `_cmd_init`). The function is
+    fully resolved by the time any stage runs.
+    """
+    from schemabrain.cli import _make_source_id
+
+    return _make_source_id(url)
+
+
+def _index_done_message(result: IndexResult, *, enrich: bool) -> str:
+    """Pick a one-line summary for a successful stage-2 outcome."""
+    cols = result.columns_added + result.columns_changed
+    base = f"{result.tables_seen} tables, {cols} columns indexed"
+    if enrich and result.descriptions_generated > 0:
+        base += f" (enriched {result.descriptions_generated} columns, ${result.llm_cost_usd:.4f})"
+    return base
+
+
+# Cost + concurrency knobs used by `_run_indexer`. Kept here, not at
+# the WizardConfig level, because they're internal to the wizard's
+# bundled enrichment policy (a power-user run via `schemabrain index`
+# directly carries its own knobs).
+_WIZARD_INDEX_ENRICH_CAP_USD: float = 10.0
+_WIZARD_INDEX_CONCURRENCY: int = 4
+_WIZARD_INDEX_CRYPTIC_CONCURRENCY: int = 2
 
 
 # ----- stage 3: entities ---------------------------------------------------

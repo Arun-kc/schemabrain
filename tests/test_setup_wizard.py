@@ -232,6 +232,19 @@ class TestRunWizardStateMachine:
         # We monkeypatch all the substrate calls so the wizard runs end-to-end
         # without a live database or a real host config — the assertion is that
         # the default stage list reaches stage 5 with this stubbing in place.
+        # `skip_index=True` short-circuits the stage-2 Postgres-only refusal
+        # without us having to stub the whole indexer pipeline.
+        cfg = WizardConfig(
+            source_url=base_config.source_url,
+            store_path=base_config.store_path,
+            host=base_config.host,
+            env_var_name=base_config.env_var_name,
+            skip_index=True,
+            no_entities=base_config.no_entities,
+            enrich=base_config.enrich,
+            entities_max_cost_usd=base_config.entities_max_cost_usd,
+            assume_yes=base_config.assume_yes,
+        )
         monkeypatch.setattr(wizard, "_validate_source_reachable", lambda _url: None)
         monkeypatch.setattr(wizard, "_validate_source_read_only", lambda _url: None)
 
@@ -254,7 +267,7 @@ class TestRunWizardStateMachine:
         )
         monkeypatch.setattr(wizard, "init", lambda **_kw: canned)
 
-        result = run_default_wizard(base_config)
+        result = run_default_wizard(cfg)
         assert result.aborted is False
         assert len(result.outcomes) == 5
         assert [o.name for o in result.outcomes] == [
@@ -408,17 +421,393 @@ class TestStageSourceCheck:
         assert outcome.next_step is None
 
 
-# ----- _stage_index (stub at this commit) ----------------------------------
+# ----- _stage_index --------------------------------------------------------
 
 
-class TestStageIndexStub:
-    def test_returns_skipped_with_recovery_hint(self, base_config: WizardConfig) -> None:
-        ctx = WizardContext(config=base_config)
-        outcome = wizard._stage_index(ctx)
+def _pg_config(base: WizardConfig, **overrides: object) -> WizardConfig:
+    """Build a Postgres-flavoured config based on `base` with field overrides."""
+    fields: dict[str, object] = {
+        "source_url": "postgresql+psycopg://u:p@localhost/db",
+        "store_path": base.store_path,
+        "host": base.host,
+        "env_var_name": base.env_var_name,
+        "skip_index": base.skip_index,
+        "no_entities": base.no_entities,
+        "enrich": base.enrich,
+        "entities_max_cost_usd": base.entities_max_cost_usd,
+        "assume_yes": base.assume_yes,
+    }
+    fields.update(overrides)
+    return WizardConfig(**fields)  # type: ignore[arg-type]
+
+
+class TestStageIndex:
+    def test_skipped_when_skip_index_flag_set(self, base_config: WizardConfig) -> None:
+        cfg = _pg_config(base_config, skip_index=True)
+        outcome = wizard._stage_index(WizardContext(config=cfg))
 
         assert outcome.stage == 2
         assert outcome.status == "skipped"
-        assert "schemabrain index" in (outcome.next_step or "")
+        assert "--skip-index" in outcome.message
+
+    def test_failed_for_non_postgres_source(self, base_config: WizardConfig) -> None:
+        # base_config uses sqlite:///:memory: — wizard's stage-2 only
+        # supports Postgres sources at v1.
+        outcome = wizard._stage_index(WizardContext(config=base_config))
+
+        assert outcome.status == "failed"
+        assert "Postgres" in outcome.message
+        assert outcome.next_step is not None
+        assert "--skip-index" in outcome.next_step
+
+    def test_skipped_when_store_already_has_tables(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        # Materialise the store so the existence check passes.
+        cfg.store_path.touch()
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_store_table_count", lambda _p, _sid: 7)
+
+        # Guard: even if the store has tables, the indexer must NOT
+        # have been invoked.
+        monkeypatch.setattr(
+            wizard,
+            "_run_indexer",
+            lambda **_kw: pytest.fail("indexer ran despite idempotent skip"),
+        )
+
+        outcome = wizard._stage_index(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "already indexed" in outcome.message
+        assert "7 table" in outcome.message
+
+    def test_failed_on_schema_version_mismatch(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.core.store import SchemaVersionMismatchError
+
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+
+        mismatch = SchemaVersionMismatchError(
+            "store created with schema v10 but installed schemabrain expects v12"
+        )
+        peek_failure = StageOutcome(
+            stage=2,
+            name="index",
+            status="failed",
+            message=str(mismatch),
+            next_step=f"delete {cfg.store_path} and re-run",
+        )
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_store_table_count", lambda _p, _sid: peek_failure)
+
+        outcome = wizard._stage_index(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert outcome.message == str(mismatch)
+        assert outcome.next_step is not None
+        assert "delete" in outcome.next_step
+
+    def test_failed_when_enrich_set_without_api_key(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config, enrich=True)
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        outcome = wizard._stage_index(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "ANTHROPIC_API_KEY" in outcome.message
+        assert outcome.next_step is not None
+        assert "--enrich" in outcome.next_step
+
+    def test_done_on_successful_index(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.indexer import IndexResult
+
+        cfg = _pg_config(base_config)
+        canned = IndexResult(
+            tables_seen=12,
+            tables_changed=12,
+            tables_unchanged=0,
+            tables_removed=0,
+            columns_added=80,
+            columns_changed=0,
+            columns_removed=0,
+        )
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_run_indexer", lambda **_kw: canned)
+
+        outcome = wizard._stage_index(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "12 tables" in outcome.message
+        assert "80 columns" in outcome.message
+
+    def test_done_when_store_exists_but_empty_for_this_source(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Store file exists (e.g. from a different source) but has zero
+        # tables for the current `source_id`. The wizard must fall
+        # through to the indexer, not short-circuit.
+        from schemabrain.indexer import IndexResult
+
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        canned = IndexResult(
+            tables_seen=4,
+            tables_changed=4,
+            tables_unchanged=0,
+            tables_removed=0,
+            columns_added=30,
+            columns_changed=0,
+            columns_removed=0,
+        )
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_store_table_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_run_indexer", lambda **_kw: canned)
+
+        outcome = wizard._stage_index(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "4 tables" in outcome.message
+
+    def test_done_message_includes_enrichment_cost(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.indexer import IndexResult
+
+        cfg = _pg_config(base_config, enrich=True)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        canned = IndexResult(
+            tables_seen=3,
+            tables_changed=3,
+            tables_unchanged=0,
+            tables_removed=0,
+            columns_added=20,
+            columns_changed=0,
+            columns_removed=0,
+            descriptions_generated=20,
+            llm_cost_usd=0.0123,
+        )
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_run_indexer", lambda **_kw: canned)
+
+        outcome = wizard._stage_index(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "enriched 20" in outcome.message
+        assert "$0.0123" in outcome.message
+
+    def test_failed_on_operational_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sqlalchemy.exc import OperationalError
+
+        cfg = _pg_config(base_config)
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        def _raise(**_kw: object) -> None:
+            raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+        monkeypatch.setattr(wizard, "_run_indexer", _raise)
+
+        outcome = wizard._stage_index(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "source unreachable" in outcome.message
+
+    def test_failed_on_cost_cap_exceeded(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.enrichment.pipeline import CostCapExceeded
+
+        cfg = _pg_config(base_config, enrich=True)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        def _raise(**_kw: object) -> None:
+            raise CostCapExceeded(spent=1.50, cap=1.00)
+
+        monkeypatch.setattr(wizard, "_run_indexer", _raise)
+
+        outcome = wizard._stage_index(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "spend" in outcome.message.lower() or "cap" in outcome.message.lower()
+        assert outcome.next_step is not None
+        assert "--max-cost-usd" in outcome.next_step
+
+    def test_failed_on_os_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        def _raise(**_kw: object) -> None:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(wizard, "_run_indexer", _raise)
+
+        outcome = wizard._stage_index(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "store unwritable" in outcome.message
+
+
+class TestSourceIdFor:
+    def test_delegates_to_cli_make_source_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The function is a thin lazy-import wrapper. Stub the cli
+        # function and verify the wrapper just returns its output.
+        import schemabrain.cli as cli_module
+
+        monkeypatch.setattr(cli_module, "_make_source_id", lambda _url: "deadbeefcafebabe")
+        assert wizard._source_id_for("postgresql://u@h/d") == "deadbeefcafebabe"
+
+
+class TestPeekStoreTableCount:
+    def test_returns_count_for_existing_store(self, tmp_path: Path) -> None:
+        # Use a real SQLiteStore so we exercise the actual lookup path
+        # rather than mocking the indirection away.
+        from schemabrain.core.store import SQLiteStore
+
+        store_path = tmp_path / "peek.db"
+        with SQLiteStore(store_path) as store:
+            # No tables for this source_id yet.
+            count = wizard._peek_store_table_count(store_path, "missing_source")
+            assert count == 0
+            # Sanity: the store opened cleanly.
+            assert store.list_tables(source_connection_id="missing_source") == []
+
+    def test_returns_failed_outcome_on_schema_mismatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.core.store import SchemaVersionMismatchError
+
+        store_path = tmp_path / "mismatch.db"
+        store_path.touch()
+
+        def _raise_mismatch(*_a: object, **_kw: object) -> None:
+            raise SchemaVersionMismatchError("v10 != v12")
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore.__init__", _raise_mismatch)
+
+        outcome = wizard._peek_store_table_count(store_path, "src")
+
+        assert isinstance(outcome, StageOutcome)
+        assert outcome.status == "failed"
+        assert "v10" in outcome.message
+
+
+class TestRunIndexerSmoke:
+    def test_runs_against_sqlite_store_with_postgres_stubs(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Patch the imports inside `_run_indexer` so we exercise the
+        # function's wiring without standing up Postgres.
+        from schemabrain.indexer import IndexResult
+
+        cfg = _pg_config(base_config)
+
+        canned_result = IndexResult(
+            tables_seen=2,
+            tables_changed=2,
+            tables_unchanged=0,
+            tables_removed=0,
+            columns_added=10,
+            columns_changed=0,
+            columns_removed=0,
+        )
+        captured: dict[str, object] = {}
+
+        class _CtxStub:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _CtxStub:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+        def _fake_index(**kwargs: object) -> IndexResult:
+            captured.update(kwargs)
+            return canned_result
+
+        monkeypatch.setattr("schemabrain.connectors.postgres.PostgresDataSource", _CtxStub)
+        monkeypatch.setattr("schemabrain.profiler.postgres.PostgresProfiler", _CtxStub)
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _CtxStub)
+        monkeypatch.setattr("schemabrain.indexer.index", _fake_index)
+
+        result = wizard._run_indexer(cfg=cfg, source_id="abcd1234", api_key=None)
+        assert result is canned_result
+        assert captured["source_connection_id"] == "abcd1234"
+        assert captured["pipeline"] is None  # enrich=False, no pipeline built
+        assert captured["embedder"] is None
+        assert captured["no_pii_classify"] is False
+
+    def test_builds_pipeline_when_enrich_and_api_key_present(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.indexer import IndexResult
+
+        cfg = _pg_config(base_config, enrich=True)
+
+        captured: dict[str, object] = {}
+
+        class _CtxStub:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _CtxStub:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+        class _PipelineStub:
+            def __init__(self, **kwargs: object) -> None:
+                captured["pipeline_kwargs"] = kwargs
+
+        def _fake_index(**kwargs: object) -> IndexResult:
+            captured.update(kwargs)
+            return IndexResult(
+                tables_seen=1,
+                tables_changed=1,
+                tables_unchanged=0,
+                tables_removed=0,
+                columns_added=5,
+                columns_changed=0,
+                columns_removed=0,
+                descriptions_generated=5,
+                llm_cost_usd=0.001,
+            )
+
+        monkeypatch.setattr("schemabrain.connectors.postgres.PostgresDataSource", _CtxStub)
+        monkeypatch.setattr("schemabrain.profiler.postgres.PostgresProfiler", _CtxStub)
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _CtxStub)
+        monkeypatch.setattr("schemabrain.enrichment.pipeline.EnrichmentPipeline", _PipelineStub)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_haiku_45_client",
+            lambda **_kw: object(),
+        )
+        monkeypatch.setattr("schemabrain.enrichment.embeddings.fastembed_default", lambda: object())
+        monkeypatch.setattr("schemabrain.indexer.index", _fake_index)
+
+        wizard._run_indexer(cfg=cfg, source_id="abcd1234", api_key="sk-ant-test")
+        assert captured["pipeline"] is not None
+        assert captured["embedder"] is not None
+        # Pipeline received the wizard's bundled enrich cap + concurrency knobs.
+        pkw = captured["pipeline_kwargs"]
+        assert isinstance(pkw, dict)
+        assert pkw["max_cost_usd"] == wizard._WIZARD_INDEX_ENRICH_CAP_USD
+        assert pkw["default_concurrency"] == wizard._WIZARD_INDEX_CONCURRENCY
+        assert pkw["cryptic_concurrency"] == wizard._WIZARD_INDEX_CRYPTIC_CONCURRENCY
 
 
 # ----- _stage_entities (stub at this commit) -------------------------------
