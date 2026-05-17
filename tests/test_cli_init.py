@@ -246,6 +246,39 @@ class TestInitCliRefusals:
         assert exit_code == 0
 
 
+class TestInitCliUrlEnv:
+    """The --url-env path (preferred over --source so creds stay out
+    of argv) needs end-to-end happy-path coverage at the CLI layer."""
+
+    def test_url_env_resolves_and_init_succeeds(
+        self,
+        seeded_store: Path,
+        stub_uvx: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setenv("FAKE_DB_URL", "sqlite:///:memory:")
+        exit_code = main(
+            [
+                "init",
+                "--url-env",
+                "FAKE_DB_URL",
+                "--store-path",
+                str(seeded_store),
+                "--print-only",
+            ]
+        )
+        assert exit_code == 0
+        parsed = json.loads(capsys.readouterr().out)
+        snippet = parsed["mcpServers"]["schemabrain"]
+        # The env var is read at CLI level and its VALUE lands in the
+        # snippet's env block under the canonical SCHEMABRAIN_DATABASE_URL
+        # key (the default env-var name). The original env-var name from
+        # --url-env is decoupled from the snippet's env-var name (set
+        # by --env-var, default SCHEMABRAIN_DATABASE_URL).
+        assert snippet["env"]["SCHEMABRAIN_DATABASE_URL"] == "sqlite:///:memory:"
+
+
 class TestInitCliEnvVarFlag:
     def test_custom_env_var_lands_in_snippet(
         self,
@@ -271,6 +304,56 @@ class TestInitCliEnvVarFlag:
         # The snippet's args reference the SAME env var name via
         # --url-env so the server reads from it at launch.
         assert "ACME_PROD_DB" in snippet["args"]
+
+
+class TestRedactEnvArgs:
+    """Direct unit tests for the credential-redaction helper used in
+    the claude-code shell-out fallback render."""
+
+    def test_redacts_value_after_dash_e(self) -> None:
+        from schemabrain.cli import _redact_env_args
+
+        cmd = (
+            "claude",
+            "mcp",
+            "add",
+            "-e",
+            "DATABASE_URL=postgresql://alice:hunter2@h/db",
+            "schemabrain",
+            "--",
+            "uvx",
+        )
+        out = _redact_env_args(cmd)
+        joined = " ".join(out)
+        assert "hunter2" not in joined
+        assert "alice" not in joined
+        assert "DATABASE_URL=<redacted>" in joined
+
+    def test_redacts_multiple_env_vars(self) -> None:
+        from schemabrain.cli import _redact_env_args
+
+        cmd = ("claude", "mcp", "add", "-e", "A=1", "-e", "B=2", "schemabrain")
+        out = _redact_env_args(cmd)
+        joined = " ".join(out)
+        assert "A=<redacted>" in joined
+        assert "B=<redacted>" in joined
+        assert "1" not in joined.replace("A=<redacted>", "").replace("B=<redacted>", "")
+
+    def test_token_without_equals_after_dash_e_is_left_alone(self) -> None:
+        # Defensive: malformed shape where `-e` is followed by a bare
+        # value (no KEY= prefix). Don't crash; pass it through.
+        from schemabrain.cli import _redact_env_args
+
+        cmd = ("claude", "-e", "bare_value", "schemabrain")
+        out = _redact_env_args(cmd)
+        assert "bare_value" in " ".join(out)
+
+    def test_non_env_tokens_untouched(self) -> None:
+        from schemabrain.cli import _redact_env_args
+
+        cmd = ("claude", "mcp", "add", "schemabrain", "--", "uvx", "schemabrain==0.1")
+        out = _redact_env_args(cmd)
+        assert list(cmd) == out
 
 
 class TestInitCliClaudeCode:
@@ -306,6 +389,55 @@ class TestInitCliClaudeCode:
         captured = capsys.readouterr()
         # The command is rendered so the user can copy-paste it.
         assert "claude mcp add" in captured.err
+
+    def test_shell_out_failure_redacts_credentials_in_rendered_command(
+        self,
+        seeded_store: Path,
+        stub_uvx: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # PR #8 security invariant: passwords must never land on
+        # stderr. The shell-out fallback render must redact -e values.
+        from schemabrain.setup.hosts import ClaudeCodeInstallResult
+
+        def fake_install(snippet: object) -> ClaudeCodeInstallResult:
+            return ClaudeCodeInstallResult(
+                succeeded=False,
+                command_run=(
+                    "claude",
+                    "mcp",
+                    "add",
+                    "-e",
+                    "DATABASE_URL=postgresql://alice:hunter2@h/db",
+                    "schemabrain",
+                    "--",
+                    "uvx",
+                ),
+                stderr="failed",
+            )
+
+        monkeypatch.setattr("schemabrain.setup.init_flow.install_to_claude_code", fake_install)
+        # Use sqlite so source-reachable + read-only checks pass without
+        # network; the password lives only inside the fake shell-out
+        # command_run tuple — what we're asserting is the renderer's
+        # behaviour, not init's own snippet construction.
+        main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(seeded_store),
+                "--host",
+                "claude-code",
+            ]
+        )
+        captured = capsys.readouterr()
+        # The password must NEVER appear in the rendered fallback
+        # command on stderr.
+        assert "hunter2" not in captured.err
+        assert "DATABASE_URL=<redacted>" in captured.err
 
     def test_shell_out_success_exits_zero(
         self,
@@ -496,11 +628,17 @@ class TestInitCliInteractiveOverlay:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Force non-interactive — the refusal renders without
-        # invoking the prompt (prompts are TTY-gated).
+        # invoking the prompt (prompts are TTY-gated). Strengthened
+        # to assert _prompt_yes_no was NEVER called, so a future
+        # refactor that unconditionally prompts gets caught.
         monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: False)
-        # If the prompt were invoked despite non-TTY, this lambda
-        # would surface as a test failure (the answer "True" would
-        # silently proceed, but we assert exit_code == 2).
+        prompt_calls: list[str] = []
+
+        def fake_prompt(question: str, *, default: bool) -> bool:
+            prompt_calls.append(question)
+            return True
+
+        monkeypatch.setattr("schemabrain.cli._prompt_yes_no", fake_prompt)
         store_path = tmp_path / "store.db"
         SQLiteStore(path=store_path).close()
         exit_code = main(
@@ -515,6 +653,76 @@ class TestInitCliInteractiveOverlay:
             ]
         )
         assert exit_code == 2
+        assert prompt_calls == []
+
+
+class TestInitCliSkipIndexRender:
+    """When init succeeds via skip_index, the 'Next:' message must
+    tell the user to index BEFORE asking the agent — otherwise the
+    suggested 'list the entities' question returns nothing."""
+
+    def test_skip_index_render_includes_index_before_querying(
+        self,
+        tmp_path: Path,
+        stub_uvx: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Empty store + --skip-index → init writes the host config and
+        # the render must include the "Before querying: schemabrain index"
+        # hint instead of the unconditional "list the entities" line.
+        store_path = tmp_path / "store.db"
+        SQLiteStore(path=store_path).close()
+        claude_dir = tmp_path / "Claude"
+        claude_dir.mkdir()
+        cfg = claude_dir / "claude_desktop_config.json"
+        monkeypatch.setattr("schemabrain.setup.init_flow.claude_desktop_config_path", lambda: cfg)
+        exit_code = main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(store_path),
+                "--host",
+                "claude-desktop",
+                "--skip-index",
+            ]
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "Before querying" in captured.err
+        assert "schemabrain index" in captured.err
+
+    def test_normal_init_render_does_not_include_index_hint(
+        self,
+        seeded_store: Path,
+        stub_uvx: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Seeded store (entities present) + no --skip-index → the
+        # unchanged single-line "Next:" message.
+        claude_dir = seeded_store.parent / "Claude"
+        claude_dir.mkdir()
+        cfg = claude_dir / "claude_desktop_config.json"
+        monkeypatch.setattr("schemabrain.setup.init_flow.claude_desktop_config_path", lambda: cfg)
+        exit_code = main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(seeded_store),
+                "--host",
+                "claude-desktop",
+            ]
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        # The skip-index hint should NOT appear.
+        assert "Before querying" not in captured.err
+        assert "list the entities" in captured.err
 
 
 class TestInitCliIdempotency:
@@ -559,3 +767,83 @@ class TestInitCliIdempotency:
         assert exit_code == 0
         captured = capsys.readouterr()
         assert "already configured" in captured.err
+
+    def test_three_runs_preserve_original_backup_byte_stable(
+        self,
+        seeded_store: Path,
+        stub_uvx: None,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # End-to-end three-run sequence exercising the backup-once
+        # idempotency contract through the init() orchestrator. A
+        # refactor that re-anchored the .bak pointer between runs
+        # would silently destroy the user's rollback target; this
+        # test catches that.
+        cfg_parent = tmp_path / "Claude"
+        cfg_parent.mkdir()
+        cfg = cfg_parent / "claude_desktop_config.json"
+        backup_path = cfg.parent / (cfg.name + ".bak")
+        # Pre-seed an "original" config — the .bak MUST capture this
+        # forever, regardless of subsequent runs.
+        cfg.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "schemabrain": {
+                            "command": "uvx",
+                            "args": ["schemabrain==0.0.99", "serve"],
+                            "env": {},
+                        }
+                    }
+                }
+            )
+        )
+        original_contents = cfg.read_text()
+        monkeypatch.setattr("schemabrain.setup.init_flow.claude_desktop_config_path", lambda: cfg)
+        # Run 1: overwrites with --yes; .bak created holding original.
+        main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(seeded_store),
+                "--host",
+                "claude-desktop",
+                "--yes",
+            ]
+        )
+        assert backup_path.exists()
+        assert backup_path.read_text() == original_contents
+        # Run 2: identical args; no-op.
+        main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(seeded_store),
+                "--host",
+                "claude-desktop",
+                "--yes",
+            ]
+        )
+        assert backup_path.read_text() == original_contents
+        # Run 3: change the env-var name to force a rewrite; --yes
+        # again. Backup MUST still hold the original from run 1.
+        main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(seeded_store),
+                "--host",
+                "claude-desktop",
+                "--env-var",
+                "CHANGED_ENV_NAME",
+                "--yes",
+            ]
+        )
+        assert backup_path.read_text() == original_contents

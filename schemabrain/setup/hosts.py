@@ -140,6 +140,15 @@ def build_snippet(
     )
 
 
+def is_postgres_url(url: str) -> bool:
+    """Whether the URL is one of the Postgres scheme variants we recognise.
+
+    Used by both `doctor` and `init` to gate the Postgres-only
+    read-only session check. SQLite URLs have no equivalent.
+    """
+    return url.startswith(("postgresql:", "postgresql+", "postgres:"))
+
+
 def claude_desktop_config_path() -> Path | None:
     """Return the OS-standard Claude Desktop config path, or None.
 

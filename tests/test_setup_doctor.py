@@ -287,6 +287,35 @@ class TestCheckHostConfigUsesUrlEnv:
         c = check_host_config_uses_url_env(cfg)
         assert c.outcome == "fail"
 
+    def test_propagated_malformed_check_has_correct_name(self, tmp_path: Path) -> None:
+        # Regression guard against the C1 bug — _safe_read_config used
+        # to hard-code name="host_config_present" in its synthesized
+        # fail Check, so callers got the wrong name in --json output.
+        cfg = tmp_path / "config.json"
+        cfg.write_text("{broken json")
+        c = check_host_config_uses_url_env(cfg)
+        assert c.name == "host_config_uses_url_env"
+
+    def test_detects_source_equals_form(self, tmp_path: Path) -> None:
+        # The single-token --source=URL form is just as dangerous as
+        # the two-token form — both leak credentials into argv. The
+        # check must detect both.
+        cfg = tmp_path / "config.json"
+        _write_host_config(
+            cfg,
+            entry={
+                "command": "uvx",
+                "args": [
+                    "schemabrain==0.1",
+                    "serve",
+                    "--source=postgresql://leaked:secret@h/db",
+                ],
+                "env": {},
+            },
+        )
+        c = check_host_config_uses_url_env(cfg)
+        assert c.outcome == "fail"
+
 
 # ----- check_host_config_version_pin_matches --------------------------------
 
@@ -382,6 +411,12 @@ class TestCheckHostConfigVersionPinMatches:
         c = check_host_config_version_pin_matches(cfg)
         assert c.outcome == "warn"
 
+    def test_propagated_malformed_check_has_correct_name(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.json"
+        cfg.write_text("{broken json")
+        c = check_host_config_version_pin_matches(cfg)
+        assert c.name == "host_config_version_pin"
+
 
 # ----- check_host_config_store_path_matches ---------------------------------
 
@@ -475,6 +510,12 @@ class TestCheckHostConfigStorePathMatches:
         )
         c = check_host_config_store_path_matches(cfg, expected=tmp_path / "store.db")
         assert c.outcome == "warn"
+
+    def test_propagated_malformed_check_has_correct_name(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.json"
+        cfg.write_text("{broken json")
+        c = check_host_config_store_path_matches(cfg, expected=tmp_path / "store.db")
+        assert c.name == "host_config_store_path"
 
     def test_warn_when_store_path_value_is_not_a_string(self, tmp_path: Path) -> None:
         # Defensive: hand-broken JSON with a non-string after --store-path.
@@ -744,15 +785,31 @@ class TestDoctorOrchestrator:
         assert "host_config_present" in names
         assert "host_config_uses_url_env" in names
 
-    def test_skips_host_checks_when_desktop_path_unavailable(
+    def test_emits_warn_when_desktop_unsupported_on_this_os(
         self, fresh_store: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # User explicitly asked for --host claude-desktop on an OS
+        # where the config path doesn't resolve (Linux, or Windows
+        # without APPDATA). Doctor must NOT silently skip — it emits
+        # a single warn check so the user sees the gap.
         monkeypatch.setattr(
             "schemabrain.setup.doctor_flow.claude_desktop_config_path", lambda: None
         )
         result = doctor(source_url=None, store_path=fresh_store, host="claude-desktop")
-        names = [c.name for c in result.checks]
-        assert "host_config_present" not in names
+        host_checks = [c for c in result.checks if c.name == "host_config_present"]
+        assert len(host_checks) == 1
+        assert host_checks[0].outcome == "warn"
+        assert "OS" in host_checks[0].message
+
+    def test_emits_warn_for_claude_code_unverifiable(self, fresh_store: Path) -> None:
+        # Claude Code registration lives in the supported `claude mcp`
+        # CLI, not in a programmatically-introspectable file. Doctor
+        # must surface that gap rather than silently passing.
+        result = doctor(source_url=None, store_path=fresh_store, host="claude-code")
+        host_checks = [c for c in result.checks if c.name == "host_config_present"]
+        assert len(host_checks) == 1
+        assert host_checks[0].outcome == "warn"
+        assert "claude mcp list" in (host_checks[0].suggested_next or "")
 
     def test_adds_read_only_check_for_postgres_source(
         self,

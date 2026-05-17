@@ -447,7 +447,7 @@ class TestInitValidatesPostgresReadOnly:
     """Drives the Postgres-only read-only validation path via mocked engine."""
 
     @pytest.fixture
-    def _stub_engine_with_value(self, monkeypatch: pytest.MonkeyPatch) -> "object":
+    def _stub_engine_with_value(self, monkeypatch: pytest.MonkeyPatch) -> object:
         from schemabrain.setup import init_flow
 
         def make(value: str) -> None:

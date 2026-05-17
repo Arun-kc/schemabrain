@@ -288,3 +288,31 @@ class TestDoctorAgainstPostgres16:
         # init/doctor pass — so the check passes.
         ro_check = next(c for c in parsed["checks"] if c["name"] == "source_session_read_only")
         assert ro_check["outcome"] == "pass"
+
+    def test_read_only_session_actually_blocks_writes_not_just_self_reports(
+        self,
+        seeded_pg_url: str,
+    ) -> None:
+        # The session_read_only check verifies via SHOW — but SHOW
+        # returning "on" doesn't prove Postgres ACTUALLY blocks the
+        # write. This test attempts a real INSERT under the same
+        # connect_args init/doctor use, and asserts Postgres rejects
+        # it. Catches a regression where the connect_args wiring
+        # silently stops applying.
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.exc import InternalError, OperationalError
+
+        engine = create_engine(
+            seeded_pg_url,
+            connect_args={"options": "-c default_transaction_read_only=on"},
+        )
+        try:
+            with engine.connect() as conn:
+                # Confirm session reports read-only.
+                assert conn.execute(text("SHOW default_transaction_read_only")).scalar() == "on"
+                # Now actually try a write. Postgres should reject.
+                with pytest.raises((InternalError, OperationalError)) as exc_info:
+                    conn.execute(text("INSERT INTO orgs (name) VALUES ('writeattempt')"))
+                assert "read-only" in str(exc_info.value).lower()
+        finally:
+            engine.dispose()

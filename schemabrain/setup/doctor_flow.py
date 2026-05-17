@@ -43,7 +43,7 @@ from schemabrain.setup.config_io import (
     read_mcp_config,
     schemabrain_entry_in,
 )
-from schemabrain.setup.hosts import HostName, claude_desktop_config_path
+from schemabrain.setup.hosts import HostName, claude_desktop_config_path, is_postgres_url
 
 _STALE_AFTER_DAYS = 30
 _STALE_AFTER_SECONDS = _STALE_AFTER_DAYS * 24 * 60 * 60
@@ -115,11 +115,13 @@ def check_installed_version() -> Check:
 # ----- host-config checks ----------------------------------------------------
 
 
-def _safe_read_config(path: Path) -> tuple[dict[str, Any] | None, Check | None]:
+def _safe_read_config(path: Path, *, check_name: str) -> tuple[dict[str, Any] | None, Check | None]:
     """Read a config file, returning either the parsed dict or an early Check.
 
     Centralises the missing-file + malformed-file handling that
-    multiple host checks would otherwise duplicate.
+    multiple host checks would otherwise duplicate. The synthesized
+    fail Check uses the supplied `check_name` so the caller's
+    identifier — not a hardcoded one — appears in doctor output.
     """
     if not path.exists():
         return None, None
@@ -127,7 +129,7 @@ def _safe_read_config(path: Path) -> tuple[dict[str, Any] | None, Check | None]:
         return read_mcp_config(path), None
     except MalformedConfigError as exc:
         return None, Check(
-            name="host_config_present",
+            name=check_name,
             outcome="fail",
             message=str(exc),
             suggested_next="inspect the file or restore from the .bak sibling, then re-run init",
@@ -143,7 +145,7 @@ def check_host_config_present(path: Path) -> Check:
             message=f"host config not found at {path}",
             suggested_next="run `schemabrain init` to wire the host",
         )
-    config, early = _safe_read_config(path)
+    config, early = _safe_read_config(path, check_name="host_config_present")
     if early is not None:
         return early
     if schemabrain_entry_in(config) is None:
@@ -161,8 +163,12 @@ def check_host_config_present(path: Path) -> Check:
 
 
 def check_host_config_uses_url_env(path: Path) -> Check:
-    """The snippet's args must use --url-env (creds in env), not --source."""
-    config, early = _safe_read_config(path)
+    """The snippet's args must use --url-env (creds in env), not --source.
+
+    Detects both flag forms: bare `--source` followed by a value, AND
+    the combined `--source=<url>` form a hand-edited config might use.
+    """
+    config, early = _safe_read_config(path, check_name="host_config_uses_url_env")
     if early is not None:
         return early
     entry = schemabrain_entry_in(config)
@@ -173,7 +179,9 @@ def check_host_config_uses_url_env(path: Path) -> Check:
             message="no schemabrain entry to evaluate (see host_config_present)",
         )
     args = entry.get("args", [])
-    if isinstance(args, list) and "--source" in args:
+    if isinstance(args, list) and any(
+        isinstance(a, str) and (a == "--source" or a.startswith("--source=")) for a in args
+    ):
         return Check(
             name="host_config_uses_url_env",
             outcome="fail",
@@ -196,7 +204,7 @@ def check_host_config_uses_url_env(path: Path) -> Check:
 
 def check_host_config_version_pin_matches(path: Path) -> Check:
     """The snippet's `schemabrain==X.Y.Z` pin should match the installed version."""
-    config, early = _safe_read_config(path)
+    config, early = _safe_read_config(path, check_name="host_config_version_pin")
     if early is not None:
         return early
     entry = schemabrain_entry_in(config)
@@ -243,7 +251,7 @@ def check_host_config_version_pin_matches(path: Path) -> Check:
 
 def check_host_config_store_path_matches(path: Path, *, expected: Path) -> Check:
     """The snippet's `--store-path` should match the store doctor is checking."""
-    config, early = _safe_read_config(path)
+    config, early = _safe_read_config(path, check_name="host_config_store_path")
     if early is not None:
         return early
     entry = schemabrain_entry_in(config)
@@ -300,7 +308,8 @@ def check_store_schema_version(path: Path) -> Check:
     from schemabrain.core.store import SchemaVersionMismatchError, SQLiteStore
 
     try:
-        store = SQLiteStore(path=path)
+        with SQLiteStore(path=path):
+            pass
     except SchemaVersionMismatchError as exc:
         return Check(
             name="store_schema_version",
@@ -308,7 +317,6 @@ def check_store_schema_version(path: Path) -> Check:
             message=str(exc),
             suggested_next="delete the store file and re-run `schemabrain index`, or downgrade to the matching schemabrain version",
         )
-    store.close()
     return Check(
         name="store_schema_version",
         outcome="pass",
@@ -328,17 +336,14 @@ def check_store_entity_count(path: Path) -> Check:
     from schemabrain.core.store import SchemaVersionMismatchError, SQLiteStore
 
     try:
-        store = SQLiteStore(path=path)
+        with SQLiteStore(path=path) as store:
+            count = len(store.list_entities())
     except SchemaVersionMismatchError:
         return Check(
             name="store_entity_count",
             outcome="warn",
             message="cannot evaluate (schema-version mismatch — see store_schema_version)",
         )
-    try:
-        count = len(store.list_entities())
-    finally:
-        store.close()
     if count == 0:
         return Check(
             name="store_entity_count",
@@ -400,10 +405,6 @@ def check_store_freshness(path: Path) -> Check:
 
 
 # ----- source checks ---------------------------------------------------------
-
-
-def _is_postgres_url(url: str) -> bool:
-    return url.startswith(("postgresql:", "postgresql+", "postgres:"))
 
 
 def check_source_reachable(source_url: str) -> Check:
@@ -520,14 +521,47 @@ def _build_check_list(
             checks.append(
                 lambda: check_host_config_store_path_matches(cfg_path, expected=store_path)
             )
+        else:
+            # No standard Claude Desktop path on this OS (Linux, or
+            # Windows without APPDATA). The user explicitly asked for
+            # claude-desktop, so silently skipping all four config
+            # checks would let doctor exit 0 having checked nothing
+            # about host registration. Emit a single warn instead.
+            checks.append(_check_host_config_unsupported_os)
+    elif host == "claude-code":
+        # Claude Code's registration lives in ~/.claude.json but
+        # Anthropic-supported access is the `claude mcp` CLI; doctor
+        # has no programmatic introspection equivalent yet. Surface
+        # this as a warn so the user sees the gap.
+        checks.append(_check_host_config_claude_code_unverifiable)
     checks.append(lambda: check_store_schema_version(store_path))
     checks.append(lambda: check_store_entity_count(store_path))
     checks.append(lambda: check_store_freshness(store_path))
     if source_url is not None:
         checks.append(lambda: check_source_reachable(source_url))
-        if _is_postgres_url(source_url):
+        if is_postgres_url(source_url):
             checks.append(lambda: check_source_read_only(source_url))
     return checks
+
+
+def _check_host_config_unsupported_os() -> Check:
+    """Surface that host-config checks were skipped on an OS without Claude Desktop."""
+    return Check(
+        name="host_config_present",
+        outcome="warn",
+        message="Claude Desktop config path not available on this OS",
+        suggested_next="re-run doctor with --host claude-code or --host manual",
+    )
+
+
+def _check_host_config_claude_code_unverifiable() -> Check:
+    """Surface that Claude Code registration isn't programmatically verifiable."""
+    return Check(
+        name="host_config_present",
+        outcome="warn",
+        message="Claude Code registration cannot be verified by doctor",
+        suggested_next="run `claude mcp list` to confirm schemabrain is registered",
+    )
 
 
 # ----- renderers -------------------------------------------------------------

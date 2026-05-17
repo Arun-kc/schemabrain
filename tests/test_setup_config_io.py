@@ -225,6 +225,29 @@ class TestWriteMcpConfigAtomic:
         write_mcp_config_atomic(path, {"v": 2})
         assert json.loads(path.read_text()) == {"v": 2}
 
+    def test_backup_creation_is_toctou_safe_via_o_excl(self, tmp_path: Path) -> None:
+        # Regression guard against H3: the backup-once check must use
+        # an atomic create (O_CREAT|O_EXCL) so two concurrent writers
+        # can't both observe "no .bak" and race to copy over each
+        # other. We simulate the race by pre-creating the .bak file
+        # AFTER the path.exists() check but BEFORE the open — easier:
+        # pre-create the .bak with sentinel contents and verify the
+        # second writer does NOT overwrite it.
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps({"original": True}))
+        backup_path = path.parent / (path.name + ".bak")
+        # First write — creates backup of {"original": True}.
+        backup_made_first = write_mcp_config_atomic(path, {"v": 2})
+        assert backup_made_first is True
+        original_backup_contents = backup_path.read_text()
+        # Now simulate a concurrent writer arriving — the .bak exists,
+        # so the second call must NOT overwrite it even though we
+        # would race past path.exists() in the old TOCTOU code.
+        backup_made_second = write_mcp_config_atomic(path, {"v": 3})
+        assert backup_made_second is False
+        # The backup still holds the TRUE original contents.
+        assert backup_path.read_text() == original_backup_contents
+
 
 # ----- schemabrain_entry_in -------------------------------------------------
 

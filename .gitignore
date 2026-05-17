@@ -87,3 +87,6 @@ logs/
 
 # Claude
 .claude/
+
+# Agent review artifacts (PR-review rotation outputs)
+.review/

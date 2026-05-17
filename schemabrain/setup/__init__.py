@@ -10,10 +10,9 @@ land here as the gate matures:
   - `init_flow`    — interactive + non-interactive `init` orchestration.
   - `doctor_flow`  — `doctor` orchestration + JSON output mode.
 
-Only `checks` ships in this commit; the rest land in follow-up commits
-of the same arc. Keep each module pure where possible — IO concentrates
-in `config_io` and the per-host snippet-write paths, so the rest stay
-easy to test against constructed fixtures.
+Each module is pure where possible — IO concentrates in `config_io`
+and the per-host snippet-write paths, so the rest stay easy to test
+against constructed fixtures.
 """
 
 from __future__ import annotations

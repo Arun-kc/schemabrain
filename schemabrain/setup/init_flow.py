@@ -56,6 +56,7 @@ from schemabrain.setup.hosts import (
     build_snippet,
     claude_desktop_config_path,
     install_to_claude_code,
+    is_postgres_url,
 )
 
 InitState = Literal[
@@ -107,6 +108,10 @@ class InitResult:
     backup_made: bool = False
     shell_out_command: tuple[str, ...] | None = None
     shell_out_stderr: str | None = None
+    # True when the store was empty + `--skip-index` was set or accepted
+    # interactively; the CLI renderer uses this to add an "index before
+    # querying" line to the next-step block.
+    skip_index: bool = False
 
 
 def init(
@@ -130,7 +135,7 @@ def init(
     """
     runner = _resolve_runner()
     _validate_source_reachable(source_url)
-    if _is_postgres_url(source_url):
+    if is_postgres_url(source_url):
         _validate_source_read_only(source_url)
     _validate_store(store_path=store_path, skip_index=skip_index)
     config_path = _resolve_host_target(host)
@@ -148,16 +153,22 @@ def init(
             host="manual",
             snippet=snippet,
             state="printed_only",
+            skip_index=skip_index,
         )
     if host == "claude-desktop":
-        assert config_path is not None
+        # _resolve_host_target above already raised InitRefusal when
+        # config_path was None; this guard is defensive against future
+        # refactor that decouples the two.
+        if config_path is None:  # pragma: no cover
+            raise RuntimeError("claude-desktop host without resolved config_path")
         return _install_to_claude_desktop(
             snippet=snippet,
             config_path=config_path,
             assume_yes=assume_yes,
+            skip_index=skip_index,
         )
     # host == "claude-code"
-    return _install_to_claude_code_host(snippet=snippet)
+    return _install_to_claude_code_host(snippet=snippet, skip_index=skip_index)
 
 
 # ----- runner resolution -----------------------------------------------------
@@ -183,10 +194,6 @@ def _resolve_runner() -> str:
 
 
 # ----- source validation -----------------------------------------------------
-
-
-def _is_postgres_url(url: str) -> bool:
-    return url.startswith(("postgresql:", "postgresql+", "postgres:"))
 
 
 def _validate_source_reachable(source_url: str) -> None:
@@ -278,7 +285,8 @@ def _validate_store(*, store_path: Path, skip_index: bool) -> None:
     from schemabrain.core.store import SchemaVersionMismatchError, SQLiteStore
 
     try:
-        store = SQLiteStore(path=store_path)
+        with SQLiteStore(path=store_path) as store:
+            entity_count = len(store.list_entities())
     except SchemaVersionMismatchError as exc:
         raise InitRefusal(
             GuidedError(
@@ -290,10 +298,6 @@ def _validate_store(*, store_path: Path, skip_index: bool) -> None:
                 next_step=None,
             )
         ) from exc
-    try:
-        entity_count = len(store.list_entities())
-    finally:
-        store.close()
     if entity_count == 0 and not skip_index:
         raise InitRefusal(
             GuidedError(
@@ -349,6 +353,7 @@ def _install_to_claude_desktop(
     snippet: SchemabrainSnippet,
     config_path: Path,
     assume_yes: bool,
+    skip_index: bool,
 ) -> InitResult:
     existing = None
     if config_path.exists():
@@ -363,6 +368,7 @@ def _install_to_claude_desktop(
             state="unchanged",
             config_path=config_path,
             backup_made=False,
+            skip_index=skip_index,
         )
     if existing_entry is not None and not assume_yes:
         raise InitRefusal(
@@ -382,19 +388,21 @@ def _install_to_claude_desktop(
         state="written",
         config_path=config_path,
         backup_made=backup_made,
+        skip_index=skip_index,
     )
 
 
 # ----- install: claude-code -------------------------------------------------
 
 
-def _install_to_claude_code_host(*, snippet: SchemabrainSnippet) -> InitResult:
+def _install_to_claude_code_host(*, snippet: SchemabrainSnippet, skip_index: bool) -> InitResult:
     outcome: ClaudeCodeInstallResult = install_to_claude_code(snippet)
     state: InitState = "shell_out_succeeded" if outcome.succeeded else "shell_out_failed"
     return InitResult(
         host="claude-code",
         snippet=snippet,
         state=state,
+        skip_index=skip_index,
         shell_out_command=outcome.command_run,
         shell_out_stderr=outcome.stderr,
     )

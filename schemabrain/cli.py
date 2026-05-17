@@ -3087,16 +3087,41 @@ def _prompt_yes_no(question: str, *, default: bool) -> bool:
     return Confirm.ask(question, default=default, console=_stderr_console())
 
 
+def _redact_env_args(cmd: tuple[str, ...]) -> list[str]:
+    """Return a copy of `cmd` with each `-e KEY=VALUE` value redacted.
+
+    Used when printing a `claude mcp add` argv to stderr after the
+    shell-out failed. The KEY=VALUE tokens carry the live DB URL
+    (including any password) — printing them verbatim contradicts
+    the PR #8 security invariant. Renders as `KEY=<redacted>`.
+    """
+    out: list[str] = []
+    skip_next = False
+    for token in cmd:
+        if skip_next:
+            key, sep, _value = token.partition("=")
+            out.append(f"{key}{sep}<redacted>" if sep else token)
+            skip_next = False
+        elif token == "-e":
+            out.append(token)
+            skip_next = True
+        else:
+            out.append(token)
+    return out
+
+
 def _render_init_result(result: object) -> None:
     """Render the outcome of a successful init run.
 
-    Imported lazily here (rather than at module top) so the rest of
-    the CLI's startup path isn't paying for rich/json imports the
-    init handler needs.
+    Caller is `_cmd_init`, which has already validated the type.
+    Typed as `object` here so the cli module doesn't import the
+    init_flow types at parse time (preserves the lazy-init-flow-
+    import discipline the rest of `_cmd_init` follows).
     """
     from schemabrain.setup.init_flow import InitResult
 
-    assert isinstance(result, InitResult)
+    if not isinstance(result, InitResult):
+        raise TypeError(f"_render_init_result expected InitResult, got {type(result).__name__}")
     console = _stderr_console()
     if result.state == "written":
         console.print(f"[green]✓[/] wrote schemabrain entry to {result.config_path}")
@@ -3108,10 +3133,23 @@ def _render_init_result(result: object) -> None:
             )
             console.print(f"  [dim]backup:[/] {backup}")
         console.print()
-        console.print(
-            "  [dim]Next:[/] restart Claude Desktop, then ask:  "
-            '"list the entities Schema Brain knows about"'
-        )
+        if result.skip_index:
+            # Store was empty + user opted in (--skip-index or interactive
+            # acceptance); the "list entities" question would return nothing
+            # without an index run first.
+            console.print(
+                "  [dim]Before querying:[/] run "
+                "`schemabrain index --url-env $VAR --store-path $PATH`"
+            )
+            console.print(
+                "  [dim]Then:[/] restart Claude Desktop and ask:  "
+                '"list the entities Schema Brain knows about"'
+            )
+        else:
+            console.print(
+                "  [dim]Next:[/] restart Claude Desktop, then ask:  "
+                '"list the entities Schema Brain knows about"'
+            )
     elif result.state == "unchanged":
         console.print(
             f"[green]✓[/] schemabrain entry already configured in {result.config_path}; no changes"
@@ -3127,7 +3165,12 @@ def _render_init_result(result: object) -> None:
         console.print("[red]✗[/] `claude mcp add` failed; you can run it manually:")
         if result.shell_out_command:
             console.print()
-            console.print("  " + " ".join(result.shell_out_command))
+            console.print("  " + " ".join(_redact_env_args(result.shell_out_command)))
+            console.print()
+            console.print(
+                "  [dim]Note:[/] env values are redacted above. To re-run with real "
+                "credentials, prefer `schemabrain init` (which reads them from your env)."
+            )
         if result.shell_out_stderr:
             console.print(f"\n  [dim]stderr:[/] {result.shell_out_stderr}")
     else:

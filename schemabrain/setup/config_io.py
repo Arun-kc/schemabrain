@@ -116,9 +116,23 @@ def write_mcp_config_atomic(
     path.parent.mkdir(parents=True, exist_ok=True)
     backup_made = False
     backup_path = path.parent / (path.name + ".bak")
-    if create_backup and path.exists() and not backup_path.exists():
-        shutil.copy2(path, backup_path)
-        backup_made = True
+    if create_backup and path.exists():
+        # TOCTOU-safe: open with O_CREAT|O_EXCL so two concurrent init
+        # invocations can't both observe "no .bak" and race to copy
+        # over each other. Whoever loses the race sees FileExistsError
+        # and respects the existing backup.
+        try:
+            bak_fd = os.open(
+                backup_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+        except FileExistsError:
+            bak_fd = None
+        if bak_fd is not None:
+            os.close(bak_fd)
+            shutil.copy2(path, backup_path)
+            backup_made = True
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{path.name}.",
         suffix=".tmp",
