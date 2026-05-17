@@ -1,6 +1,7 @@
 """Tests for the schemabrain CLI."""
 
 import tomllib
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1688,6 +1689,108 @@ class TestIndexDryRun:
         # both descriptions_generated == 0 and llm_cost_usd == 0).
         assert "Estimated LLM" not in err
         assert "Would index" in err
+
+    def test_dry_run_since_renders_freshness_audit(
+        self,
+        seeded_pg_url: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # End-to-end: real index against seeded Postgres, then a
+        # --dry-run --since on a generous window. The store rows have
+        # `indexed_at = now`, so a future cutoff classifies everything
+        # as stale; the audit line names the column count.
+        store_path = tmp_path / "schemabrain.db"
+        # Real index first so the cache has stamped rows.
+        main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--no-enrich",
+            ]
+        )
+        capsys.readouterr()  # discard
+
+        # Dry-run with --since at a far-future ts: every cached row
+        # has `indexed_at` before "now + 1 year", so the freshness
+        # audit reports the full cached set.
+        future = (datetime.now(UTC) + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        exit_code = main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+                "--since",
+                future,
+            ]
+        )
+        assert exit_code == 0
+        err = capsys.readouterr().err
+        assert "Stale since" in err
+        assert "estimated refresh $" in err
+
+    def test_dry_run_since_zero_stale_still_prints_line(
+        self,
+        seeded_pg_url: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Inverse: cutoff before any cached row. Nothing is stale, but
+        # the audit line MUST still render so operators know the flag
+        # took effect.
+        store_path = tmp_path / "schemabrain.db"
+        main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--no-enrich",
+            ]
+        )
+        capsys.readouterr()
+
+        past = (datetime.now(UTC) - timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+                "--since",
+                past,
+            ]
+        )
+        err = capsys.readouterr().err
+        assert "Stale since" in err
+        assert "0 columns" in err
+
+    def test_dry_run_since_malformed_returns_two(
+        self,
+        seeded_pg_url: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+                "--since",
+                "not-a-duration",
+            ]
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "--since" in err
 
     def test_dry_run_help_text_lists_flag(self) -> None:
         from schemabrain.cli import _build_parser

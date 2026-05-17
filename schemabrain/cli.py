@@ -71,6 +71,7 @@ import sys
 import time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -85,6 +86,7 @@ from schemabrain.connectors.postgres import PostgresDataSource
 from schemabrain.core.metric import DbtOwnedMetricError
 from schemabrain.core.models import Table
 from schemabrain.core.store import DbtOwnedEntityError, SQLiteStore
+from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.anthropic_client import (
     anthropic_haiku_45_client,
     anthropic_sonnet_46_client,
@@ -242,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
             no_embed=args.no_embed,
             quiet=args.quiet,
             dry_run=args.dry_run,
+            since=args.since,
             no_pii_classify=args.no_pii_classify,
         )
     if args.command == "eval":
@@ -537,6 +540,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "calls, no embeddings, no fastembed init. ANTHROPIC_API_KEY "
         "is NOT required. Note: estimate ignores --enable-sonnet "
         "tier routing and reports Haiku pricing only.",
+    )
+    p_index.add_argument(
+        "--since",
+        default=None,
+        help="Only meaningful with --dry-run. Adds a freshness audit "
+        "line to the preview: count of cached columns whose owning "
+        "table was last indexed before this point in time, with an "
+        "estimated cost to refresh them. Accepts a compact duration "
+        "('30s', '5m', '2h', '14d') or an ISO 8601 timestamp with "
+        "timezone ('2026-05-01T00:00:00Z'). Lets operators preview "
+        "the cost of catching up after a long pause before committing "
+        "to a real re-index.",
     )
 
     p_eval = sub.add_parser(
@@ -1314,8 +1329,16 @@ def _cmd_index(
     no_embed: bool,
     quiet: bool = False,
     dry_run: bool = False,
+    since: str | None = None,
     no_pii_classify: bool = False,
 ) -> int:
+    if since is not None and not dry_run:
+        print(
+            "error: --since requires --dry-run (it is meaningful only "
+            "when previewing, not when actually indexing)",
+            file=sys.stderr,
+        )
+        return 2
     if no_pii_classify:
         # One-shot startup warning: operators who opted out of
         # classification need a visible reminder that downstream
@@ -1346,6 +1369,7 @@ def _cmd_index(
             no_enrich=no_enrich,
             no_embed=no_embed,
             quiet=quiet,
+            since=since,
         )
 
     # API key check happens BEFORE the store opens — failing fast on
@@ -1491,6 +1515,7 @@ def _cmd_index_dry_run(
     no_enrich: bool,
     no_embed: bool,
     quiet: bool,
+    since: str | None = None,
 ) -> int:
     """`schemabrain index --dry-run` — preview without doing.
 
@@ -1506,12 +1531,31 @@ def _cmd_index_dry_run(
     still surface through the guided-error translators. That's the
     right behavior: a dry-run that can't reach the source isn't a
     successful dry-run.
+
+    When `since` is supplied, a separate freshness-audit line follows
+    the standard dry-run summary. The audit counts cached columns
+    whose owning table was last indexed before the cutoff and
+    estimates the cost to refresh them.
     """
+    from schemabrain.observability import parse_since
+
+    since_ts: int | None = None
+    if since is not None:
+        try:
+            since_ts = int(parse_since(since).timestamp())
+        except ValueError as exc:
+            print(f"error: --since: {exc}", file=sys.stderr)
+            return 2
+
     source_id = _make_source_id(url)
     reporter = _build_index_reporter(quiet=quiet)
     will_enrich = not no_enrich
     will_embed = will_enrich and not no_embed
     started = time.monotonic()
+    # Pre-init so the post-try render path can read `freshness` even
+    # if a future maintainer adds a catch-all except above; today the
+    # only matching `except` clauses return before reaching the render.
+    freshness: dict[str, object] | None = None
     try:
         try:
             with (
@@ -1526,6 +1570,12 @@ def _cmd_index_dry_run(
                     will_embed=will_embed,
                     reporter=reporter,
                 )
+                if since_ts is not None:
+                    freshness = _compute_freshness_audit(
+                        store=store,
+                        source_connection_id=source_id,
+                        since_ts=since_ts,
+                    )
         finally:
             reporter.close()
     except OperationalError as e:
@@ -1539,12 +1589,56 @@ def _cmd_index_dry_run(
         f"{result.summary(dry_run=True)} | source={canonical} store={store_path} in {elapsed:.1f}s",
         file=sys.stderr,
     )
+    if freshness is not None:
+        # Freshness audit always renders when --since was supplied,
+        # even when zero columns are stale — silence on a zero result
+        # would leave operators wondering whether the flag took effect.
+        print(
+            f"Stale since {since}: {freshness['stale_columns']} columns "
+            f"across {freshness['stale_tables']} tables "
+            f"(estimated refresh ${freshness['cost_usd']:.4f})",
+            file=sys.stderr,
+        )
     if result.tables_seen == 0:
         print(
             "warning: source has no user-visible tables — dry-run produced an empty diff",
             file=sys.stderr,
         )
     return 0
+
+
+# Per-column estimated refresh cost when computing `--since` freshness
+# audit. Same constant the indexer's `dry_run_index` uses for its main
+# cost line; kept here as a local alias to avoid importing a private
+# module symbol from the indexer.
+_FRESHNESS_AVG_COST_PER_COLUMN_USD = 0.0003
+
+
+def _compute_freshness_audit(
+    *,
+    store: Store,
+    source_connection_id: str,
+    since_ts: int,
+) -> dict[str, object]:
+    """Count cached columns belonging to tables last indexed before `since_ts`.
+
+    Returns a dict with `stale_tables`, `stale_columns`, `cost_usd`.
+    Typed against the `Store` Protocol so any future backend (in-memory
+    mock, hosted backend) participates without a CLI change. The
+    underlying query answers a different question than `dry_run_index`
+    ("what is stale in the cache" vs "what has drifted in the source")
+    and the two outputs can disagree (a stale cached table may not
+    have any source-side drift).
+    """
+    stale_tables, stale_cols = store.count_stale_tables_and_columns(
+        source_connection_id=source_connection_id,
+        since_ts=since_ts,
+    )
+    return {
+        "stale_tables": stale_tables,
+        "stale_columns": stale_cols,
+        "cost_usd": stale_cols * _FRESHNESS_AVG_COST_PER_COLUMN_USD,
+    }
 
 
 def _cmd_eval(
@@ -3556,6 +3650,39 @@ def _cmd_audit_verify(*, store_path: str, full: bool) -> int:
     return 1
 
 
+# Audit rows with `occurred_at` newer than this threshold render in
+# compact `HH:MM:SS` form; older ones keep the full ISO string.
+_AUDIT_RECENT_THRESHOLD_SECS: int = 24 * 3600
+
+
+def _format_audit_occurred_at(iso: str, *, now: datetime) -> str:
+    """Compact recent timestamps; keep older ones in full ISO form.
+
+    Audit rows accumulate at high rate during active sessions; the full
+    `YYYY-MM-DDTHH:MM:SS.ffffffZ` form dominates a terminal row. Within
+    `_AUDIT_RECENT_THRESHOLD_SECS` of `now` the date is implied, so
+    `HH:MM:SS` is enough to distinguish rows for an operator scanning a
+    live audit. Beyond that the full ISO string carries again — date
+    matters when a row could be from yesterday or last week.
+
+    Future timestamps (clock skew, test-seeded rows) keep the full ISO
+    form deliberately. A compact "14:30:00" with no date would mislead
+    the operator into reading a future row as today's.
+
+    Malformed timestamps (defensive — the writer never emits them) fall
+    through to the raw string so the table still renders something
+    rather than crashing the CLI.
+    """
+    try:
+        parsed = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
+    except ValueError:
+        return iso
+    delta_secs = (now - parsed).total_seconds()
+    if 0 <= delta_secs < _AUDIT_RECENT_THRESHOLD_SECS:
+        return parsed.strftime("%H:%M:%S")
+    return iso
+
+
 def _cmd_audit_list(
     *,
     store_path: str,
@@ -3618,7 +3745,7 @@ def _cmd_audit_list(
     # enters the SQL string itself.
     sql = (
         "SELECT id, occurred_at, tool_name, status, cost_class, "  # nosec B608
-        "fingerprint, fingerprint_version "
+        "pii_categories, fingerprint, fingerprint_version "
         f"FROM mcp_audit {where_sql} "
         "ORDER BY id DESC LIMIT ?"
     )
@@ -3638,6 +3765,7 @@ def _cmd_audit_list(
                 "tool_name": row["tool_name"],
                 "status": row["status"],
                 "cost_class": row["cost_class"],
+                "pii_categories": row["pii_categories"],
                 "fingerprint": bytes(row["fingerprint"]).hex(),
                 "fingerprint_version": row["fingerprint_version"],
             }
@@ -3655,15 +3783,20 @@ def _cmd_audit_list(
     table.add_column("tool")
     table.add_column("status")
     table.add_column("cost")
-    table.add_column("fingerprint (first 12)", overflow="fold")
+    table.add_column("pii")
+    table.add_column("fingerprint", overflow="fold")
+    now = datetime.now(UTC)
     for row in rows:
+        pii_raw = row["pii_categories"] or ""
+        pii_cell = pii_raw if pii_raw else "[dim](none)[/]"
         table.add_row(
             str(row["id"]),
-            row["occurred_at"],
+            _format_audit_occurred_at(row["occurred_at"], now=now),
             row["tool_name"],
             row["status"],
             row["cost_class"],
-            bytes(row["fingerprint"]).hex()[:12],
+            pii_cell,
+            bytes(row["fingerprint"]).hex()[:16],
         )
     console.print(table)
     return 0

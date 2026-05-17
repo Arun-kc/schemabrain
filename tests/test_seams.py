@@ -483,6 +483,11 @@ class TestStoreProtocolSeamUsable:
             def add_spend_usd(self, *, source_connection_id: str, amount_usd: float) -> float:
                 return amount_usd
 
+            def count_stale_tables_and_columns(
+                self, *, source_connection_id: str, since_ts: int
+            ) -> tuple[int, int]:
+                return (0, 0)
+
             def write_entity(self, entity: Entity, *, source_connection_id: str) -> None:
                 pass
 

@@ -164,6 +164,25 @@ class Store(Protocol):
         """
         ...
 
+    # ----- Freshness audit ------------------------------------------
+    #
+    # Read-only count primitive for the `index --dry-run --since DATE`
+    # freshness preview. Reports how much of the cache has fallen
+    # behind a cutoff so operators can estimate the cost of catching
+    # up before committing to a real re-index.
+
+    def count_stale_tables_and_columns(
+        self, *, source_connection_id: str, since_ts: int
+    ) -> tuple[int, int]:
+        """Return (stale_tables, stale_columns) where `indexed_at < since_ts`.
+
+        "Stale" means the cached table has not been re-indexed since
+        the cutoff (Unix epoch seconds). Counts are restricted to
+        rows matching `source_connection_id`. Implementations MUST
+        raise `RuntimeError` when called against a closed store.
+        """
+        ...
+
     # ----- Embedding retrieval -------------------------------------
     #
     # Single bulk-fetch + cosine ranking primitive.

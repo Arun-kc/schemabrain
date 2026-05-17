@@ -2145,6 +2145,35 @@ class SQLiteStore:
             for row in rows
         }
 
+    def count_stale_tables_and_columns(
+        self, *, source_connection_id: str, since_ts: int
+    ) -> tuple[int, int]:
+        """Return (stale_tables, stale_columns) where `indexed_at < since_ts`.
+
+        "Stale" means the table row has not been re-indexed since the
+        cutoff. Used by `schemabrain index --dry-run --since DATE` to
+        estimate the cost of refreshing what has fallen behind.
+
+        Counts are restricted to rows matching `source_connection_id`
+        so a multi-source store reports per-source freshness.
+        """
+        if self._conn is None:
+            raise RuntimeError("store is closed")
+        stale_tables_row = self._conn.execute(
+            "SELECT COUNT(*) FROM tables WHERE source_connection_id = ? AND indexed_at < ?",
+            (source_connection_id, since_ts),
+        ).fetchone()
+        stale_cols_row = self._conn.execute(
+            "SELECT COUNT(*) FROM columns c "
+            "INNER JOIN tables t "
+            "  ON c.schema_name = t.schema_name "
+            "  AND c.table_name = t.name "
+            "  AND c.source_connection_id = t.source_connection_id "
+            "WHERE c.source_connection_id = ? AND t.indexed_at < ?",
+            (source_connection_id, since_ts),
+        ).fetchone()
+        return int(stale_tables_row[0]), int(stale_cols_row[0])
+
     def close(self) -> None:
         if self._conn is not None:
             self._conn.close()

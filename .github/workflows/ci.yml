@@ -221,3 +221,52 @@ jobs:
             --cov-branch \
             --cov-report=term-missing \
             --cov-fail-under=99
+
+  docker-build-smoke:
+    name: Docker build smoke (linux/amd64)
+    # Only runs when the Dockerfile, .dockerignore, package metadata, or
+    # source tree changes. Skipping it on docs-only PRs keeps the typical
+    # PR critical path fast; running it when it matters catches Dockerfile
+    # breakage before release time instead of at publish-workflow time.
+    runs-on: ubuntu-latest
+    needs: lint-and-unit
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Detect Docker-relevant changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            docker:
+              - 'Dockerfile'
+              - '.dockerignore'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'schemabrain/**'
+              - '.github/workflows/ci.yml'
+
+      - name: Set up Buildx
+        if: steps.filter.outputs.docker == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        if: steps.filter.outputs.docker == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: schemabrain:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test --help
+        if: steps.filter.outputs.docker == 'true'
+        run: |
+          OUT=$(docker run --rm schemabrain:smoke --help)
+          echo "$OUT"
+          echo "$OUT" | grep -q "usage:"
