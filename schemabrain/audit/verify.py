@@ -70,8 +70,13 @@ def walk_chain(conn: sqlite3.Connection, *, full: bool = False) -> Iterator[Chai
     walker should see every break, including unserialisable rows.
     """
     prev_chain = GENESIS_CHAIN_HASH
+    # `_ROW_COLUMNS` is a module-level Final[tuple[str, ...]] of hardcoded
+    # column names; no user input enters the SELECT. The f-string is
+    # purely a static-string assembly so the column list stays in
+    # lock-step with `canonical.AUDIT_ROW_FIELDS`.
     select_cols = ", ".join(_ROW_COLUMNS) + ", chain_hash"
-    cursor = conn.execute(f"SELECT {select_cols} FROM mcp_audit ORDER BY id ASC")
+    sql = f"SELECT {select_cols} FROM mcp_audit ORDER BY id ASC"  # nosec B608 — column list hardcoded
+    cursor = conn.execute(sql)
     for row in cursor:
         actual_chain = bytes(row["chain_hash"])
         try:

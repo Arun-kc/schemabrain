@@ -3449,17 +3449,18 @@ def _cmd_audit_list(
         )
         return 2
     conn.row_factory = _sqlite3.Row
+    # Column list hardcoded; `where_sql` assembled from hardcoded clause
+    # fragments above (only `?` placeholders for user values). All
+    # user-supplied filter values flow through `params`. No user input
+    # enters the SQL string itself.
+    sql = (
+        "SELECT id, occurred_at, tool_name, status, cost_class, "  # nosec B608
+        "fingerprint, fingerprint_version "
+        f"FROM mcp_audit {where_sql} "
+        "ORDER BY id DESC LIMIT ?"
+    )
     try:
-        # Column list hardcoded — no user input flows here.
-        rows = list(
-            conn.execute(
-                "SELECT id, occurred_at, tool_name, status, cost_class, "
-                f"fingerprint, fingerprint_version "
-                f"FROM mcp_audit {where_sql} "
-                "ORDER BY id DESC LIMIT ?",
-                params,
-            )
-        )
+        rows = list(conn.execute(sql, params))
     except _sqlite3.DatabaseError as exc:
         print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
         return 2
