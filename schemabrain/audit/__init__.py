@@ -29,6 +29,7 @@ from schemabrain.audit.fingerprint import (
     RefusalReason,
     compute_fingerprint,
 )
+from schemabrain.audit.verify import ChainMismatch, walk_chain
 from schemabrain.audit.writer import AuditRow, AuditWriter, build_audit_row
 
 __all__ = [
@@ -38,6 +39,7 @@ __all__ = [
     "GENESIS_CHAIN_HASH",
     "AuditRow",
     "AuditWriter",
+    "ChainMismatch",
     "CostClass",
     "FingerprintInput",
     "RefusalReason",
@@ -46,4 +48,5 @@ __all__ = [
     "compute_chain_hash",
     "compute_fingerprint",
     "ensure_audit_schema",
+    "walk_chain",
 ]
