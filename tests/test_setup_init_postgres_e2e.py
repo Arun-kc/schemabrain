@@ -95,7 +95,7 @@ class TestInitAgainstPostgres16:
         assert exit_code == 0
         snippet = json.loads(capsys.readouterr().out)
         entry = snippet["mcpServers"]["schemabrain"]
-        # Decision 3 invariants hold against real Postgres URL:
+        # Snippet shape invariants hold against a real Postgres URL:
         assert entry["command"] == "uvx"
         assert "--url-env" in entry["args"]
         # Credentials never leak into args.

@@ -130,7 +130,8 @@ class TestInitToManual:
             assume_yes=False,
         )
         assert isinstance(result.snippet, SchemabrainSnippet)
-        # Decision 3 invariant: credentials live in env, not args.
+        # Credentials live in env, not args — keeps passwords out of
+        # any process-listing surface (ps, journald, container logs).
         assert "sqlite:///:memory:" not in result.snippet.args
         assert result.snippet.env == {"DB_URL": "sqlite:///:memory:"}
 

@@ -4,9 +4,9 @@ Goals:
 
   1. Flag parsing: --source/--url-env, --store-path, --host,
      --env-var, --skip-index, --yes, --print-only.
-  2. Exit codes per Decision 9: 0 on success, 1 on claude-code
-     shell-out failure (snippet still printed), 2 on operational
-     refusal (URL conflict, source unreachable, store empty, etc.).
+  2. Exit codes: 0 on success, 1 on claude-code shell-out failure
+     (snippet still printed), 2 on operational refusal (URL conflict,
+     source unreachable, store empty, etc.).
   3. `--print-only` and `--host manual` both produce the same
      snippet JSON to stdout.
   4. Successful claude-desktop wiring writes the JSON file and
@@ -107,7 +107,7 @@ class TestInitCliPrintOnly:
         # JSON block lands on stdout, paste-ready.
         parsed = json.loads(captured.out)
         assert "schemabrain" in parsed["mcpServers"]
-        # The DB URL lives in env, not args (Decision 3 invariant).
+        # The DB URL lives in env, not args (keeps creds out of argv).
         snippet = parsed["mcpServers"]["schemabrain"]
         assert "sqlite:///:memory:" not in snippet["args"]
         assert snippet["env"] == {"SCHEMABRAIN_DATABASE_URL": "sqlite:///:memory:"}
@@ -397,8 +397,9 @@ class TestInitCliClaudeCode:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        # PR #8 security invariant: passwords must never land on
-        # stderr. The shell-out fallback render must redact -e values.
+        # Passwords must never land on stderr / terminal scrollback /
+        # screen recordings — the shell-out fallback render must
+        # redact -e values.
         from schemabrain.setup.hosts import ClaudeCodeInstallResult
 
         def fake_install(snippet: object) -> ClaudeCodeInstallResult:

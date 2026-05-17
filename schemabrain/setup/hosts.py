@@ -23,10 +23,10 @@ Auto-detect order:
 
 The snippet shape is locked: `--url-env VARNAME` is always used so DB
 credentials live in the host's env block rather than in argv (where
-they would be visible to any process listing — the PR #8 fix). `uvx`
-is the default runner because it isolates the server's Python env
-from the user's project env; the absolute-path fallback to the
-installed schemabrain entrypoint is used only when `uvx` is missing.
+they would be visible to any process listing). `uvx` is the default
+runner because it isolates the server's Python env from the user's
+project env; the absolute-path fallback to the installed schemabrain
+entrypoint is used only when `uvx` is missing.
 """
 
 from __future__ import annotations

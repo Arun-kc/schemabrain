@@ -268,8 +268,8 @@ class TestRunChecks:
 
     def test_raising_check_in_middle_does_not_abort_others(self) -> None:
         # Sequential runner must reach every check, even if an earlier
-        # one raised. This is the silent-failure-hunter guarantee:
-        # one bad check never hides the others.
+        # one raised. The runner's guarantee: one bad check never
+        # hides the others.
         order: list[str] = []
 
         def first() -> Check:

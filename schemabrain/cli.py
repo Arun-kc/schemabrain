@@ -2960,7 +2960,7 @@ def _cmd_doctor(
     refuses on conflict or unset env var with the same guided errors
     every other source-using subcommand emits, returning exit code 2.
 
-    Exit code semantics (Decision 9):
+    Exit code semantics:
       - 0: doctor ran; no `fail` outcomes
       - 1: doctor ran; at least one `fail` outcome
       - 2: operational refusal before doctor could run (e.g. --source
@@ -3002,7 +3002,7 @@ def _cmd_init(
 ) -> int:
     """Run `schemabrain init` and render the outcome.
 
-    Exit codes (Decision 9):
+    Exit codes:
       - 0: snippet written / shell-out succeeded / printed (manual)
       - 1: claude-code shell-out failed (the snippet IS still
         printed so the user can fall back to running the command
@@ -3092,8 +3092,10 @@ def _redact_env_args(cmd: tuple[str, ...]) -> list[str]:
 
     Used when printing a `claude mcp add` argv to stderr after the
     shell-out failed. The KEY=VALUE tokens carry the live DB URL
-    (including any password) — printing them verbatim contradicts
-    the PR #8 security invariant. Renders as `KEY=<redacted>`.
+    (including any password) — printing them verbatim would land
+    credentials on stderr / terminal scrollback / screen recordings,
+    which the project keeps out of argv-visible surfaces. Renders
+    as `KEY=<redacted>`.
     """
     out: list[str] = []
     skip_next = False

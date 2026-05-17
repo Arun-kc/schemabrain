@@ -13,8 +13,8 @@ Goals:
   3. `render_doctor` writes a colored summary + per-check line; the
      output contains pass/warn/fail glyphs deterministically; the
      final summary line counts each outcome.
-  4. The JSON render produces the contract shape from Decision 7
-     and is roundtrippable via stdlib json.
+  4. The JSON render produces the documented contract shape
+     (checks / summary / exit_code) and roundtrips via stdlib json.
 """
 
 from __future__ import annotations
@@ -288,9 +288,10 @@ class TestCheckHostConfigUsesUrlEnv:
         assert c.outcome == "fail"
 
     def test_propagated_malformed_check_has_correct_name(self, tmp_path: Path) -> None:
-        # Regression guard against the C1 bug — _safe_read_config used
-        # to hard-code name="host_config_present" in its synthesized
-        # fail Check, so callers got the wrong name in --json output.
+        # Regression guard: _safe_read_config must propagate the
+        # caller's name onto the synthesized fail Check rather than
+        # emitting a hardcoded one — otherwise multiple callers all
+        # produce Check rows with the same name in --json output.
         cfg = tmp_path / "config.json"
         cfg.write_text("{broken json")
         c = check_host_config_uses_url_env(cfg)

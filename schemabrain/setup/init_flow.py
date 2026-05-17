@@ -18,7 +18,7 @@ URL conflicts, env-var resolution, etc.) and:
      output.
   5. Builds the snippet via `build_snippet` and installs it:
      - claude-desktop: `config_io.write_mcp_config_atomic` with the
-       backup-once + namespace-isolation contract from Decision 5.
+       backup-once + namespace-isolation contract.
      - claude-code: shell out via `install_to_claude_code`.
      - manual: return the snippet for the CLI to print.
 
@@ -27,9 +27,9 @@ can render the standard guided-error block + map to exit code 2.
 Non-failure outcomes return an `InitResult` that the CLI uses to
 decide what to print to the user.
 
-This commit is non-interactive only — the version that prompts for
-missing arguments and asks "index now?" lands next; the interactive
-overlay is a thin layer above the orchestrator defined here.
+This orchestrator is non-interactive; the CLI wraps it with a
+TTY-gated prompt for the two recoverable refusal kinds (existing
+entry + empty store).
 """
 
 from __future__ import annotations

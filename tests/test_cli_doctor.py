@@ -6,8 +6,8 @@ Goals:
      no-args, --source/--url-env, --store-path, --host, --json.
   2. Exit code is the CheckResult's exit_code (0 on no-fail, 1 on
      any fail). Warnings never affect exit code.
-  3. `--json` writes to stdout in the contract shape from Decision 7
-     and suppresses the human-readable render.
+  3. `--json` writes to stdout in the documented contract shape
+     (checks / summary / exit_code) and suppresses the human render.
   4. The human-readable path renders to stderr (so JSON tooling can
      pipe stdout without contamination); --json writes JSON to
      stdout.
@@ -114,7 +114,7 @@ class TestDoctorParsing:
                 "MISSING_DB_URL",
             ]
         )
-        # Operational refusal — exit 2 per Decision 9.
+        # Operational refusal — exit 2.
         assert exit_code == 2
 
     def test_doctor_with_both_source_and_url_env_exits_two(

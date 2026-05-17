@@ -111,9 +111,9 @@ class TestBuildSnippet:
         assert "schemabrain==0.2.0a1" not in s.args
 
     def test_db_url_lives_in_env_block_not_args(self) -> None:
-        # Decision 3 invariant 1: credentials never appear in argv.
-        # This is the PR #8 security regression test — re-running the
-        # snippet builder must never put the URL into args.
+        # Credentials must never appear in argv — the snippet builder
+        # must always put the URL into the env block, not args.
+        # Re-runs of build_snippet must preserve this.
         s = build_snippet(
             version_pin="0.1.0",
             env_var_name="DB_URL",
@@ -215,8 +215,8 @@ class TestClaudeDesktopConfigPath:
         assert claude_desktop_config_path() is None
 
     def test_linux_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Decision 2: Linux has no official Claude Desktop build;
-        # init refuses with --host claude-desktop on Linux.
+        # Linux has no official Claude Desktop build; init refuses
+        # with --host claude-desktop on Linux.
         monkeypatch.setattr("platform.system", lambda: "Linux")
         assert claude_desktop_config_path() is None
 

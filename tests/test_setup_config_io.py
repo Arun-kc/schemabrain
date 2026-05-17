@@ -177,9 +177,9 @@ class TestWriteMcpConfigAtomic:
         assert not (path.parent / (path.name + ".bak")).exists()
 
     def test_no_backup_overwrite_when_backup_already_exists(self, tmp_path: Path) -> None:
-        # The idempotency requirement from Decision 5: re-running init
-        # must NOT overwrite the original backup with the now-current
-        # config, since that would defeat the rollback.
+        # Idempotency contract: re-running init must NOT overwrite the
+        # original backup with the now-current config, since that
+        # would defeat the rollback.
         path = tmp_path / "config.json"
         backup_path = path.parent / (path.name + ".bak")
         backup_path.write_text(json.dumps({"original": True}))
@@ -226,13 +226,11 @@ class TestWriteMcpConfigAtomic:
         assert json.loads(path.read_text()) == {"v": 2}
 
     def test_backup_creation_is_toctou_safe_via_o_excl(self, tmp_path: Path) -> None:
-        # Regression guard against H3: the backup-once check must use
-        # an atomic create (O_CREAT|O_EXCL) so two concurrent writers
-        # can't both observe "no .bak" and race to copy over each
-        # other. We simulate the race by pre-creating the .bak file
-        # AFTER the path.exists() check but BEFORE the open — easier:
-        # pre-create the .bak with sentinel contents and verify the
-        # second writer does NOT overwrite it.
+        # The backup-once check must use an atomic create
+        # (O_CREAT|O_EXCL) so two concurrent writers can't both
+        # observe "no .bak" and race to copy over each other. We
+        # simulate the race by pre-creating the .bak with sentinel
+        # contents and verifying the second writer does NOT overwrite it.
         path = tmp_path / "config.json"
         path.write_text(json.dumps({"original": True}))
         backup_path = path.parent / (path.name + ".bak")
