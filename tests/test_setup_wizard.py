@@ -450,15 +450,17 @@ class TestStageIndex:
         assert outcome.status == "skipped"
         assert "--skip-index" in outcome.message
 
-    def test_failed_for_non_postgres_source(self, base_config: WizardConfig) -> None:
-        # base_config uses sqlite:///:memory: — wizard's stage-2 only
-        # supports Postgres sources at v1.
+    def test_skipped_for_non_postgres_source(self, base_config: WizardConfig) -> None:
+        # base_config uses sqlite:///:memory:. Indexing only supports
+        # Postgres today, but we surface that as `skipped` rather
+        # than `failed` so the wizard still wires the host for the
+        # non-Postgres user.
         outcome = wizard._stage_index(WizardContext(config=base_config))
 
-        assert outcome.status == "failed"
+        assert outcome.status == "skipped"
         assert "Postgres" in outcome.message
         assert outcome.next_step is not None
-        assert "--skip-index" in outcome.next_step
+        assert "Postgres URL" in outcome.next_step
 
     def test_skipped_when_store_already_has_tables(
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch

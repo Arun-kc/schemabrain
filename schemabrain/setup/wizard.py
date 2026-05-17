@@ -315,13 +315,18 @@ def _stage_index(ctx: WizardContext) -> StageOutcome:
         )
 
     if not is_postgres_url(cfg.source_url):
+        # Non-Postgres sources (e.g. SQLite) can't be indexed today,
+        # but the wizard should still wire the host so the user gets
+        # a working MCP entry. Surface the gap as `skipped`, not
+        # `failed`, so stage 2's `abort_on_fail=True` doesn't kill
+        # the wizard for a known limitation.
         return StageOutcome(
             stage=2,
             name="index",
-            status="failed",
+            status="skipped",
             message="indexing only supports Postgres sources today",
-            next_step="re-run with a Postgres URL, "
-            "or pass --skip-index to wire the host without indexing",
+            next_step="re-run with a Postgres URL to index the schema, "
+            "or continue with the snippet for a non-Postgres source",
         )
 
     source_id = _source_id_for(cfg.source_url)
