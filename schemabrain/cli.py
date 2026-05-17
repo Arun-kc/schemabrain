@@ -3020,22 +3020,71 @@ def _cmd_init(
     if source_url is None:
         # _resolve_url_source already rendered a guided error.
         return 2
-    try:
-        result = init(
-            source_url=source_url,
-            store_path=Path(store_path),
-            host=effective_host,  # type: ignore[arg-type]
-            env_var_name=env_var,
-            skip_index=skip_index,
-            assume_yes=assume_yes,
-        )
-    except InitRefusal as refusal:
-        _render_guided(refusal.error)
-        return 2
+    effective_skip_index = skip_index
+    effective_assume_yes = assume_yes
+    interactive = _stderr_is_interactive_tty()
+    while True:
+        try:
+            result = init(
+                source_url=source_url,
+                store_path=Path(store_path),
+                host=effective_host,  # type: ignore[arg-type]
+                env_var_name=env_var,
+                skip_index=effective_skip_index,
+                assume_yes=effective_assume_yes,
+            )
+        except InitRefusal as refusal:
+            # Two refusal kinds have an interactive recovery: the
+            # entry-exists case (user can confirm overwrite) and the
+            # empty-store case (user can confirm "skip indexing for
+            # now, I'll do it later"). Anything else surfaces as a
+            # plain guided error and exits 2.
+            if interactive and refusal.error.kind == "init_entry_exists":
+                if _prompt_yes_no(
+                    "Overwrite the existing schemabrain entry?",
+                    default=False,
+                ):
+                    effective_assume_yes = True
+                    continue
+                _stderr_console().print("[yellow]cancelled[/] no changes made.")
+                return 0
+            if interactive and refusal.error.kind == "init_store_empty":
+                if _prompt_yes_no(
+                    "Continue without indexing now? "
+                    "(you'll need to run `schemabrain index` before agents can query)",
+                    default=False,
+                ):
+                    effective_skip_index = True
+                    continue
+                _render_guided(refusal.error)
+                return 2
+            _render_guided(refusal.error)
+            return 2
+        break
     _render_init_result(result)
     if result.state == "shell_out_failed":
         return 1
     return 0
+
+
+def _stderr_is_interactive_tty() -> bool:
+    """True iff init can safely prompt — both stdin AND stderr are TTYs.
+
+    Wrapped so tests can monkeypatch this one function instead of
+    patching `sys.stdin.isatty` and `sys.stderr.isatty` separately.
+    """
+    return sys.stdin.isatty() and sys.stderr.isatty()
+
+
+def _prompt_yes_no(question: str, *, default: bool) -> bool:
+    """Ask the user a yes/no question via rich.prompt.Confirm.
+
+    Lazy-imported so the cli's import-cost path isn't affected
+    when no subcommand needs interactive input.
+    """
+    from rich.prompt import Confirm
+
+    return Confirm.ask(question, default=default, console=_stderr_console())
 
 
 def _render_init_result(result: object) -> None:

@@ -336,6 +336,187 @@ class TestInitCliClaudeCode:
         assert exit_code == 0
 
 
+class TestInitCliInteractiveOverlay:
+    """When stderr+stdin are both TTYs, two refusal kinds become
+    interactive prompts: entry-exists and empty-store."""
+
+    @pytest.fixture
+    def force_interactive(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        yield
+
+    def test_overwrite_prompt_y_proceeds_with_assume_yes(
+        self,
+        seeded_store: Path,
+        stub_uvx: None,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        force_interactive: None,
+    ) -> None:
+        # Pre-seed the host config with an existing different entry.
+        cfg = tmp_path / "Claude" / "claude_desktop_config.json"
+        cfg.parent.mkdir()
+        cfg.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "schemabrain": {
+                            "command": "uvx",
+                            "args": ["schemabrain==0.0.99", "serve"],
+                            "env": {},
+                        }
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr(
+            "schemabrain.setup.init_flow.claude_desktop_config_path",
+            lambda: cfg,
+        )
+        # User confirms overwrite.
+        monkeypatch.setattr("schemabrain.cli._prompt_yes_no", lambda *_a, **_kw: True)
+        exit_code = main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(seeded_store),
+                "--host",
+                "claude-desktop",
+            ]
+        )
+        assert exit_code == 0
+        # The new entry replaced the old one.
+        merged = json.loads(cfg.read_text())
+        new_args = merged["mcpServers"]["schemabrain"]["args"]
+        assert not any("0.0.99" in a for a in new_args)
+
+    def test_overwrite_prompt_n_cancels_gracefully(
+        self,
+        seeded_store: Path,
+        stub_uvx: None,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        force_interactive: None,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        cfg = tmp_path / "Claude" / "claude_desktop_config.json"
+        cfg.parent.mkdir()
+        original = json.dumps(
+            {
+                "mcpServers": {
+                    "schemabrain": {
+                        "command": "uvx",
+                        "args": ["schemabrain==0.0.99", "serve"],
+                        "env": {},
+                    }
+                }
+            }
+        )
+        cfg.write_text(original)
+        monkeypatch.setattr(
+            "schemabrain.setup.init_flow.claude_desktop_config_path",
+            lambda: cfg,
+        )
+        # User declines overwrite.
+        monkeypatch.setattr("schemabrain.cli._prompt_yes_no", lambda *_a, **_kw: False)
+        exit_code = main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(seeded_store),
+                "--host",
+                "claude-desktop",
+            ]
+        )
+        # Exit 0 — graceful cancel, not refusal.
+        assert exit_code == 0
+        # File untouched.
+        assert cfg.read_text() == original
+        captured = capsys.readouterr()
+        assert "cancelled" in captured.err
+
+    def test_empty_store_prompt_y_continues_with_skip_index(
+        self,
+        tmp_path: Path,
+        stub_uvx: None,
+        monkeypatch: pytest.MonkeyPatch,
+        force_interactive: None,
+    ) -> None:
+        store_path = tmp_path / "store.db"
+        SQLiteStore(path=store_path).close()
+        # User confirms "skip indexing for now."
+        monkeypatch.setattr("schemabrain.cli._prompt_yes_no", lambda *_a, **_kw: True)
+        exit_code = main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(store_path),
+                "--host",
+                "manual",
+            ]
+        )
+        assert exit_code == 0
+
+    def test_empty_store_prompt_n_exits_two_with_hint(
+        self,
+        tmp_path: Path,
+        stub_uvx: None,
+        monkeypatch: pytest.MonkeyPatch,
+        force_interactive: None,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        store_path = tmp_path / "store.db"
+        SQLiteStore(path=store_path).close()
+        monkeypatch.setattr("schemabrain.cli._prompt_yes_no", lambda *_a, **_kw: False)
+        exit_code = main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(store_path),
+                "--host",
+                "manual",
+            ]
+        )
+        assert exit_code == 2
+        captured = capsys.readouterr()
+        assert "schemabrain index" in captured.err
+
+    def test_non_interactive_skips_prompts_and_refuses(
+        self,
+        tmp_path: Path,
+        stub_uvx: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Force non-interactive — the refusal renders without
+        # invoking the prompt (prompts are TTY-gated).
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: False)
+        # If the prompt were invoked despite non-TTY, this lambda
+        # would surface as a test failure (the answer "True" would
+        # silently proceed, but we assert exit_code == 2).
+        store_path = tmp_path / "store.db"
+        SQLiteStore(path=store_path).close()
+        exit_code = main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(store_path),
+                "--host",
+                "manual",
+            ]
+        )
+        assert exit_code == 2
+
+
 class TestInitCliIdempotency:
     def test_second_run_exits_zero_no_changes(
         self,
