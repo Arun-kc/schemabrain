@@ -33,8 +33,9 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, get_args
 
@@ -76,7 +77,10 @@ class StageOutcome:
     on. `status` is the tri-state outcome. `message` is the one-line
     human summary. `next_step` is an optional second line shown only
     when present — typically populated on `skipped` or `failed` to
-    point the user at the recovery action.
+    point the user at the recovery action. `duration_s` is the
+    wall-clock seconds the stage spent; the orchestrator overwrites
+    handler-returned values with a measured `perf_counter` delta so
+    handlers can leave it at its 0.0 default.
     """
 
     stage: int
@@ -84,6 +88,7 @@ class StageOutcome:
     status: StageStatus
     message: str
     next_step: str | None = None
+    duration_s: float = 0.0
 
     def __post_init__(self) -> None:
         if self.stage < 1:
@@ -95,6 +100,10 @@ class StageOutcome:
         if self.status not in _VALID_STATUSES:
             raise ValueError(
                 f"StageOutcome.status must be one of {sorted(_VALID_STATUSES)}; got {self.status!r}"
+            )
+        if self.duration_s < 0:
+            raise ValueError(
+                f"StageOutcome.duration_s must be >= 0; got {self.duration_s}"
             )
         # A `failed` outcome without a recovery hint leaves the user
         # at a dead end. The renderer's dim next-step line simply
@@ -233,7 +242,14 @@ def run_wizard(
     actual_stages = stages if stages is not None else DEFAULT_STAGES
     ctx = WizardContext(config=config)
     for stage in actual_stages:
+        # Measure each handler ourselves rather than trust the handler
+        # to report its own duration. Centralising the measurement
+        # gives every stage a consistent timing surface for the
+        # renderer + future --json output mode.
+        started_at = time.perf_counter()
         outcome = stage.handler(ctx)
+        elapsed = time.perf_counter() - started_at
+        outcome = replace(outcome, duration_s=elapsed)
         ctx.outcomes.append(outcome)
         if outcome.status == "failed" and stage.abort_on_fail:
             return WizardResult(

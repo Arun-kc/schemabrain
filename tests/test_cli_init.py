@@ -1115,6 +1115,65 @@ class TestWizardRenderer:
 
         assert _host_display_name("future-host") == "future-host"
 
+    def test_renderer_shows_per_stage_duration(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Each stage's `duration_s` renders as a 1-decimal "X.Xs"
+        # string near the stage header so the operator sees how long
+        # each step spent without enabling verbose mode.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import StageOutcome, WizardResult
+
+        result = WizardResult(
+            outcomes=(
+                StageOutcome(
+                    stage=1,
+                    name="source_check",
+                    status="done",
+                    message="ok",
+                    duration_s=0.42,
+                ),
+                StageOutcome(
+                    stage=2,
+                    name="index",
+                    status="done",
+                    message="ok",
+                    duration_s=6.1,
+                ),
+            ),
+            aborted=False,
+        )
+        _render_wizard_result(result)
+        captured = capsys.readouterr()
+        assert "0.4s" in captured.err
+        assert "6.1s" in captured.err
+
+    def test_renderer_omits_duration_for_zero_value(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A 0.0s duration means the stage didn't actually do work (a
+        # skipped peek-and-bypass). Rendering "0.0s" next to a skipped
+        # stage would be misleading — the time spent on that line is
+        # effectively unmeasurable.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import StageOutcome, WizardResult
+
+        result = WizardResult(
+            outcomes=(
+                StageOutcome(
+                    stage=1,
+                    name="source_check",
+                    status="skipped",
+                    message="ok",
+                    duration_s=0.0,
+                ),
+            ),
+            aborted=False,
+        )
+        _render_wizard_result(result)
+        captured = capsys.readouterr()
+        assert "0.0s" not in captured.err
+
     def test_unknown_status_falls_through_glyph_lookup(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:

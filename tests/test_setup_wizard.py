@@ -147,6 +147,27 @@ class TestStageOutcome:
                 next_step="",
             )
 
+    def test_duration_s_defaults_to_zero(self) -> None:
+        # Default 0.0 keeps every existing StageOutcome construction
+        # backward-compatible — tests that don't care about timing can
+        # ignore the field entirely.
+        outcome = StageOutcome(stage=1, name="x", status="done", message="m")
+        assert outcome.duration_s == 0.0
+
+    def test_duration_s_accepts_positive_value(self) -> None:
+        outcome = StageOutcome(
+            stage=1, name="x", status="done", message="m", duration_s=2.5
+        )
+        assert outcome.duration_s == 2.5
+
+    def test_duration_s_rejects_negative(self) -> None:
+        # A negative duration would mean perf_counter measurement went
+        # backwards — an orchestrator bug, not a user error. Fail fast.
+        with pytest.raises(ValueError, match="duration_s must be >= 0"):
+            StageOutcome(
+                stage=1, name="x", status="done", message="m", duration_s=-0.1
+            )
+
 
 class TestWizardConfigInvariants:
     def _build(self, **overrides: object) -> WizardConfig:
@@ -379,6 +400,53 @@ class TestRunWizardStateMachine:
         ]
         run_wizard(base_config, stages=stages)
         assert tracker.seen == ["stage1", "stage2"]
+
+    def test_run_wizard_captures_per_stage_duration(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The orchestrator measures perf_counter around each handler
+        # call and threads the elapsed seconds into the outcome via
+        # `dataclasses.replace`, even when the handler itself returned
+        # `duration_s=0.0`. Tests pin the perf_counter via monkeypatch
+        # so the timing is deterministic.
+        ticks = iter([0.0, 0.42, 0.42, 0.5, 0.5, 1.6, 1.6, 1.65, 1.65, 1.7])
+
+        def fake_perf_counter() -> float:
+            return next(ticks)
+
+        monkeypatch.setattr(wizard.time, "perf_counter", fake_perf_counter)
+
+        stages = [_ok_stage(i, f"stage{i}") for i in range(1, 6)]
+        result = run_wizard(base_config, stages=stages)
+
+        # Per the fake clock: 0.42, 0.08, 1.1, 0.05, 0.05 seconds.
+        durations = [round(o.duration_s, 2) for o in result.outcomes]
+        assert durations == [0.42, 0.08, 1.10, 0.05, 0.05]
+
+    def test_run_wizard_preserves_duration_on_abort(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Even when a stage aborts the wizard, the failed outcome
+        # records its own elapsed time so the renderer can show the
+        # user how long the broken stage spent before giving up.
+        ticks = iter([0.0, 0.2, 0.2, 2.5])
+
+        def fake_perf_counter() -> float:
+            return next(ticks)
+
+        monkeypatch.setattr(wizard.time, "perf_counter", fake_perf_counter)
+
+        stages = [
+            _ok_stage(1, "stage1"),
+            _failing_stage(2, "index"),
+            _ok_stage(3, "stage3"),
+        ]
+        result = run_wizard(base_config, stages=stages)
+
+        assert result.aborted is True
+        assert len(result.outcomes) == 2
+        assert round(result.outcomes[0].duration_s, 2) == 0.20
+        assert round(result.outcomes[1].duration_s, 2) == 2.30
 
 
 # ----- _stage_source_check (production handler) ----------------------------

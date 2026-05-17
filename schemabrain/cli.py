@@ -3736,6 +3736,18 @@ def _redact_stderr_credentials(stderr_text: str) -> str:
     )
 
 
+def _format_duration(seconds: float) -> str:
+    """Format a wall-clock duration as a one-decimal `X.Xs` string.
+
+    Sub-second times still render with one decimal so a row of
+    durations stays visually aligned (0.4s next to 6.1s next to
+    0.0s). Larger values would benefit from "12.3s" / "1.5m"
+    formatting; we keep it simple at v1 since stages typically
+    complete well under 60 seconds.
+    """
+    return f"{seconds:.1f}s"
+
+
 def _host_display_name(host: str) -> str:
     """Map the kebab-case host identifier to a human display string.
 
@@ -3795,8 +3807,14 @@ def _render_wizard_result(result: object, *, host_display: str | None = None) ->
     console.print()
     for outcome in result.outcomes:
         # Indent stage header consistently with the existing init
-        # rendering (2 spaces) so the eye reads top-to-bottom.
-        console.print(f"  [{outcome.stage}/5] {_stage_display_name(outcome.name)}")
+        # rendering (2 spaces) so the eye reads top-to-bottom. A
+        # measured duration (>0.0s) renders dim next to the stage
+        # name; 0.0s means peek-and-bypass (skipped) where rendering
+        # "0.0s" would mislead.
+        header = f"  [{outcome.stage}/5] {_stage_display_name(outcome.name)}"
+        if outcome.duration_s > 0:
+            header += f" [dim]({_format_duration(outcome.duration_s)})[/]"
+        console.print(header)
         glyph = _STAGE_GLYPHS.get(outcome.status, outcome.status)
         console.print(f"        {glyph} {outcome.message}")
         if outcome.next_step:
