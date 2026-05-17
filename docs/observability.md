@@ -124,9 +124,9 @@ to stderr, and the event is dropped. The agent's tool call still
 returns normally; we never fail a request because the log layer
 failed.
 
-A durable-store consumer is on the roadmap; once it lands, that path
-will guarantee durability for higher-trust events while the JSONL
-tail remains lossy by design.
+A durable-store consumer is on the roadmap. That path will guarantee
+durability for higher-trust events while the JSONL tail remains lossy
+by design.
 
 ## CLI cheat sheet
 
