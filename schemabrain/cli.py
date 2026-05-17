@@ -150,6 +150,7 @@ from schemabrain.mining.pipeline import mine_queries
 from schemabrain.profiler.postgres import PostgresProfiler
 
 _DEFAULT_STORE_PATH = "./schemabrain.db"
+_DEFAULT_EVENTS_PATH = "~/.schemabrain/events.jsonl"
 # Default cap deliberately low — a first-time user's `schemabrain index`
 # should not be able to surprise-spend more than $1 against the LLM
 # vendor before they understand what's running. Override with
@@ -347,6 +348,13 @@ def main(argv: list[str] | None = None) -> int:
             skip_index=args.skip_index,
             assume_yes=args.assume_yes,
             print_only=args.print_only,
+        )
+    if args.command == "tail":
+        return _cmd_tail(
+            since=args.since,
+            follow=args.follow,
+            json_mode=args.json_mode,
+            events_path=args.events_path,
         )
     if args.command == "metrics":
         if args.metrics_action == "apply":
@@ -1070,6 +1078,46 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="print_only",
         action="store_true",
         help="Alias for --host manual: print the snippet, write nothing.",
+    )
+
+    p_tail = sub.add_parser(
+        "tail",
+        help="Stream MCP tool-call events from a running schemabrain serve process",
+    )
+    p_tail.add_argument(
+        "--since",
+        default="5m",
+        help="Replay events newer than this point. Accepts a compact duration "
+        "like '30s' / '5m' / '2h' / '1d', or an ISO 8601 timestamp with "
+        "timezone like '2026-05-17T10:00:00Z'. Default: 5m.",
+    )
+    follow_group = p_tail.add_mutually_exclusive_group()
+    follow_group.add_argument(
+        "--follow",
+        dest="follow",
+        action="store_true",
+        default=True,
+        help="Keep the process attached and print new events as they arrive (default).",
+    )
+    follow_group.add_argument(
+        "--no-follow",
+        dest="follow",
+        action="store_false",
+        help="Print history matching --since and exit.",
+    )
+    p_tail.add_argument(
+        "--json",
+        dest="json_mode",
+        action="store_true",
+        help="Emit raw JSON lines instead of the colored two-line record. "
+        "Pipe-friendly for jq / awk.",
+    )
+    p_tail.add_argument(
+        "--events-path",
+        dest="events_path",
+        default=None,
+        help=f"Path to the JSONL events file written by `schemabrain serve`. "
+        f"Default: $SCHEMABRAIN_EVENTS_PATH or {_DEFAULT_EVENTS_PATH}.",
     )
 
     return parser
@@ -3064,6 +3112,63 @@ def _cmd_init(
     _render_init_result(result)
     if result.state == "shell_out_failed":
         return 1
+    return 0
+
+
+def _cmd_tail(
+    *,
+    since: str,
+    follow: bool,
+    json_mode: bool,
+    events_path: str | None,
+) -> int:
+    """Run `schemabrain tail`: stream events from the JSONL bus file."""
+    import json as _json
+    import os as _os
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    from rich.console import Console as _Console
+
+    from schemabrain.observability import (
+        TailOptions,
+        TailReader,
+        parse_since,
+        render_event_pretty,
+    )
+
+    resolved_path = (
+        events_path or _os.environ.get("SCHEMABRAIN_EVENTS_PATH") or _DEFAULT_EVENTS_PATH
+    )
+    path = _Path(resolved_path).expanduser()
+    try:
+        since_dt = parse_since(since)
+    except ValueError as exc:
+        print(f"error: {exc}", file=_sys.stderr)
+        return 2
+    options = TailOptions(
+        events_path=path,
+        since=since_dt,
+        follow=follow,
+        json_mode=json_mode,
+    )
+    if json_mode:
+        out = _sys.stdout
+        try:
+            with TailReader(options) as reader:
+                for event in reader.stream():
+                    out.write(_json.dumps(event, separators=(",", ":")) + "\n")
+                    out.flush()
+        except KeyboardInterrupt:
+            return 0
+        return 0
+    console = _Console()
+    try:
+        with TailReader(options) as reader:
+            for event in reader.stream():
+                render_event_pretty(event, console)
+    except KeyboardInterrupt:
+        return 0
     return 0
 
 

@@ -30,6 +30,12 @@ from schemabrain.observability.extractors import (
 )
 from schemabrain.observability.instrument import instrument, now_iso_utc
 from schemabrain.observability.redactor import EventRedactor
+from schemabrain.observability.tail import (
+    TailOptions,
+    TailReader,
+    parse_since,
+    render_event_pretty,
+)
 
 __all__ = [
     "Event",
@@ -40,8 +46,12 @@ __all__ = [
     "JsonlEventBus",
     "NullEventBus",
     "ServerEventSubtype",
+    "TailOptions",
+    "TailReader",
     "default_result_extractor",
     "get_result_extractor",
     "instrument",
     "now_iso_utc",
+    "parse_since",
+    "render_event_pretty",
 ]
