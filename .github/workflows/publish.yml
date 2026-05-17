@@ -30,6 +30,11 @@ on:
           - testpypi
           - pypi
         default: testpypi
+      version:
+        description: "Version tag for the Docker image (e.g. 0.3.0). Required when target=pypi; ignored otherwise."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -92,3 +97,68 @@ jobs:
       - name: Publish to PyPI
         if: inputs.target == 'pypi'
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  docker:
+    name: Build + push Docker (linux/amd64 + linux/arm64)
+    # Only runs on production publishes (PyPI). TestPyPI runs skip this
+    # so we are not minting container images for unstable releases.
+    if: inputs.target == 'pypi'
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Validate version input
+        run: |
+          if [ -z "${{ inputs.version }}" ]; then
+            echo "::error::version input is required when target=pypi"
+            exit 1
+          fi
+          # Strict semver-ish check: MAJOR.MINOR.PATCH with optional
+          # pre-release suffix (e.g. 0.3.0a1). Rejects empty, leading
+          # 'v', and obviously-wrong shapes.
+          if ! echo "${{ inputs.version }}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([a-z]+[0-9]*)?$'; then
+            echo "::error::version '${{ inputs.version }}' does not look like MAJOR.MINOR.PATCH[suffix]"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v6
+
+      - name: Compute MAJOR.MINOR floating tag
+        id: tags
+        run: |
+          MAJOR_MINOR=$(echo "${{ inputs.version }}" | cut -d. -f1-2)
+          echo "major_minor=${MAJOR_MINOR}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push multi-platform image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # Three tags: pinned patch, floating minor, floating latest.
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/schemabrain:${{ inputs.version }}
+            ghcr.io/${{ github.repository_owner }}/schemabrain:${{ steps.tags.outputs.major_minor }}
+            ghcr.io/${{ github.repository_owner }}/schemabrain:latest
+          # Build cache via GitHub Actions cache backend. Cuts ARM64
+          # cold builds substantially after the first push.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
