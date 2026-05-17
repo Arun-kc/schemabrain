@@ -17,7 +17,7 @@ on top of these stats.
 
 from __future__ import annotations
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.pool import NullPool
@@ -145,8 +145,16 @@ class PostgresProfiler:
         sql = f"SELECT {', '.join(select_parts)} FROM {quoted_table}"  # nosec B608
         try:
             with engine.connect() as conn:
-                # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text - same justification as the `# nosec B608` above; no user input enters `sql`.
-                row = conn.execute(text(sql)).one()
+                # `exec_driver_sql` bypasses SQLAlchemy's parameter
+                # binding layer. We can't use `text(sql)` here because
+                # psycopg's pyformat paramstyle treats `%` as a
+                # parameter marker, so any `%` baked into a column name
+                # (e.g. BIRD's `Percent (%) Eligible Free (K-12)`) is
+                # double-escaped (`%` -> `%%` -> `%%%%`) and the query
+                # dies in Postgres parse. The SQL has zero bind
+                # parameters, so going straight to the DBAPI is exactly
+                # what we want.
+                row = conn.exec_driver_sql(sql).one()
         except ProgrammingError as e:
             # Only `UndefinedTable` (SQLSTATE 42P01) gets translated into a
             # `TableNotFoundError`. Other ProgrammingErrors — typically
@@ -203,8 +211,11 @@ class PostgresProfiler:
             f"LIMIT {self._sample_size}"
         )
         with engine.connect() as conn:
-            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text - same justification as the `# nosec B608` above; no user input enters `sql`.
-            rows = conn.execute(text(sql)).all()
+            # `exec_driver_sql` for the same reason as `_fetch_counts`:
+            # `text(sql)` triggers psycopg pyformat `%`-expansion on the
+            # quoted column name, which corrupts identifiers containing
+            # `%`. SQL has zero bind parameters here too.
+            rows = conn.exec_driver_sql(sql).all()
         # The `WHERE col IS NOT NULL` filter guarantees psycopg never
         # returns a NULL row here. Cap raw width before regex/truncation
         # so cost stays bounded; `_SAMPLE_RAW_CAP` is well above any PII

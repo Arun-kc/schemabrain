@@ -70,6 +70,32 @@ class TestRealClientConstruction:
         client = anthropic_haiku_45_client(api_key="sk-ant-fake-key-for-construction-test")
         assert client.model == "claude-haiku-4-5"
 
+    def test_sdk_constructed_with_elevated_max_retries(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Regression: Anthropic SDK defaults `max_retries=2`, which is
+        # not enough to weather a sustained 50-RPM Tier-1 rate limit
+        # during a multi-hundred-column index run. We pass an explicit
+        # higher value so the SDK's built-in retry-after-aware backoff
+        # has room to clear the window. Real workload that exposed this:
+        # indexing BIRD Mini-Dev's 798 columns crashed at column 38 with
+        # `anthropic.RateLimitError` and no retry.
+        captured_kwargs: dict[str, object] = {}
+
+        class _CapturingAnthropic:
+            def __init__(self, **kwargs: object) -> None:
+                captured_kwargs.update(kwargs)
+
+        import anthropic
+
+        monkeypatch.setattr(anthropic, "Anthropic", _CapturingAnthropic)
+        anthropic_haiku_45_client(api_key="sk-ant-fake")
+        assert captured_kwargs.get("max_retries") == 8, (
+            "AnthropicClient must construct the SDK with max_retries=8 so the "
+            "SDK's built-in 429 backoff handles rate-limited bursts. "
+            f"Got: {captured_kwargs.get('max_retries')}"
+        )
+
 
 class TestProtocolConformance:
     def test_haiku_factory_satisfies_llm_client_protocol(self) -> None:

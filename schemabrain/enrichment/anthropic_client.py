@@ -48,6 +48,15 @@ __all__ = [
 _HAIKU_45_MODEL = "claude-haiku-4-5"
 _SONNET_46_MODEL = "claude-sonnet-4-6"
 
+# Anthropic SDK defaults `max_retries=2`. That's not enough to weather a
+# sustained Tier-1 rate-limit window (50 RPM) during an index run that
+# fans out hundreds of column-description calls. The SDK already
+# implements retry-after-aware exponential backoff; we just give it more
+# room. 8 retries with the SDK's default backoff caps the worst-case
+# tail latency for a single call at ~60s, well under any operator's
+# patience for an indexing pass that already takes minutes.
+_SDK_MAX_RETRIES = 8
+
 # Haiku is asked for one short sentence (≤30 words). 200 is comfortably
 # above that; hitting it indicates the model went off-prompt.
 _HAIKU_DEFAULT_MAX_OUTPUT_TOKENS = 200
@@ -83,7 +92,7 @@ class AnthropicClient:
             # don't fail when ANTHROPIC_API_KEY is missing.
             from anthropic import Anthropic
 
-            client = Anthropic(api_key=api_key)
+            client = Anthropic(api_key=api_key, max_retries=_SDK_MAX_RETRIES)
         self._client = client
         self._model = model
         self._max_output_tokens = max_output_tokens
