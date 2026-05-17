@@ -333,15 +333,17 @@ def _stage_source_check(ctx: WizardContext) -> StageOutcome:
     cfg = ctx.config
     try:
         _validate_source_reachable(cfg.source_url)
-        if is_postgres_url(cfg.source_url):
+        is_postgres = is_postgres_url(cfg.source_url)
+        if is_postgres:
             _validate_source_read_only(cfg.source_url)
     except InitRefusal as refusal:
         return _failed_from_refusal(stage=1, name="source_check", error=refusal.error)
+    message = "Postgres reachable · session is read-only" if is_postgres else "source reachable"
     return StageOutcome(
         stage=1,
         name="source_check",
         status="done",
-        message="source reachable + read-only",
+        message=message,
     )
 
 
@@ -565,9 +567,15 @@ def _source_id_for(url: str) -> str:
 
 
 def _index_done_message(result: IndexResult, *, enrich: bool) -> str:
-    """Pick a one-line summary for a successful stage-2 outcome."""
+    """Pick a one-line summary for a successful stage-2 outcome.
+
+    The middle-dot separator matches the visual rhythm of the rest of
+    the wizard output (source-check + closing block both use it) and
+    reads more confidently than a comma — the numbers are facts, not
+    a list.
+    """
     cols = result.columns_added + result.columns_changed
-    base = f"{result.tables_seen} tables, {cols} columns indexed"
+    base = f"{result.tables_seen} tables · {cols} columns indexed"
     if enrich and result.descriptions_generated > 0:
         base += f" (enriched {result.descriptions_generated} columns, ${result.llm_cost_usd:.4f})"
     return base

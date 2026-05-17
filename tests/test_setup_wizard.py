@@ -496,6 +496,9 @@ class TestStageSourceCheck:
         assert outcome.status == "done"
         assert outcome.stage == 1
         assert called == ["sqlite:///:memory:"]
+        # SQLite source has no session-level read-only concept — message
+        # acknowledges the difference rather than implying it.
+        assert outcome.message == "source reachable"
 
     def test_done_for_postgres_source(
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
@@ -525,6 +528,9 @@ class TestStageSourceCheck:
         assert outcome.status == "done"
         assert reach_calls == ["postgresql+psycopg://u:p@localhost/db"]
         assert ro_calls == ["postgresql+psycopg://u:p@localhost/db"]
+        # Postgres-specific phrasing — the `·` separator matches the
+        # rest of the wizard's visual vocabulary.
+        assert outcome.message == "Postgres reachable · session is read-only"
 
     def test_failed_when_source_unreachable(
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch

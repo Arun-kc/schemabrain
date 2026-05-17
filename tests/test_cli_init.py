@@ -1133,7 +1133,7 @@ class TestWizardRenderer:
         result = WizardResult(
             outcomes=(
                 self._make_outcome(1, "source_check", "done", "ok"),
-                self._make_outcome(2, "index", "done", "53 tables, 412 columns indexed"),
+                self._make_outcome(2, "index", "done", "53 tables · 412 columns indexed"),
                 self._make_outcome(3, "entities", "done", "8 entities created (cost $0.0123)"),
                 self._make_outcome(
                     4, "wire_host", "done", f"wrote schemabrain entry to {cfg_path}"
