@@ -170,31 +170,42 @@ Columns: +24/~0/-0. LLM: 24 descriptions ($0.0074). Embeddings: 24
 
 ### 4. Wire into Claude Desktop
 
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
-
-```json
-{
-  "mcpServers": {
-    "schemabrain": {
-      "command": "/ABSOLUTE/PATH/TO/.venv/bin/schemabrain",
-      "args": [
-        "serve",
-        "--url-env",
-        "DATABASE_URL",
-        "--store-path",
-        "/ABSOLUTE/PATH/TO/schemabrain.db"
-      ],
-      "env": {
-        "DATABASE_URL": "postgresql+psycopg://postgres:local@localhost:5432/postgres"
-      }
-    }
-  }
-}
+```bash
+schemabrain init --url-env DATABASE_URL --store-path ./schemabrain.db
 ```
 
-Both paths must be absolute. Quit Claude Desktop fully (Cmd+Q) and relaunch. The 🔌 tools panel should now show "schemabrain" with 4 tools.
+That's it. `init` detects your Claude Desktop config, writes a
+`schemabrain` MCP server entry that uses `--url-env` (so your
+password never lands in argv), pins the snippet to the installed
+schemabrain version, and resolves the store path to absolute. A
+`.bak` of any existing config is preserved on first overwrite, and
+other MCP servers you've configured are left untouched.
 
-**Or for Cursor:** drop the same `mcpServers` block into `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project-scoped). Template at [`examples/cursor_mcp_config.example.json`](examples/cursor_mcp_config.example.json). Restart Cursor.
+Quit Claude Desktop fully (Cmd+Q) and relaunch. Ask it:
+
+> list the entities Schema Brain knows about
+
+**For Claude Code:** `--host claude-code` shells out to `claude mcp add`
+instead of editing JSON directly (Claude Code's supported registration
+path).
+
+**For Cursor / Continue / Windsurf / anything else:**
+`schemabrain init --print-only` prints the snippet without writing —
+paste into your host's MCP config. Template paths for the major hosts
+are printed alongside.
+
+**Re-running is safe.** Identical inputs → no-op. Different existing
+entry → init refuses unless you pass `--yes`.
+
+**Confirm it's wired:**
+
+```bash
+schemabrain doctor --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+`doctor` runs 11 checks across host config, local store, and source
+connectivity (`SELECT 1` + read-only session verification on Postgres).
+Pass `--json` for machine-readable output suitable for CI / monitoring.
 
 For the headless Anthropic-SDK path, see [`examples/anthropic_demo.py`](examples/anthropic_demo.py) and [`docs/setup.md`](docs/setup.md).
 

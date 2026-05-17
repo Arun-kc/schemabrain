@@ -329,6 +329,25 @@ def main(argv: list[str] | None = None) -> int:
                 url_env=args.url_env,
             )
         parser.error(f"unknown joins action: {args.joins_action}")  # pragma: no cover
+    if args.command == "doctor":
+        return _cmd_doctor(
+            positional_url=args.source,
+            url_env=args.url_env,
+            store_path=args.store_path,
+            host=args.host,
+            json_output=args.json,
+        )
+    if args.command == "init":
+        return _cmd_init(
+            positional_url=args.source,
+            url_env=args.url_env,
+            store_path=args.store_path,
+            host=args.host,
+            env_var=args.env_var,
+            skip_index=args.skip_index,
+            assume_yes=args.assume_yes,
+            print_only=args.print_only,
+        )
     if args.command == "metrics":
         if args.metrics_action == "apply":
             return _cmd_metrics_apply(
@@ -951,6 +970,106 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="VARNAME",
         default=None,
         help="Name of the environment variable that holds the source URL.",
+    )
+
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="Run health checks against the host config, store, and (optionally) source",
+    )
+    p_doctor.add_argument(
+        "--source",
+        default=None,
+        help="Source URL to probe (SELECT 1 + read-only session check on Postgres). "
+        "DEPRECATED when the URL contains a password; prefer --url-env. "
+        "Optional — if neither --source nor --url-env is given, source checks are skipped.",
+    )
+    p_doctor.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL "
+        "(e.g. --url-env DATABASE_URL). Preferred over --source so credentials "
+        "never appear in argv. Mutually exclusive with --source.",
+    )
+    p_doctor.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_doctor.add_argument(
+        "--host",
+        choices=("claude-desktop", "claude-code", "manual"),
+        default="claude-desktop",
+        help="Which host config to check. Use `manual` to skip host-config checks "
+        "(default: claude-desktop)",
+    )
+    p_doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON to stdout instead of the human-readable "
+        "report to stderr. Useful for CI/monitoring scripts.",
+    )
+
+    p_init = sub.add_parser(
+        "init",
+        help="Wire schemabrain into an MCP host (Claude Desktop, Claude Code, or print snippet)",
+    )
+    p_init.add_argument(
+        "--source",
+        default=None,
+        help="Source URL (e.g. postgresql+psycopg://...). DEPRECATED when the URL "
+        "contains a password; prefer --url-env. One of --source / --url-env is required.",
+    )
+    p_init.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL "
+        "(e.g. --url-env DATABASE_URL). Preferred over --source so credentials "
+        "never appear in argv. Mutually exclusive with --source.",
+    )
+    p_init.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_init.add_argument(
+        "--host",
+        choices=("claude-desktop", "claude-code", "manual"),
+        default="claude-desktop",
+        help="Which host to wire. `manual` prints the snippet without writing "
+        "anywhere (default: claude-desktop)",
+    )
+    p_init.add_argument(
+        "--env-var",
+        dest="env_var",
+        default="SCHEMABRAIN_DATABASE_URL",
+        help="Name of the env var the host will set when launching the MCP server "
+        "(default: SCHEMABRAIN_DATABASE_URL). The DB URL goes into this env var, "
+        "not into argv.",
+    )
+    p_init.add_argument(
+        "--skip-index",
+        dest="skip_index",
+        action="store_true",
+        help="Don't require the store to have any entities indexed. Pass this when "
+        "you've indexed in a different session or plan to index later.",
+    )
+    p_init.add_argument(
+        "--yes",
+        "-y",
+        dest="assume_yes",
+        action="store_true",
+        help="Overwrite an existing schemabrain entry in the host config without "
+        "prompting. Only the schemabrain entry is touched; other entries are preserved.",
+    )
+    p_init.add_argument(
+        "--print-only",
+        dest="print_only",
+        action="store_true",
+        help="Alias for --host manual: print the snippet, write nothing.",
     )
 
     return parser
@@ -2823,6 +2942,277 @@ def _write_joins_suggest_report(
     if apply_summary is not None:
         report["apply_summary"] = dict(apply_summary)
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+
+def _cmd_doctor(
+    *,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+    host: str,
+    json_output: bool,
+) -> int:
+    """Run `schemabrain doctor` and render the result.
+
+    Source URL is OPTIONAL — when both `positional_url` and `url_env`
+    are None, source-related checks are skipped (config-only mode).
+    When one is supplied, the standard `_resolve_url_source` helper
+    refuses on conflict or unset env var with the same guided errors
+    every other source-using subcommand emits, returning exit code 2.
+
+    Exit code semantics:
+      - 0: doctor ran; no `fail` outcomes
+      - 1: doctor ran; at least one `fail` outcome
+      - 2: operational refusal before doctor could run (e.g. --source
+        + --url-env conflict, --url-env names an unset variable)
+    """
+    from schemabrain.setup.doctor_flow import doctor, render_doctor, render_doctor_json
+
+    source_url: str | None = None
+    if positional_url is not None or url_env is not None:
+        source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+        if source_url is None:
+            # Guided error already rendered to stderr.
+            return 2
+    result = doctor(
+        source_url=source_url,
+        store_path=Path(store_path),
+        host=host,  # type: ignore[arg-type]
+    )
+    if json_output:
+        # JSON to stdout — clean pipe target.
+        sys.stdout.write(render_doctor_json(result))
+    else:
+        # Human-readable to stderr so users can pipe stdout cleanly
+        # in mixed-output scripts.
+        render_doctor(result, console=_stderr_console())
+    return result.exit_code
+
+
+def _cmd_init(
+    *,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+    host: str,
+    env_var: str,
+    skip_index: bool,
+    assume_yes: bool,
+    print_only: bool,
+) -> int:
+    """Run `schemabrain init` and render the outcome.
+
+    Exit codes:
+      - 0: snippet written / shell-out succeeded / printed (manual)
+      - 1: claude-code shell-out failed (the snippet IS still
+        printed so the user can fall back to running the command
+        themselves)
+      - 2: operational refusal (URL flag conflict, source unreachable,
+        store empty without --skip-index, host config dir missing, etc.)
+
+    `--print-only` is an alias for `--host manual` — when either is
+    set, init never writes; the snippet renders to stdout.
+    """
+    from schemabrain.setup.init_flow import InitRefusal, init
+
+    effective_host = "manual" if print_only else host
+    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if source_url is None:
+        # _resolve_url_source already rendered a guided error.
+        return 2
+    effective_skip_index = skip_index
+    effective_assume_yes = assume_yes
+    interactive = _stderr_is_interactive_tty()
+    while True:
+        try:
+            result = init(
+                source_url=source_url,
+                store_path=Path(store_path),
+                host=effective_host,  # type: ignore[arg-type]
+                env_var_name=env_var,
+                skip_index=effective_skip_index,
+                assume_yes=effective_assume_yes,
+            )
+        except InitRefusal as refusal:
+            # Two refusal kinds have an interactive recovery: the
+            # entry-exists case (user can confirm overwrite) and the
+            # empty-store case (user can confirm "skip indexing for
+            # now, I'll do it later"). Anything else surfaces as a
+            # plain guided error and exits 2.
+            if interactive and refusal.error.kind == "init_entry_exists":
+                if _prompt_yes_no(
+                    "Overwrite the existing schemabrain entry?",
+                    default=False,
+                ):
+                    effective_assume_yes = True
+                    continue
+                _stderr_console().print("[yellow]cancelled[/] no changes made.")
+                return 0
+            if interactive and refusal.error.kind == "init_store_empty":
+                if _prompt_yes_no(
+                    "Continue without indexing now? "
+                    "(you'll need to run `schemabrain index` before agents can query)",
+                    default=False,
+                ):
+                    effective_skip_index = True
+                    continue
+                _render_guided(refusal.error)
+                return 2
+            _render_guided(refusal.error)
+            return 2
+        break
+    _render_init_result(result)
+    if result.state == "shell_out_failed":
+        return 1
+    return 0
+
+
+def _stderr_is_interactive_tty() -> bool:
+    """True iff init can safely prompt — both stdin AND stderr are TTYs.
+
+    Wrapped so tests can monkeypatch this one function instead of
+    patching `sys.stdin.isatty` and `sys.stderr.isatty` separately.
+    """
+    return sys.stdin.isatty() and sys.stderr.isatty()
+
+
+def _prompt_yes_no(question: str, *, default: bool) -> bool:
+    """Ask the user a yes/no question via rich.prompt.Confirm.
+
+    Lazy-imported so the cli's import-cost path isn't affected
+    when no subcommand needs interactive input.
+    """
+    from rich.prompt import Confirm
+
+    return Confirm.ask(question, default=default, console=_stderr_console())
+
+
+def _redact_env_args(cmd: tuple[str, ...]) -> list[str]:
+    """Return a copy of `cmd` with each `-e KEY=VALUE` value redacted.
+
+    Used when printing a `claude mcp add` argv to stderr after the
+    shell-out failed. The KEY=VALUE tokens carry the live DB URL
+    (including any password) — printing them verbatim would land
+    credentials on stderr / terminal scrollback / screen recordings,
+    which the project keeps out of argv-visible surfaces. Renders
+    as `KEY=<redacted>`.
+    """
+    out: list[str] = []
+    skip_next = False
+    for token in cmd:
+        if skip_next:
+            key, sep, _value = token.partition("=")
+            out.append(f"{key}{sep}<redacted>" if sep else token)
+            skip_next = False
+        elif token == "-e":
+            out.append(token)
+            skip_next = True
+        else:
+            out.append(token)
+    return out
+
+
+def _render_init_result(result: object) -> None:
+    """Render the outcome of a successful init run.
+
+    Caller is `_cmd_init`, which has already validated the type.
+    Typed as `object` here so the cli module doesn't import the
+    init_flow types at parse time (preserves the lazy-init-flow-
+    import discipline the rest of `_cmd_init` follows).
+    """
+    from schemabrain.setup.init_flow import InitResult
+
+    if not isinstance(result, InitResult):
+        raise TypeError(f"_render_init_result expected InitResult, got {type(result).__name__}")
+    console = _stderr_console()
+    if result.state == "written":
+        console.print(f"[green]✓[/] wrote schemabrain entry to {result.config_path}")
+        if result.backup_made:
+            backup = (
+                result.config_path.parent / (result.config_path.name + ".bak")
+                if result.config_path is not None
+                else None
+            )
+            console.print(f"  [dim]backup:[/] {backup}")
+        console.print()
+        if result.skip_index:
+            # Store was empty + user opted in (--skip-index or interactive
+            # acceptance); the "list entities" question would return nothing
+            # without an index run first.
+            console.print(
+                "  [dim]Before querying:[/] run "
+                "`schemabrain index --url-env $VAR --store-path $PATH`"
+            )
+            console.print(
+                "  [dim]Then:[/] restart Claude Desktop and ask:  "
+                '"list the entities Schema Brain knows about"'
+            )
+        else:
+            console.print(
+                "  [dim]Next:[/] restart Claude Desktop, then ask:  "
+                '"list the entities Schema Brain knows about"'
+            )
+    elif result.state == "unchanged":
+        console.print(
+            f"[green]✓[/] schemabrain entry already configured in {result.config_path}; no changes"
+        )
+    elif result.state == "shell_out_succeeded":
+        console.print("[green]✓[/] registered schemabrain with Claude Code")
+        console.print()
+        console.print(
+            "  [dim]Next:[/] restart Claude Code, then ask:  "
+            '"list the entities Schema Brain knows about"'
+        )
+    elif result.state == "shell_out_failed":
+        console.print("[red]✗[/] `claude mcp add` failed; you can run it manually:")
+        if result.shell_out_command:
+            console.print()
+            console.print("  " + " ".join(_redact_env_args(result.shell_out_command)))
+            console.print()
+            console.print(
+                "  [dim]Note:[/] env values are redacted above. To re-run with real "
+                "credentials, prefer `schemabrain init` (which reads them from your env)."
+            )
+        if result.shell_out_stderr:
+            console.print(f"\n  [dim]stderr:[/] {result.shell_out_stderr}")
+    else:
+        # state == "printed_only" — manual / --print-only
+        import json as _json
+
+        # Header to stderr — paste-target-safe (stdout stays clean
+        # JSON for `> snippet.json` piping). Flush after each stream
+        # switch so terminal users see header → JSON → footer in
+        # source order rather than interleaved by buffering.
+        console.print("[bold]Schema Brain init[/] — manual mode.")
+        console.print()
+        console.print("Add this to your MCP host's config:")
+        console.print()
+        console.file.flush()
+        # Snippet to stdout — the user wants a paste-ready JSON block,
+        # so this lands on stdout not stderr.
+        entry = {"mcpServers": {"schemabrain": result.snippet.to_mcp_entry()}}
+        sys.stdout.write(_json.dumps(entry, indent=2))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        console.print()
+        # `soft_wrap=True` keeps the long paths on one line each so
+        # users can copy-paste without the terminal's auto-wrap
+        # breaking the path mid-word (e.g. "Application Support").
+        console.print("  [dim]Common config paths:[/]", soft_wrap=True)
+        for line in (
+            "    Claude Desktop (macOS):   ~/Library/Application Support/Claude/claude_desktop_config.json",
+            "    Claude Desktop (Windows): %APPDATA%\\Claude\\claude_desktop_config.json",
+            "    Cursor:                   ~/.cursor/mcp.json",
+            "    Continue:                 ~/.continue/config.json",
+            "    Windsurf:                 ~/.codeium/windsurf/mcp_config.json",
+        ):
+            console.print(line, soft_wrap=True, highlight=False)
+        console.print()
+        console.print(
+            "  [dim]After saving the file, restart your host and ask:[/]  "
+            '"list the entities Schema Brain knows about"',
+            soft_wrap=True,
+        )
 
 
 def _cmd_fixture_path(name: str) -> int:
