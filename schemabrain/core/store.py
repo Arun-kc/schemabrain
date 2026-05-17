@@ -132,7 +132,7 @@ __all__ = [
 #         + 2 indexes (occurred_at, fingerprint) per ADR 0001. The DDL
 #         lives in `schemabrain.audit.ddl` and is applied here so the
 #         single source of truth for the on-disk shape stays the
-#         `_SCHEMA_VERSION` constant. Empty on first open; every
+#         `SCHEMA_VERSION` constant. Empty on first open; every
 #         `@instrument`-wrapped tool call writes one row at runtime.
 #   "12" → added `column_pii_tags` table for the heuristic PII
 #         classifier (ADR 0001 §3 — populates the previously-stub
@@ -147,7 +147,7 @@ __all__ = [
 #         `get_column_pii_tags` only returns rows that match the
 #         caller-supplied table + column set.
 # Older stores raise SchemaVersionMismatchError; pre-alpha users re-create.
-_SCHEMA_VERSION = "12"
+SCHEMA_VERSION = "12"
 _MEMORY_PATH = ":memory:"
 
 # 1 USD = 1_000_000 micros. Storing the ledger as INTEGER micros avoids
@@ -2196,16 +2196,16 @@ class SQLiteStore:
                 conn.execute(stmt)
             conn.execute(
                 "INSERT OR IGNORE INTO schemabrain_meta (key, value) VALUES (?, ?)",
-                ("schema_version", _SCHEMA_VERSION),
+                ("schema_version", SCHEMA_VERSION),
             )
             ensure_audit_schema(conn)
         stored = conn.execute(
             "SELECT value FROM schemabrain_meta WHERE key = ?", ("schema_version",)
         ).fetchone()
-        if stored is not None and stored["value"] != _SCHEMA_VERSION:
+        if stored is not None and stored["value"] != SCHEMA_VERSION:
             raise SchemaVersionMismatchError(
                 f"Store schema version {stored['value']!r} does not match "
-                f"expected {_SCHEMA_VERSION!r}. Schema Brain is pre-alpha and "
+                f"expected {SCHEMA_VERSION!r}. Schema Brain is pre-alpha and "
                 f"does not yet provide migrations — delete or move the store "
                 f"file (path passed to SQLiteStore) and re-run `schemabrain "
                 f"index` to rebuild from scratch."

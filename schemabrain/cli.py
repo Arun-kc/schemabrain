@@ -3623,6 +3623,71 @@ def _cmd_tail(
     return 0
 
 
+# Cap on the `schema_version` value we'll echo to stderr in
+# `_warn_on_schema_drift`. A crafted store file could stuff a multi-MB
+# string into `schemabrain_meta.value` and flood the operator's stderr
+# pipeline. 64 chars is generous headroom for any legitimate version
+# string (current "12"; a "v3.5.7-rc1+build.42" would still fit).
+_MAX_SCHEMA_VERSION_ECHO = 64
+
+
+def _warn_on_schema_drift(conn: sqlite3.Connection, path: Path) -> None:
+    """Emit a stderr warning when the store's schema_version diverges
+    from `SCHEMA_VERSION`, or when the version record is missing.
+
+    The two `audit` read paths (`list`, `verify`) deliberately bypass
+    `SQLiteStore` to open the file read-only — which means they also
+    bypass the strict `SchemaVersionMismatchError` that `SQLiteStore`
+    raises on drift. That's intentional for inspectors (history rows
+    stay readable even after an upgrade), but the user deserves to
+    know the column shapes they're seeing may not match the current
+    code's expectations. Warn-and-proceed, not error-and-refuse.
+
+    Three failure modes get distinct treatment:
+      - `schemabrain_meta` table absent or unreadable → silent return.
+        The caller's own audit query will hit the same DB error and
+        surface it to the user; a second message would be noise.
+      - Meta row missing (`schema_version` key not present in an
+        otherwise readable store) → warn. This is the case where the
+        audit table IS readable but the version record was deleted; the
+        operator deserves to know the column shape is unverifiable.
+      - Version mismatch → warn with stored vs expected.
+
+    Both call sites assign `conn.row_factory = sqlite3.Row` before
+    invoking this helper, so `row["value"]` is always the correct
+    accessor.
+    """
+    from schemabrain.core.store import SCHEMA_VERSION
+
+    try:
+        row = conn.execute(
+            "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
+        ).fetchone()
+    except sqlite3.DatabaseError:
+        return
+    if row is None:
+        print(
+            f"warning: store at {path} has no schema_version record — "
+            f"column shape may not match this build's expectations",
+            file=sys.stderr,
+        )
+        return
+    stored = row["value"]
+    if stored != SCHEMA_VERSION:
+        # Cap the echoed value: a crafted store could insert a multi-MB
+        # value here and flood stderr. `repr` (via `!r` below) escapes
+        # control chars in whatever we DO print.
+        if len(stored) > _MAX_SCHEMA_VERSION_ECHO:
+            stored = stored[:_MAX_SCHEMA_VERSION_ECHO] + "..."
+        print(
+            f"warning: store at {path} has schema_version={stored!r} "
+            f"but this build expects {SCHEMA_VERSION!r} — output may "
+            f"reflect a different column shape than the current code "
+            f"expects",
+            file=sys.stderr,
+        )
+
+
 def _cmd_audit_verify(*, store_path: str, full: bool) -> int:
     """Walk `mcp_audit`'s chain hash; report mismatches.
 
@@ -3649,12 +3714,16 @@ def _cmd_audit_verify(*, store_path: str, full: bool) -> int:
             file=_sys.stderr,
         )
         return 2
-    conn.row_factory = _sqlite3.Row
     try:
-        mismatches = list(walk_chain(conn, full=full))
-    except _sqlite3.DatabaseError as exc:
-        print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
-        return 2
+        # row_factory + drift-warn live inside the try so an
+        # unexpected raise from either still closes `conn`.
+        conn.row_factory = _sqlite3.Row
+        _warn_on_schema_drift(conn, path)
+        try:
+            mismatches = list(walk_chain(conn, full=full))
+        except _sqlite3.DatabaseError as exc:
+            print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
+            return 2
     finally:
         conn.close()
 
@@ -3756,22 +3825,26 @@ def _cmd_audit_list(
             file=_sys.stderr,
         )
         return 2
-    conn.row_factory = _sqlite3.Row
-    # Column list hardcoded; `where_sql` assembled from hardcoded clause
-    # fragments above (only `?` placeholders for user values). All
-    # user-supplied filter values flow through `params`. No user input
-    # enters the SQL string itself.
-    sql = (
-        "SELECT id, occurred_at, tool_name, status, cost_class, "  # nosec B608
-        "pii_categories, fingerprint, fingerprint_version "
-        f"FROM mcp_audit {where_sql} "
-        "ORDER BY id DESC LIMIT ?"
-    )
     try:
-        rows = list(conn.execute(sql, params))
-    except _sqlite3.DatabaseError as exc:
-        print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
-        return 2
+        # row_factory + drift-warn live inside the try so an
+        # unexpected raise from either still closes `conn`.
+        conn.row_factory = _sqlite3.Row
+        _warn_on_schema_drift(conn, path)
+        # Column list hardcoded; `where_sql` assembled from hardcoded
+        # clause fragments above (only `?` placeholders for user
+        # values). All user-supplied filter values flow through
+        # `params`. No user input enters the SQL string itself.
+        sql = (
+            "SELECT id, occurred_at, tool_name, status, cost_class, "  # nosec B608
+            "pii_categories, fingerprint, fingerprint_version "
+            f"FROM mcp_audit {where_sql} "
+            "ORDER BY id DESC LIMIT ?"
+        )
+        try:
+            rows = list(conn.execute(sql, params))
+        except _sqlite3.DatabaseError as exc:
+            print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
+            return 2
     finally:
         conn.close()
 
