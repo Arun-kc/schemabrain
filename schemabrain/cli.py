@@ -282,6 +282,12 @@ def main(argv: list[str] | None = None) -> int:
                 url_env=args.url_env,
                 store_path=args.store_path,
             )
+        if args.entity_action == "list":
+            return _cmd_entities_list(
+                store_path=args.store_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+            )
         if args.entity_action == "suggest":
             return _cmd_entities_suggest(
                 positional_url=args.source,
@@ -726,13 +732,38 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # `entities` is a subgroup for semantic-layer management.
-    # Two actions today: `apply` (file -> store loader) and `suggest`
-    # (LLM-suggest pipeline with three output modes).
+    # Three actions today: `apply` (file -> store loader), `list` (the
+    # verification path after apply — mirrors `joins list` and
+    # `metrics list`), and `suggest` (LLM-suggest pipeline with three
+    # output modes).
     p_entities = sub.add_parser(
         "entities",
         help="Manage semantic entity definitions",
     )
     entity_sub = p_entities.add_subparsers(dest="entity_action", required=True)
+
+    p_entities_list = entity_sub.add_parser(
+        "list",
+        help="List entities in the local store. The verification path after `entities apply`.",
+    )
+    p_entities_list.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_entities_list.add_argument(
+        "--source",
+        default=None,
+        help="Filter listing to one source (the same URL passed to "
+        "`index`). Without this flag, lists across every source.",
+    )
+    p_entities_list.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL.",
+    )
 
     p_apply = entity_sub.add_parser(
         "apply",
@@ -2071,6 +2102,68 @@ def _cmd_entities_apply(
         return 2
 
     print(f"applied entity: {entity.name}")
+    return 0
+
+
+def _cmd_entities_list(
+    *,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """List entities in the store, pretty-printed.
+
+    With `--source` / `--url-env` filter to one source. Without
+    either, lists every entity across every source. The verification
+    path after `entities apply` — symmetric with `joins list` and
+    `metrics list` so the three semantic-layer surfaces share one
+    discovery shape.
+
+    Exit codes:
+      0: success (empty list is success, not an error)
+      2: structural (unwritable store path or URL-source mismatch)
+    """
+    source_id: str | None = None
+    if positional_url is not None or url_env is not None:
+        source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+        if source_url is None:
+            return 2
+        # `_resolve_url_source` already validated; the second call is
+        # defensive — same shape as `_cmd_joins_list` / `_cmd_metrics_list`.
+        if _resolve_url(source_url) is None:  # pragma: no cover
+            return 2  # pragma: no cover
+        source_id = _make_source_id(source_url)
+
+    try:
+        with SQLiteStore(store_path) as store:
+            entities = store.list_entities(source_connection_id=source_id)
+    except OSError as e:
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+    except ValueError as exc:
+        # Symmetric with `_cmd_metrics_list`: `list_entities` re-runs
+        # `Entity.__post_init__` invariants on each row, so a corrupt
+        # row (hand-edited store, invalid origin, non-identifier name)
+        # surfaces as a plain `ValueError`. Wrap with store-path
+        # context so the user sees "your store appears corrupt" rather
+        # than a raw traceback.
+        print(
+            f"error: failed to read entities from {store_path!r}: store appears corrupt ({exc})",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not entities:
+        print("(no entities in the store)")
+        return 0
+
+    for entity in entities:
+        print(
+            f"{entity.name}  "
+            f"table={entity.binding.qualified_table}  "
+            f"identity={entity.identity}  "
+            f"origin={entity.origin}"
+        )
     return 0
 
 
