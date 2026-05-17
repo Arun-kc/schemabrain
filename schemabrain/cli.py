@@ -71,6 +71,7 @@ import sys
 import time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -3556,6 +3557,29 @@ def _cmd_audit_verify(*, store_path: str, full: bool) -> int:
     return 1
 
 
+def _format_audit_occurred_at(iso: str, *, now: datetime) -> str:
+    """Compact recent timestamps; keep older ones in full ISO form.
+
+    Audit rows accumulate at high rate during active sessions; the full
+    `YYYY-MM-DDTHH:MM:SS.ffffffZ` form dominates a terminal row. Within
+    24 hours of `now` the date is implied, so `HH:MM:SS` is enough to
+    distinguish rows for an operator scanning a live audit. Beyond 24
+    hours the full ISO string carries again — date matters when a row
+    could be from yesterday or last week.
+
+    Malformed timestamps (defensive — the writer never emits them) fall
+    through to the raw string so the table still renders something
+    rather than crashing the CLI.
+    """
+    try:
+        parsed = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
+    except ValueError:
+        return iso
+    if abs((now - parsed).total_seconds()) < 24 * 3600:
+        return parsed.strftime("%H:%M:%S")
+    return iso
+
+
 def _cmd_audit_list(
     *,
     store_path: str,
@@ -3618,7 +3642,7 @@ def _cmd_audit_list(
     # enters the SQL string itself.
     sql = (
         "SELECT id, occurred_at, tool_name, status, cost_class, "  # nosec B608
-        "fingerprint, fingerprint_version "
+        "pii_categories, fingerprint, fingerprint_version "
         f"FROM mcp_audit {where_sql} "
         "ORDER BY id DESC LIMIT ?"
     )
@@ -3638,6 +3662,7 @@ def _cmd_audit_list(
                 "tool_name": row["tool_name"],
                 "status": row["status"],
                 "cost_class": row["cost_class"],
+                "pii_categories": row["pii_categories"],
                 "fingerprint": bytes(row["fingerprint"]).hex(),
                 "fingerprint_version": row["fingerprint_version"],
             }
@@ -3655,15 +3680,20 @@ def _cmd_audit_list(
     table.add_column("tool")
     table.add_column("status")
     table.add_column("cost")
-    table.add_column("fingerprint (first 12)", overflow="fold")
+    table.add_column("pii")
+    table.add_column("fingerprint", overflow="fold")
+    now = datetime.now(UTC)
     for row in rows:
+        pii_raw = row["pii_categories"] or ""
+        pii_cell = pii_raw if pii_raw else "[dim](none)[/]"
         table.add_row(
             str(row["id"]),
-            row["occurred_at"],
+            _format_audit_occurred_at(row["occurred_at"], now=now),
             row["tool_name"],
             row["status"],
             row["cost_class"],
-            bytes(row["fingerprint"]).hex()[:12],
+            pii_cell,
+            bytes(row["fingerprint"]).hex()[:16],
         )
     console.print(table)
     return 0

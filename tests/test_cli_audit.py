@@ -320,3 +320,119 @@ class TestAuditList:
         assert "fingerprint" in row
         assert len(row["fingerprint"]) == 64
         assert row["fingerprint_version"] == "fp-v1"
+
+
+class TestAuditListRendering:
+    """Renderer-side coverage for the rich-table polish."""
+
+    def test_pii_column_renders_in_table(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=1)
+        cli_main(["audit", "list", "--store-path", str(store_path)])
+        out = capsys.readouterr().out
+        assert "pii" in out
+
+    def test_empty_pii_shows_none_placeholder(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Default seeded rows have empty pii_categories — the (none)
+        # placeholder must appear so empty cells are not silently blank.
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=1)
+        cli_main(["audit", "list", "--store-path", str(store_path)])
+        out = capsys.readouterr().out
+        assert "(none)" in out
+
+    def test_fingerprint_displays_sixteen_chars(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Force a wide Console so the 16-char fingerprint cell does
+        # not wrap when pytest captures stdout (no real TTY ->
+        # Rich's default is 80 cols, which forces fold-wrapping on the
+        # 7-column table). Real terminals are wider.
+        from rich.console import Console as _RichConsole
+
+        original_init = _RichConsole.__init__
+
+        def wide_init(self: _RichConsole, *args: object, **kwargs: object) -> None:  # type: ignore[no-untyped-def]
+            kwargs.setdefault("width", 200)
+            original_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(_RichConsole, "__init__", wide_init)
+
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=1)
+        # Pull the row's full fingerprint hex from JSON-mode, then
+        # confirm its 16-char prefix appears in the human render.
+        cli_main(["audit", "list", "--store-path", str(store_path), "--json"])
+        json_out = capsys.readouterr().out.strip()
+        full_hex = json.loads(json_out)["fingerprint"]
+        cli_main(["audit", "list", "--store-path", str(store_path)])
+        out = capsys.readouterr().out
+        assert full_hex[:16] in out
+        # Old header was "fingerprint (first 12)"; make sure the
+        # widened display also dropped the parenthetical width hint.
+        assert "(first 12)" not in out
+
+    def test_json_mode_includes_pii_categories(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=1)
+        cli_main(["audit", "list", "--store-path", str(store_path), "--json"])
+        row = json.loads(capsys.readouterr().out.strip())
+        assert "pii_categories" in row
+        # Default seed has no PII; the field is the empty string,
+        # not omitted, not None.
+        assert row["pii_categories"] == ""
+
+    def test_recent_timestamp_renders_short_form(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Rows just written are < 24h old; the renderer must compact
+        # them to HH:MM:SS rather than the full microsecond ISO.
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=1)
+        cli_main(["audit", "list", "--store-path", str(store_path)])
+        out = capsys.readouterr().out
+        # Pull the full timestamp from JSON-mode for comparison.
+        cli_main(["audit", "list", "--store-path", str(store_path), "--json"])
+        full_iso = json.loads(capsys.readouterr().out.strip())["occurred_at"]
+        # The full ISO must NOT appear (we compacted it).
+        assert full_iso not in out
+
+
+class TestFormatAuditOccurredAt:
+    """Direct coverage on the timestamp helper so age branches are exercised."""
+
+    def test_recent_returns_hhmmss(self) -> None:
+        from datetime import UTC, datetime
+
+        from schemabrain.cli import _format_audit_occurred_at
+
+        now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC)
+        iso = "2026-05-17T11:30:45.123456Z"  # 29 min 15s before `now`
+        assert _format_audit_occurred_at(iso, now=now) == "11:30:45"
+
+    def test_old_returns_full_iso(self) -> None:
+        from datetime import UTC, datetime
+
+        from schemabrain.cli import _format_audit_occurred_at
+
+        now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC)
+        iso = "2026-05-15T11:30:45.123456Z"  # 2 days before `now`
+        assert _format_audit_occurred_at(iso, now=now) == iso
+
+    def test_malformed_iso_returns_raw(self) -> None:
+        from datetime import UTC, datetime
+
+        from schemabrain.cli import _format_audit_occurred_at
+
+        now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC)
+        bogus = "not-a-timestamp"
+        assert _format_audit_occurred_at(bogus, now=now) == bogus
