@@ -23,9 +23,15 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     # constraints mirror the Charter envelope + ADR enums so a row
     # that wouldn't survive Python validation also wouldn't survive
     # SQL insertion.
+    # `id INTEGER PRIMARY KEY` is a rowid alias — SQLite assigns
+    # monotonically-increasing values. AUTOINCREMENT would add a
+    # `sqlite_sequence` table for strict no-reuse semantics, but the
+    # append-only triggers forbid DELETE anyway, so rowid reuse can
+    # never occur. AUTOINCREMENT's extra per-INSERT UPDATE on
+    # `sqlite_sequence` would be pure overhead.
     """
     CREATE TABLE IF NOT EXISTS mcp_audit (
-        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        id                   INTEGER PRIMARY KEY,
         occurred_at          TEXT    NOT NULL,
         source_connection_id TEXT    NOT NULL,
         caller_id            TEXT,
@@ -87,9 +93,11 @@ def ensure_audit_schema(conn: sqlite3.Connection) -> None:
 
     Safe to call against an existing connection on every store open;
     `CREATE ... IF NOT EXISTS` makes each statement a no-op when the
-    object already exists. The caller is responsible for committing
-    if it manages an open transaction.
+    object already exists. The caller is responsible for the
+    transaction boundary — wrap in `with conn:` for atomicity. This
+    function deliberately does NOT open its own transaction so it can
+    participate in a larger atomic block (e.g. core DDL + version
+    stamp + audit DDL in `SQLiteStore._init_schema`).
     """
-    with conn:
-        for stmt in _DDL_STATEMENTS:
-            conn.execute(stmt)
+    for stmt in _DDL_STATEMENTS:
+        conn.execute(stmt)

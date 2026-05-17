@@ -123,6 +123,19 @@ class TestAuditVerifyStoreMissing:
         assert exit_code == 2
         assert "not found" in capsys.readouterr().err
 
+    def test_corrupt_db_file_returns_two_with_clean_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A non-SQLite file at the store path used to raise an
+        unhandled traceback; the fix returns exit 2 with a clean
+        error message."""
+        bogus = tmp_path / "garbage.db"
+        bogus.write_bytes(b"not a sqlite file" * 100)
+        exit_code = cli_main(["audit", "verify", "--store-path", str(bogus)])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "cannot open" in err or "SQLite" in err
+
 
 class TestAuditList:
     def test_lists_all_rows_when_no_filters(
@@ -285,6 +298,16 @@ class TestAuditList:
         exit_code = cli_main(["audit", "list", "--store-path", str(nonexistent)])
         assert exit_code == 2
         assert "not found" in capsys.readouterr().err
+
+    def test_corrupt_db_file_returns_two_with_clean_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bogus = tmp_path / "garbage.db"
+        bogus.write_bytes(b"not a sqlite file" * 100)
+        exit_code = cli_main(["audit", "list", "--store-path", str(bogus)])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "cannot open" in err or "SQLite" in err
 
     def test_json_mode_includes_fingerprint_hex(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

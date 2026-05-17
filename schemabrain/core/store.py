@@ -2000,7 +2000,17 @@ class SQLiteStore:
             self._conn = None
 
     def _init_schema(self) -> None:
+        # `mcp_audit` DDL is owned by the audit module so the audit
+        # surface stays co-located with its writer + verifier. The
+        # import is local to avoid an `audit -> core -> audit` cycle
+        # at module-load time; runtime cost is one-time per process.
+        from schemabrain.audit.ddl import ensure_audit_schema
+
         conn = self._require_conn()
+        # Single atomic block: core DDL + version stamp + audit DDL all
+        # commit together. A crash mid-block rolls back, so the version
+        # stamp never lands without the `mcp_audit` table that the
+        # stamp implies exists.
         with conn:
             for stmt in _DDL_STATEMENTS:
                 conn.execute(stmt)
@@ -2008,12 +2018,7 @@ class SQLiteStore:
                 "INSERT OR IGNORE INTO schemabrain_meta (key, value) VALUES (?, ?)",
                 ("schema_version", _SCHEMA_VERSION),
             )
-        # `mcp_audit` DDL is owned by the audit module so the audit
-        # surface stays co-located with its writer + verifier. The
-        # schema-version bump above keeps the on-disk shape in lock-step.
-        from schemabrain.audit.ddl import ensure_audit_schema
-
-        ensure_audit_schema(conn)
+            ensure_audit_schema(conn)
         stored = conn.execute(
             "SELECT value FROM schemabrain_meta WHERE key = ?", ("schema_version",)
         ).fetchone()

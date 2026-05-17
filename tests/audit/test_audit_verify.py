@@ -176,6 +176,74 @@ class TestWalkChainTampering:
             conn.close()
 
 
+class TestCanonicalisationError:
+    def test_corrupted_row_yields_synthetic_mismatch(self, tmp_path: Path) -> None:
+        """A row whose canonical form raises (e.g. a binary field with
+        the wrong byte width) used to crash the walker. The fix yields
+        a synthetic ChainMismatch with the error embedded in
+        expected_hex so forensic walks see the broken row in context."""
+        db_path = tmp_path / "s.db"
+        writer = AuditWriter(db_path)
+        try:
+            _seed(writer, n=3)
+        finally:
+            writer.close()
+
+        # Corrupt row 2's fingerprint to be wrong-width (16 bytes
+        # instead of 32). canonical_audit_row will refuse.
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("DROP TRIGGER mcp_audit_no_update")
+            conn.execute(
+                "UPDATE mcp_audit SET fingerprint = ? WHERE id = 2",
+                (b"\x00" * 16,),
+            )
+            conn.commit()
+            mismatches = list(walk_chain(conn, full=True))
+        finally:
+            conn.close()
+
+        # Row 2 surfaces as a canonicalisation error; row 3 still gets
+        # validated against the writer's chain so it should also
+        # surface as a mismatch (its expected prev now uses the
+        # corrupted row's stored chain_hash which is unchanged, but
+        # the chain computed from row 3's canonical bytes won't match
+        # because row 3 was written using row 2's ORIGINAL canonical
+        # — wait, that's a subtle case; the test asserts at minimum
+        # that row 2 surfaces as the canonicalisation-error variant.
+        ids = [m.row_id for m in mismatches]
+        assert 2 in ids
+        row2 = next(m for m in mismatches if m.row_id == 2)
+        assert "canonicalisation-error" in row2.expected_hex
+
+    def test_full_false_stops_at_canonicalisation_error(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "s.db"
+        writer = AuditWriter(db_path)
+        try:
+            _seed(writer, n=3)
+        finally:
+            writer.close()
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("DROP TRIGGER mcp_audit_no_update")
+            conn.execute(
+                "UPDATE mcp_audit SET fingerprint = ? WHERE id = 1",
+                (b"\x00" * 16,),
+            )
+            conn.commit()
+            # full=False — should stop after row 1's canonicalisation
+            # error.
+            mismatches = list(walk_chain(conn, full=False))
+        finally:
+            conn.close()
+        assert len(mismatches) == 1
+        assert mismatches[0].row_id == 1
+        assert "canonicalisation-error" in mismatches[0].expected_hex
+
+
 class TestChainMismatchShape:
     def test_mismatch_carries_expected_and_actual_hex(self, tmp_path: Path) -> None:
         db_path = tmp_path / "s.db"

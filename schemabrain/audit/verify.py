@@ -63,14 +63,33 @@ def walk_chain(conn: sqlite3.Connection, *, full: bool = False) -> Iterator[Chai
     With `full=False` (default) stops after the first mismatch — the
     common "is the chain intact?" check exits early. With `full=True`
     continues past mismatches so forensic walks report every break.
+
+    Rows whose canonical serialisation raises (corrupted shape, wrong
+    binary widths, future-schema drift) surface as a synthetic
+    `ChainMismatch` rather than crashing the iterator — a forensic
+    walker should see every break, including unserialisable rows.
     """
     prev_chain = GENESIS_CHAIN_HASH
     select_cols = ", ".join(_ROW_COLUMNS) + ", chain_hash"
     cursor = conn.execute(f"SELECT {select_cols} FROM mcp_audit ORDER BY id ASC")
     for row in cursor:
         actual_chain = bytes(row["chain_hash"])
-        canonical_dict = _row_to_canonical_dict(row)
-        canonical = canonical_audit_row(canonical_dict)
+        try:
+            canonical_dict = _row_to_canonical_dict(row)
+            canonical = canonical_audit_row(canonical_dict)
+        except ValueError as exc:
+            yield ChainMismatch(
+                row_id=row["id"],
+                expected_hex=f"<canonicalisation-error: {exc}>",
+                actual_hex=actual_chain.hex(),
+            )
+            if not full:
+                return
+            # Cannot recompute the expected chain for this row, but
+            # advance prev_chain with the stored value so subsequent
+            # rows can still be validated against the writer's path.
+            prev_chain = actual_chain
+            continue
         expected_chain = compute_chain_hash(prev_chain, canonical)
         if expected_chain != actual_chain:
             yield ChainMismatch(

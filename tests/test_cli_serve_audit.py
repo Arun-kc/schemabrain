@@ -128,3 +128,47 @@ class TestServeAuditWiring:
         stderr = capsys.readouterr().err
         assert "cannot initialise audit writer" in stderr
         assert "Read-only file system" in stderr
+        # Exception class name is included so operators can distinguish
+        # OSError from sqlite3.DatabaseError from ValueError.
+        assert "OSError" in stderr
+
+    def test_non_oserror_audit_init_also_falls_back(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A non-OSError from AuditWriter.__init__ (e.g.,
+        corrupted-chain ValueError, sqlite3.DatabaseError on a
+        damaged file) used to crash serve. The fix broadens the
+        catch so the same fallback discipline applies."""
+        import sys as _sys
+
+        store_path = tmp_path / "store.db"
+        _seed_store(store_path)
+        captured = _patch_run_stdio_capture(monkeypatch)
+        monkeypatch.setenv("FAKE_URL", "postgresql+psycopg://fake/serve")
+
+        writer_mod = _sys.modules["schemabrain.audit.writer"]
+
+        def _explode(*args: object, **kwargs: object) -> object:
+            raise ValueError("mcp_audit row 7 has corrupted chain_hash (16 bytes)")
+
+        monkeypatch.setattr(writer_mod, "AuditWriter", _explode)
+
+        exit_code = cli_main(
+            [
+                "serve",
+                "--url-env",
+                "FAKE_URL",
+                "--store-path",
+                str(store_path),
+                "--no-events",
+            ]
+        )
+        assert exit_code == 0
+        assert captured["audit_writer"] is None
+        stderr = capsys.readouterr().err
+        assert "cannot initialise audit writer" in stderr
+        assert "ValueError" in stderr
+        assert "corrupted chain_hash" in stderr

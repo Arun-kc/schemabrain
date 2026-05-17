@@ -1612,10 +1612,17 @@ def _cmd_serve(
     else:
         try:
             audit_writer = AuditWriter(Path(store_path).expanduser())
-        except OSError as exc:
+        except Exception as exc:
+            # OSError (permissions / read-only volume) is the common
+            # case; SchemaVersionMismatchError, sqlite3.DatabaseError,
+            # and corrupted-chain ValueError from the tail-load path
+            # all want the same response — fall back to audit-disabled
+            # rather than crash serve. The exception class is included
+            # in the warning so the operator can distinguish causes.
             print(
                 f"schemabrain serve: cannot initialise audit writer at "
-                f"{store_path}: {exc}. Continuing with audit disabled. "
+                f"{store_path}: {type(exc).__name__}: {exc}. "
+                f"Continuing with audit disabled. "
                 f"Pass --no-audit to suppress this warning.",
                 file=sys.stderr,
             )
@@ -3359,10 +3366,20 @@ def _cmd_audit_verify(*, store_path: str, full: bool) -> int:
         print(f"error: store file not found at {path}", file=_sys.stderr)
         return 2
 
-    conn = _sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        conn = _sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except _sqlite3.DatabaseError as exc:
+        print(
+            f"error: cannot open {path} as a SQLite database: {exc}",
+            file=_sys.stderr,
+        )
+        return 2
     conn.row_factory = _sqlite3.Row
     try:
         mismatches = list(walk_chain(conn, full=full))
+    except _sqlite3.DatabaseError as exc:
+        print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
+        return 2
     finally:
         conn.close()
 
@@ -3423,7 +3440,14 @@ def _cmd_audit_list(
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     params.append(limit)
 
-    conn = _sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        conn = _sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except _sqlite3.DatabaseError as exc:
+        print(
+            f"error: cannot open {path} as a SQLite database: {exc}",
+            file=_sys.stderr,
+        )
+        return 2
     conn.row_factory = _sqlite3.Row
     try:
         # Column list hardcoded — no user input flows here.
@@ -3436,6 +3460,9 @@ def _cmd_audit_list(
                 params,
             )
         )
+    except _sqlite3.DatabaseError as exc:
+        print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
+        return 2
     finally:
         conn.close()
 

@@ -189,6 +189,18 @@ write can lose the last few rows; the chain hash still keeps the rest
 of the table tamper-evident. Stricter fsync-on-write durability lives
 on the roadmap.
 
+### Single-process constraint
+
+Run **one** `schemabrain serve` instance per store file. The audit
+writer holds an in-memory `_last_chain_hash` that is recovered from
+the table tail on startup. Two `serve` processes against the same
+store would each compute the next `id` independently and race the
+`INSERT` — the second loses with a `UNIQUE` constraint failure that
+surfaces as a stderr `BUG` line and silently drops the audit row.
+
+If you need horizontal scale, separate the source databases (one
+store per source) until v3 hosted brings a multi-writer audit plane.
+
 ### Opting out
 
 ```bash

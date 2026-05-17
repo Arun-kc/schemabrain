@@ -256,6 +256,77 @@ class TestFingerprintInjection:
         finally:
             writer.close()
 
+    def test_data_with_fingerprint_but_no_model_copy_warns_once(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The wire-shape regression case must surface as a stderr
+        warning so a contributor sees the silent skip the first time."""
+        import sys as _sys
+
+        instrument_mod = _sys.modules["schemabrain.observability.instrument"]
+        monkeypatch.setattr(instrument_mod, "_injection_skip_logged", set())
+
+        class _PlainData:
+            fingerprint = "fp-unset"
+
+        writer = AuditWriter(tmp_path / "s.db")
+        try:
+
+            @instrument(
+                tool_name="get_metric",
+                bus=NullEventBus(),
+                redactor=EventRedactor(),
+                server_session_id=_SESSION,
+                audit_writer=writer,
+                source_connection_id=_SOURCE,
+            )
+            def fake_tool() -> _FakeResponse:
+                return _FakeResponse(status="success", data=_PlainData())
+
+            fake_tool()
+            fake_tool()  # second call — dedupe should keep warning to one
+            err = capsys.readouterr().err
+            assert err.count("fingerprint injection skipped") == 1
+            assert "_PlainData" in err
+            assert "data.model_copy missing" in err
+        finally:
+            writer.close()
+
+    def test_pydantic_data_but_dataclass_response_envelope_warns(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the outer envelope lacks model_copy (e.g., a plain
+        dataclass), the inner model_copy succeeds but the outer
+        rewrap fails — also surfaces as a warning."""
+        import sys as _sys
+
+        instrument_mod = _sys.modules["schemabrain.observability.instrument"]
+        monkeypatch.setattr(instrument_mod, "_injection_skip_logged", set())
+
+        writer = AuditWriter(tmp_path / "s.db")
+        try:
+
+            @instrument(
+                tool_name="get_metric",
+                bus=NullEventBus(),
+                redactor=EventRedactor(),
+                server_session_id=_SESSION,
+                audit_writer=writer,
+                source_connection_id=_SOURCE,
+            )
+            def fake_tool() -> _FakeResponse:
+                return _FakeResponse(
+                    status="success",
+                    data=_ResultWithFingerprint(fingerprint="fp-unset", value=1),
+                )
+
+            fake_tool()
+            err = capsys.readouterr().err
+            assert "fingerprint injection skipped" in err
+            assert "response.model_copy missing" in err
+        finally:
+            writer.close()
+
     def test_pydantic_data_but_dataclass_response_envelope_passes_through(
         self, tmp_path: Path
     ) -> None:

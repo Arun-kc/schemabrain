@@ -276,6 +276,65 @@ class TestAuditWriterConcurrency:
         assert sorted(results) == list(range(1, 2 * n_per_thread + 1))
 
 
+class TestAuditWriterCorruptedTail:
+    """A corrupted last-row `chain_hash` (wrong byte width) used to be
+    silently propagated — every subsequent write then failed with
+    'prev must be 32 bytes' caught by the BUG path. The fix raises
+    at construction time so the operator sees a clear message and the
+    serve fallback path catches it cleanly."""
+
+    def test_short_chain_hash_raises_at_load(self, tmp_path: Path) -> None:
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "store.db"
+        writer = AuditWriter(db_path)
+        try:
+            writer.write(_draft())
+        finally:
+            writer.close()
+
+        # Tamper the chain_hash to be too short. The trigger blocks
+        # UPDATE so drop it temporarily.
+        conn = _sqlite3.connect(db_path)
+        try:
+            conn.execute("DROP TRIGGER mcp_audit_no_update")
+            conn.execute(
+                "UPDATE mcp_audit SET chain_hash = ? WHERE id = 1",
+                (b"\x00" * 16,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with pytest.raises(ValueError, match="corrupted chain_hash"):
+            AuditWriter(db_path)
+
+
+class TestBrokenResponseWarning:
+    def test_warning_emitted_once_per_tool_type_pair(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Repeated broken-response calls log once per (tool, status-class)
+        pair so a recurring bug stays visible without flooding stderr."""
+
+        from schemabrain.audit import writer as writer_mod
+
+        monkeypatch.setattr(writer_mod, "_broken_response_logged", set())
+
+        # First call — should log.
+        writer_mod._warn_broken_response("describe_table", None)
+        # Second call with same args — should be deduped.
+        writer_mod._warn_broken_response("describe_table", None)
+        # Third call with different tool — should log again.
+        writer_mod._warn_broken_response("describe_column", None)
+
+        err = capsys.readouterr().err
+        # Two WARNING lines: one per (tool, class) pair.
+        assert err.count("WARNING") == 2
+        assert "describe_table" in err
+        assert "describe_column" in err
+
+
 class TestAuditWriterInitDir:
     def test_creates_parent_directory_if_missing(self, tmp_path: Path) -> None:
         nested = tmp_path / "deep" / "dir" / "store.db"

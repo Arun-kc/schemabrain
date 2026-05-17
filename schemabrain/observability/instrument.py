@@ -29,7 +29,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import wraps
-from typing import Any, TypeVar
+from typing import Any, TypeVar, overload
 
 from schemabrain.audit.writer import AuditRow, AuditWriter, build_audit_row
 from schemabrain.observability.bus import EventBus
@@ -52,6 +52,30 @@ def now_iso_utc() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
 
 
+@overload
+def instrument(
+    *,
+    tool_name: str,
+    bus: EventBus,
+    redactor: EventRedactor,
+    server_session_id: str,
+    audit_writer: None = ...,
+    source_connection_id: None = ...,
+) -> Callable[[Callable[..., T]], Callable[..., T]]: ...
+
+
+@overload
+def instrument(
+    *,
+    tool_name: str,
+    bus: EventBus,
+    redactor: EventRedactor,
+    server_session_id: str,
+    audit_writer: AuditWriter,
+    source_connection_id: str,
+) -> Callable[[Callable[..., T]], Callable[..., T]]: ...
+
+
 def instrument(
     *,
     tool_name: str,
@@ -69,10 +93,10 @@ def instrument(
     shape; if shape is wrong, the emit step catches the AttributeError
     and drops the event rather than blowing up the tool.
 
-    `audit_writer` is optional. When set, `source_connection_id` MUST
-    also be set — the audit row needs it to attribute the call to the
-    right source database. Setting one without the other is a
-    programming bug and raises at decorator construction time.
+    `audit_writer` and `source_connection_id` are a pair — either both
+    set or both unset. The overloads above push this constraint into
+    the type system; the runtime check below catches the same misuse
+    for callers that bypass type checking.
     """
     if audit_writer is not None and source_connection_id is None:
         raise ValueError("instrument(audit_writer=...) requires source_connection_id to be set")
@@ -88,10 +112,14 @@ def instrument(
             # path below so an audit failure does not block tail.
             audit_row: AuditRow | None = None
             if audit_writer is not None:
+                # source_connection_id is guaranteed non-None by the
+                # pair-validation in instrument() above; the assert
+                # narrows for the type checker without runtime cost.
+                assert source_connection_id is not None
                 audit_row = _safe_audit_write(
                     writer=audit_writer,
                     tool_name=tool_name,
-                    source_connection_id=source_connection_id or "",
+                    source_connection_id=source_connection_id,
                     response=response,
                 )
             if audit_row is not None:
@@ -158,18 +186,50 @@ def _maybe_inject_fingerprint(response: Any, fingerprint_hex: str) -> Any:
     (hasattr fingerprint + model_copy) ensures we don't trip on any
     arbitrary MetricResult-shaped class — only on real Pydantic
     models with the field defined.
+
+    When `data` carries a `fingerprint` field but cannot be rewrapped
+    (`data` has no `model_copy`, or the outer `response` has no
+    `model_copy`), emit a one-shot stderr warning. The audit row was
+    still persisted, but the agent sees the placeholder value — a
+    silent wire-shape regression otherwise.
     """
     data = getattr(response, "data", None)
+    # Use `is None` deliberately: a falsy-but-not-None data object
+    # (e.g. an empty list) has no `fingerprint` field, and the next
+    # hasattr check returns False. Switching to `if not data:` would
+    # also skip legitimate empty containers that DO have the field.
     if data is None:
         return response
     if not hasattr(data, "fingerprint"):
         return response
     if not hasattr(data, "model_copy"):
+        _warn_injection_skipped(type(data).__name__, "data.model_copy missing")
         return response
     new_data = data.model_copy(update={"fingerprint": fingerprint_hex})
-    if hasattr(response, "model_copy"):
-        return response.model_copy(update={"data": new_data})
-    return response
+    if not hasattr(response, "model_copy"):
+        _warn_injection_skipped(type(response).__name__, "response.model_copy missing")
+        return response
+    return response.model_copy(update={"data": new_data})
+
+
+_injection_skip_logged: set[tuple[str, str]] = set()
+
+
+def _warn_injection_skipped(type_name: str, reason: str) -> None:
+    """One stderr line per (type, reason) pair so a repeating
+    misconfiguration doesn't flood logs. Programming bug class —
+    visible enough that a fresh contributor sees it the first time."""
+    key = (type_name, reason)
+    if key in _injection_skip_logged:
+        return
+    _injection_skip_logged.add(key)
+    print(
+        f"schemabrain audit: fingerprint injection skipped for "
+        f"{type_name} ({reason}). Agent sees the placeholder value; "
+        f"audit row was still persisted. This is a wire-shape "
+        f"regression — verify the envelope is Pydantic-shaped.",
+        file=sys.stderr,
+    )
 
 
 def _safe_emit(

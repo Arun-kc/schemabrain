@@ -20,21 +20,29 @@ import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from schemabrain.audit.canonical import canonical_audit_row
-from schemabrain.audit.chain import GENESIS_CHAIN_HASH, compute_chain_hash
+from schemabrain.audit.chain import CHAIN_HASH_SIZE, GENESIS_CHAIN_HASH, compute_chain_hash
 from schemabrain.audit.ddl import ensure_audit_schema
 from schemabrain.audit.fingerprint import (
     FINGERPRINT_VERSION,
+    CostClass,
     FingerprintInput,
+    RefusalReason,
     compute_fingerprint,
 )
 
-# Mirrors the SQL CHECK on the `status` column. Used to fall back to
-# `"error"` when a tool returns a response without a recognisable
-# status — keeps the row writable rather than failing the INSERT under
-# adversarial / programming-bug inputs.
+# Mirrors the SQL CHECK on the `status` column AND the Charter envelope
+# Status literal. Kept as a sibling Literal here so the audit module
+# does not import from `schemabrain.mcp.envelope` (which would pull in
+# pydantic and inflate the audit dependency graph).
+AuditStatus = Literal["success", "empty", "partial", "degraded", "error", "refused"]
+
+# Frozenset for the runtime fallback at `build_audit_row` time — when a
+# tool returns a response with a status outside the enum, we coerce to
+# "error" rather than fail the INSERT. The set is derived from the
+# Literal so the two stay in lock-step.
 _ALLOWED_STATUSES: Final[frozenset[str]] = frozenset(
     {"success", "empty", "partial", "degraded", "error", "refused"}
 )
@@ -54,9 +62,9 @@ class AuditRow:
     source_connection_id: str
     caller_id: str | None
     tool_name: str
-    status: str
-    refusal_reason: str | None
-    cost_class: str
+    status: AuditStatus
+    refusal_reason: RefusalReason | None
+    cost_class: CostClass
     pii_categories: str
     ast_shape_hash: bytes | None
     rule_id: str | None
@@ -85,7 +93,16 @@ def build_audit_row(
     they're nullable in the schema until v2 brings real values).
     """
     raw_status = getattr(response, "status", None)
-    status = raw_status if raw_status in _ALLOWED_STATUSES else "error"
+    if raw_status not in _ALLOWED_STATUSES:
+        # A tool returning None or a bare object (forgot to wrap in
+        # ToolResponse) hits this path. The audit row still lands as
+        # `status="error"` so the chain stays gap-free, but the broken
+        # tool surface needs to be visible to the contributor —
+        # otherwise the bug hides behind a clean-looking error row.
+        _warn_broken_response(tool_name, raw_status)
+        status = "error"
+    else:
+        status = raw_status
     return {
         "source_connection_id": source_connection_id,
         "caller_id": None,
@@ -108,6 +125,27 @@ def _now_iso_utc() -> str:
     packages — both are small and the format is a fixed contract.
     """
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+
+
+_broken_response_logged: set[tuple[str, str]] = set()
+
+
+def _warn_broken_response(tool_name: str, raw_status: Any) -> None:
+    """One stderr line per (tool, status-class) pair. A repeating
+    broken tool doesn't flood logs but stays visible the first time."""
+    import sys
+
+    key = (tool_name, type(raw_status).__name__)
+    if key in _broken_response_logged:
+        return
+    _broken_response_logged.add(key)
+    print(
+        f"schemabrain audit WARNING: tool {tool_name!r} returned a "
+        f"response with no .status (got {raw_status!r}). Writing "
+        f"audit row with status='error'. Fix the tool to return a "
+        f"ToolResponse-shaped object.",
+        file=sys.stderr,
+    )
 
 
 class AuditWriter:
@@ -134,7 +172,11 @@ class AuditWriter:
         if path_str != ":memory:":
             self._conn.execute("PRAGMA journal_mode = WAL")
             self._conn.execute("PRAGMA synchronous = NORMAL")
-        ensure_audit_schema(self._conn)
+        # ensure_audit_schema does NOT open its own transaction so it
+        # can participate in larger atomic blocks elsewhere; here we
+        # wrap it ourselves since this is a standalone construction.
+        with self._conn:
+            ensure_audit_schema(self._conn)
         self._lock = threading.Lock()
         self._last_chain_hash = self._load_tail_chain_hash()
 
@@ -142,15 +184,29 @@ class AuditWriter:
         """Read the most recent row's `chain_hash` so the next write
         extends the chain rather than restarting from genesis.
 
-        Returns `GENESIS_CHAIN_HASH` when the table is empty.
+        Returns `GENESIS_CHAIN_HASH` when the table is empty. Raises
+        `ValueError` if the stored chain_hash is not exactly 32 bytes
+        (a corrupted DB) — the caller (`_cmd_serve`) catches and falls
+        back to audit-disabled rather than silently producing rows
+        every subsequent write would reject with "prev must be 32 bytes."
         """
         conn = self._require_conn()
-        row = conn.execute("SELECT chain_hash FROM mcp_audit ORDER BY id DESC LIMIT 1").fetchone()
+        row = conn.execute(
+            "SELECT id, chain_hash FROM mcp_audit ORDER BY id DESC LIMIT 1"
+        ).fetchone()
         if row is None:
             return GENESIS_CHAIN_HASH
         # SQLite returns BLOB as memoryview in some bindings; bytes()
         # normalises.
-        return bytes(row["chain_hash"])
+        raw = bytes(row["chain_hash"])
+        if len(raw) != CHAIN_HASH_SIZE:
+            raise ValueError(
+                f"mcp_audit row {row['id']} has corrupted chain_hash "
+                f"({len(raw)} bytes; expected {CHAIN_HASH_SIZE}). The "
+                f"chain is unrecoverable from this row; restore from "
+                f"backup or delete the store and re-index."
+            )
+        return raw
 
     def write(self, draft: dict[str, Any]) -> AuditRow:
         """Persist one row and return the materialised `AuditRow`.
@@ -229,7 +285,13 @@ class AuditWriter:
                     ),
                 )
 
-            # Commit succeeded — advance the in-memory tail.
+            # CRITICAL INVARIANT: only reached after `with conn:` exits
+            # cleanly (commit succeeded). An exception inside the
+            # `with` block re-raises here without executing this
+            # assignment, leaving `_last_chain_hash` matching the
+            # on-disk tail. Do NOT insert code between the `with`
+            # block and this line — that would risk desyncing the
+            # in-memory tail from the persisted state.
             self._last_chain_hash = chain_hash
             return AuditRow(
                 id=next_id,

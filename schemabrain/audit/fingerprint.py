@@ -59,9 +59,9 @@ class FingerprintInput:
     rule_id: str | None
 
 
-def compute_fingerprint(input: FingerprintInput) -> bytes:
+def compute_fingerprint(fp_input: FingerprintInput) -> bytes:
     """Return the 32-byte sha256 digest of a canonical serialisation
-    of `input`.
+    of `fp_input`.
 
     Stable across deployments: two deployments that build a
     semantically-identical `FingerprintInput` produce the IDENTICAL
@@ -70,11 +70,11 @@ def compute_fingerprint(input: FingerprintInput) -> bytes:
     canonical = json.dumps(
         {
             "v": FINGERPRINT_VERSION,
-            "ast": input.ast_shape_hash.hex() if input.ast_shape_hash is not None else None,
-            "pii": sorted(input.pii_tags_touched),
-            "reason": input.refusal_reason,
-            "cost": input.cost_class,
-            "rule": input.rule_id,
+            "ast": fp_input.ast_shape_hash.hex() if fp_input.ast_shape_hash is not None else None,
+            "pii": sorted(fp_input.pii_tags_touched),
+            "reason": fp_input.refusal_reason,
+            "cost": fp_input.cost_class,
+            "rule": fp_input.rule_id,
         },
         sort_keys=True,
         separators=(",", ":"),
