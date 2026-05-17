@@ -810,17 +810,561 @@ class TestRunIndexerSmoke:
         assert pkw["cryptic_concurrency"] == wizard._WIZARD_INDEX_CRYPTIC_CONCURRENCY
 
 
-# ----- _stage_entities (stub at this commit) -------------------------------
+# ----- _stage_entities -----------------------------------------------------
 
 
-class TestStageEntitiesStub:
-    def test_returns_skipped_with_recovery_hint(self, base_config: WizardConfig) -> None:
-        ctx = WizardContext(config=base_config)
-        outcome = wizard._stage_entities(ctx)
+class TestStageEntities:
+    def test_skipped_when_no_entities_flag_set(self, base_config: WizardConfig) -> None:
+        cfg = _pg_config(base_config, no_entities=True)
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
 
-        assert outcome.stage == 3
         assert outcome.status == "skipped"
+        assert "--no-entities" in outcome.message
         assert "entities suggest" in (outcome.next_step or "")
+
+    def test_skipped_when_skip_index_set(self, base_config: WizardConfig) -> None:
+        cfg = _pg_config(base_config, skip_index=True)
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "--skip-index" in outcome.message
+
+    def test_skipped_for_non_postgres_source(self, base_config: WizardConfig) -> None:
+        # base_config has sqlite:///:memory:
+        outcome = wizard._stage_entities(WizardContext(config=base_config))
+
+        assert outcome.status == "skipped"
+        assert "Postgres" in outcome.message
+
+    def test_skipped_when_anthropic_key_missing(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Stage 3 is best-effort — missing key is `skipped`, not `failed`.
+        cfg = _pg_config(base_config)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "ANTHROPIC_API_KEY" in outcome.message
+
+    def test_skipped_when_entities_already_present(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 5)
+        monkeypatch.setattr(
+            wizard,
+            "_run_entity_suggestion",
+            lambda **_kw: pytest.fail("pipeline ran despite idempotent skip"),
+        )
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "5 entit" in outcome.message  # "5 entity" or "5 entities"
+
+    def test_failed_on_schema_version_mismatch(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        peek_failure = StageOutcome(
+            stage=3,
+            name="entities",
+            status="failed",
+            message="store created with schema v10 but installed schemabrain expects v12",
+            next_step=f"delete {cfg.store_path} and re-run",
+        )
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: peek_failure)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "v10" in outcome.message
+
+    def test_done_on_successful_apply(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        canned = wizard._EntityApplyResult(applied_count=8, cost_usd=0.0125, llm_model="sonnet-4.6")
+        captured: dict[str, object] = {}
+
+        def _fake_run(**kwargs: object) -> wizard._EntityApplyResult:
+            captured.update(kwargs)
+            return canned
+
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", _fake_run)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "8 entit" in outcome.message
+        assert "$0.0125" in outcome.message
+        # Confirm the wizard's cost cap was passed through.
+        assert isinstance(captured["max_cost_usd"], float)
+
+    def test_runs_pipeline_when_store_exists_but_no_entities(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Store file exists (e.g. from indexing) but zero entities
+        # for this source_id — wizard must fall through to the
+        # pipeline.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 0)
+        canned = wizard._EntityApplyResult(applied_count=3, cost_usd=0.005, llm_model="sonnet-4.6")
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", lambda **_kw: canned)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "3 entit" in outcome.message
+
+    def test_failed_on_cost_ceiling(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._CostCeilingExceededAtWizard("cost ceiling exceeded")
+
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", _raise)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert outcome.next_step is not None
+        assert "--entities-max-cost-usd" in outcome.next_step
+
+    def test_failed_on_parse_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._SuggestionParseAtWizard("invalid YAML")
+
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", _raise)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "unparseable" in outcome.message
+
+    def test_skipped_on_empty_schema(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._EmptySchemaAtWizard()
+
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", _raise)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "no indexed tables" in outcome.message
+
+    def test_failed_when_pipeline_returns_zero_candidates(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        empty = wizard._EntityApplyResult(applied_count=0, cost_usd=0.0021, llm_model="x")
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", lambda **_kw: empty)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "0 candidates" in outcome.message
+
+
+class TestResolveEntitiesCostCap:
+    def test_explicit_flag_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SCHEMABRAIN_MAX_LLM_COST_USD", "5.0")
+        assert wizard._resolve_entities_cost_cap(0.25) == 0.25
+
+    def test_env_used_when_flag_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SCHEMABRAIN_MAX_LLM_COST_USD", "0.75")
+        assert wizard._resolve_entities_cost_cap(None) == 0.75
+
+    def test_default_used_when_env_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SCHEMABRAIN_MAX_LLM_COST_USD", raising=False)
+        assert (
+            wizard._resolve_entities_cost_cap(None) == wizard._WIZARD_ENTITIES_DEFAULT_COST_CAP_USD
+        )
+
+    def test_malformed_env_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SCHEMABRAIN_MAX_LLM_COST_USD", "not-a-float")
+        assert (
+            wizard._resolve_entities_cost_cap(None) == wizard._WIZARD_ENTITIES_DEFAULT_COST_CAP_USD
+        )
+
+
+class TestPeekEntityCount:
+    def test_returns_zero_for_fresh_store(self, tmp_path: Path) -> None:
+        from schemabrain.core.store import SQLiteStore
+
+        store_path = tmp_path / "peek_entity.db"
+        # Touch the store via context manager so it exists with schema v12.
+        with SQLiteStore(store_path):
+            pass
+
+        assert wizard._peek_entity_count(store_path, "missing_source") == 0
+
+    def test_returns_failed_outcome_on_schema_mismatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.core.store import SchemaVersionMismatchError
+
+        store_path = tmp_path / "mismatch_entity.db"
+        store_path.touch()
+
+        def _raise_mismatch(*_a: object, **_kw: object) -> None:
+            raise SchemaVersionMismatchError("v10 != v12")
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore.__init__", _raise_mismatch)
+
+        outcome = wizard._peek_entity_count(store_path, "src")
+
+        assert isinstance(outcome, StageOutcome)
+        assert outcome.status == "failed"
+        assert outcome.stage == 3
+
+
+class TestRunEntitySuggestionSmoke:
+    def test_pipeline_invoked_and_writes_applied(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Substitute every external dependency so we can verify the
+        # function's wiring without standing up Anthropic or Postgres.
+        from schemabrain.entities.suggest import SuggestionResult
+
+        cfg = _pg_config(base_config)
+
+        # Build a fake suggestion result with two candidates.
+        class _FakeEntity:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        class _FakeCandidate:
+            def __init__(self, name: str) -> None:
+                self.entity = _FakeEntity(name=name)
+
+        canned = SuggestionResult(
+            candidates=(_FakeCandidate("orders"), _FakeCandidate("users")),  # type: ignore[arg-type]
+            total_cost_usd=0.0123,
+            llm_model="sonnet-4.6",
+        )
+
+        applied_writes: list[str] = []
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_tables(self, *, source_connection_id: str) -> list[tuple[str, str]]:
+                return [("public", "orders"), ("public", "users")]
+
+            def get_table(self, _schema: str, name: str, *, source_connection_id: str) -> object:
+                return object()
+
+            def write_entity(self, entity: object, *, source_connection_id: str) -> None:
+                applied_writes.append(entity.name)  # type: ignore[attr-defined]
+
+        class _FakePipeline:
+            def __init__(self, *, llm: object) -> None:
+                pass
+
+            def propose_from_tables(self, _tables: object) -> SuggestionResult:
+                return canned
+
+        class _FakeGuard:
+            def __init__(self, *, inner: object, max_cost_usd: float) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr("schemabrain.entities.suggest.EntitySuggestionPipeline", _FakePipeline)
+        monkeypatch.setattr("schemabrain.entities.suggest.CostCeilingGuard", _FakeGuard)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        result = wizard._run_entity_suggestion(
+            cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=0.5
+        )
+
+        assert result.applied_count == 2
+        assert result.cost_usd == 0.0123
+        assert result.llm_model == "sonnet-4.6"
+        assert applied_writes == ["orders", "users"]
+
+    def test_raises_empty_schema_when_no_tables(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_tables(self, *, source_connection_id: str) -> list[tuple[str, str]]:
+                return []
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        with pytest.raises(wizard._EmptySchemaAtWizard):
+            wizard._run_entity_suggestion(
+                cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=0.5
+            )
+
+    def test_raises_empty_schema_when_tables_unloadable(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `list_tables` returns names but `get_table` returns None for
+        # each (the cache row exists but the table fingerprints are
+        # missing). The function should treat this as empty-schema.
+        cfg = _pg_config(base_config)
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_tables(self, *, source_connection_id: str) -> list[tuple[str, str]]:
+                return [("public", "ghost")]
+
+            def get_table(self, *_a: object, **_kw: object) -> None:
+                return None
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        with pytest.raises(wizard._EmptySchemaAtWizard):
+            wizard._run_entity_suggestion(
+                cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=0.5
+            )
+
+    def test_translates_cost_ceiling_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.entities.suggest import CostCeilingExceededError
+
+        cfg = _pg_config(base_config)
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_tables(self, *, source_connection_id: str) -> list[tuple[str, str]]:
+                return [("public", "t")]
+
+            def get_table(self, *_a: object, **_kw: object) -> object:
+                return object()
+
+        class _RaisingPipeline:
+            def __init__(self, *, llm: object) -> None:
+                pass
+
+            def propose_from_tables(self, _tables: object) -> object:
+                raise CostCeilingExceededError(
+                    cumulative_cost_usd=0.5,
+                    next_call_estimate_usd=0.6,
+                    max_cost_usd=1.0,
+                )
+
+        class _FakeGuard:
+            def __init__(self, **_kw: object) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr(
+            "schemabrain.entities.suggest.EntitySuggestionPipeline", _RaisingPipeline
+        )
+        monkeypatch.setattr("schemabrain.entities.suggest.CostCeilingGuard", _FakeGuard)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        with pytest.raises(wizard._CostCeilingExceededAtWizard):
+            wizard._run_entity_suggestion(
+                cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=1.0
+            )
+
+    def test_translates_parse_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.entities.suggest import SuggestionParseError
+
+        cfg = _pg_config(base_config)
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_tables(self, *, source_connection_id: str) -> list[tuple[str, str]]:
+                return [("public", "t")]
+
+            def get_table(self, *_a: object, **_kw: object) -> object:
+                return object()
+
+        class _RaisingPipeline:
+            def __init__(self, *, llm: object) -> None:
+                pass
+
+            def propose_from_tables(self, _tables: object) -> object:
+                raise SuggestionParseError("bad YAML")
+
+        class _FakeGuard:
+            def __init__(self, **_kw: object) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr(
+            "schemabrain.entities.suggest.EntitySuggestionPipeline", _RaisingPipeline
+        )
+        monkeypatch.setattr("schemabrain.entities.suggest.CostCeilingGuard", _FakeGuard)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        with pytest.raises(wizard._SuggestionParseAtWizard):
+            wizard._run_entity_suggestion(
+                cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=1.0
+            )
+
+    def test_partial_apply_breaks_on_integrity_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Verify the `except (DbtOwnedEntityError, IntegrityError): break`
+        # path: write candidate 0 succeeds, candidate 1 raises, applied=1.
+        from sqlite3 import IntegrityError
+
+        from schemabrain.entities.suggest import SuggestionResult
+
+        cfg = _pg_config(base_config)
+
+        class _FakeEntity:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        class _FakeCandidate:
+            def __init__(self, name: str) -> None:
+                self.entity = _FakeEntity(name=name)
+
+        canned = SuggestionResult(
+            candidates=(_FakeCandidate("orders"), _FakeCandidate("ghost")),  # type: ignore[arg-type]
+            total_cost_usd=0.01,
+            llm_model="sonnet-4.6",
+        )
+
+        applied: list[str] = []
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_tables(self, *, source_connection_id: str) -> list[tuple[str, str]]:
+                return [("public", "orders"), ("public", "ghost")]
+
+            def get_table(self, *_a: object, **_kw: object) -> object:
+                return object()
+
+            def write_entity(self, entity: object, *, source_connection_id: str) -> None:
+                if entity.name == "ghost":  # type: ignore[attr-defined]
+                    raise IntegrityError("table not in store")
+                applied.append(entity.name)  # type: ignore[attr-defined]
+
+        class _FakePipeline:
+            def __init__(self, *, llm: object) -> None:
+                pass
+
+            def propose_from_tables(self, _tables: object) -> SuggestionResult:
+                return canned
+
+        class _FakeGuard:
+            def __init__(self, **_kw: object) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr("schemabrain.entities.suggest.EntitySuggestionPipeline", _FakePipeline)
+        monkeypatch.setattr("schemabrain.entities.suggest.CostCeilingGuard", _FakeGuard)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        result = wizard._run_entity_suggestion(
+            cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=1.0
+        )
+
+        assert result.applied_count == 1
+        assert applied == ["orders"]
 
 
 # ----- _stage_wire_host ----------------------------------------------------

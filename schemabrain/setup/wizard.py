@@ -496,16 +496,280 @@ _WIZARD_INDEX_CRYPTIC_CONCURRENCY: int = 2
 def _stage_entities(ctx: WizardContext) -> StageOutcome:
     """Suggest + apply entities via the Anthropic-backed pipeline.
 
-    Stub at this commit — returns a `skipped` outcome. Real pipeline
-    wiring lands in a subsequent commit.
+    Decision tree:
+
+      1. `cfg.no_entities` → skipped (explicit opt-out).
+      2. `cfg.skip_index` → skipped (no schema to analyse).
+      3. Non-Postgres source → skipped (entities need an indexed
+         Postgres schema today).
+      4. `ANTHROPIC_API_KEY` missing → skipped with hint (entity
+         suggestion is aspirational; a missing key is not a wizard-
+         fatal condition).
+      5. Store already has entities for this `source_id` → skipped
+         (idempotent re-run).
+      6. Otherwise, run the pipeline + apply candidates and emit
+         `done` with the applied count + cost.
+
+    Stage 3 is the only `abort_on_fail=False` stage in the canonical
+    pipeline: a failure here records a `failed` outcome but lets the
+    wizard wire the host and print the next step.
     """
+    cfg = ctx.config
+
+    if cfg.no_entities:
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="skipped",
+            message="--no-entities set; not running entity suggestion",
+            next_step="run `schemabrain entities suggest --apply` later to curate entities",
+        )
+
+    if cfg.skip_index:
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="skipped",
+            message="skipped because --skip-index is set (no indexed schema to analyse)",
+        )
+
+    if not is_postgres_url(cfg.source_url):
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="skipped",
+            message="entity suggestion needs a Postgres source",
+        )
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="skipped",
+            message="ANTHROPIC_API_KEY not set; entity suggestion skipped",
+            next_step="export ANTHROPIC_API_KEY=sk-ant-... and then run "
+            "`schemabrain entities suggest --apply`",
+        )
+
+    source_id = _source_id_for(cfg.source_url)
+
+    if cfg.store_path.exists():
+        existing = _peek_entity_count(cfg.store_path, source_id)
+        if isinstance(existing, StageOutcome):
+            return existing
+        if existing > 0:
+            return StageOutcome(
+                stage=3,
+                name="entities",
+                status="skipped",
+                message=f"already curated: {existing} entity/ies present for this source",
+            )
+
+    max_cost = _resolve_entities_cost_cap(cfg.entities_max_cost_usd)
+
+    try:
+        result = _run_entity_suggestion(
+            cfg=cfg,
+            source_id=source_id,
+            api_key=api_key,
+            max_cost_usd=max_cost,
+        )
+    except _CostCeilingExceededAtWizard as exc:
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="failed",
+            message=exc.message,
+            next_step="re-run with `--entities-max-cost-usd N` for a higher cap, "
+            "or `--no-entities` to skip",
+        )
+    except _SuggestionParseAtWizard as exc:
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="failed",
+            message=f"LLM returned unparseable response: {exc.message}",
+            next_step="re-run — transient LLM hiccups usually clear",
+        )
+    except _EmptySchemaAtWizard:
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="skipped",
+            message="no indexed tables for this source — nothing to analyse",
+            next_step="re-run `schemabrain init` after the schema has tables",
+        )
+
+    if result.applied_count == 0:
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="failed",
+            message=f"LLM returned 0 candidates (cost ${result.cost_usd:.4f})",
+            next_step="re-run `schemabrain entities suggest --dry-run` to inspect, "
+            "or curate entities by hand via `schemabrain entities apply`",
+        )
+
     return StageOutcome(
         stage=3,
         name="entities",
-        status="skipped",
-        message="entity suggestion handler not yet wired",
-        next_step="run `schemabrain entities suggest --apply` separately for now",
+        status="done",
+        message=f"{result.applied_count} entity/ies created (cost ${result.cost_usd:.4f})",
     )
+
+
+@dataclass(frozen=True)
+class _EntityApplyResult:
+    """Internal outcome of `_run_entity_suggestion`.
+
+    `applied_count` is the number of entities that landed in the
+    store (writes commit per call; a partial-success run reports
+    the count before the first failure). `cost_usd` and `llm_model`
+    come from the pipeline's `SuggestionResult`.
+    """
+
+    applied_count: int
+    cost_usd: float
+    llm_model: str
+
+
+# Wizard-internal exception wrappers. The pipeline's
+# `CostCeilingExceededError` and `SuggestionParseError` are caught at
+# the `_run_entity_suggestion` boundary and re-raised as these so
+# the stage handler's `except` clauses don't depend on importing the
+# pipeline's exception classes at module scope (they live behind a
+# lazy import).
+
+
+class _CostCeilingExceededAtWizard(Exception):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class _SuggestionParseAtWizard(Exception):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class _EmptySchemaAtWizard(Exception):
+    pass
+
+
+def _peek_entity_count(store_path: Path, source_id: str) -> int | StageOutcome:
+    """Open the store read-only and count entities for `source_id`.
+
+    Same shape as `_peek_store_table_count` — returns the count, or a
+    `StageOutcome(failed)` on schema-version mismatch.
+    """
+    from schemabrain.core.store import SchemaVersionMismatchError, SQLiteStore
+
+    try:
+        with SQLiteStore(path=store_path) as store:
+            return len(store.list_entities(source_connection_id=source_id))
+    except SchemaVersionMismatchError as exc:
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="failed",
+            message=str(exc),
+            next_step=f"delete {store_path} and re-run, "
+            "or install the matching schemabrain version",
+        )
+
+
+def _resolve_entities_cost_cap(flag_value: float | None) -> float:
+    """Pick the effective entity-suggest cost cap.
+
+    Priority: explicit `--entities-max-cost-usd` > env var > package
+    default. The env var name matches what `entities suggest` reads
+    so the user's chosen ceiling carries across both surfaces.
+    """
+    if flag_value is not None:
+        return flag_value
+    env_value = os.environ.get("SCHEMABRAIN_MAX_LLM_COST_USD")
+    if env_value is not None:
+        try:
+            return float(env_value)
+        except ValueError:
+            pass  # silently fall back to default — stage 3 is best-effort
+    return _WIZARD_ENTITIES_DEFAULT_COST_CAP_USD
+
+
+def _run_entity_suggestion(
+    *,
+    cfg: WizardConfig,
+    source_id: str,
+    api_key: str,
+    max_cost_usd: float,
+) -> _EntityApplyResult:
+    """Build the suggestion pipeline, propose candidates, apply them.
+
+    Translates the pipeline's exception classes into wizard-internal
+    wrappers (`_CostCeilingExceededAtWizard`, `_SuggestionParseAtWizard`,
+    `_EmptySchemaAtWizard`) so the stage handler doesn't need a
+    module-level import of the pipeline's package.
+
+    Writes commit per `store.write_entity` call. A partial-success
+    write loop (the LLM proposed a table not in the store, or a name
+    collides with a dbt-imported entity) breaks out and returns the
+    count of entities that landed before the first failure.
+    """
+    from sqlite3 import IntegrityError
+
+    from schemabrain.core.store import DbtOwnedEntityError, SQLiteStore
+    from schemabrain.enrichment.anthropic_client import anthropic_sonnet_46_client
+    from schemabrain.entities.suggest import (
+        CostCeilingExceededError,
+        CostCeilingGuard,
+        EntitySuggestionPipeline,
+        SuggestionParseError,
+    )
+
+    llm = anthropic_sonnet_46_client(api_key=api_key)
+    guard = CostCeilingGuard(inner=llm, max_cost_usd=max_cost_usd)
+    pipeline = EntitySuggestionPipeline(llm=guard)
+
+    with SQLiteStore(cfg.store_path) as store:
+        names = store.list_tables(source_connection_id=source_id)
+        if not names:
+            raise _EmptySchemaAtWizard()
+        tables = []
+        for schema, name in names:
+            table = store.get_table(schema, name, source_connection_id=source_id)
+            if table is not None:
+                tables.append(table)
+        if not tables:
+            raise _EmptySchemaAtWizard()
+
+        try:
+            result = pipeline.propose_from_tables(tables)
+        except CostCeilingExceededError as exc:
+            raise _CostCeilingExceededAtWizard(str(exc)) from exc
+        except SuggestionParseError as exc:
+            raise _SuggestionParseAtWizard(str(exc)) from exc
+
+        applied = 0
+        for candidate in result.candidates:
+            try:
+                store.write_entity(candidate.entity, source_connection_id=source_id)
+            except (DbtOwnedEntityError, IntegrityError):
+                break
+            applied += 1
+
+    return _EntityApplyResult(
+        applied_count=applied,
+        cost_usd=result.total_cost_usd,
+        llm_model=result.llm_model,
+    )
+
+
+# Stage-3 cost cap default. Kept aligned with the standalone
+# `entities suggest` CLI's default so a wizard run and a direct
+# `entities suggest` run see the same ceiling.
+_WIZARD_ENTITIES_DEFAULT_COST_CAP_USD: float = 1.0
 
 
 # ----- stage 4: wire_host --------------------------------------------------
