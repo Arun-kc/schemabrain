@@ -279,7 +279,11 @@ class TestImplHappyPath:
         assert result.rows == [{"total_revenue": 12345}]
         assert 'sum("order"."total_amount") AS "total_revenue"' in result.sql_skeleton
         assert "LIMIT :p_limit" in result.sql_skeleton
-        assert result.fingerprint == "fp-stub"
+        # `get_metric_impl` returns the placeholder; the @instrument
+        # decorator overwrites it with the real `mcp_audit` row's hex
+        # at the server boundary. Tools called impl-directly (this test
+        # path) bypass the decorator and see the placeholder.
+        assert result.fingerprint == "fp-unset"
         assert result.required_joins == []
         assert result.fan_out_join_names == []
         # Executor was actually called with the compiler's SQL.

@@ -44,11 +44,12 @@ from schemabrain.semantic.compiler import (
     resolve_metric_plan,
 )
 
-# Fingerprint placeholder for v1. The audit layer (future PR) replaces
-# this with a real `fp-v1`-prefixed hash; the wire shape is locked
-# here so consumer-side code doesn't have to change when the producer
-# lands.
-_FINGERPRINT_STUB = "fp-stub"
+# Placeholder fingerprint stamped on the MetricResult before the
+# `@instrument` decorator overwrites it with the real `mcp_audit` row's
+# fingerprint hex. The placeholder only surfaces when the server is
+# wired without an audit writer (test contexts, the `--no-audit` CLI
+# path). Production deployments see the real digest.
+_FINGERPRINT_UNSET = "fp-unset"
 
 
 def get_metric_impl(
@@ -117,7 +118,7 @@ def get_metric_impl(
         row_count=len(rows),
         sql_skeleton=sql_text,
         sql_params=_serialise_params(sql_params),
-        fingerprint=_FINGERPRINT_STUB,
+        fingerprint=_FINGERPRINT_UNSET,
         token_estimate=0,
         required_joins=list(plan.required_join_names),
         fan_out_join_names=list(plan.fan_out_join_names),

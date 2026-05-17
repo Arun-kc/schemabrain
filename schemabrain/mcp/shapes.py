@@ -504,10 +504,11 @@ class MetricResult(BaseModel):
     the compiler (with `:p_*` placeholders); `sql_params` carries the
     bound values. An agent can audit or compose against either.
 
-    `fingerprint` is reserved for the audit layer (future PR). It's
-    stubbed here as `"fp-stub"` so the wire shape is locked from day
-    one; when the real fingerprint formula activates, no consumer-
-    side change is needed.
+    `fingerprint` is the lowercase-hex sha256 digest of the
+    `mcp_audit` row written for this call, when the server is wired
+    with an `AuditWriter`. Without an audit writer (test contexts, the
+    `--no-audit` CLI path), it carries `"fp-unset"` so consumers can
+    distinguish "no audit row exists" from "audit row exists with hex".
 
     `fan_out_join_names` surfaces the canonical-join names whose
     cardinality means the result rows may be inflated by JOIN expansion

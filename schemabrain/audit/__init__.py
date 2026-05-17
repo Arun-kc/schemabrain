@@ -29,15 +29,19 @@ from schemabrain.audit.fingerprint import (
     RefusalReason,
     compute_fingerprint,
 )
+from schemabrain.audit.writer import AuditRow, AuditWriter, build_audit_row
 
 __all__ = [
     "AUDIT_ROW_FIELDS",
     "CHAIN_HASH_SIZE",
     "FINGERPRINT_VERSION",
     "GENESIS_CHAIN_HASH",
+    "AuditRow",
+    "AuditWriter",
     "CostClass",
     "FingerprintInput",
     "RefusalReason",
+    "build_audit_row",
     "canonical_audit_row",
     "compute_chain_hash",
     "compute_fingerprint",
