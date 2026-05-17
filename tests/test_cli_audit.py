@@ -293,6 +293,42 @@ class TestAuditList:
         rows = [json.loads(line) for line in capsys.readouterr().out.strip().split("\n")]
         assert len(rows) == 2
 
+    def test_negative_limit_rejected_with_clean_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A user passing `--limit -1` would historically be silently
+        translated to "no limit" by SQLite (its LIMIT clause treats any
+        negative value as unlimited), so a caller could pass `-1` and
+        exfiltrate every audit row when ostensibly asking for one. Gate
+        at argparse with a clear usage error.
+
+        `argparse` raises `SystemExit(2)` on `type=` rejection (it's a
+        parser-time error, not a handler-time refusal), so the test
+        catches `SystemExit` rather than reading a return code — same
+        pattern used elsewhere when arguments fail validation pre-dispatch.
+        """
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=3)
+        with pytest.raises(SystemExit) as exc_info:
+            cli_main(["audit", "list", "--store-path", str(store_path), "--limit", "-1"])
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "-1" in err
+        assert "non-negative" in err.lower()
+
+    def test_zero_limit_accepted_as_empty_result(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--limit 0` is a legitimate "show nothing" — the regression
+        gate must accept it and emit an empty result, not error."""
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=3)
+        exit_code = cli_main(
+            ["audit", "list", "--store-path", str(store_path), "--limit", "0", "--json"]
+        )
+        assert exit_code == 0
+        assert capsys.readouterr().out.strip() == ""
+
     def test_missing_store_path_returns_two(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

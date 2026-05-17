@@ -421,6 +421,24 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
+def _nonneg_int(value: str) -> int:
+    """argparse `type=` converter for "must be a non-negative int".
+
+    Bare `type=int` silently accepts negatives, which on `audit list`
+    bleeds through to SQLite's `LIMIT -1` (SQLite treats any negative
+    LIMIT as "unlimited"). The user asked for one row, the store
+    returned all of them. Gate at argparse so the error fires before
+    SQL ever sees the value.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"must be an integer; got {value!r}") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"must be non-negative; got {parsed!r}")
+    return parsed
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="schemabrain",
@@ -1304,7 +1322,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_audit_list.add_argument(
         "--limit",
-        type=int,
+        type=_nonneg_int,
         default=100,
         help="Maximum rows to return. Default 100.",
     )
