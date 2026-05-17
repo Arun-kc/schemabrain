@@ -24,6 +24,7 @@ invariants directly.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 import pytest
@@ -523,6 +524,24 @@ class TestStoreProtocolSeamUsable:
 
             def list_metrics(self, *, source_connection_id: str | None = None) -> list[Metric]:
                 return []
+
+            def write_column_pii_tags(
+                self,
+                *,
+                source_connection_id: str,
+                qualified_table: str,
+                tags: Mapping[str, tuple[str, frozenset[str]]],
+            ) -> None:
+                pass
+
+            def get_column_pii_tags(
+                self,
+                *,
+                source_connection_id: str,
+                qualified_table: str,
+                columns: Iterable[str],
+            ) -> dict[str, tuple[str, frozenset[str]]]:
+                return {}
 
         store = _InMemoryStore()
         assert isinstance(store, Store), (

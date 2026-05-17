@@ -25,6 +25,7 @@ import math
 import sqlite3
 import struct
 import time
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import numpy as np
@@ -132,8 +133,20 @@ __all__ = [
 #         single source of truth for the on-disk shape stays the
 #         `_SCHEMA_VERSION` constant. Empty on first open; every
 #         `@instrument`-wrapped tool call writes one row at runtime.
+#   "12" → added `column_pii_tags` table for the heuristic PII
+#         classifier (ADR 0001 §3 — populates the previously-stub
+#         `mcp_audit.pii_categories` column). PK is `(source_
+#         connection_id, qualified_table, column_name)`. `origin` is
+#         `'heuristic'` for classifier output, `'operator'` for hand
+#         overrides (the override path lands in a follow-up PR; the
+#         column exists at v12 to avoid another schema bump). No FK
+#         to `tables` because `qualified_table` is the `schema.table`
+#         form the compiler hands in, not the split form `tables`
+#         uses; stale rows on dropped tables are harmless because
+#         `get_column_pii_tags` only returns rows that match the
+#         caller-supplied table + column set.
 # Older stores raise SchemaVersionMismatchError; pre-alpha users re-create.
-_SCHEMA_VERSION = "11"
+_SCHEMA_VERSION = "12"
 _MEMORY_PATH = ":memory:"
 
 # 1 USD = 1_000_000 micros. Storing the ledger as INTEGER micros avoids
@@ -486,6 +499,42 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS idx_metrics_by_entity
         ON metrics (source_connection_id, entity, name)
+    """,
+    # Heuristic PII tags per column. Populated by the index pipeline
+    # after profiler stats are computed; consumed by `get_metric`'s
+    # propagation step to (a) populate `mcp_audit.pii_categories` and
+    # (b) raise `PiiBlockedError` when `--pii-block` is active.
+    #
+    # `qualified_table` is the `schema.table` form the compiler hands
+    # in directly — no split-and-rejoin shuffle at the read path.
+    # `categories` is the sorted comma-separated frozenset[PIICategory]
+    # encoding (same convention as `example_queries.pii_categories`);
+    # empty string means no categories. `origin` is `heuristic` for
+    # classifier output, `operator` for hand-asserted overrides (the
+    # override path lands in a follow-up PR; the CHECK + column exist
+    # at v12 so the future PR doesn't need another schema bump).
+    """
+    CREATE TABLE IF NOT EXISTS column_pii_tags (
+        source_connection_id TEXT NOT NULL,
+        qualified_table TEXT NOT NULL,
+        column_name TEXT NOT NULL,
+        sensitivity TEXT NOT NULL
+            CHECK (sensitivity IN ('public', 'internal', 'confidential', 'pii')),
+        categories TEXT NOT NULL DEFAULT '',
+        origin TEXT NOT NULL
+            CHECK (origin IN ('heuristic', 'operator')),
+        classified_at INTEGER NOT NULL,
+        PRIMARY KEY (source_connection_id, qualified_table, column_name)
+    )
+    """,
+    # Covering index for the bulk-lookup `get_column_pii_tags` issues:
+    # `WHERE source_connection_id = ? AND qualified_table = ? AND
+    # column_name IN (...)`. PK leads with `source_connection_id` then
+    # `qualified_table` so the IN clause filters within an already-
+    # narrowed range scan.
+    """
+    CREATE INDEX IF NOT EXISTS idx_column_pii_tags_table
+        ON column_pii_tags (source_connection_id, qualified_table)
     """,
 )
 
@@ -1993,6 +2042,102 @@ class SQLiteStore:
                 (source_connection_id,),
             ).fetchall()
         return [_row_to_metric(row) for row in rows]
+
+    def write_column_pii_tags(
+        self,
+        *,
+        source_connection_id: str,
+        qualified_table: str,
+        tags: Mapping[str, tuple[str, frozenset[str]]],
+    ) -> None:
+        """Replace all PII tags for `qualified_table` atomically.
+
+        Each entry in `tags` is `column_name → (sensitivity, categories)`.
+        The write is all-or-nothing: every existing row for the table
+        is deleted, then the new rows are inserted. Re-classifying a
+        table after a schema change is therefore a clean swap — no
+        stale rows survive, no partial-state read window exposed.
+
+        Empty `tags` is a valid call: it deletes every row for the
+        table without writing replacements. The index pipeline's
+        `--no-pii-classify` opt-out uses this shape to wipe pre-
+        existing heuristic tags rather than leave them stale.
+
+        `categories` is stored as the sorted comma-separated encoding
+        (same convention as `example_queries.pii_categories`); the
+        `_encode_pii_categories` helper handles the serialisation so
+        round-trips are byte-identical.
+
+        Always writes `origin='heuristic'` at v12 — operator overrides
+        land via a follow-up PR that writes `origin='operator'`
+        through a separate code path.
+        """
+        conn = self._require_conn()
+        now = int(time.time())
+        with conn:
+            conn.execute(
+                "DELETE FROM column_pii_tags "
+                "WHERE source_connection_id = ? AND qualified_table = ?",
+                (source_connection_id, qualified_table),
+            )
+            if not tags:
+                return
+            conn.executemany(
+                "INSERT INTO column_pii_tags "
+                "(source_connection_id, qualified_table, column_name, "
+                "sensitivity, categories, origin, classified_at) "
+                "VALUES (?, ?, ?, ?, ?, 'heuristic', ?)",
+                [
+                    (
+                        source_connection_id,
+                        qualified_table,
+                        column_name,
+                        sensitivity,
+                        _encode_pii_categories(categories),
+                        now,
+                    )
+                    for column_name, (sensitivity, categories) in tags.items()
+                ],
+            )
+
+    def get_column_pii_tags(
+        self,
+        *,
+        source_connection_id: str,
+        qualified_table: str,
+        columns: Iterable[str],
+    ) -> dict[str, tuple[str, frozenset[str]]]:
+        """Bulk-fetch PII tags for `columns` on `qualified_table`.
+
+        Returns a mapping `column_name → (sensitivity, categories)`
+        ONLY for columns that have a stored row. Columns absent from
+        the result are treated as `("public", frozenset())` by
+        callers — the propagation helper's empty-input contract.
+
+        Deduplicating `columns` at the call boundary keeps the
+        parameter list bounded if a caller passes the same column
+        twice (e.g. a metric whose measure column also appears in
+        `group_by`).
+        """
+        unique = tuple(dict.fromkeys(columns))
+        if not unique:
+            return {}
+        conn = self._require_conn()
+        placeholders = ",".join("?" * len(unique))
+        rows = conn.execute(
+            f"SELECT column_name, sensitivity, categories "  # nosec B608 — placeholders only
+            f"FROM column_pii_tags "
+            f"WHERE source_connection_id = ? AND qualified_table = ? "
+            f"AND column_name IN ({placeholders})",
+            (source_connection_id, qualified_table, *unique),
+        ).fetchall()
+        return {
+            row["column_name"]: (
+                row["sensitivity"],
+                _decode_pii_categories(row["categories"]),
+            )
+            for row in rows
+        }
 
     def close(self) -> None:
         if self._conn is not None:

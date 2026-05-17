@@ -60,33 +60,33 @@ def _eq(
     )
 
 
-class TestSchemaVersionBumpToV11:
-    """Pre-alpha contract: a store written by a v10 Schema Brain raises
+class TestSchemaVersionBumpToV12:
+    """Pre-alpha contract: a store written by a v11 Schema Brain raises
     `SchemaVersionMismatchError` on open. Per project convention only
     the current N-1 version-bump test is retained — the prior
-    `TestSchemaVersionBumpToV10` class (added at the v9→v10 bump) was
-    removed when this class was added at the v10→v11 bump (mcp_audit
-    table + append-only triggers + occurred_at/fingerprint indexes).
+    `TestSchemaVersionBumpToV11` class (added at the v10→v11 bump) was
+    removed when this class was added at the v11→v12 bump
+    (column_pii_tags table for the heuristic PII classifier).
     """
 
-    def test_fresh_store_has_schema_version_11(self, tmp_path: Path) -> None:
+    def test_fresh_store_has_schema_version_12(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "sb.db") as store:
             row = (
                 store._require_conn()
                 .execute("SELECT value FROM schemabrain_meta WHERE key = 'schema_version'")
                 .fetchone()
             )
-            assert row["value"] == "11"
+            assert row["value"] == "12"
 
-    def test_opening_a_v10_store_raises(self, tmp_path: Path) -> None:
+    def test_opening_a_v11_store_raises(self, tmp_path: Path) -> None:
         db_path = tmp_path / "sb.db"
         store = SQLiteStore(db_path)
         store._require_conn().execute(
-            "UPDATE schemabrain_meta SET value = '10' WHERE key = 'schema_version'"
+            "UPDATE schemabrain_meta SET value = '11' WHERE key = 'schema_version'"
         )
         store._require_conn().commit()
         store.close()
-        with pytest.raises(SchemaVersionMismatchError, match=r"10.*11|11.*10"):
+        with pytest.raises(SchemaVersionMismatchError, match=r"11.*12|12.*11"):
             SQLiteStore(db_path)
 
     def test_unique_index_exists(self, tmp_path: Path) -> None:
