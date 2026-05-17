@@ -337,6 +337,17 @@ def main(argv: list[str] | None = None) -> int:
             host=args.host,
             json_output=args.json,
         )
+    if args.command == "init":
+        return _cmd_init(
+            positional_url=args.source,
+            url_env=args.url_env,
+            store_path=args.store_path,
+            host=args.host,
+            env_var=args.env_var,
+            skip_index=args.skip_index,
+            assume_yes=args.assume_yes,
+            print_only=args.print_only,
+        )
     if args.command == "metrics":
         if args.metrics_action == "apply":
             return _cmd_metrics_apply(
@@ -998,6 +1009,67 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit machine-readable JSON to stdout instead of the human-readable "
         "report to stderr. Useful for CI/monitoring scripts.",
+    )
+
+    p_init = sub.add_parser(
+        "init",
+        help="Wire schemabrain into an MCP host (Claude Desktop, Claude Code, or print snippet)",
+    )
+    p_init.add_argument(
+        "--source",
+        default=None,
+        help="Source URL (e.g. postgresql+psycopg://...). DEPRECATED when the URL "
+        "contains a password; prefer --url-env. One of --source / --url-env is required.",
+    )
+    p_init.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL "
+        "(e.g. --url-env DATABASE_URL). Preferred over --source so credentials "
+        "never appear in argv. Mutually exclusive with --source.",
+    )
+    p_init.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_init.add_argument(
+        "--host",
+        choices=("claude-desktop", "claude-code", "manual"),
+        default="claude-desktop",
+        help="Which host to wire. `manual` prints the snippet without writing "
+        "anywhere (default: claude-desktop)",
+    )
+    p_init.add_argument(
+        "--env-var",
+        dest="env_var",
+        default="SCHEMABRAIN_DATABASE_URL",
+        help="Name of the env var the host will set when launching the MCP server "
+        "(default: SCHEMABRAIN_DATABASE_URL). The DB URL goes into this env var, "
+        "not into argv.",
+    )
+    p_init.add_argument(
+        "--skip-index",
+        dest="skip_index",
+        action="store_true",
+        help="Don't require the store to have any entities indexed. Pass this when "
+        "you've indexed in a different session or plan to index later.",
+    )
+    p_init.add_argument(
+        "--yes",
+        "-y",
+        dest="assume_yes",
+        action="store_true",
+        help="Overwrite an existing schemabrain entry in the host config without "
+        "prompting. Only the schemabrain entry is touched; other entries are preserved.",
+    )
+    p_init.add_argument(
+        "--print-only",
+        dest="print_only",
+        action="store_true",
+        help="Alias for --host manual: print the snippet, write nothing.",
     )
 
     return parser
@@ -2915,6 +2987,123 @@ def _cmd_doctor(
         # in mixed-output scripts.
         render_doctor(result, console=_stderr_console())
     return result.exit_code
+
+
+def _cmd_init(
+    *,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+    host: str,
+    env_var: str,
+    skip_index: bool,
+    assume_yes: bool,
+    print_only: bool,
+) -> int:
+    """Run `schemabrain init` and render the outcome.
+
+    Exit codes (Decision 9):
+      - 0: snippet written / shell-out succeeded / printed (manual)
+      - 1: claude-code shell-out failed (the snippet IS still
+        printed so the user can fall back to running the command
+        themselves)
+      - 2: operational refusal (URL flag conflict, source unreachable,
+        store empty without --skip-index, host config dir missing, etc.)
+
+    `--print-only` is an alias for `--host manual` — when either is
+    set, init never writes; the snippet renders to stdout.
+    """
+    from schemabrain.setup.init_flow import InitRefusal, init
+
+    effective_host = "manual" if print_only else host
+    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if source_url is None:
+        # _resolve_url_source already rendered a guided error.
+        return 2
+    try:
+        result = init(
+            source_url=source_url,
+            store_path=Path(store_path),
+            host=effective_host,  # type: ignore[arg-type]
+            env_var_name=env_var,
+            skip_index=skip_index,
+            assume_yes=assume_yes,
+        )
+    except InitRefusal as refusal:
+        _render_guided(refusal.error)
+        return 2
+    _render_init_result(result)
+    if result.state == "shell_out_failed":
+        return 1
+    return 0
+
+
+def _render_init_result(result: object) -> None:
+    """Render the outcome of a successful init run.
+
+    Imported lazily here (rather than at module top) so the rest of
+    the CLI's startup path isn't paying for rich/json imports the
+    init handler needs.
+    """
+    from schemabrain.setup.init_flow import InitResult
+
+    assert isinstance(result, InitResult)
+    console = _stderr_console()
+    if result.state == "written":
+        console.print(f"[green]✓[/] wrote schemabrain entry to {result.config_path}")
+        if result.backup_made:
+            backup = (
+                result.config_path.parent / (result.config_path.name + ".bak")
+                if result.config_path is not None
+                else None
+            )
+            console.print(f"  [dim]backup:[/] {backup}")
+        console.print()
+        console.print(
+            "  [dim]Next:[/] restart Claude Desktop, then ask:  "
+            '"list the entities Schema Brain knows about"'
+        )
+    elif result.state == "unchanged":
+        console.print(
+            f"[green]✓[/] schemabrain entry already configured in {result.config_path}; no changes"
+        )
+    elif result.state == "shell_out_succeeded":
+        console.print("[green]✓[/] registered schemabrain with Claude Code")
+        console.print()
+        console.print(
+            "  [dim]Next:[/] restart Claude Code, then ask:  "
+            '"list the entities Schema Brain knows about"'
+        )
+    elif result.state == "shell_out_failed":
+        console.print("[red]✗[/] `claude mcp add` failed; you can run it manually:")
+        if result.shell_out_command:
+            console.print()
+            console.print("  " + " ".join(result.shell_out_command))
+        if result.shell_out_stderr:
+            console.print(f"\n  [dim]stderr:[/] {result.shell_out_stderr}")
+    else:
+        # state == "printed_only" — manual / --print-only
+        import json as _json
+
+        # Snippet to stdout — the user wants a paste-ready JSON block,
+        # so this lands on stdout not stderr.
+        entry = {"mcpServers": {"schemabrain": result.snippet.to_mcp_entry()}}
+        sys.stdout.write(_json.dumps(entry, indent=2))
+        sys.stdout.write("\n")
+        console.print()
+        console.print(
+            "  [dim]Common config paths:[/]\n"
+            "    Claude Desktop (macOS):   ~/Library/Application Support/Claude/claude_desktop_config.json\n"
+            "    Claude Desktop (Windows): %APPDATA%\\Claude\\claude_desktop_config.json\n"
+            "    Cursor:                   ~/.cursor/mcp.json\n"
+            "    Continue:                 ~/.continue/config.json\n"
+            "    Windsurf:                 ~/.codeium/windsurf/mcp_config.json"
+        )
+        console.print()
+        console.print(
+            "  [dim]After saving the file, restart your host and ask:[/]  "
+            '"list the entities Schema Brain knows about"'
+        )
 
 
 def _cmd_fixture_path(name: str) -> int:
