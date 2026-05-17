@@ -155,18 +155,14 @@ class TestStageOutcome:
         assert outcome.duration_s == 0.0
 
     def test_duration_s_accepts_positive_value(self) -> None:
-        outcome = StageOutcome(
-            stage=1, name="x", status="done", message="m", duration_s=2.5
-        )
+        outcome = StageOutcome(stage=1, name="x", status="done", message="m", duration_s=2.5)
         assert outcome.duration_s == 2.5
 
     def test_duration_s_rejects_negative(self) -> None:
         # A negative duration would mean perf_counter measurement went
         # backwards — an orchestrator bug, not a user error. Fail fast.
         with pytest.raises(ValueError, match="duration_s must be >= 0"):
-            StageOutcome(
-                stage=1, name="x", status="done", message="m", duration_s=-0.1
-            )
+            StageOutcome(stage=1, name="x", status="done", message="m", duration_s=-0.1)
 
 
 class TestWizardConfigInvariants:

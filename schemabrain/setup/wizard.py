@@ -102,9 +102,7 @@ class StageOutcome:
                 f"StageOutcome.status must be one of {sorted(_VALID_STATUSES)}; got {self.status!r}"
             )
         if self.duration_s < 0:
-            raise ValueError(
-                f"StageOutcome.duration_s must be >= 0; got {self.duration_s}"
-            )
+            raise ValueError(f"StageOutcome.duration_s must be >= 0; got {self.duration_s}")
         # A `failed` outcome without a recovery hint leaves the user
         # at a dead end. The renderer's dim next-step line simply
         # doesn't render when `next_step` is None, so the failure

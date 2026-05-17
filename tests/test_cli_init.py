@@ -937,9 +937,7 @@ class TestWizardRenderer:
         # full pipeline shape, not the count of outcomes seen).
         assert "Stopped at stage 4 of 5" in captured.err
 
-    def test_failure_panel_omitted_on_clean_run(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_failure_panel_omitted_on_clean_run(self, capsys: pytest.CaptureFixture[str]) -> None:
         # Clean (non-aborted) runs must NOT render the failure panel —
         # the closing block carries the next-step copy instead.
         from schemabrain.cli import _render_wizard_result
@@ -1143,9 +1141,7 @@ class TestWizardRenderer:
 
         assert _host_display_name("future-host") == "future-host"
 
-    def test_renderer_shows_per_stage_duration(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_renderer_shows_per_stage_duration(self, capsys: pytest.CaptureFixture[str]) -> None:
         # Each stage's `duration_s` renders as a 1-decimal "X.Xs"
         # string near the stage header so the operator sees how long
         # each step spent without enabling verbose mode.
@@ -1206,9 +1202,7 @@ class TestWizardRenderer:
         from schemabrain.setup.hosts import SchemabrainSnippet
         from schemabrain.setup.init_flow import InitResult
 
-        snippet = SchemabrainSnippet(
-            command="uvx", args=("schemabrain==0.2.0a1", "serve"), env={}
-        )
+        snippet = SchemabrainSnippet(command="uvx", args=("schemabrain==0.2.0a1", "serve"), env={})
         return InitResult(
             host="claude-desktop",
             snippet=snippet,
@@ -1221,9 +1215,7 @@ class TestWizardRenderer:
         from schemabrain.setup.hosts import SchemabrainSnippet
         from schemabrain.setup.init_flow import InitResult
 
-        snippet = SchemabrainSnippet(
-            command="uvx", args=("schemabrain==0.2.0a1", "serve"), env={}
-        )
+        snippet = SchemabrainSnippet(command="uvx", args=("schemabrain==0.2.0a1", "serve"), env={})
         return InitResult(host="manual", snippet=snippet, state="printed_only")
 
     def _full_clean_outcomes(self) -> tuple[object, ...]:
@@ -1277,18 +1269,14 @@ class TestWizardRenderer:
         assert "schemabrain tail" in captured.err
         assert "The agent reads. It doesn't write." in captured.err
 
-    def test_closing_block_omitted_on_abort(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_closing_block_omitted_on_abort(self, capsys: pytest.CaptureFixture[str]) -> None:
         from schemabrain.cli import _render_wizard_result
         from schemabrain.setup.wizard import WizardResult
 
         result = WizardResult(
             outcomes=(
                 self._make_outcome(1, "source_check", "done", "ok"),
-                self._make_outcome(
-                    2, "index", "failed", "boom", "verify the URL and retry"
-                ),
+                self._make_outcome(2, "index", "failed", "boom", "verify the URL and retry"),
             ),
             aborted=True,
         )

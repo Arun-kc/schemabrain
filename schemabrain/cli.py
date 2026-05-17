@@ -3886,7 +3886,7 @@ def _render_closing_block(
 
       ──────────────────────────────────────────────────────────────
       Restart Claude Desktop, then ask:
-      › list the entities Schema Brain knows about
+      > list the entities Schema Brain knows about
 
       Inspect activity:  schemabrain tail --follow
       Review the audit:  schemabrain audit list
@@ -3906,14 +3906,12 @@ def _render_closing_block(
     else:
         target = host_display or "your MCP host"
         console.print(f"Restart {target}, then ask:")  # type: ignore[attr-defined]
-    console.print("[cyan]›[/] list the entities Schema Brain knows about")  # type: ignore[attr-defined]
+    console.print("[cyan]>[/] list the entities Schema Brain knows about")  # type: ignore[attr-defined]
     console.print()  # type: ignore[attr-defined]
     console.print("Inspect activity:  [bold]schemabrain tail --follow[/]")  # type: ignore[attr-defined]
     console.print("Review the audit:  [bold]schemabrain audit list[/]")  # type: ignore[attr-defined]
     console.print()  # type: ignore[attr-defined]
-    console.print(
-        "[dim]The agent reads. It doesn't write. That's the whole point.[/]"
-    )  # type: ignore[attr-defined]
+    console.print("[dim]The agent reads. It doesn't write. That's the whole point.[/]")  # type: ignore[attr-defined]
 
 
 def _stage_display_name(name: str) -> str:
