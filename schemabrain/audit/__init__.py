@@ -22,12 +22,24 @@ from schemabrain.audit.chain import (
     compute_chain_hash,
 )
 from schemabrain.audit.ddl import ensure_audit_schema
+from schemabrain.audit.fingerprint import (
+    FINGERPRINT_VERSION,
+    CostClass,
+    FingerprintInput,
+    RefusalReason,
+    compute_fingerprint,
+)
 
 __all__ = [
     "AUDIT_ROW_FIELDS",
     "CHAIN_HASH_SIZE",
+    "FINGERPRINT_VERSION",
     "GENESIS_CHAIN_HASH",
+    "CostClass",
+    "FingerprintInput",
+    "RefusalReason",
     "canonical_audit_row",
     "compute_chain_hash",
+    "compute_fingerprint",
     "ensure_audit_schema",
 ]
