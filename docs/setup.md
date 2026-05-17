@@ -68,6 +68,87 @@ Re-running `index` against an unchanged schema is a **no-op** — 0 LLM calls, 0
 
 For cost-free dry runs (no LLM, no embeddings), pass `--no-enrich`.
 
+## 0b. Docker (alternative install)
+
+The published Docker image bundles the runtime, all dependencies, and the
+local embedding model (`BAAI/bge-small-en-v1.5`, baked at build time so
+the first `serve` does not download). Image is published to GitHub
+Container Registry at `ghcr.io/arun-kc/schemabrain` for `linux/amd64`
+and `linux/arm64`.
+
+### Quick index against a Postgres source
+
+```bash
+# Persist the SQLite store and the events log to ~/.schemabrain on the
+# host. The container writes there as a non-root user (uid 1000); the
+# directory must be writable by that uid, or you can `chmod 777` it
+# once if you do not care.
+mkdir -p ~/.schemabrain
+
+# Run `schemabrain index` with the connection URL passed via env var.
+# `-i` is not needed for index (no stdio); it IS needed for serve.
+docker run --rm \
+    -e DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname" \
+    -e ANTHROPIC_API_KEY \
+    -v ~/.schemabrain:/data \
+    ghcr.io/arun-kc/schemabrain:latest \
+    index --url-env DATABASE_URL --store-path /data/store.db
+```
+
+### Claude Desktop config (containerised serve)
+
+The `serve` subcommand needs `-i` (interactive stdio) so Claude Desktop
+can talk to it. Drop the following into your
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS
+path; the file lives next to other Claude config on Linux / Windows):
+
+```json
+{
+  "mcpServers": {
+    "schemabrain": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "DATABASE_URL",
+        "-v", "/Users/YOU/.schemabrain:/data",
+        "ghcr.io/arun-kc/schemabrain:latest",
+        "serve", "--url-env", "DATABASE_URL", "--store-path", "/data/store.db"
+      ],
+      "env": {
+        "DATABASE_URL": "postgresql+psycopg://user:pass@host:5432/dbname"
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- Replace `/Users/YOU/.schemabrain` with your real home directory. Claude
+  Desktop does not expand `~` inside config arguments.
+- The `env` block carries the password into the container as a
+  Docker-side environment variable. The URL never lands in argv on the
+  host or in argv inside the container; `--url-env DATABASE_URL` reads
+  it from the in-container env. This is the same discipline as the
+  non-Docker setup.
+- The mounted store volume (`-v .../.schemabrain:/data`) persists across
+  container restarts. Without it, every `serve` rebuilds the in-memory
+  retriever from zero and you lose `mine-queries` history.
+- The image runs as uid 1000. If you indexed natively before switching
+  to Docker, `chown -R 1000:1000 ~/.schemabrain` once so the container
+  can read the store.
+
+### Tags
+
+| Tag | Meaning |
+|---|---|
+| `:latest` | Latest published release (PyPI publish + Docker push together) |
+| `:0.3.0` | A specific version |
+| `:0.3` | The latest patch in the 0.3 minor line |
+
+For production-style pinning, use a specific patch (`:0.3.0`) rather
+than `:latest`.
+
 ## 0.5. (Optional) Mine observed queries
 
 `get_example_queries` returns SQL agents (and humans) have actually

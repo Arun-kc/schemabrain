@@ -1,0 +1,48 @@
+# Keep the build context small and predictable.
+# Anything not listed here is sent to the Docker daemon when building.
+
+# Version control + tooling caches
+.git/
+.github/
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Dev artefacts that should never enter the image
+.env
+.env.*
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+schemabrain.db*
+
+# Test + dev data
+tests/
+docs/
+examples/
+benchmarks/
+*.md
+!README.md
+
+# Editor + OS junk
+.vscode/
+.idea/
+.DS_Store
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# Memory store (developer-local context)
+memory/
