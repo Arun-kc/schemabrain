@@ -241,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
             no_embed=args.no_embed,
             quiet=args.quiet,
             dry_run=args.dry_run,
+            no_pii_classify=args.no_pii_classify,
         )
     if args.command == "eval":
         return _cmd_eval(
@@ -259,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
             events_path=args.events_path,
             no_events=args.no_events,
             no_audit=args.no_audit,
+            pii_block_csv=args.pii_block,
         )
     if args.command == "fixture-path":
         return _cmd_fixture_path(args.name)
@@ -484,6 +486,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-enrich is set, since there are no descriptions to embed.",
     )
     p_index.add_argument(
+        "--no-pii-classify",
+        action="store_true",
+        help="Skip the heuristic PII classifier and wipe any existing "
+        "PII tags for tables touched this run. With classification "
+        "ON (default), `get_metric` populates the audit row's "
+        "`pii_categories` column and the `--pii-block` policy on "
+        "`serve` has data to act on. With classification OFF, audit "
+        "rows record `pii_categories=''` and `--pii-block` blocks "
+        "nothing. Use only when local tag inference itself is "
+        "unwanted (privacy-paranoid environments).",
+    )
+    p_index.add_argument(
         "--quiet",
         "-q",
         action="store_true",
@@ -604,6 +618,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "tools still respond — only the durable per-call record is "
         "suppressed. Use for CI runs or test contexts where audit "
         "writes would clutter a shared store.",
+    )
+    p_serve.add_argument(
+        "--pii-block",
+        dest="pii_block",
+        default="",
+        help="Comma-separated PIICategory list whose presence in a "
+        "compiled get_metric plan triggers a refused envelope "
+        "(refusal_reason='pii_blocked'). Example: "
+        "--pii-block contact,health. Unknown category names abort "
+        "startup with an error listing the 12 valid values. Empty "
+        "(default) disables enforcement — PII tags still flow to "
+        "the audit row.",
     )
 
     p_mine = sub.add_parser(
@@ -1241,7 +1267,19 @@ def _cmd_index(
     no_embed: bool,
     quiet: bool = False,
     dry_run: bool = False,
+    no_pii_classify: bool = False,
 ) -> int:
+    if no_pii_classify:
+        # One-shot startup warning: operators who opted out of
+        # classification need a visible reminder that downstream
+        # `get_metric` audit rows will record `pii_categories=''`
+        # and `--pii-block` enforcement has nothing to act on.
+        print(
+            "warning: PII classification disabled — get_metric audit rows "
+            "will record pii_categories=''. Use 'schemabrain index' without "
+            "--no-pii-classify to populate tags.",
+            file=sys.stderr,
+        )
     url = _resolve_url_source(positional=positional_url, url_env=url_env)
     if url is None:
         return 2
@@ -1358,6 +1396,7 @@ def _cmd_index(
                     pipeline=pipeline,
                     embedder=embedder,
                     reporter=reporter,
+                    no_pii_classify=no_pii_classify,
                 )
         finally:
             reporter.close()
@@ -1530,6 +1569,7 @@ def _cmd_serve(
     events_path: str | None = None,
     no_events: bool = False,
     no_audit: bool = False,
+    pii_block_csv: str = "",
 ) -> int:
     """Run the MCP server on stdio against the local store.
 
@@ -1552,9 +1592,42 @@ def _cmd_serve(
     audit is disabled for the run.
     """
     import os as _os
+    from typing import cast as _cast
 
     from schemabrain.audit.writer import AuditWriter
     from schemabrain.observability import JsonlEventBus, NullEventBus
+    from schemabrain.pii import PII_CATEGORIES, PIICategory
+
+    # Parse `--pii-block CATEGORIES`. Empty string disables enforcement.
+    # Unknown category names abort startup with a clear error listing
+    # the 12 valid values — a typo in the operator config should
+    # NOT silently fall through to "no PII protection." After the
+    # guard passes, cast the validated set to `frozenset[PIICategory]`
+    # so the type narrows across the build_server / run_stdio
+    # boundary without a `type: ignore` at the call site.
+    pii_block: frozenset[PIICategory] = frozenset()
+    if pii_block_csv:
+        requested = frozenset(c.strip() for c in pii_block_csv.split(",") if c.strip())
+        unknown = requested - PII_CATEGORIES
+        if unknown:
+            print(
+                f"error: --pii-block contains unknown category names: "
+                f"{sorted(unknown)}. Valid categories: {sorted(PII_CATEGORIES)}.",
+                file=sys.stderr,
+            )
+            return 2
+        pii_block = _cast(frozenset[PIICategory], requested)
+
+    if pii_block and no_audit:
+        # Honest disclosure: enforcement still happens (the agent sees
+        # the refusal envelope), but the refused row never lands in
+        # mcp_audit. Operators relying on audit for compliance need
+        # to know this combination is observable-but-not-persistent.
+        print(
+            "warning: --pii-block active with --no-audit: refusals will be "
+            "enforced but not persisted to mcp_audit.",
+            file=sys.stderr,
+        )
 
     source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
     if source_url is None:
@@ -1637,6 +1710,7 @@ def _cmd_serve(
                 metric_executor=metric_executor,
                 event_bus=bus,
                 audit_writer=audit_writer,
+                pii_block=pii_block,
             )
     except OSError as e:
         # Unwritable directory, missing parent, etc. Surface as a

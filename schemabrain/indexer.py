@@ -73,6 +73,7 @@ from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder, embedding_for
 from schemabrain.enrichment.pipeline import EnrichmentPipeline
 from schemabrain.enrichment.prompts import PROMPT_VERSION
+from schemabrain.pii import classify_column
 from schemabrain.profiler.base import Profiler
 
 
@@ -224,6 +225,7 @@ def index(
     pipeline: EnrichmentPipeline | None = None,
     embedder: Embedder | None = None,
     reporter: IndexReporter | None = None,
+    no_pii_classify: bool = False,
 ) -> IndexResult:
     """Perform one cache-aware indexing pass and return the diff summary.
 
@@ -241,6 +243,13 @@ def index(
 
     If `reporter` is supplied, lifecycle callbacks are emitted as
     indexing progresses; see `IndexReporter`. Default is a no-op.
+
+    If `no_pii_classify=True`, the heuristic PII classifier does NOT
+    run for re-profiled tables, and any existing `column_pii_tags`
+    rows for those tables are wiped (leaving stale tags would be
+    worse than no tags). Tables in cache that did not change this
+    run retain their existing tags. The CLI surfaces this via the
+    `--no-pii-classify` flag with a one-shot stderr warning.
     """
     if reporter is None:
         reporter = NullReporter()
@@ -252,10 +261,17 @@ def index(
 
     # Tables present in cache but absent from source: drop them. The
     # cascade on `tables` removes their columns, FKs, fingerprints, AND
-    # descriptions in one shot.
+    # descriptions in one shot. `column_pii_tags` has no FK to `tables`
+    # (qualified_table form differs from the split form `tables`
+    # uses), so we wipe its rows for the dropped table explicitly.
     removed_tables = set(cached_tables) - set(current_tables)
     for schema, name in removed_tables:
         store.delete_table(schema, name, source_connection_id=source_connection_id)
+        store.write_column_pii_tags(
+            source_connection_id=source_connection_id,
+            qualified_table=f"{schema}.{name}",
+            tags={},
+        )
     reporter.on_tables_removed(removed=len(removed_tables))
 
     tables_changed = 0
@@ -388,6 +404,34 @@ def index(
                 embeddings=embeddings,
             )
 
+        # PII tags. With `--no-pii-classify`, we still write an empty
+        # mapping so any existing heuristic tags for the table are
+        # cleared atomically — never leaving stale tags from a prior
+        # classifier run. With classification enabled (the default),
+        # the heuristic produces (sensitivity, categories) per column
+        # from name + shape signal and the bulk write replaces all
+        # rows for the table.
+        qualified_table = f"{schema}.{name}"
+        if no_pii_classify:
+            store.write_column_pii_tags(
+                source_connection_id=source_connection_id,
+                qualified_table=qualified_table,
+                tags={},
+            )
+        else:
+            classified = {
+                col.name: classify_column(
+                    col.name,
+                    shape_patterns=stats[col.name].shape_patterns if col.name in stats else (),
+                )
+                for col in table.columns
+            }
+            store.write_column_pii_tags(
+                source_connection_id=source_connection_id,
+                qualified_table=qualified_table,
+                tags=classified,
+            )
+
         tables_changed += 1
         columns_added += len(col_added)
         columns_changed += len(col_changed)
@@ -406,6 +450,20 @@ def index(
         llm_cost_usd=pipeline.spent_usd if pipeline is not None else 0.0,
         embeddings_generated=embeddings_generated,
     )
+    # Silent-failure protection for the `--no-pii-classify` partial
+    # state: classifier is off for re-profiled tables but unchanged
+    # tables retain whatever heuristic tags exist from a prior run.
+    # Without this warning the partial mix is invisible.
+    if no_pii_classify and tables_unchanged > 0:
+        import sys as _sys
+
+        print(
+            f"warning: --no-pii-classify wiped tags for re-profiled tables, "
+            f"but {tables_unchanged} unchanged table(s) retain any PII tags "
+            f"from prior runs. Re-index those tables explicitly (e.g. by "
+            f"forcing a column change) to wipe their tags too.",
+            file=_sys.stderr,
+        )
     reporter.on_finish(result=result)
     return result
 

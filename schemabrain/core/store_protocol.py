@@ -20,6 +20,7 @@ slot in without breaking callers.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from typing import Protocol, runtime_checkable
 
 from schemabrain.core.description import ColumnDescription
@@ -29,6 +30,7 @@ from schemabrain.core.example_query import ExampleQuery
 from schemabrain.core.join import CanonicalJoin
 from schemabrain.core.metric import Metric
 from schemabrain.core.models import ForeignKey, IncomingForeignKey, Table
+from schemabrain.pii.categories import ColumnPiiTag
 
 
 @runtime_checkable
@@ -467,5 +469,47 @@ class Store(Protocol):
         `source_connection_id=None` lists across sources. The CLI
         `metrics list` command depends on alphabetical ordering for
         stable output across runs.
+        """
+        ...
+
+    # ----- PII tags -------------------------------------------------
+    #
+    # Per-column PII classification produced by the heuristic
+    # classifier (`schemabrain.pii.classifier`) at index time. The
+    # `get_metric` compiler reads tags here, propagates them across
+    # the columns a metric touches, and populates `mcp_audit.
+    # pii_categories` + drives `pii_blocked` refusals.
+
+    def write_column_pii_tags(
+        self,
+        *,
+        source_connection_id: str,
+        qualified_table: str,
+        tags: Mapping[str, ColumnPiiTag],
+    ) -> None:
+        """Replace all PII tags for `qualified_table` atomically.
+
+        Each entry in `tags` is `column_name → ColumnPiiTag` (the
+        `(Sensitivity, frozenset[PIICategory])` alias from
+        `pii.categories`). Implementations MUST delete every existing
+        row for the table before inserting; an empty `tags` deletes
+        without re-inserting (the `--no-pii-classify` opt-out depends
+        on this shape).
+        """
+        ...
+
+    def get_column_pii_tags(
+        self,
+        *,
+        source_connection_id: str,
+        qualified_table: str,
+        columns: Iterable[str],
+    ) -> dict[str, ColumnPiiTag]:
+        """Bulk-fetch PII tags for `columns` on `qualified_table`.
+
+        Returns a mapping `column_name → ColumnPiiTag` ONLY for
+        columns with a stored row. Columns absent from the result
+        are treated as `("public", frozenset())` by callers (matches
+        the propagation helper's empty-input contract).
         """
         ...

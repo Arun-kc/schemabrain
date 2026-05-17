@@ -32,6 +32,7 @@ from schemabrain.audit.fingerprint import (
     RefusalReason,
     compute_fingerprint,
 )
+from schemabrain.pii import PIICategory
 
 # Mirrors the SQL CHECK on the `status` column AND the Charter envelope
 # Status literal. Kept as a sibling Literal here so the audit module
@@ -88,9 +89,18 @@ def build_audit_row(
     The writer fills in `id`, `occurred_at`, `fingerprint`, and
     `chain_hash`. The remaining fields come from this function:
     `tool_name` + `source_connection_id` from the decorator's closure,
-    `status` from the response envelope, and v1 constants for the
-    refusal / PII / AST / rule fields (no v1 tool populates these;
-    they're nullable in the schema until v2 brings real values).
+    `status` from the response envelope, and PII categories pulled
+    from either `response.data.pii_categories` (success path —
+    today only `MetricResult` carries the field) or
+    `response.error.pii_categories` (refusal path — populated by the
+    `pii_blocked` refusal envelope).
+
+    `pii_categories` is carried in the draft as
+    `frozenset[PIICategory]` (the typed form). `AuditWriter.write`
+    serialises it to the canonical comma-sorted CSV for the SQL
+    column AND uses the typed value directly when constructing
+    `FingerprintInput.pii_tags_touched` — no string round-trip,
+    no `type: ignore` required.
     """
     raw_status = getattr(response, "status", None)
     if raw_status not in _ALLOWED_STATUSES:
@@ -103,18 +113,83 @@ def build_audit_row(
         status = "error"
     else:
         status = raw_status
+
+    pii_categories = _extract_pii_categories(response)
+    refusal_reason = _extract_refusal_reason(response, status)
+
     return {
         "source_connection_id": source_connection_id,
         "caller_id": None,
         "tool_name": tool_name,
         "status": status,
-        "refusal_reason": None,
-        "cost_class": "small",
-        "pii_categories": "",
+        "refusal_reason": refusal_reason,
+        "cost_class": "refused" if status == "refused" else "small",
+        "pii_categories": pii_categories,
         "ast_shape_hash": None,
         "rule_id": None,
         "fingerprint_version": FINGERPRINT_VERSION,
     }
+
+
+def _extract_pii_categories(response: Any) -> frozenset[PIICategory]:
+    """Read `pii_categories` from the response (success or refusal path).
+
+    Success-side: `response.data.pii_categories` is the propagated
+    set when present (today only `MetricResult` carries it).
+    Refusal-side: `response.error.pii_categories` is the attempted-
+    set populated by the `pii_blocked` refusal envelope. Either is
+    a sorted tuple of category strings (or any iterable of `PIICategory`-
+    valued strings).
+
+    Returns `frozenset()` when neither path produces a value — the
+    schema column defaults to `''` for "no PII touched" via the
+    CSV encoding step in `AuditWriter.write`.
+    """
+    data = getattr(response, "data", None)
+    if data is not None:
+        categories = getattr(data, "pii_categories", None)
+        if categories:
+            return frozenset(categories)
+    error = getattr(response, "error", None)
+    if error is not None:
+        categories = getattr(error, "pii_categories", None)
+        if categories:
+            return frozenset(categories)
+    return frozenset()
+
+
+def _encode_pii_categories_csv(categories: frozenset[PIICategory]) -> str:
+    """Serialise a typed category frozenset to the on-disk CSV form.
+
+    Sorted so two writes carrying the same conceptual set produce the
+    same bytes — matches the `example_queries.pii_categories`
+    encoding convention and supports cross-table grep workflows.
+    """
+    if not categories:
+        return ""
+    return ",".join(sorted(categories))
+
+
+def _extract_refusal_reason(response: Any, status: str) -> str | None:
+    """Map a refused envelope's `error.kind` to the audit row's
+    `refusal_reason`.
+
+    Non-refused responses always carry `refusal_reason=None`.
+    Refused responses today only emit `pii_blocked`; the other
+    five refusal kinds in ADR 0001 (`allowlist_violation`,
+    `fragment_unsafe`, `cost_cap_exceeded`,
+    `ambiguous_resolution`, `schema_drift`) land in future PRs and
+    extend the mapping below.
+    """
+    if status != "refused":
+        return None
+    error = getattr(response, "error", None)
+    if error is None:
+        return None
+    kind = getattr(error, "kind", None)
+    if kind == "pii_blocked":
+        return "pii_blocked"
+    return None
 
 
 def _now_iso_utc() -> str:
@@ -221,13 +296,22 @@ class AuditWriter:
             conn = self._require_conn()
             occurred_at = _now_iso_utc()
 
-            # Compute fingerprint over the v1 input set. The PII /
-            # AST / refusal fields are all v1-constant; v2 widens
-            # them through `build_audit_row` rather than touching
-            # the writer.
+            # The draft carries `pii_categories` as the TYPED
+            # `frozenset[PIICategory]` (set by `build_audit_row`).
+            # FingerprintInput consumes the typed value directly;
+            # the SQL column gets the CSV encoding alongside. No
+            # round-trip through a comma-string, no type: ignore.
+            pii_tags_touched: frozenset[PIICategory] = draft["pii_categories"]
+            pii_categories_csv = _encode_pii_categories_csv(pii_tags_touched)
+
+            # Compute fingerprint over the v1 input set. PII tags
+            # touched now varies per call (the `get_metric`
+            # propagation step populates it from the column tag
+            # store); the AST shape and rule id are still v1-constant
+            # pending v2 query-shape fingerprinting + rule resolution.
             fp_input = FingerprintInput(
                 ast_shape_hash=draft["ast_shape_hash"],
-                pii_tags_touched=frozenset(),
+                pii_tags_touched=pii_tags_touched,
                 refusal_reason=draft["refusal_reason"],
                 cost_class=draft["cost_class"],
                 rule_id=draft["rule_id"],
@@ -248,7 +332,7 @@ class AuditWriter:
                 "status": draft["status"],
                 "refusal_reason": draft["refusal_reason"],
                 "cost_class": draft["cost_class"],
-                "pii_categories": draft["pii_categories"],
+                "pii_categories": pii_categories_csv,
                 "ast_shape_hash": draft["ast_shape_hash"],
                 "rule_id": draft["rule_id"],
                 "fingerprint": fingerprint,
@@ -276,7 +360,7 @@ class AuditWriter:
                         draft["status"],
                         draft["refusal_reason"],
                         draft["cost_class"],
-                        draft["pii_categories"],
+                        pii_categories_csv,
                         draft["ast_shape_hash"],
                         draft["rule_id"],
                         fingerprint,
@@ -302,7 +386,7 @@ class AuditWriter:
                 status=draft["status"],
                 refusal_reason=draft["refusal_reason"],
                 cost_class=draft["cost_class"],
-                pii_categories=draft["pii_categories"],
+                pii_categories=pii_categories_csv,
                 ast_shape_hash=draft["ast_shape_hash"],
                 rule_id=draft["rule_id"],
                 fingerprint=fingerprint,

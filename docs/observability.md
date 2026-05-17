@@ -212,6 +212,66 @@ If the writer cannot be constructed (read-only volume, missing parent
 permissions), `serve` falls back to no-audit with a stderr warning —
 the server is more useful without audit than not at all.
 
+## PII classification (alpha)
+
+`schemabrain index` runs a heuristic classifier over every column it
+profiles, tagging columns with categories from the closed
+12-category taxonomy in
+[ADR 0001](adr/0001-audit-row-and-pii-taxonomy.md). The taxonomy is
+regulator-derived (GDPR Arts. 4 + 9, CCPA/CPRA, HIPAA Safe Harbor,
+PCI DSS, ISO 27018) so categories map cleanly onto compliance
+boundaries instead of conflating them.
+
+Tags live in a `column_pii_tags` SQLite table keyed by
+`(source_connection_id, qualified_table, column_name)`. `get_metric`
+bulk-reads tags for every column a plan touches (measure + time
+bucket + group_by + filters), propagates by MAX-sensitivity +
+UNION-categories (ADR §4), and writes the propagated set into the
+audit row's `pii_categories` column. Two `get_metric` calls touching
+different category sets therefore produce distinct `fingerprint`
+digests — the field that pre-PR-#36 was a v1 constant.
+
+### Enforcing a refusal policy
+
+```bash
+# Refuse any get_metric whose plan touches `contact` or `health`.
+schemabrain serve --pii-block contact,health \
+  --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+The policy is *additive* (refuse calls touching these categories);
+omitting `--pii-block` disables enforcement and tags still flow
+through to `mcp_audit.pii_categories`. Unknown category names abort
+startup with a clear error listing the 12 valid values — typos in
+the operator config never silently fall through to "no PII
+protection".
+
+A blocked call returns a Charter `status="refused"` envelope with
+`error.kind="pii_blocked"`. The audit row records:
+
+- `status='refused'`
+- `refusal_reason='pii_blocked'`
+- `pii_categories` = the attempted set (so the audit shows *what
+  was touched*, not just *that something was blocked*)
+- `cost_class='refused'`
+
+`--pii-block` with `--no-audit` emits a one-shot stderr warning at
+startup: enforcement still happens (the agent sees the refusal
+envelope), but the refused row never lands in `mcp_audit`.
+
+### Opting out of classification
+
+```bash
+# Skip classification at index time; wipe any existing tags for
+# tables touched this run.
+schemabrain index ... --no-pii-classify
+```
+
+`get_metric` audit rows then record `pii_categories=''` and any
+`--pii-block` policy on `serve` has nothing to act on. Use only
+when local tag inference itself is unwanted (privacy-paranoid
+environments).
+
 ## Integrating with existing observability stacks
 
 For now, the recommendation is to tail `events.jsonl` and ship the
