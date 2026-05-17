@@ -51,6 +51,17 @@ class TestConstruction:
         mode = stat.S_IMODE(events_path.parent.stat().st_mode)
         assert mode == 0o700
 
+    def test_preexisting_loose_dir_tightened_to_0700(self, tmp_path: Path) -> None:
+        """A directory that already exists with a looser mode (e.g. 0o755
+        from another tool) must be chmodded back to 0o700. Previously
+        mkdir(exist_ok=True) silently accepted the loose mode."""
+        events_dir = tmp_path / "loose"
+        events_dir.mkdir(mode=0o755)
+        # Verify the test setup actually created a loose dir.
+        assert stat.S_IMODE(events_dir.stat().st_mode) == 0o755
+        JsonlEventBus(events_dir / "events.jsonl")
+        assert stat.S_IMODE(events_dir.stat().st_mode) == 0o700
+
     def test_path_property_expanded(self) -> None:
         bus = JsonlEventBus("~/.schemabrain_test_unused.jsonl")
         assert "~" not in str(bus.path)

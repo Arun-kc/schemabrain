@@ -416,6 +416,129 @@ class TestRenderEventPretty:
         assert "x" in output
 
 
+class TestPartialLineAcrossMultiplePolls:
+    """Regression test for an offset-tracking bug that caused partial
+    lines held in the buffer to be re-read from disk and prepended
+    to themselves, producing corrupted concatenated lines.
+    """
+
+    def test_two_poll_cycles_with_partial_line_in_between(self, tmp_path: Path) -> None:
+        events_path = tmp_path / "e.jsonl"
+        _write_event(events_path, tool_name="early")
+        opts = TailOptions(
+            events_path=events_path,
+            since=datetime(2020, 1, 1, tzinfo=UTC),
+            follow=True,
+            json_mode=True,
+            poll_interval_s=0.02,
+        )
+        results: list[dict] = []
+
+        def consume() -> None:
+            with TailReader(opts) as reader:
+                for ev in reader.stream():
+                    results.append(ev)
+                    if len(results) >= 2:
+                        return
+
+        thread = threading.Thread(target=consume, daemon=True)
+        thread.start()
+        time.sleep(0.05)
+        # Append a partial line (no newline) — the reader should hold
+        # it in its buffer without yielding it.
+        partial_event = json.dumps(
+            {
+                "timestamp": "2026-05-17T12:00:00.000000Z",
+                "server_session_id": "test-session",
+                "kind": "tool_call",
+                "tool_name": "later",
+                "args_summary": {},
+                "status": "success",
+                "error_kind": None,
+                "duration_ms": 1.0,
+                "result_summary": {},
+                "event_subtype": None,
+                "message": None,
+            }
+        )
+        with events_path.open("a", encoding="utf-8") as f:
+            f.write(partial_event)  # no trailing \n
+            f.flush()
+        time.sleep(0.1)
+        # Now complete the line. The reader must produce ONE valid
+        # event named "later", not a corrupted concatenation.
+        with events_path.open("a", encoding="utf-8") as f:
+            f.write("\n")
+            f.flush()
+        thread.join(timeout=2.0)
+        assert [e["tool_name"] for e in results] == ["early", "later"]
+
+
+class TestTailReaderFileVanishWarning:
+    def test_file_disappearance_warns_and_recovers(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        events_path = tmp_path / "e.jsonl"
+        _write_event(events_path, tool_name="before")
+        opts = TailOptions(
+            events_path=events_path,
+            since=datetime(2020, 1, 1, tzinfo=UTC),
+            follow=True,
+            json_mode=True,
+            poll_interval_s=0.02,
+        )
+        results: list[dict] = []
+
+        def consume() -> None:
+            with TailReader(opts) as reader:
+                for ev in reader.stream():
+                    results.append(ev)
+                    if len(results) >= 2:
+                        return
+
+        thread = threading.Thread(target=consume, daemon=True)
+        thread.start()
+        time.sleep(0.1)
+        # Remove the file entirely. The reader should warn once and
+        # keep polling for the file to reappear.
+        events_path.unlink()
+        time.sleep(0.1)
+        # Re-create with a new event.
+        _write_event(events_path, tool_name="after")
+        thread.join(timeout=2.0)
+        names = [e["tool_name"] for e in results]
+        assert "before" in names
+        assert "after" in names
+        captured = capsys.readouterr()
+        assert "disappeared" in captured.err
+
+
+class TestTailReaderExitCleanupUnderException:
+    def test_fd_closed_when_exception_in_with_block(self, tmp_path: Path) -> None:
+        """TailReader.__exit__ must close the open fd even when the
+        caller raises inside the with block."""
+        events_path = tmp_path / "e.jsonl"
+        _write_event(events_path, tool_name="t1")
+        opts = TailOptions(
+            events_path=events_path,
+            since=datetime(2020, 1, 1, tzinfo=UTC),
+            follow=False,
+            json_mode=True,
+        )
+        reader = TailReader(opts)
+        try:
+            with reader:
+                # Advance the stream so fd is assigned.
+                _ = next(reader.stream())
+                # Caller raises with the fd open.
+                raise RuntimeError("caller boom")
+        except RuntimeError:
+            pass
+        assert reader._fd is None
+
+
 class TestTailReaderTimestampDefensives:
     def test_event_with_missing_timestamp_passes_filter(self, tmp_path: Path) -> None:
         events_path = tmp_path / "e.jsonl"

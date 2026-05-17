@@ -274,18 +274,90 @@ class TestErrorWithoutKind:
         assert bus.events[0].error_kind is None
 
 
-class TestFailureLogOncePerKind:
-    def test_repeated_emit_failure_logs_once(
-        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Reset the module-level kind tracker between tests to avoid
-        # cross-test contamination. Resolve via sys.modules because the
-        # package re-exports the `instrument` name, shadowing the
-        # submodule for `import as` and attribute-access lookups.
+class TestFailureLogging:
+    """OSError failures dedupe per (tool, exception). Programming
+    bugs (RuntimeError, TypeError, ValueError) log every time so
+    a regression doesn't go silent after the first occurrence."""
+
+    def _reset_dedup_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import sys
 
         instrument_mod = sys.modules["schemabrain.observability.instrument"]
         monkeypatch.setattr(instrument_mod, "_emit_failure_logged", set())
+
+    def test_oserror_dedupes_per_tool(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._reset_dedup_set(monkeypatch)
+
+        class _DiskFullBus:
+            def emit(self, event: Event) -> None:
+                raise OSError("disk full")
+
+            def close(self) -> None:
+                pass
+
+        @instrument(
+            tool_name="describe_table",
+            bus=_DiskFullBus(),
+            redactor=EventRedactor(),
+            server_session_id=_SESSION,
+        )
+        def fake_tool() -> _FakeResponse:
+            return _FakeResponse(status="success", data=None)
+
+        fake_tool()
+        fake_tool()
+        fake_tool()
+        captured = capsys.readouterr()
+        # OSError is the documented expected case — dedupe per tool.
+        assert captured.err.count("OSError") == 1
+        assert "describe_table" in captured.err
+
+    def test_oserror_dedup_is_per_tool_not_global(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A disk-full OSError on tool A must NOT silence the same
+        OSError on tool B. The previous module-global set keyed on
+        exception type name only had this regression."""
+        self._reset_dedup_set(monkeypatch)
+
+        class _DiskFullBus:
+            def emit(self, event: Event) -> None:
+                raise OSError("disk full")
+
+            def close(self) -> None:
+                pass
+
+        bus = _DiskFullBus()
+        wrap_a = instrument(
+            tool_name="tool_a",
+            bus=bus,
+            redactor=EventRedactor(),
+            server_session_id=_SESSION,
+        )
+        wrap_b = instrument(
+            tool_name="tool_b",
+            bus=bus,
+            redactor=EventRedactor(),
+            server_session_id=_SESSION,
+        )
+
+        wrap_a(lambda: _FakeResponse(status="success", data=None))()
+        wrap_b(lambda: _FakeResponse(status="success", data=None))()
+        captured = capsys.readouterr()
+        assert "tool_a" in captured.err
+        assert "tool_b" in captured.err
+        # Two distinct (tool, kind) pairs → two log lines.
+        assert captured.err.count("OSError") == 2
+
+    def test_programming_bug_logs_every_time(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-OSError (programming bug) is never deduped. A typo or
+        shape regression must stay visible — silencing it would hide
+        the bug after a single log line for the rest of the process."""
+        self._reset_dedup_set(monkeypatch)
 
         class _BrokenBus:
             def emit(self, event: Event) -> None:
@@ -307,7 +379,9 @@ class TestFailureLogOncePerKind:
         fake_tool()
         fake_tool()
         captured = capsys.readouterr()
-        assert captured.err.count("RuntimeError") == 1
+        # 3 calls → 3 BUG log lines.
+        assert captured.err.count("RuntimeError") == 3
+        assert captured.err.count("BUG in describe_table") == 3
 
 
 class TestNullBusIntegration:

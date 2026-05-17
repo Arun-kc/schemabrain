@@ -18,9 +18,39 @@ class TestConnectionUrlRedaction:
         r = EventRedactor()
         assert r.redact("mysql://u:p@h/d") == "<redacted-connection-url>"
 
-    def test_sqlite_url_redacted(self) -> None:
+    def test_sqlite_file_url_not_redacted_no_credentials(self) -> None:
+        # sqlite:// URLs reference a local file with no credentials —
+        # they are not a credential-leak vector. The new regex requires
+        # user:pass@ to qualify.
         r = EventRedactor()
-        assert r.redact("sqlite:///./x.db") == "<redacted-connection-url>"
+        assert r.redact("sqlite:///./x.db") == "sqlite:///./x.db"
+
+    def test_mid_string_postgres_url_redacted(self) -> None:
+        # The previous regex was ^-anchored and missed embedded URLs.
+        # A natural-language agent query referencing a connection
+        # string mid-sentence must redact too.
+        r = EventRedactor()
+        assert (
+            r.redact("connecting to postgresql://u:p@h/d for stats") == "<redacted-connection-url>"
+        )
+
+    def test_mongodb_url_with_creds_redacted(self) -> None:
+        r = EventRedactor()
+        assert r.redact("mongodb://user:pw@host/db") == "<redacted-connection-url>"
+
+    def test_redis_url_with_creds_redacted(self) -> None:
+        r = EventRedactor()
+        assert r.redact("redis://default:secret@h:6379") == "<redacted-connection-url>"
+
+    def test_https_basic_auth_url_redacted(self) -> None:
+        r = EventRedactor()
+        assert r.redact("https://token:x@github.com/org/repo") == "<redacted-connection-url>"
+
+    def test_plain_https_url_not_redacted_no_credentials(self) -> None:
+        # Public URLs without user:pass@ qualifier shouldn't be redacted
+        # — they're not credentials.
+        r = EventRedactor()
+        assert r.redact("https://docs.example.com") == "https://docs.example.com"
 
     def test_postgres_url_inside_dict_redacted(self) -> None:
         r = EventRedactor()
@@ -163,8 +193,8 @@ class TestNoOpCases:
 class TestNesting:
     def test_url_inside_filter_still_url_redacted(self) -> None:
         # The order matters: long-value > URL > filter > email.
-        # Inside filters, both URL and email-shape strings still
-        # fire the URL/email rule because they match earlier guards.
+        # Inside filters, a connection URL still fires the URL rule
+        # first because it's the most-credentialed value type.
         r = EventRedactor()
         out = r.redact({"filters": {"x": "postgresql://u:p@h/d"}})
         # URL rule fires before the filter-value rule because it's
@@ -175,3 +205,11 @@ class TestNesting:
         r = EventRedactor()
         out = r.redact({"a": {"b": {"c": "alice@x.com"}}})
         assert out == {"a": {"b": {"c": "<email>"}}}
+
+    def test_mid_string_email_redacted(self) -> None:
+        # Previously the email regex was full-string anchored and
+        # missed "contact alice@example.com". The new search-based
+        # rule redacts the whole containing string when an email
+        # substring is present.
+        r = EventRedactor()
+        assert r.redact("contact alice@example.com please") == "<email>"

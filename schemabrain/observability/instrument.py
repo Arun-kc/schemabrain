@@ -30,7 +30,12 @@ from schemabrain.observability.event import Event
 from schemabrain.observability.extractors import get_result_extractor
 from schemabrain.observability.redactor import EventRedactor
 
-_emit_failure_logged: set[str] = set()
+# Key on (tool_name, exception_class_name) so one tool's failure mode
+# doesn't permanently silence the same exception class for the other
+# eight tools. The module-level set is safe today: FastMCP dispatches
+# sync tools on the event-loop thread with no thread pool, so the set
+# is single-thread.
+_emit_failure_logged: set[tuple[str, str]] = set()
 
 T = TypeVar("T")
 
@@ -121,15 +126,28 @@ def _safe_emit(
             result_summary=result_summary,
         )
         bus.emit(event)
+    except OSError as exc:
+        # Expected at-runtime failure (disk full, permission revoked
+        # mid-run). Log once per tool and drop the event so the actual
+        # tool call still returns to the agent.
+        _log_failure_once(tool_name, type(exc).__name__, exc)
     except Exception as exc:
-        _log_failure_once(type(exc).__name__, exc)
+        # Programming bug — wrong Event field, mismatched response
+        # shape, redactor crash. Log EVERY occurrence (no dedup) so
+        # a fresh contributor sees the regression immediately rather
+        # than getting one stderr line followed by silence forever.
+        print(
+            f"schemabrain instrument BUG in {tool_name}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
 
 
-def _log_failure_once(kind: str, exc: BaseException) -> None:
-    if kind in _emit_failure_logged:
+def _log_failure_once(tool_name: str, exc_kind: str, exc: BaseException) -> None:
+    key = (tool_name, exc_kind)
+    if key in _emit_failure_logged:
         return
-    _emit_failure_logged.add(kind)
+    _emit_failure_logged.add(key)
     print(
-        f"schemabrain instrument: dropping event ({kind}: {exc})",
+        f"schemabrain instrument: dropping event for {tool_name} ({exc_kind}: {exc})",
         file=sys.stderr,
     )

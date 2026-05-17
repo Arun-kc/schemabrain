@@ -166,6 +166,53 @@ class TestServeBusWiring:
         bus = captured["event_bus"]
         assert isinstance(bus, NullEventBus)
 
+    def test_unwritable_events_path_falls_back_to_null_bus_with_warning(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A bad --events-path (e.g. read-only volume, no parent
+        permissions) must NOT crash the serve process. It falls back
+        to NullEventBus with a stderr warning so the operator can
+        diagnose and the server is still useful."""
+        import sys as _sys
+
+        store_path = tmp_path / "store.db"
+        _seed_store(store_path)
+        captured = _patch_run_stdio_capture(monkeypatch)
+        monkeypatch.setenv("FAKE_URL", "postgresql+psycopg://fake/serve")
+
+        # `_cmd_serve` does `from schemabrain.observability import
+        # JsonlEventBus, NullEventBus` locally. Patch the source module
+        # so the local import picks up the exploding replacement.
+        bus_mod = _sys.modules["schemabrain.observability.bus"]
+        obs_pkg = _sys.modules["schemabrain.observability"]
+
+        def _explode(*args: object, **kwargs: object) -> object:
+            raise OSError("Read-only file system")
+
+        monkeypatch.setattr(bus_mod, "JsonlEventBus", _explode)
+        monkeypatch.setattr(obs_pkg, "JsonlEventBus", _explode)
+
+        exit_code = cli_main(
+            [
+                "serve",
+                "--url-env",
+                "FAKE_URL",
+                "--store-path",
+                str(store_path),
+                "--events-path",
+                "/nonexistent/path/events.jsonl",
+            ]
+        )
+        assert exit_code == 0
+        bus = captured["event_bus"]
+        assert isinstance(bus, NullEventBus)
+        stderr = capsys.readouterr().err
+        assert "cannot initialise events file" in stderr
+        assert "Read-only file system" in stderr
+
 
 class TestRunStdioLifecycleEvents:
     def test_emits_server_start_and_stop(

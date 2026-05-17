@@ -1466,12 +1466,26 @@ def _cmd_serve(
         return 2
     source_id = _make_source_id(source_url)
     if no_events:
-        bus = NullEventBus()
+        bus: JsonlEventBus | NullEventBus = NullEventBus()
     else:
         resolved_events_path = (
             events_path or _os.environ.get("SCHEMABRAIN_EVENTS_PATH") or _DEFAULT_EVENTS_PATH
         )
-        bus = JsonlEventBus(Path(resolved_events_path).expanduser())
+        try:
+            bus = JsonlEventBus(Path(resolved_events_path).expanduser())
+        except OSError as exc:
+            # Bus construction fails when the parent dir can't be
+            # created (read-only volume, no write perms). The serve
+            # process is more useful WITHOUT observability than not
+            # at all, so fall back to a no-op bus and warn.
+            print(
+                f"schemabrain serve: cannot initialise events file at "
+                f"{resolved_events_path}: {exc}. Continuing with events "
+                f"disabled. Pass --no-events to suppress this warning, "
+                f"or --events-path PATH to point at a writable location.",
+                file=sys.stderr,
+            )
+            bus = NullEventBus()
 
     # Construct the same default embedder the indexer used so query and
     # stored vectors are dimension-compatible. fastembed loads the ONNX

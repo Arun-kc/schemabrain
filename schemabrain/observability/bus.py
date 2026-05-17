@@ -20,6 +20,7 @@ don't want a side effect).
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -89,7 +90,18 @@ class JsonlEventBus:
         return
 
     def _ensure_dir(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
+        parent = self._path.parent
+        parent.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
+        # mkdir(exist_ok=True) silently ACCEPTS a pre-existing dir
+        # regardless of its mode. Re-chmod here so the intended 0700
+        # posture holds even when the dir was created by an earlier
+        # version, another tool, or a system package manager that
+        # used a looser mode.
+        # If we don't own the directory we can't tighten it. Better
+        # to proceed than to refuse — the file mode of 0600 is the
+        # real protection on the data itself.
+        with contextlib.suppress(OSError):  # pragma: no cover
+            os.chmod(parent, _DIR_MODE)
 
     def _append(self, line: bytes) -> None:
         # Open per-emit so multiple processes don't share an offset and
