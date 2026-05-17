@@ -241,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
             no_embed=args.no_embed,
             quiet=args.quiet,
             dry_run=args.dry_run,
+            no_pii_classify=args.no_pii_classify,
         )
     if args.command == "eval":
         return _cmd_eval(
@@ -482,6 +483,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "at index time but disables "
         "semantic retrieval. Default off (embeddings ON). Implied when "
         "--no-enrich is set, since there are no descriptions to embed.",
+    )
+    p_index.add_argument(
+        "--no-pii-classify",
+        action="store_true",
+        help="Skip the heuristic PII classifier and wipe any existing "
+        "PII tags for tables touched this run. With classification "
+        "ON (default), `get_metric` populates the audit row's "
+        "`pii_categories` column and the `--pii-block` policy on "
+        "`serve` has data to act on. With classification OFF, audit "
+        "rows record `pii_categories=''` and `--pii-block` blocks "
+        "nothing. Use only when local tag inference itself is "
+        "unwanted (privacy-paranoid environments).",
     )
     p_index.add_argument(
         "--quiet",
@@ -1241,7 +1254,19 @@ def _cmd_index(
     no_embed: bool,
     quiet: bool = False,
     dry_run: bool = False,
+    no_pii_classify: bool = False,
 ) -> int:
+    if no_pii_classify:
+        # One-shot startup warning: operators who opted out of
+        # classification need a visible reminder that downstream
+        # `get_metric` audit rows will record `pii_categories=''`
+        # and `--pii-block` enforcement has nothing to act on.
+        print(
+            "warning: PII classification disabled — get_metric audit rows "
+            "will record pii_categories=''. Use 'schemabrain index' without "
+            "--no-pii-classify to populate tags.",
+            file=sys.stderr,
+        )
     url = _resolve_url_source(positional=positional_url, url_env=url_env)
     if url is None:
         return 2
@@ -1358,6 +1383,7 @@ def _cmd_index(
                     pipeline=pipeline,
                     embedder=embedder,
                     reporter=reporter,
+                    no_pii_classify=no_pii_classify,
                 )
         finally:
             reporter.close()
