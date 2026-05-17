@@ -316,3 +316,138 @@ class TestDoctorAgainstPostgres16:
                 assert "read-only" in str(exc_info.value).lower()
         finally:
             engine.dispose()
+
+
+@pytest.mark.integration
+class TestWizardAgainstPostgres16:
+    """End-to-end exercise of the activation wizard against a real
+    Postgres 16 instance. Verifies the full 5-stage pipeline:
+    source check passes, the index stage populates the local store,
+    the entities stage skips cleanly without ANTHROPIC_API_KEY in
+    CI, and the host stage emits the snippet.
+    """
+
+    def test_wizard_indexes_real_postgres_into_empty_store(
+        self,
+        seeded_pg_url: str,
+        tmp_path: Path,
+        stub_uvx: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Drop ANTHROPIC_API_KEY so stage 3 takes the soft-skip path
+        # (the explicit `--no-entities` works too; the soft-skip is
+        # what most CI environments hit and is the path we most want
+        # to exercise against a real database).
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        store_path = tmp_path / "wizard.db"
+
+        exit_code = main(
+            [
+                "init",
+                "--source",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--print-only",
+            ]
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        # All five stages render.
+        for header in ("[1/5]", "[2/5]", "[3/5]", "[4/5]", "[5/5]"):
+            assert header in captured.err
+        # Stage 2 indexed real tables.
+        assert "tables" in captured.err.lower()
+        # Stage 3 soft-skipped on missing API key.
+        assert "ANTHROPIC_API_KEY" in captured.err
+        # Stage 4 emitted the manual-mode snippet to stdout.
+        snippet = json.loads(captured.out)
+        assert "schemabrain" in snippet["mcpServers"]
+        # Confirm the indexer actually wrote tables to the store —
+        # this is what closes the UX gap the wizard was built for.
+        with SQLiteStore(path=store_path) as store:
+            tables = store.list_tables(
+                source_connection_id="anything"
+            )  # any source_id is fine for the assertion
+            # We don't know the exact source_id without re-deriving;
+            # use the cli helper to get the real one.
+        from schemabrain.cli import _make_source_id
+
+        real_source_id = _make_source_id(seeded_pg_url)
+        with SQLiteStore(path=store_path) as store:
+            tables = store.list_tables(source_connection_id=real_source_id)
+            assert len(tables) > 0  # the seeded schema was indexed
+
+    def test_wizard_idempotent_against_pre_indexed_store(
+        self,
+        seeded_pg_url: str,
+        tmp_path: Path,
+        stub_uvx: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Run the wizard twice. Second run must auto-skip stage 2 +
+        # stage 3 (idempotent) and still emit the snippet.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        store_path = tmp_path / "wizard.db"
+
+        # First run: indexes.
+        first_exit = main(
+            [
+                "init",
+                "--source",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--print-only",
+            ]
+        )
+        assert first_exit == 0
+        capsys.readouterr()  # discard
+
+        # Second run: stages 2 + 3 auto-skip via the
+        # "already indexed" / "ANTHROPIC_API_KEY missing" paths.
+        second_exit = main(
+            [
+                "init",
+                "--source",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--print-only",
+            ]
+        )
+        assert second_exit == 0
+        captured = capsys.readouterr()
+        # Stage 2 reports already-indexed skip.
+        assert "already indexed" in captured.err
+
+    def test_wizard_skip_index_no_entities_against_postgres(
+        self,
+        seeded_pg_url: str,
+        tmp_path: Path,
+        stub_uvx: None,
+    ) -> None:
+        # Explicit power-user flags: --skip-index --no-entities both
+        # surface as `skipped` outcomes and the wizard still wires
+        # the host. Mirrors the prior PR-33 init contract.
+        store_path = tmp_path / "wizard.db"
+        # Pre-create the store so wire_host's existing-store check
+        # doesn't refuse.
+        SQLiteStore(path=store_path).close()
+
+        exit_code = main(
+            [
+                "init",
+                "--source",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--print-only",
+                "--skip-index",
+                "--no-entities",
+            ]
+        )
+        assert exit_code == 0

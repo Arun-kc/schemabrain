@@ -5,9 +5,9 @@ Two paths from "I have a Postgres database" to "an AI agent can answer questions
 1. **MCP client (Claude Desktop or Cursor)** — for everyday use; click into the chat and ask questions.
 2. **Anthropic SDK demo** — for verifying the install end-to-end without Claude Desktop, and for adapting Schema Brain into your own agent code.
 
-Both share the same indexing step.
+The recommended path is the activation wizard (`schemabrain init`). It runs the source check, indexer, entity suggestion, and host wiring in one command. The manual `index` flow below still works and is the right choice for power users who want explicit control over each step.
 
-## 0. Install + index
+## 0. Activation wizard (recommended)
 
 ```bash
 # Install (in a venv)
@@ -18,18 +18,40 @@ pip install schemabrain
 #   uv sync --extra dev
 # (source-install users prefix the runtime commands below with `uv run`)
 
-# Set your Anthropic key (used at index time for column descriptions)
-export ANTHROPIC_API_KEY=sk-ant-...
-
 # Put the connection string in an env var so the password never lands
 # in shell history, `ps`, or journald. Schema Brain reads it via
 # --url-env. URL MUST use the postgresql+psycopg:// scheme (psycopg v3;
 # the bare postgresql:// scheme fails with ModuleNotFoundError).
 export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"
 
-schemabrain index \
-    --url-env DATABASE_URL \
-    --store-path ./schemabrain.db
+# Optional: an Anthropic key unlocks the entity-suggestion stage
+# (stage 3). Without it the wizard skips stage 3 gracefully and you
+# can curate entities later via `schemabrain entities suggest --apply`.
+export ANTHROPIC_API_KEY=sk-ant-...
+
+schemabrain init --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+The wizard runs five stages:
+
+1. **Source check** — validates URL reachable + read-only on Postgres.
+2. **Index schema** — DDL introspection into `./schemabrain.db`. Cost-free by default; `--enrich` opts in to LLM column descriptions ($0.10–$2.00 for a 50-table schema).
+3. **Curate entities** — Claude Sonnet 4.6 proposes domain entities. Soft-skips if `ANTHROPIC_API_KEY` is absent. Cap spend with `--entities-max-cost-usd N`.
+4. **Wire host** — writes `schemabrain` into Claude Desktop's `mcpServers` block. Use `--host claude-code` for Claude Code (`claude mcp add`) or `--print-only` for any other host (paste-ready snippet to stdout).
+5. **Next step** — prints what to ask the agent first.
+
+Re-runs are idempotent: stages 2 and 3 auto-skip when the work is already done. Use `--skip-index` to opt out of stage 2 and `--no-entities` to opt out of stage 3.
+
+## 0a. Manual flow (advanced)
+
+If you want explicit control over each step — or you're scripting individual phases — the underlying commands still work:
+
+```bash
+# Index only (no host wiring, no entity suggestion)
+schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db
+
+# Or with LLM enrichment + ANTHROPIC_API_KEY:
+# schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db
 ```
 
 > **Legacy path:** the older `schemabrain index "postgresql+psycopg://..."` form
@@ -38,7 +60,7 @@ schemabrain index \
 
 The index step:
 - Reflects every user-visible table.
-- Generates one LLM-written column description per column (Claude Haiku 4.5; ~$0.0003/column at typical schema density).
+- Generates one LLM-written column description per column (Claude Haiku 4.5; ~$0.0003/column at typical schema density) — only when run with enrichment enabled.
 - Embeds each description locally with `BAAI/bge-small-en-v1.5` (~67 MB ONNX, ~10 ms/column warm).
 - Persists everything to `./schemabrain.db`.
 
