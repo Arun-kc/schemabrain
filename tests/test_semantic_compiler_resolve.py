@@ -225,6 +225,57 @@ class TestUnknownMetric:
                     metric_name="ghost_metric",
                 )
 
+    def test_unknown_metric_name_at_boundary_echoed_verbatim(self, tmp_path: Path) -> None:
+        """A 200-char metric name (exactly at the cap) must echo verbatim
+        — only names *longer than* `_MAX_METRIC_NAME_ECHO` get the `...`
+        suffix. Guards against an off-by-one (`<` vs `<=`) regression
+        on the truncation comparison."""
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_basic(store)
+            at_boundary = "a" * 200
+            with pytest.raises(UnknownMetricError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name=at_boundary,
+                )
+            # The full name appears; no truncation marker.
+            assert at_boundary in str(exc_info.value)
+            assert "..." not in str(exc_info.value)
+
+    def test_unknown_metric_name_just_over_boundary_truncated(self, tmp_path: Path) -> None:
+        """A 201-char metric name (one over the cap) gets truncated and
+        the `...` suffix appended. Paired with the boundary test above
+        to lock both sides of the comparison."""
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_basic(store)
+            over_boundary = "a" * 201
+            with pytest.raises(UnknownMetricError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name=over_boundary,
+                )
+            assert "..." in str(exc_info.value)
+
+    def test_unknown_metric_with_oversized_name_bounded_echo(self, tmp_path: Path) -> None:
+        """A prompt-injected agent could pass a 100 KB metric_name and
+        cause the UnknownMetricError to echo the full payload back
+        into the caller's context window. Parallel to the bounded-echo
+        defense on the qualified-name parsers in `mcp/_helpers.py`.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_basic(store)
+            attack = "a" * 100_000
+            with pytest.raises(UnknownMetricError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name=attack,
+                )
+            # The error message must NOT carry the full 100 KB payload.
+            assert len(str(exc_info.value)) < 2_000
+
 
 # ----- happy paths -----------------------------------------------------------
 
