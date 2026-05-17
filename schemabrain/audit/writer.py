@@ -277,10 +277,10 @@ class AuditWriter:
             occurred_at = _now_iso_utc()
 
             # Compute fingerprint over the v1 input set. PII tags
-            # touched now varies per call (PR #36 populated this from
-            # the get_metric propagation step); the AST shape and
-            # rule id are still v1-constant pending v2 query-shape
-            # fingerprinting + rule resolution.
+            # touched now varies per call (the `get_metric`
+            # propagation step populates it from the column tag
+            # store); the AST shape and rule id are still v1-constant
+            # pending v2 query-shape fingerprinting + rule resolution.
             pii_categories_str = draft["pii_categories"]
             pii_tags_touched = (
                 frozenset(pii_categories_str.split(",")) if pii_categories_str else frozenset()

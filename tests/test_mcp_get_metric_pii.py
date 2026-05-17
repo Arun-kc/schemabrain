@@ -4,8 +4,9 @@ Asserts that:
   - get_metric attaches propagated categories to MetricResult.pii_categories
   - `pii_block` policy raises PiiBlockedError pre-emission
   - PiiBlockedError carries attempted + blocked sets for the audit row
-  - fingerprint differs across pii-tagged vs untagged plans (load-bearing
-    demonstration of fingerprint differentiation post-PR-#36)
+  - fingerprint differs across pii-tagged vs untagged plans (the
+    load-bearing demonstration that propagation actually varies the
+    audit-row fingerprint)
 """
 
 from __future__ import annotations
@@ -193,8 +194,9 @@ class TestPiiBlockedRefusal:
             assert exc_info.value.attempted_categories == ("contact",)
             assert exc_info.value.blocked_categories == ("contact",)
             # CRITICAL: emit_sql + executor.execute must NOT have run.
-            # PR design lock: refusal happens pre-emission so the SQL
-            # is never compiled, logged, or executed.
+            # The refusal happens pre-emission so the SQL is never
+            # compiled, logged, or executed — verified by the empty
+            # `execute_calls` list on the fake executor.
             assert executor.execute_calls == []
         finally:
             store.close()
@@ -294,9 +296,10 @@ class TestAuditRowReadsPiiCategories:
 
 
 class TestFingerprintDifferentiation:
-    """The load-bearing claim of PR #36 — fingerprints actually differ
-    across calls that touch different category sets, where prior to
-    PR #36 every audit row hashed identically.
+    """Fingerprints actually differ across calls that touch different
+    category sets. Prior to PII propagation wiring, every audit row
+    hashed identically because every `FingerprintInput` field was a
+    v1 constant; pii_tags_touched now varies per call.
     """
 
     def test_two_metrics_with_different_pii_have_distinct_audit_fingerprints(

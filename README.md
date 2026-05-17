@@ -431,6 +431,33 @@ constructed (read-only volume, missing perms), `serve` falls back to
 no-audit with a stderr warning — the server is more useful without
 audit than not at all.
 
+### PII classification (alpha)
+
+`schemabrain index` tags every column with the regulator-derived PII
+categories from [ADR 0001](docs/adr/0001-audit-row-and-pii-taxonomy.md)
+— twelve categories spanning GDPR, CCPA/CPRA, HIPAA, PCI DSS, and ISO
+27018. Tags are produced by a heuristic regex classifier (column-name
+match) at index time and stored in a separate `column_pii_tags` table.
+`get_metric` propagates tags across every column the query touches
+(MAX-sensitivity + UNION-categories per ADR §4) and writes the
+resulting set into the audit row's `pii_categories` column — so two
+calls touching different category sets produce distinct
+`fingerprint` digests in `mcp_audit`.
+
+```bash
+# Refuse any get_metric that touches `contact` or `health` columns.
+schemabrain serve --pii-block contact,health
+
+# Skip classification at index time (audit rows still land; the
+# pii_categories column stays empty).
+schemabrain index ... --no-pii-classify
+```
+
+A blocked call returns a Charter `status="refused"` envelope with
+`error.kind="pii_blocked"`; the SQL is never compiled, never logged,
+never executed. The audit row records `refusal_reason='pii_blocked'`
+and `pii_categories` lists the categories that triggered the refusal.
+
 ---
 
 ## Roadmap
