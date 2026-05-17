@@ -3843,17 +3843,65 @@ def _render_wizard_result(result: object, *, host_display: str | None = None) ->
         # already point the user at recovery).
         return
 
-    # Clean run — print the closing next-step hint inline with the
-    # stage-5 message style.
+    # Clean run — print the closing block (rule + restart-or-snippet
+    # prompt + tail/audit hints + thesis tagline). Skipped on
+    # shell_out_failed (the existing Note covers the recovery — adding
+    # a "Restart Claude Code" line would contradict it).
     host_result = result.host_install_result
     if host_result is not None and host_result.state == "shell_out_failed":
-        # Stage 4 succeeded as a wizard stage (shell-out attempted)
-        # but the underlying `claude mcp add` failed. The user needs
-        # the fallback copy-paste argv.
         console.print(
             "  [dim]Note:[/] `claude mcp add` failed; you can run the redacted "
             "command above with real credentials to register manually."
         )
+        return
+    if host_result is not None and host_result.state in {
+        "written",
+        "unchanged",
+        "printed_only",
+    }:
+        _render_closing_block(host_result, host_display=host_display, console=console)
+
+
+def _render_closing_block(
+    host_result: object,
+    *,
+    host_display: str | None,
+    console: object,
+) -> None:
+    """Render the post-stage closing block for clean runs.
+
+    Layout:
+
+      ──────────────────────────────────────────────────────────────
+      Restart Claude Desktop, then ask:
+      › list the entities Schema Brain knows about
+
+      Inspect activity:  schemabrain tail --follow
+      Review the audit:  schemabrain audit list
+
+      The agent reads. It doesn't write. That's the whole point.
+
+    Manual mode swaps the restart line for "Add the snippet above to
+    your host config, then ask:" since there's nothing to restart yet.
+    """
+    from schemabrain.setup.init_flow import InitResult
+
+    if not isinstance(host_result, InitResult):
+        return  # pragma: no cover — defensive; caller already narrowed
+    console.print("[dim]" + "─" * 62 + "[/]")  # type: ignore[attr-defined]
+    if host_result.state == "printed_only":
+        console.print("Add the snippet above to your host config, then ask:")  # type: ignore[attr-defined]
+    else:
+        target = host_display or "your MCP host"
+        console.print(f"Restart {target}, then ask:")  # type: ignore[attr-defined]
+    console.print("[cyan]›[/] list the entities Schema Brain knows about")  # type: ignore[attr-defined]
+    console.print()  # type: ignore[attr-defined]
+    console.print("Inspect activity:  [bold]schemabrain tail --follow[/]")  # type: ignore[attr-defined]
+    console.print("Review the audit:  [bold]schemabrain audit list[/]")  # type: ignore[attr-defined]
+    console.print()  # type: ignore[attr-defined]
+    console.print(
+        "[dim]The agent reads. It doesn't write. That's the whole point.[/]"
+    )  # type: ignore[attr-defined]
 
 
 def _stage_display_name(name: str) -> str:

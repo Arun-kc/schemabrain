@@ -152,9 +152,10 @@ class TestInitCliPrintOnly:
         captured = capsys.readouterr()
         # The wizard's renderer prints the common config paths block
         # next to the manual-mode (stage-4 `printed_only`) snippet,
-        # and stage-5 prints the restart-and-ask line.
+        # and the closing block points the user at the snippet they
+        # were just shown.
         assert "Common config paths" in captured.err
-        assert "restart your MCP host" in captured.err
+        assert "Add the snippet" in captured.err
 
     def test_print_only_emits_manual_mode_header(
         self,
@@ -970,7 +971,7 @@ class TestWizardRenderer:
                     "done",
                     "Claude Code registration failed; the snippet is printable below",
                 ),
-                self._make_outcome(5, "next_step", "done", "restart your MCP host"),
+                self._make_outcome(5, "next_step", "done", "Ready"),
             ),
             aborted=False,
             host_install_result=host_result,
@@ -1011,7 +1012,7 @@ class TestWizardRenderer:
                 self._make_outcome(
                     4, "wire_host", "done", f"wrote schemabrain entry to {cfg_path}"
                 ),
-                self._make_outcome(5, "next_step", "done", "restart your MCP host"),
+                self._make_outcome(5, "next_step", "done", "Ready"),
             ),
             aborted=False,
             host_install_result=host_result,
@@ -1173,6 +1174,142 @@ class TestWizardRenderer:
         _render_wizard_result(result)
         captured = capsys.readouterr()
         assert "0.0s" not in captured.err
+
+    def _written_host_result(self, tmp_path: Path) -> object:
+        from schemabrain.setup.hosts import SchemabrainSnippet
+        from schemabrain.setup.init_flow import InitResult
+
+        snippet = SchemabrainSnippet(
+            command="uvx", args=("schemabrain==0.2.0a1", "serve"), env={}
+        )
+        return InitResult(
+            host="claude-desktop",
+            snippet=snippet,
+            state="written",
+            config_path=tmp_path / "claude_desktop_config.json",
+            backup_made=False,
+        )
+
+    def _printed_only_host_result(self) -> object:
+        from schemabrain.setup.hosts import SchemabrainSnippet
+        from schemabrain.setup.init_flow import InitResult
+
+        snippet = SchemabrainSnippet(
+            command="uvx", args=("schemabrain==0.2.0a1", "serve"), env={}
+        )
+        return InitResult(host="manual", snippet=snippet, state="printed_only")
+
+    def _full_clean_outcomes(self) -> tuple[object, ...]:
+        return (
+            self._make_outcome(1, "source_check", "done", "ok"),
+            self._make_outcome(2, "index", "done", "indexed"),
+            self._make_outcome(3, "entities", "skipped", "skipped"),
+            self._make_outcome(4, "wire_host", "done", "wired"),
+            self._make_outcome(5, "next_step", "done", "Ready"),
+        )
+
+    def test_closing_block_renders_on_written_host(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._written_host_result(tmp_path),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        # Automated host gets "Restart …, then ask:" copy.
+        assert "Restart Claude Desktop" in captured.err
+        # Tail + audit hints are part of the closing block.
+        assert "schemabrain tail" in captured.err
+        assert "schemabrain audit list" in captured.err
+        # Thesis tagline closes the block.
+        assert "The agent reads. It doesn't write." in captured.err
+
+    def test_closing_block_renders_manual_copy_on_printed_only(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._printed_only_host_result(),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="manual mode")
+        captured = capsys.readouterr()
+        # Manual mode never restarts a host — copy points at the
+        # snippet the user just received instead.
+        assert "Restart" not in captured.err
+        assert "Add the snippet" in captured.err
+        # Tail + audit hints + thesis tagline still apply.
+        assert "schemabrain tail" in captured.err
+        assert "The agent reads. It doesn't write." in captured.err
+
+    def test_closing_block_omitted_on_abort(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=(
+                self._make_outcome(1, "source_check", "done", "ok"),
+                self._make_outcome(
+                    2, "index", "failed", "boom", "verify the URL and retry"
+                ),
+            ),
+            aborted=True,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        # Aborted runs land in the failure path (commit 4 — panel);
+        # the clean-run closing block must not appear.
+        assert "The agent reads. It doesn't write." not in captured.err
+        assert "schemabrain tail" not in captured.err
+
+    def test_closing_block_omitted_on_shell_out_failed(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # `shell_out_failed` is a non-fatal stage-4 outcome (aborted=False)
+        # but the auto-register attempt didn't work — directing the user
+        # to "Restart Claude Code" would be misleading. The existing
+        # "register manually" Note covers the recovery; the clean-run
+        # closing block must defer to it.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.hosts import SchemabrainSnippet
+        from schemabrain.setup.init_flow import InitResult
+        from schemabrain.setup.wizard import WizardResult
+
+        snippet = SchemabrainSnippet(
+            command="uvx",
+            args=("schemabrain==0.2.0a1", "serve"),
+            env={"SCHEMABRAIN_DATABASE_URL": "postgresql://u:p@h/d"},
+        )
+        host_result = InitResult(
+            host="claude-code",
+            snippet=snippet,
+            state="shell_out_failed",
+            shell_out_command=("claude", "mcp", "add"),
+            shell_out_stderr="claude: command not found",
+        )
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=host_result,
+        )
+        _render_wizard_result(result, host_display="Claude Code")
+        captured = capsys.readouterr()
+        # The "register manually" Note still appears (covered by
+        # _render_wizard_result's existing shell_out_failed branch).
+        assert "register manually" in captured.err
+        # The clean-run thesis tagline does NOT — to avoid contradicting
+        # the recovery hint.
+        assert "The agent reads. It doesn't write." not in captured.err
 
     def test_unknown_status_falls_through_glyph_lookup(
         self, capsys: pytest.CaptureFixture[str]

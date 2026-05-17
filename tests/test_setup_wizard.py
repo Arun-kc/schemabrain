@@ -1777,7 +1777,9 @@ class TestStageNextStep:
 
         assert outcome.stage == 5
         assert outcome.status == "done"
-        assert "restart" in outcome.message
+        # Brief status line — the renderer's closing block carries the
+        # actionable next-step copy.
+        assert outcome.message == "Ready"
 
 
 # ----- DEFAULT_STAGES contract --------------------------------------------

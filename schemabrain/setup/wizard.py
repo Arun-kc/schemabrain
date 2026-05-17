@@ -969,12 +969,18 @@ def _wire_host_message(result: InitResult) -> str:
 
 
 def _stage_next_step(ctx: WizardContext) -> StageOutcome:
-    """Closing stage — never fails; always renders the next-step hint."""
+    """Closing stage — never fails; emits a brief status line.
+
+    The renderer's closing block carries the actionable next-step
+    copy (restart prompt, example query, tail/audit hints, thesis
+    tagline), so this handler only signals that the wizard reached
+    the end successfully.
+    """
     return StageOutcome(
         stage=5,
         name="next_step",
         status="done",
-        message='restart your MCP host, then ask: "list the entities Schema Brain knows about"',
+        message="Ready",
     )
 
 
