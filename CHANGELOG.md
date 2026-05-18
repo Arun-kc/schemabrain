@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Three CLI smoke findings from the post-PR-#65 manual pass.** No
+  CLI flag, JSON schema, or public API change.
+  - **Wizard stage + abort `Panel` width** stretched unbounded with
+    `expand=False` whenever a stage's failure or recovery message ran
+    long (the store-schema-version-mismatch error is ~250 chars and
+    rendered as a 200+ col panel that horizontal-scrolled on most
+    terminals). Panels now soft-cap at `min(console.width, 100)` via
+    a shared `_wizard_panel_width` helper; long messages wrap inside
+    the panel rather than blowing it out.
+  - **Wizard stages 3 + 4 crashed the entire run** when Anthropic
+    hit `max_tokens` mid-prompt — the bare `RuntimeError` raised by
+    `anthropic_client._extract_text` propagated through
+    `pipeline.propose_from_*` and surfaced to the user as an
+    unhandled traceback, violating the documented best-effort
+    contract. Both `_run_entity_suggestion` + `_run_metric_suggestion`
+    now wrap the LLM call in a narrow-scope catch that re-raises as a
+    new `_LLMClientErrorAtWizard`; stage handlers catch it and emit a
+    structured failed `StageOutcome` with a recovery hint naming
+    `max_tokens` as the most common trigger. `MetricSuggestionParseError`
+    is now explicitly caught alongside the entity-side
+    `SuggestionParseError` so a malformed-LLM-YAML response on stage 4
+    surfaces the right "transient LLM hiccups" hint instead of the
+    LLM-network message. `ValueError` from `propose_from_*` is
+    re-raised defensively (today's guards make it unreachable, but
+    future drift now stays loud).
+  - **All three `apply` subcommands (`entities apply` / `joins apply`
+    / `metrics apply`)** crashed with `unrecognized arguments` when a
+    shell glob (`apply dir/*.yaml`) expanded to more than one path.
+    The positional `yaml_path` argument now uses `nargs="+"` on every
+    apply command and accepts a mix of files and directories. A new
+    shared `_expand_yaml_paths` helper resolves each path, expands
+    directories to their immediate `.yaml`/`.yml` children, dedupes
+    on canonicalised paths, and routes unreadable paths into the
+    per-file failure summary (no more raw `PermissionError`
+    traceback). `_cmd_entities_apply` gained the per-file failure-
+    aggregation loop that `joins apply` and `metrics apply` already
+    had — partial success now reports correctly, and a mid-loop
+    structural error flushes the applied/failed summary before
+    exiting so users see what landed.
+
 ### Changed
 - **CLI rendering polish (Rich-only, no new deps).** Three operator
   surfaces upgraded from hand-rolled string formatting to Rich

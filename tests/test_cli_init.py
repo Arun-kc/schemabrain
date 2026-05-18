@@ -1040,6 +1040,52 @@ class TestWizardRenderer:
         with _wizard_stage_context(_BareStage()):
             pass
 
+    def test_stage_panel_caps_width_at_soft_limit(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # A long failure message must not blow the panel out past the
+        # soft cap (_STAGE_PANEL_MAX_WIDTH = 100). Regression for the
+        # post-PR-#65 smoke finding where a 200+ char store-version
+        # error rendered as a 200-col-wide panel that horizontal-
+        # scrolled on most terminals.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        long_message = (
+            "Store schema version '2' does not match expected '12'. "
+            "Schema Brain is pre-alpha and does not yet provide migrations "
+            "— delete or move the store file (path passed to SQLiteStore) "
+            "and re-run `schemabrain index` to rebuild from scratch."
+        )
+        result = WizardResult(
+            outcomes=(
+                self._make_outcome(1, "source_check", "done", "ok"),
+                self._make_outcome(
+                    2,
+                    "index",
+                    "failed",
+                    long_message,
+                    "delete schemabrain.db and re-run",
+                ),
+            ),
+            aborted=True,
+        )
+        _render_wizard_result(result)
+        captured = capsys.readouterr()
+        # No line in either the per-stage Panel OR the abort Panel
+        # may exceed the soft cap (with a few cells of padding slack).
+        # _STAGE_PANEL_MAX_WIDTH = 100; any line wider than ~104
+        # cells means the cap was ignored.
+        max_line = max(len(ln) for ln in captured.err.splitlines() if ln)
+        assert max_line <= 104, (
+            f"Expected all panel lines ≤ 104 cells (soft cap = 100); longest line was {max_line}"
+        )
+        # And the long message must still appear in full — wrapping
+        # within the panel is fine, truncation is not. Asserting on
+        # short non-wrapping tokens at the start, middle, and end of
+        # the body confirms nothing was dropped.
+        assert "Store schema version" in captured.err
+        assert "migrations" in captured.err
+        assert "scratch" in captured.err
+
     def test_failure_panel_omitted_on_clean_run(self, capsys: pytest.CaptureFixture[str]) -> None:
         # Clean (non-aborted) runs must NOT render the failure panel —
         # the closing block carries the next-step copy instead.

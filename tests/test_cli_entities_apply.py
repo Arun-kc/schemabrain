@@ -463,3 +463,357 @@ class TestStoreErrors:
             ]
         )
         assert exit_code == 0
+
+
+_ORDERS_YAML = """\
+version: 1
+name: order
+description: An order placed by a customer
+binding:
+  single_table: public.orders
+identity: id
+"""
+
+
+def _orders_table() -> Table:
+    return Table(
+        name="orders",
+        schema_name="public",
+        columns=(
+            Column(
+                name="id",
+                table_name="orders",
+                schema_name="public",
+                data_type="bigint",
+                nullable=False,
+                ordinal_position=1,
+                is_primary_key=True,
+            ),
+        ),
+    )
+
+
+def _seed_store_with_both_tables(store_path: Path, url: str) -> None:
+    """Seed both `public.users` AND `public.orders` so multi-file
+    apply tests can land a customer entity AND an order entity in
+    one call."""
+    from schemabrain.cli import _make_source_id
+
+    source_id = _make_source_id(url)
+    with SQLiteStore(store_path) as store:
+        store.write_table(_users_table(), source_connection_id=source_id)
+        store.write_table(_orders_table(), source_connection_id=source_id)
+
+
+class TestMultiPath:
+    """Regression tests for the post-PR-#65 smoke finding: a shell glob
+    expansion (`schemabrain entities apply dir/*.yaml`) crashed with
+    `unrecognized arguments` because the CLI accepted only one
+    positional yaml_path. Fix: `nargs="+"` + per-file failure
+    aggregation, mirroring `joins apply` / `metrics apply`."""
+
+    _MULTI_URL = "postgresql+psycopg://u:p@h:5432/db"
+
+    def test_apply_multiple_files_via_shell_glob_expansion(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Shell glob `dir/*.yaml` expands to multiple positional args.
+        # Before the fix, only the first was accepted and the rest
+        # raised "unrecognized arguments". Now: all land in one call.
+        store_path = tmp_path / "store.db"
+        _seed_store_with_both_tables(store_path, self._MULTI_URL)
+        users_yaml = tmp_path / "customer.yaml"
+        users_yaml.write_text(_USERS_YAML, encoding="utf-8")
+        orders_yaml = tmp_path / "order.yaml"
+        orders_yaml.write_text(_ORDERS_YAML, encoding="utf-8")
+
+        exit_code = main(
+            [
+                "entities",
+                "apply",
+                str(users_yaml),
+                str(orders_yaml),
+                "--source",
+                self._MULTI_URL,
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "applied entity: customer" in out
+        assert "applied entity: order" in out
+
+    def test_apply_directory_loads_every_yaml_file(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Mirror of the joins-side directory test.
+        store_path = tmp_path / "store.db"
+        _seed_store_with_both_tables(store_path, self._MULTI_URL)
+        yaml_dir = tmp_path / "entities"
+        yaml_dir.mkdir()
+        (yaml_dir / "customer.yaml").write_text(_USERS_YAML, encoding="utf-8")
+        (yaml_dir / "order.yaml").write_text(_ORDERS_YAML, encoding="utf-8")
+        (yaml_dir / "ignored.txt").write_text("not yaml", encoding="utf-8")
+
+        exit_code = main(
+            [
+                "entities",
+                "apply",
+                str(yaml_dir),
+                "--source",
+                self._MULTI_URL,
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "applied entity: customer" in out
+        assert "applied entity: order" in out
+
+    def test_partial_failure_aggregates_and_exits_one(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # One good YAML + one bad YAML → good lands, bad reports,
+        # exit code 1. Verifies the new failure-aggregation loop.
+        store_path = tmp_path / "store.db"
+        _seed_store_with_both_tables(store_path, self._MULTI_URL)
+        users_yaml = tmp_path / "customer.yaml"
+        users_yaml.write_text(_USERS_YAML, encoding="utf-8")
+        bad_yaml = tmp_path / "broken.yaml"
+        bad_yaml.write_text("not: a: valid: entity", encoding="utf-8")
+
+        exit_code = main(
+            [
+                "entities",
+                "apply",
+                str(users_yaml),
+                str(bad_yaml),
+                "--source",
+                self._MULTI_URL,
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert "applied entity: customer" in captured.out
+        assert "broken.yaml" in captured.err
+
+    def test_mixed_file_and_directory_args(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # `entities apply file.yaml dir/` — one explicit file plus
+        # one directory. Both should apply.
+        store_path = tmp_path / "store.db"
+        _seed_store_with_both_tables(store_path, self._MULTI_URL)
+        users_yaml = tmp_path / "customer.yaml"
+        users_yaml.write_text(_USERS_YAML, encoding="utf-8")
+        more_dir = tmp_path / "more"
+        more_dir.mkdir()
+        (more_dir / "order.yaml").write_text(_ORDERS_YAML, encoding="utf-8")
+
+        exit_code = main(
+            [
+                "entities",
+                "apply",
+                str(users_yaml),
+                str(more_dir),
+                "--source",
+                self._MULTI_URL,
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "applied entity: customer" in out
+        assert "applied entity: order" in out
+
+    def test_duplicate_paths_dedupe(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # `entities apply file.yaml file.yaml` — should apply once,
+        # not twice. Dedupe is keyed on resolved absolute path.
+        store_path = tmp_path / "store.db"
+        _seed_store_with_both_tables(store_path, self._MULTI_URL)
+        users_yaml = tmp_path / "customer.yaml"
+        users_yaml.write_text(_USERS_YAML, encoding="utf-8")
+
+        exit_code = main(
+            [
+                "entities",
+                "apply",
+                str(users_yaml),
+                str(users_yaml),
+                "--source",
+                self._MULTI_URL,
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        # Only one apply line — dedupe worked.
+        assert out.count("applied entity: customer") == 1
+
+    def test_file_appearing_via_both_explicit_and_directory_dedupes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Covers `_expand_yaml_paths` dedupe `continue` when the SAME
+        # canonical path is reached via two different input args (one
+        # explicit file + one directory containing that same file).
+        # Without dedupe, the file would apply twice in a row,
+        # producing a no-op-then-noop or worse a write/IntegrityError.
+        store_path = tmp_path / "store.db"
+        _seed_store_with_both_tables(store_path, self._MULTI_URL)
+        yaml_dir = tmp_path / "entities"
+        yaml_dir.mkdir()
+        explicit = yaml_dir / "customer.yaml"
+        explicit.write_text(_USERS_YAML, encoding="utf-8")
+
+        exit_code = main(
+            [
+                "entities",
+                "apply",
+                str(explicit),
+                str(yaml_dir),
+                "--source",
+                self._MULTI_URL,
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        # Dedupe ensured only one apply of customer.yaml even though it
+        # was reachable both as `explicit` and as `yaml_dir/customer.yaml`.
+        assert out.count("applied entity: customer") == 1
+
+    def test_unreadable_directory_reports_failure_not_traceback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Covers the `except OSError` branch in `_expand_yaml_paths`
+        # when iterating a directory fails (PermissionError is the
+        # most common real-world trigger; chmod 000 doesn't behave
+        # consistently across CI runners so we monkeypatch
+        # `Path.iterdir` to raise the same error class directly).
+        store_path = tmp_path / "store.db"
+        _seed_store_with_both_tables(store_path, self._MULTI_URL)
+        protected_dir = tmp_path / "protected"
+        protected_dir.mkdir()
+        users_yaml = tmp_path / "customer.yaml"
+        users_yaml.write_text(_USERS_YAML, encoding="utf-8")
+
+        # Force `iterdir()` on the protected dir to raise the OSError
+        # the production code path would see from a real chmod 000.
+        original_iterdir = Path.iterdir
+
+        def _raising_iterdir(self_path: Path) -> object:
+            if self_path == protected_dir:
+                raise PermissionError(f"[Errno 13] Permission denied: {self_path!r}")
+            return original_iterdir(self_path)
+
+        monkeypatch.setattr(Path, "iterdir", _raising_iterdir)
+
+        exit_code = main(
+            [
+                "entities",
+                "apply",
+                str(protected_dir),
+                str(users_yaml),
+                "--source",
+                self._MULTI_URL,
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        # The unreadable directory is reported, the readable yaml still applies.
+        assert "could not list directory" in captured.err
+        assert "Permission denied" in captured.err
+        assert "applied entity: customer" in captured.out
+
+    def test_db_error_mid_loop_flushes_applied_before_exit_two(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Covers the silent-failure-hunter fold: when the SQLite store
+        # raises a non-Integrity DatabaseError mid-loop, the CLI returns
+        # exit 2 but must FLUSH the per-file summary first so the user
+        # sees which files DID land before the structural error.
+        store_path = tmp_path / "store.db"
+        _seed_store_with_both_tables(store_path, self._MULTI_URL)
+        users_yaml = tmp_path / "customer.yaml"
+        users_yaml.write_text(_USERS_YAML, encoding="utf-8")
+        orders_yaml = tmp_path / "order.yaml"
+        orders_yaml.write_text(_ORDERS_YAML, encoding="utf-8")
+
+        # Patch SQLiteStore.write_entity so the FIRST call succeeds and
+        # the SECOND raises a non-Integrity DatabaseError (e.g. disk full).
+        import sqlite3 as _sqlite3
+
+        from schemabrain.core.store import SQLiteStore as _Store
+
+        original_write = _Store.write_entity
+        call_state = {"calls": 0}
+
+        def _failing_second_write(self_store: _Store, *args: object, **kwargs: object) -> object:
+            call_state["calls"] += 1
+            if call_state["calls"] == 1:
+                return original_write(self_store, *args, **kwargs)
+            raise _sqlite3.DatabaseError("disk I/O error (simulated)")
+
+        monkeypatch.setattr(_Store, "write_entity", _failing_second_write)
+
+        exit_code = main(
+            [
+                "entities",
+                "apply",
+                str(users_yaml),
+                str(orders_yaml),
+                "--source",
+                self._MULTI_URL,
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        captured = capsys.readouterr()
+        assert exit_code == 2
+        # The first file applied — flush must have surfaced it before
+        # the structural exit. Without the flush, this assertion would
+        # fail because the apply-summary print loop is after the return.
+        assert "applied entity: customer" in captured.out
+        # The structural error itself surfaces with the guided shape.
+        assert "store-level error" in captured.err
+
+    def test_non_yaml_extension_reported_as_failure(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # `entities apply notes.txt customer.yaml` — the txt path
+        # surfaces in the failure summary; the yaml still applies.
+        store_path = tmp_path / "store.db"
+        _seed_store_with_both_tables(store_path, self._MULTI_URL)
+        users_yaml = tmp_path / "customer.yaml"
+        users_yaml.write_text(_USERS_YAML, encoding="utf-8")
+        txt = tmp_path / "notes.txt"
+        txt.write_text("not yaml", encoding="utf-8")
+
+        exit_code = main(
+            [
+                "entities",
+                "apply",
+                str(txt),
+                str(users_yaml),
+                "--source",
+                self._MULTI_URL,
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert "applied entity: customer" in captured.out
+        assert "notes.txt" in captured.err
+        assert "not a `.yaml`" in captured.err
