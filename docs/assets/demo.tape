@@ -7,7 +7,7 @@
 #     vhs docs/assets/demo.tape
 #
 # The four acts (run-time ~45s):
-#   1. schemabrain init   — five-stage activation wizard
+#   1. schemabrain init   — seven-stage activation wizard
 #   2. schemabrain inspect — operator-side browser, no LLM, no agent
 #   3. MCP get_metric call — Claude resolves a metric through the server
 #   4. schemabrain tail   — live stream of the tool call from act 3
@@ -16,11 +16,16 @@
 # "Recording the demo asset", for the full setup script:
 #   - A running Postgres at localhost:5432 with the bundled ecommerce
 #     fixture applied.
-#   - ANTHROPIC_API_KEY exported in the recording shell so stage 3 of
-#     init does NOT skip (a skipped stage 3 means no entities are
-#     applied and Act 3's get_metric call has nothing to resolve, AND
-#     Act 2's `inspect customer` drill exits 1 with a guided error
-#     instead of rendering — the recording will look broken).
+#   - ANTHROPIC_API_KEY exported in the recording shell so stages 3
+#     (entities, LLM) and 4 (metrics, LLM) of init do NOT skip — a
+#     skipped stage 3 means no entities are applied, so Act 2's
+#     `inspect customer` drill exits 1 with a guided error and Act 3's
+#     get_metric call has nothing to resolve. Stage 5 (joins) is
+#     deterministic and runs regardless of the API key.
+#   - --skip-llm-confirm passed to init so the recording doesn't hang
+#     on the Enter-to-continue prompt before stages 3 + 4. The prompt
+#     auto-suppresses in non-TTY environments, but a TTY-backed
+#     recording shell sees the prompt; the flag bypasses it cleanly.
 #   - Pre-warm the fastembed model cache by running `schemabrain init`
 #     manually once before recording. The Sleep budget below assumes
 #     the embedding model is already on disk; a cold first-run download
@@ -49,13 +54,15 @@ Enter
 Type "export DATABASE_URL='postgresql+psycopg://postgres:local@localhost:5432/postgres'"
 Enter
 Sleep 400ms
-Type "schemabrain init --url-env DATABASE_URL --store-path ./demo.db"
+Type "schemabrain init --url-env DATABASE_URL --store-path ./demo.db --skip-llm-confirm"
 Enter
-# The wizard renders five stages: doctor → connect → entities (LLM) →
-# joins → metrics. Stage 3 makes a live Haiku call which adds 5–10s
-# on top of indexing. 20s is the headroom needed for a warm-cache run;
-# bump higher if mid-stage cuts appear at re-render time.
-Sleep 20s
+# The wizard renders seven stages: source_check → index → entities
+# (LLM) → metrics (LLM) → joins (FK + query-log, no LLM) → wire_host
+# → next_step. Stages 3 and 4 each make a live Anthropic call which
+# adds 5–10s apiece on top of indexing. 30s is the headroom needed
+# for a warm-cache run that exercises both LLM stages; bump higher
+# if mid-stage cuts appear at re-render time.
+Sleep 30s
 
 # --- Act 2: inspect -------------------------------------------------------
 Type "# Look at the surface the agent will see — no LLM call needed."

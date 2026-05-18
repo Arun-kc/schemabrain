@@ -8,7 +8,7 @@
 
 Schema intelligence for AI agents on Postgres. Today: validated SQL from your schema. Tomorrow: a SQL-boundary safety layer that refuses, rewrites, and audits before queries execute.
 
-- **One command from `pip install` to wired agent** — `schemabrain init` walks source → index → entities → host config in five stages.
+- **One command from `pip install` to wired agent** — `schemabrain init` walks source → index → entities → metrics → canonical joins → host config in seven stages. Auto-detects a dbt project and routes through the importer when one is present.
 - **Validated metrics, not invented SQL** — entities, metrics, and canonical joins compile to parameterized SQL the agent never sees.
 - **Watch what the agent does** — `schemabrain tail` streams every tool call live; every call is also logged to a tamper-evident audit table.
 
@@ -121,20 +121,24 @@ export DATABASE_URL="postgresql+psycopg://postgres:local@localhost:5432/postgres
 schemabrain init --url-env DATABASE_URL --store-path ./schemabrain.db
 ```
 
-`init` is a five-stage wizard that takes you from "I have a Postgres database" to "Claude Desktop can answer questions about it" in one command:
+`init` is a seven-stage wizard that takes you from "I have a Postgres database" to "Claude Desktop can answer questions about it" in one command:
 
 ```
 Schema Brain init — activation wizard
 
-  [1/5] Source check
+  [1/7] Source check
         ✓ source reachable + read-only
-  [2/5] Index schema
+  [2/7] Index schema
         ✓ 7 tables, 30 columns indexed
-  [3/5] Curate entities
+  [3/7] Curate entities
         ✓ 3 entities suggested + applied (cost: $0.02)
-  [4/5] Wire host
+  [4/7] Curate metrics
+        ✓ 2 metrics suggested + applied (cost: $0.01)
+  [5/7] Curate joins
+        ✓ 1 canonical join created (FK-mined, no LLM)
+  [6/7] Wire host
         ✓ wrote schemabrain entry to ~/Library/Application Support/Claude/claude_desktop_config.json
-  [5/5] Next
+  [7/7] Next
         ✓ restart your MCP host, then ask: "list the entities Schema Brain knows about"
 ```
 
@@ -154,11 +158,19 @@ Or skip entity curation entirely by passing `--no-entities` to `init`.
 
 **What each stage does:**
 
-- **Source check** — validates the URL is reachable + verifies the session is read-only on Postgres.
+- **Source check** — validates the URL is reachable + verifies the session is read-only on Postgres. Auto-detects a dbt manifest from `$DBT_PROJECT_DIR/target/manifest.json` or by walking up from the cwd for a `dbt_project.yml`. When found, stages 3 and 4 route through the dbt importer instead of the LLM.
 - **Index schema** — introspects every user-visible table, fingerprints columns, persists to `./schemabrain.db`. Free by default; pass `--enrich` to add LLM column descriptions (typically $0.10–$2.00 for a 50-table schema).
-- **Curate entities** — proposes domain entities via Claude Sonnet 4.6 and writes them into the store. Cap spend with `--entities-max-cost-usd N`.
+- **Curate entities** — proposes domain entities via Claude Sonnet 4.6 and writes them into the store. Cap spend with `--entities-max-cost-usd N`. Opt out with `--no-entities`.
+- **Curate metrics** — proposes aggregations anchored on the curated entities (measure column + agg function + grain). Cap spend with `--metrics-max-cost-usd N`. Opt out with `--no-metrics`.
+- **Curate joins** — mines FK constraints + `pg_stat_statements` query log to surface canonical joins. **Deterministic — no LLM call, no cost cap.** Opt out with `--no-joins`.
 - **Wire host** — writes a `schemabrain` MCP entry into Claude Desktop's config. Other MCP servers are left untouched. Existing entries trigger an interactive prompt (or pass `--yes`).
 - **Next** — prints the question to ask first.
+
+**Stages 3, 4, and 5 are best-effort:** a failure records the issue and prints a guided next step, but doesn't abort the wizard. Stages 1, 2, 6, and 7 abort on failure.
+
+**Before each LLM-driven stage** (entities + metrics), the wizard pauses with the cost cap formatted in the prompt — Enter to continue, Ctrl-C to skip just that stage. Skip the pause in scripted runs with `--skip-llm-confirm`. The full superset `--yes` skips both the LLM pause AND the host-overwrite prompt; use it in CI. The pause auto-suppresses in non-TTY environments regardless of either flag.
+
+**dbt as the source of truth:** force a specific manifest with `--from-dbt PATH` to route stages 3 and 4 through the dbt importer. Stage 5 (joins) is unaffected — dbt has no canonical-join concept. See [Import from dbt](#import-from-dbt) for the full surface.
 
 **Re-running is safe.** Identical inputs → no-op for each stage.
 
@@ -351,7 +363,17 @@ Once applied, the agent-facing `resolve_join` MCP tool returns the canonical joi
 
 ### Import from dbt
 
-If you already curate entities in dbt, point Schema Brain at your compiled `target/manifest.json` and dbt becomes the source of truth:
+If you already curate entities in dbt, point Schema Brain at your compiled `target/manifest.json` and dbt becomes the source of truth. Two entry points:
+
+**During `init` (auto-detected or explicit):** the wizard's stage 1 auto-detects a manifest from `$DBT_PROJECT_DIR/target/manifest.json` or by walking up from the cwd looking for `dbt_project.yml`. When found, stages 3 (entities) and 4 (metrics) route through the importer instead of the LLM — your dbt definitions become the source of truth in one command. Force a specific manifest with `--from-dbt PATH`:
+
+```bash
+schemabrain init --url-env DATABASE_URL --from-dbt /path/to/dbt/target/manifest.json
+```
+
+Stage 5 (joins) still uses FK + query-log mining since dbt has no canonical-join concept.
+
+**Standalone import:** if you've already run `init` (or want to import without going through the wizard), point the importer directly at a manifest:
 
 ```bash
 schemabrain import dbt path/to/target/manifest.json --url-env DATABASE_URL
