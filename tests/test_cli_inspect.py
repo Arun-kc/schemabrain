@@ -231,9 +231,12 @@ class TestInspectSummary:
             ]
         )
         err = capsys.readouterr().err
-        assert "Metrics:" in err
+        # Tree-based summary renders "Metrics" / "Joins" as branch
+        # labels (no trailing colon) — assertions are content-only,
+        # not punctuation-coupled.
+        assert "Metrics" in err
         assert "total_revenue" in err
-        assert "Joins:" in err
+        assert "Joins" in err
         assert "customer_orders" in err
 
     def test_empty_store_shows_getting_started_hint(

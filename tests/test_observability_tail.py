@@ -359,6 +359,26 @@ class TestRenderEventPretty:
         assert "degraded" in output
         assert "rows=5" in output
 
+    def test_long_tool_name_truncated_with_ellipsis(self) -> None:
+        # Tool names longer than the fixed-width tool column truncate
+        # with a single "…" so the args column still starts at a
+        # consistent visual position. Defensive against any future MCP
+        # tool with a long name (today's longest is 22 chars exactly).
+        event = {
+            "timestamp": "2026-05-17T14:32:07.114000Z",
+            "kind": "tool_call",
+            "tool_name": "find_relevant_tables_and_more_columns",
+            "args_summary": {"q": "x"},
+            "status": "success",
+            "error_kind": None,
+            "duration_ms": 1.0,
+            "result_summary": {},
+        }
+        output = self._render(event)
+        # Truncated form ends with ellipsis; full name does NOT appear.
+        assert "…" in output
+        assert "find_relevant_tables_and_more_columns" not in output
+
     def test_renders_server_event(self) -> None:
         event = {
             "timestamp": "2026-05-17T14:32:07.114000Z",
