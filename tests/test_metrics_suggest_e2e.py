@@ -615,3 +615,130 @@ candidates:
         err = capsys.readouterr().err
         # GuidedError panel structure: message line + why/fix/next.
         assert "cannot write candidates" in err
+
+    def test_malformed_llm_yaml_yields_guided_error(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When the LLM returns YAML the parser can't accept, the CLI
+        surfaces a `MetricSuggestionParseError` -> guided error with
+        exit 1. Covers the `except MetricSuggestionParseError` branch
+        in `_cmd_metrics_suggest`.
+        """
+        store_path = tmp_path / "store.db"
+        _seed_store_with_ecommerce(store_path)
+
+        # `candidates: not-a-list` — top-level shape error caught at parse.
+        monkeypatch.setenv("SCHEMABRAIN_STUB_RESPONSE", "candidates: not-a-list")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        exit_code = main(
+            [
+                "metrics",
+                "suggest",
+                "--source",
+                _TEST_URL,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+                "--provider",
+                "stub",
+            ]
+        )
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "unparseable YAML" in err
+
+    def test_sidecar_conflict_refuses_to_overwrite(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        ecommerce_stub_env: None,
+    ) -> None:
+        """When the metadata sidecar already exists in the target dir,
+        the suggester refuses the entire write — same atomicity
+        guarantee as for the per-metric YAMLs. Covers the
+        `conflicts.append("_suggestion_metadata.json")` branch.
+        """
+        store_path = tmp_path / "store.db"
+        _seed_store_with_ecommerce(store_path)
+
+        out_dir = tmp_path / "regenerated"
+        out_dir.mkdir()
+        # Pre-create the sidecar file (not the per-metric YAMLs).
+        sidecar = out_dir / "_suggestion_metadata.json"
+        sidecar.write_text('{"hand-edited": true}')
+
+        exit_code = main(
+            [
+                "metrics",
+                "suggest",
+                "--source",
+                _TEST_URL,
+                "--store-path",
+                str(store_path),
+                "--out-dir",
+                str(out_dir),
+                "--provider",
+                "stub",
+            ]
+        )
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "_suggestion_metadata.json" in err
+        # The hand-edited sidecar survived intact.
+        assert sidecar.read_text() == '{"hand-edited": true}'
+
+    def test_non_temporal_metric_renders_without_time_fields(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When the LLM proposes a metric without a time dimension, the
+        rendered YAML must omit BOTH `time_dimension` and `time_grains`
+        (paired-emptiness invariant). Covers the `if metric.description`
+        false branch and the `if metric.time_dimension is not None`
+        false branch in `_format_metric_yaml_body`.
+        """
+        store_path = tmp_path / "store.db"
+        _seed_store_with_ecommerce(store_path)
+
+        # Stub: ONE candidate, no description, no time_dimension.
+        # Exercises both omitted-optional branches in the formatter.
+        non_temporal_stub = """\
+candidates:
+  - name: row_count
+    entity: order
+    measure: {agg: count, column: id}
+    confidence: high
+"""
+        monkeypatch.setenv("SCHEMABRAIN_STUB_RESPONSE", non_temporal_stub)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        exit_code = main(
+            [
+                "metrics",
+                "suggest",
+                "--source",
+                _TEST_URL,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+                "--provider",
+                "stub",
+            ]
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        # The rendered body must NOT carry time_dimension or time_grains
+        # (paired-emptiness invariant flows through to the YAML output).
+        assert "time_dimension" not in out
+        assert "time_grains" not in out
+        # Description is omitted when blank — no `description:` line should appear.
+        assert "description:" not in out
+        # The metric itself rendered.
+        assert "name: row_count" in out
+        assert "count" in out

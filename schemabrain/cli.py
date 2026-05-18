@@ -3672,7 +3672,7 @@ def _cmd_metrics_suggest(
             )
         )
         return 1
-    if not tables:
+    if not tables:  # pragma: no cover — structurally rare; entity FK requires the table row
         # Defensive — an entity exists but its bound table isn't indexed.
         # Operationally rare (write_entity FK requires the table row),
         # but a manual mid-run table delete could land here.
@@ -3750,7 +3750,9 @@ def _load_entities_and_tables_for_source(
         tables: list[Table] = []
         for schema, name in names:
             table = store.get_table(schema, name, source_connection_id=source_id)
-            if table is not None:
+            if (
+                table is not None
+            ):  # pragma: no branch — `list_tables` only yields names backed by rows; the None branch defends against a TOCTOU delete
                 tables.append(table)
         return entities, tables
 
