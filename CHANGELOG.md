@@ -45,6 +45,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inspect customer` drill.
 
 ### Added
+- **`schemabrain init` canonical-join suggestion stage.** The activation
+  wizard is now seven stages instead of six: `source_check → index →
+  entities → metrics → joins → wire_host → next_step`. Stage 5 (joins)
+  is best-effort (continues on failure, mirroring stages 3 and 4) and
+  skips cleanly in five conditions: `--no-joins` opt-out, `--skip-index`
+  set, non-Postgres source, store already has canonical joins for this
+  source, or empty entity store (the cross-stage dependency — joins
+  anchor on entities). **Joins is deterministic** — `suggest_canonical_joins`
+  mines FK constraints + query-log evidence from the indexed schema, no
+  LLM call. So this stage has no API-key check, no cost cap, no
+  `--joins-max-cost-usd` knob. One new flag: `--no-joins` (opt out).
+  The renderer's closing block grows a third parallel pending block
+  (`_render_pending_joins_block`) with three branches: opt-out,
+  empty-entity-store cross-stage hint ("Joins anchor on entities"),
+  and generic failure. Stage labels in the rendered output update
+  from `[N/6]` to `[N/7]`; the abort-panel denominator likewise
+  updates. PR B of the wizard semantic-layer expansion arc; joins
+  precedes the dbt-import branch (PR C).
 - **`schemabrain init` metrics suggestion stage.** The activation wizard
   is now six stages instead of five: `source_check → index → entities →
   metrics → wire_host → next_step`. Stage 4 (metrics) is best-effort

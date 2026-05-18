@@ -370,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
             skip_index=args.skip_index,
             no_entities=args.no_entities,
             no_metrics=args.no_metrics,
+            no_joins=args.no_joins,
             enrich=args.enrich,
             entities_max_cost_usd=args.entities_max_cost_usd,
             metrics_max_cost_usd=args.metrics_max_cost_usd,
@@ -1378,6 +1379,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "positive. Defaults to $SCHEMABRAIN_MAX_LLM_COST_USD or the package "
         "default. The pipeline aborts cleanly if the next call would exceed "
         "this cap.",
+    )
+    p_init.add_argument(
+        "--no-joins",
+        dest="no_joins",
+        action="store_true",
+        help="Skip the wizard's canonical-join suggestion stage. The wizard "
+        "still wires the MCP host; you can curate joins later via "
+        "`schemabrain joins suggest --apply`. The join suggester is "
+        "deterministic (FK + query-log mining) — no LLM cost, no API key.",
     )
     p_init.add_argument(
         "--yes",
@@ -4215,6 +4225,7 @@ def _cmd_init(
     skip_index: bool,
     no_entities: bool,
     no_metrics: bool,
+    no_joins: bool,
     enrich: bool,
     entities_max_cost_usd: float | None,
     metrics_max_cost_usd: float | None,
@@ -4223,28 +4234,30 @@ def _cmd_init(
 ) -> int:
     """Run the activation wizard and render the multi-stage outcome.
 
-    The wizard executes six stages: validate the source, index the
+    The wizard executes seven stages: validate the source, index the
     schema, suggest entities, suggest metrics anchored on those
-    entities, wire the MCP host, print the next-step hint. See
-    `schemabrain.setup.wizard` for the per-stage contracts.
+    entities, suggest canonical joins between the entities, wire the
+    MCP host, print the next-step hint. See `schemabrain.setup.wizard`
+    for the per-stage contracts.
 
     Exit codes:
-      - 0: wizard reached stage 6 (whether or not stage 3 or 4 was
-        skipped or failed — entity + metric curation are best-effort)
-      - 1: stage 5 (wire_host) succeeded but Claude Code's `claude
+      - 0: wizard reached stage 7 (whether or not stages 3, 4, or 5
+        were skipped or failed — entity / metric / join curation are
+        all best-effort)
+      - 1: stage 6 (wire_host) succeeded but Claude Code's `claude
         mcp add` shell-out failed (the snippet is still printable
         from the rendered output so the user can fall back to running
         it)
-      - 2: the wizard aborted before reaching stage 6 (stage 1, 2,
-        or 5 failed, or the URL flags were malformed)
+      - 2: the wizard aborted before reaching stage 7 (stage 1, 2,
+        or 6 failed, or the URL flags were malformed)
 
-    Interactive recovery: if stage 5 fails because a different
+    Interactive recovery: if stage 6 fails because a different
     schemabrain entry already exists in the host config, the user
     is prompted to confirm an overwrite. Declining returns 0 with
     no changes.
 
     `--print-only` is an alias for `--host manual` — when either is
-    set, stage 5 never writes; the snippet renders to stdout.
+    set, stage 6 never writes; the snippet renders to stdout.
     """
     from dataclasses import replace as _dc_replace
     from typing import get_args as _get_args
@@ -4285,6 +4298,7 @@ def _cmd_init(
         assume_yes=assume_yes,
         no_metrics=no_metrics,
         metrics_max_cost_usd=metrics_max_cost_usd,
+        no_joins=no_joins,
     )
 
     interactive = _stderr_is_interactive_tty()
@@ -4710,9 +4724,9 @@ _STAGE_GLYPHS: dict[str, str] = {
 }
 
 # Total stage count for the wizard pipeline. Used as the abort
-# denominator ("stage N of 6") so an early abort still labels the
+# denominator ("stage N of 7") so an early abort still labels the
 # pipeline shape correctly. Must stay in sync with `DEFAULT_STAGES`.
-_WIZARD_TOTAL_STAGES: int = 6
+_WIZARD_TOTAL_STAGES: int = 7
 
 
 def _redact_stderr_credentials(stderr_text: str) -> str:
@@ -4887,7 +4901,7 @@ def _render_wizard_result(result: object, *, host_display: str | None = None) ->
       Schema Brain
       Activating Schema Brain for Claude Desktop. ~30s.
 
-        [N/6] <stage display name>
+        [N/7] <stage display name>
               <glyph> <message>
               <indented next_step, if present>
 
@@ -4919,7 +4933,7 @@ def _render_wizard_after(result: object, *, host_display: str | None, console: o
 
     if not isinstance(result, WizardResult):
         raise TypeError(f"_render_wizard_after expected WizardResult, got {type(result).__name__}")
-    # The wizard always has 6 stages even on early abort — using
+    # The wizard always has 7 stages even on early abort — using
     # `len(result.outcomes)` for the denominator would render "of 2"
     # on a stage-2 abort, misleading the user about the pipeline shape.
     total = _WIZARD_TOTAL_STAGES
@@ -5046,6 +5060,7 @@ def _render_closing_block(
     console.print()  # type: ignore[attr-defined]
     _render_pending_entity_block(wizard_result, console=console)
     _render_pending_metrics_block(wizard_result, console=console)
+    _render_pending_joins_block(wizard_result, console=console)
     console.print("Inspect activity:  [bold]schemabrain tail --follow[/]")  # type: ignore[attr-defined]
     console.print("Review the audit:  [bold]schemabrain audit list[/]")  # type: ignore[attr-defined]
     console.print()  # type: ignore[attr-defined]
@@ -5179,6 +5194,59 @@ def _render_pending_metrics_block(wizard_result: object, *, console: object) -> 
     console.print()  # type: ignore[attr-defined]
 
 
+def _render_pending_joins_block(wizard_result: object, *, console: object) -> None:
+    """Surface stage 5 (joins) recovery hint when curation did not complete.
+
+    Mirror of `_render_pending_metrics_block`, but with one fewer
+    branch — joins is deterministic (FK + query-log mining), so
+    there is no ANTHROPIC_API_KEY branch to handle.
+
+    Three branches based on the outcome's status + message prefix:
+
+    - `--no-joins set` (skipped, explicit opt-out) → opt-in pointer
+    - `entity store is empty` (skipped, cross-stage dependency) →
+      pointer at curating entities first
+    - any other `skipped`/`failed` outcome → generic retry pointer
+
+    Renders nothing when stage 5 succeeded, was idempotently
+    short-circuited on already-curated, or didn't run (wizard
+    aborted earlier — the abort panel covers that).
+
+    The match strings here are coupled to the prefixes the wizard
+    handler writes in `schemabrain/setup/wizard.py::_stage_joins`.
+    If you change them there, update this matcher too.
+    """
+    from schemabrain.setup.wizard import WizardResult
+
+    if not isinstance(wizard_result, WizardResult):
+        return  # pragma: no cover — defensive; caller already narrowed
+    joins_outcome = next(
+        (o for o in wizard_result.outcomes if o.name == "joins"),
+        None,
+    )
+    if joins_outcome is None or joins_outcome.status == "done":
+        return
+    if joins_outcome.message.startswith("already curated:"):
+        return
+    if joins_outcome.message.startswith("--no-joins set"):
+        console.print("Curate joins when ready:")  # type: ignore[attr-defined]
+        console.print("  schemabrain joins suggest --apply")  # type: ignore[attr-defined]
+        console.print()  # type: ignore[attr-defined]
+        return
+    if joins_outcome.message.startswith("entity store is empty"):
+        # Cross-stage dependency surfaced: entities must land before
+        # joins. Point at entity curation first.
+        console.print("Joins anchor on entities. Curate entities first, then joins:")  # type: ignore[attr-defined]
+        console.print("  schemabrain entities suggest --apply")  # type: ignore[attr-defined]
+        console.print("  schemabrain joins suggest --apply")  # type: ignore[attr-defined]
+        console.print()  # type: ignore[attr-defined]
+        return
+    # Generic recovery: any other skipped/failed status.
+    console.print("Stage 5 did not curate joins (see above). Retry when ready:")  # type: ignore[attr-defined]
+    console.print("  schemabrain joins suggest --apply")  # type: ignore[attr-defined]
+    console.print()  # type: ignore[attr-defined]
+
+
 def _stage_display_name(name: str) -> str:
     """Map the wizard's stable stage names to friendlier display strings."""
     return {
@@ -5186,6 +5254,7 @@ def _stage_display_name(name: str) -> str:
         "index": "Index schema",
         "entities": "Curate entities",
         "metrics": "Curate metrics",
+        "joins": "Curate joins",
         "wire_host": "Wire host",
         "next_step": "Next",
     }.get(name, name)

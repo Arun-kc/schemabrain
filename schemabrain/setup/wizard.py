@@ -1,9 +1,10 @@
-"""Six-stage activation wizard behind `schemabrain init`.
+"""Seven-stage activation wizard behind `schemabrain init`.
 
 The wizard turns a single `schemabrain init` invocation into the
 end-to-end activation surface a new user expects: validate the source,
 index the schema, suggest entities, suggest metrics anchored on those
-entities, wire the MCP host, and print the next step.
+entities, suggest canonical joins between the entities, wire the MCP
+host, and print the next step.
 
 Stages in order:
 
@@ -12,14 +13,17 @@ Stages in order:
   3. entities      — Anthropic-backed entity suggestion (cost-capped)
   4. metrics       — Anthropic-backed metric suggestion anchored on entities
                      (cost-capped, requires entities present)
-  5. wire_host     — write the MCP host config (or print the snippet)
-  6. next_step     — render the "ask Claude X" hint
+  5. joins         — deterministic canonical-join suggestion from FK +
+                     query-log evidence (no LLM, requires entities present)
+  6. wire_host     — write the MCP host config (or print the snippet)
+  7. next_step     — render the "ask Claude X" hint
 
 Each stage produces a `StageOutcome` (`done` / `skipped` / `failed`).
-Stages 1, 2, 5, and 6 abort the wizard on `failed`; stages 3 (entities)
-and 4 (metrics) emit a warning outcome and let the wizard continue,
-because partial success (no entities/metrics curated yet) is still
-useful — the MCP host gets wired either way.
+Stages 1, 2, 6, and 7 abort the wizard on `failed`; stages 3
+(entities), 4 (metrics), and 5 (joins) emit a warning outcome and
+let the wizard continue, because partial success (no entities /
+metrics / joins curated yet) is still useful — the MCP host gets
+wired either way.
 
 The orchestrator is dependency-injected: tests pass synthetic
 `WizardStage` lists to drive the state machine without touching a
@@ -127,13 +131,14 @@ class WizardConfig:
 
     Carries everything a stage might need to do its work — source URL,
     store path, host target, plus the flag-driven knobs for stages 2,
-    3, and 4. Frozen so handlers can't mutate the config under each
-    other.
+    3, 4, and 5. Frozen so handlers can't mutate the config under
+    each other.
 
     `no_metrics` / `metrics_max_cost_usd` are stage-4 knobs added in
-    PR A. New fields are appended (with defaults) so existing callers
-    constructing this dataclass with positional or keyword arguments
-    remain valid.
+    PR A. `no_joins` is the stage-5 knob added in PR B (joins is
+    deterministic — no cost cap needed). New fields are appended
+    (with defaults) so existing callers constructing this dataclass
+    with positional or keyword arguments remain valid.
     """
 
     source_url: str
@@ -147,6 +152,7 @@ class WizardConfig:
     assume_yes: bool
     no_metrics: bool = False
     metrics_max_cost_usd: float | None = None
+    no_joins: bool = False
 
     def __post_init__(self) -> None:
         if self.host not in _VALID_HOSTS:
@@ -1357,7 +1363,262 @@ def _run_metric_suggestion(
 _WIZARD_METRICS_DEFAULT_COST_CAP_USD: float = 0.5
 
 
-# ----- stage 5: wire_host --------------------------------------------------
+# ----- stage 5: joins ------------------------------------------------------
+
+
+def _stage_joins(ctx: WizardContext) -> StageOutcome:
+    """Suggest + apply canonical joins via the deterministic pipeline.
+
+    Unlike stage 3 (entities) and stage 4 (metrics), the join
+    suggester is NOT LLM-driven — it mines FK constraints + query-log
+    evidence and returns a deterministic ranked candidate list. So
+    this stage has no API-key check, no cost cap, no parse-error
+    branch, no `--joins-max-cost-usd` knob. It's fast and free.
+
+    Decision tree:
+
+      1. `cfg.no_joins` → skipped (explicit opt-out).
+      2. `cfg.skip_index` → skipped (no schema to analyse).
+      3. Non-Postgres source → skipped (joins need an indexed
+         Postgres schema today).
+      4. Store already has canonical joins for this `source_id` →
+         skipped (idempotent re-run).
+      5. Entity store empty for this `source_id` → skipped with hint
+         pointing at entity curation first. Same cross-stage
+         dependency as stage 4: joins between entities require
+         entities to exist. The suggester would silently return an
+         empty list otherwise, masking the missing prerequisite.
+      6. Otherwise, run `suggest_canonical_joins`, write each
+         candidate, emit `done` with the applied count.
+
+    Like stages 3 and 4, stage 5 is `abort_on_fail=False`: a failure
+    here records a `failed` outcome but lets the wizard wire the
+    host and print the next step.
+    """
+    cfg = ctx.config
+
+    if cfg.no_joins:
+        return StageOutcome(
+            stage=5,
+            name="joins",
+            status="skipped",
+            message="--no-joins set; not running canonical-join suggestion",
+            next_step="run `schemabrain joins suggest --apply` later to curate joins",
+        )
+
+    if cfg.skip_index:
+        return StageOutcome(
+            stage=5,
+            name="joins",
+            status="skipped",
+            message="skipped because --skip-index is set (no indexed schema to analyse)",
+        )
+
+    if not is_postgres_url(cfg.source_url):
+        return StageOutcome(
+            stage=5,
+            name="joins",
+            status="skipped",
+            message="canonical-join suggestion needs a Postgres source",
+        )
+
+    # Already-curated check runs before the empty-entity check. An
+    # idempotent re-run on a store that already has canonical joins
+    # short-circuits — the suggester is deterministic, so re-running
+    # against an unchanged FK + query-log set yields the same
+    # candidates that already landed.
+    source_id = _source_id_for(cfg.source_url)
+    if cfg.store_path.exists():
+        existing = _peek_join_count(cfg.store_path, source_id)
+        if isinstance(existing, StageOutcome):
+            return existing
+        if existing > 0:
+            return StageOutcome(
+                stage=5,
+                name="joins",
+                status="skipped",
+                message=f"already curated: {existing} canonical join/s present for this source",
+                next_step="run `schemabrain joins suggest --apply` directly "
+                "to re-curate from fresh evidence",
+            )
+
+    # Cross-stage dependency check (mirror of `_stage_metrics`): the
+    # join suggester needs entities to map FK pairs through. Without
+    # any entities, the suggester returns an empty list silently — we
+    # surface a guided pointer instead.
+    if cfg.store_path.exists():
+        entity_count = _peek_entity_count(cfg.store_path, source_id)
+        if isinstance(entity_count, StageOutcome):
+            return StageOutcome(
+                stage=5,
+                name="joins",
+                status=entity_count.status,
+                message=entity_count.message,
+                next_step=entity_count.next_step,
+            )
+        if entity_count == 0:
+            return StageOutcome(
+                stage=5,
+                name="joins",
+                status="skipped",
+                message="entity store is empty; joins need entities to anchor on",
+                next_step="run `schemabrain entities suggest --apply` first, "
+                "then re-run `schemabrain init` (or `schemabrain joins suggest --apply`)",
+            )
+    else:
+        # No store file at all → treat as empty entity store. Stage 2
+        # was skipped AND no prior session indexed.
+        return StageOutcome(
+            stage=5,
+            name="joins",
+            status="skipped",
+            message="entity store is empty; joins need entities to anchor on",
+            next_step="run `schemabrain entities suggest --apply` first, "
+            "then re-run `schemabrain init` (or `schemabrain joins suggest --apply`)",
+        )
+
+    try:
+        result = _run_join_suggestion(cfg=cfg, source_id=source_id)
+    except _EmptySchemaAtWizard:
+        return StageOutcome(
+            stage=5,
+            name="joins",
+            status="skipped",
+            message="no FK constraints or query-log evidence found",
+            next_step="run `schemabrain joins suggest --dry-run` to confirm, "
+            "or define joins by hand via `schemabrain joins apply`",
+        )
+
+    if result.applied_count == 0:
+        return StageOutcome(
+            stage=5,
+            name="joins",
+            status="skipped",
+            message="no canonical joins surfaced from FK or query-log evidence",
+            next_step="define joins by hand via `schemabrain joins apply`, "
+            "or run `schemabrain joins suggest --dry-run` to inspect evidence",
+        )
+
+    if result.candidates_proposed > 0 and result.applied_count < result.candidates_proposed:
+        # Partial-success: writes started failing mid-loop (typically
+        # a TOCTOU entity-delete race producing an IntegrityError).
+        suffix = (
+            f"; {result.candidates_proposed - result.applied_count} skipped: {result.skip_reason}"
+            if result.skip_reason
+            else ""
+        )
+        return StageOutcome(
+            stage=5,
+            name="joins",
+            status="done",
+            message=(
+                f"{result.applied_count} of {result.candidates_proposed} "
+                f"canonical join{'' if result.applied_count == 1 else 's'} created{suffix}"
+            ),
+            next_step="inspect the skipped candidates with "
+            "`schemabrain joins suggest --dry-run` and apply manually if needed",
+        )
+
+    return StageOutcome(
+        stage=5,
+        name="joins",
+        status="done",
+        message=(
+            f"{result.applied_count} canonical "
+            f"join{'' if result.applied_count == 1 else 's'} created "
+            "from FK + query-log evidence"
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _JoinApplyResult:
+    """Internal outcome of `_run_join_suggestion`.
+
+    No `cost_usd` / `llm_model` fields — the join suggester is
+    deterministic. `skip_reason` carries the exception name + the
+    candidate that triggered it when writes started failing mid-loop
+    (today only `sqlite3.IntegrityError` from a TOCTOU entity-delete
+    race; `DbtOwnedJoinError` will join the catch list when the
+    dbt-relationships importer lands per the comment on
+    `store.write_canonical_join`).
+    """
+
+    applied_count: int
+    candidates_proposed: int = 0
+    skip_reason: str | None = None
+
+
+def _peek_join_count(store_path: Path, source_id: str) -> int | StageOutcome:
+    """Open the store read-only and count canonical joins for `source_id`.
+
+    Mirror of `_peek_entity_count` / `_peek_metric_count`. The
+    returned `StageOutcome` on failure carries `stage=5, name="joins"`
+    so the renderer routes the line to the joins stage label.
+    """
+    from schemabrain.core.store import SchemaVersionMismatchError, SQLiteStore
+
+    try:
+        with SQLiteStore(path=store_path) as store:
+            return len(store.list_canonical_joins(source_connection_id=source_id))
+    except SchemaVersionMismatchError as exc:
+        return StageOutcome(
+            stage=5,
+            name="joins",
+            status="failed",
+            message=str(exc),
+            next_step=f"delete {store_path} and re-run, "
+            "or install the matching schemabrain version",
+        )
+    except OSError as exc:
+        return StageOutcome(
+            stage=5,
+            name="joins",
+            status="failed",
+            message=f"store unreadable: {exc}",
+            next_step=f"check filesystem permissions on {store_path.parent}",
+        )
+
+
+def _run_join_suggestion(*, cfg: WizardConfig, source_id: str) -> _JoinApplyResult:
+    """Mine FK + query-log evidence, write each canonical join.
+
+    No LLM, no cost guard. `suggest_canonical_joins` is a pure
+    function over the store's FK table + query-log aggregates;
+    returns an already-ranked candidate list. We walk it and call
+    `store.write_canonical_join` per candidate, catching
+    `sqlite3.IntegrityError` for the rare TOCTOU race where an
+    entity was deleted between the suggester's read and the writer's
+    insert.
+    """
+    from sqlite3 import IntegrityError
+
+    from schemabrain.core.store import SQLiteStore
+    from schemabrain.joins.suggest import suggest_canonical_joins
+
+    with SQLiteStore(cfg.store_path) as store:
+        candidates = suggest_canonical_joins(store=store, source_connection_id=source_id)
+        applied = 0
+        skip_reason: str | None = None
+        for candidate in candidates:
+            try:
+                store.write_canonical_join(
+                    candidate.to_canonical_join(),
+                    source_connection_id=source_id,
+                )
+            except IntegrityError as exc:
+                skip_reason = f"{type(exc).__name__} at '{candidate.name}'"
+                break
+            applied += 1
+
+    return _JoinApplyResult(
+        applied_count=applied,
+        candidates_proposed=len(candidates),
+        skip_reason=skip_reason,
+    )
+
+
+# ----- stage 6: wire_host --------------------------------------------------
 
 
 def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
@@ -1381,10 +1642,10 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
             assume_yes=cfg.assume_yes,
         )
     except InitRefusal as refusal:
-        return _failed_from_refusal(stage=5, name="wire_host", error=refusal.error)
+        return _failed_from_refusal(stage=6, name="wire_host", error=refusal.error)
     ctx.host_install_result = result
     return StageOutcome(
-        stage=5,
+        stage=6,
         name="wire_host",
         status="done",
         message=_wire_host_message(result),
@@ -1411,7 +1672,7 @@ def _wire_host_message(result: InitResult) -> str:
     return "manual mode: snippet ready to paste into your host's config"
 
 
-# ----- stage 6: next_step --------------------------------------------------
+# ----- stage 7: next_step --------------------------------------------------
 
 
 def _stage_next_step(ctx: WizardContext) -> StageOutcome:
@@ -1423,7 +1684,7 @@ def _stage_next_step(ctx: WizardContext) -> StageOutcome:
     the end successfully.
     """
     return StageOutcome(
-        stage=6,
+        stage=7,
         name="next_step",
         status="done",
         message="Ready",
@@ -1460,12 +1721,18 @@ DEFAULT_STAGES: tuple[WizardStage, ...] = (
     ),
     WizardStage(
         stage=5,
+        name="joins",
+        handler=_stage_joins,
+        abort_on_fail=False,
+    ),
+    WizardStage(
+        stage=6,
         name="wire_host",
         handler=_stage_wire_host,
         abort_on_fail=True,
     ),
     WizardStage(
-        stage=6,
+        stage=7,
         name="next_step",
         handler=_stage_next_step,
         abort_on_fail=True,

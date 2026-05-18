@@ -342,7 +342,7 @@ class TestRunWizardStateMachine:
         # `run_default_wizard` delegates to `run_wizard` with `DEFAULT_STAGES`.
         # We monkeypatch all the substrate calls so the wizard runs end-to-end
         # without a live database or a real host config — the assertion is that
-        # the default stage list reaches stage 6 with this stubbing in place.
+        # the default stage list reaches stage 7 with this stubbing in place.
         # `skip_index=True` short-circuits the stage-2 Postgres-only refusal
         # without us having to stub the whole indexer pipeline.
         cfg = WizardConfig(
@@ -380,12 +380,13 @@ class TestRunWizardStateMachine:
 
         result = run_default_wizard(cfg)
         assert result.aborted is False
-        assert len(result.outcomes) == 6
+        assert len(result.outcomes) == 7
         assert [o.name for o in result.outcomes] == [
             "source_check",
             "index",
             "entities",
             "metrics",
+            "joins",
             "wire_host",
             "next_step",
         ]
@@ -2542,6 +2543,457 @@ class TestRunMetricSuggestionSmoke:
         assert "aov" in result.skip_reason
 
 
+# ----- _stage_joins --------------------------------------------------------
+
+
+class TestStageJoins:
+    """Tests for `_stage_joins`.
+
+    Unlike entities and metrics, the join suggester is NOT
+    LLM-driven — `suggest_canonical_joins` mines FK constraints +
+    query-log evidence and returns a deterministic list. So this
+    test class has no API-key branch, no cost-cap branch, no
+    parse-error branch. Five skip branches + four outcome branches
+    (done / empty-evidence / partial-success / failed-on-mismatch).
+    """
+
+    def test_skipped_when_no_joins_flag_set(self, base_config: WizardConfig) -> None:
+        cfg = _pg_config(base_config, no_joins=True)
+        outcome = wizard._stage_joins(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert outcome.stage == 5
+        assert outcome.name == "joins"
+        assert "--no-joins" in outcome.message
+        assert "joins suggest" in (outcome.next_step or "")
+
+    def test_skipped_when_skip_index_set(self, base_config: WizardConfig) -> None:
+        cfg = _pg_config(base_config, skip_index=True)
+        outcome = wizard._stage_joins(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "--skip-index" in outcome.message
+
+    def test_skipped_for_non_postgres_source(self, base_config: WizardConfig) -> None:
+        # base_config has sqlite:///:memory:
+        outcome = wizard._stage_joins(WizardContext(config=base_config))
+
+        assert outcome.status == "skipped"
+        assert "Postgres" in outcome.message
+
+    def test_skipped_when_joins_already_present(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_join_count", lambda _p, _sid: 4)
+        monkeypatch.setattr(
+            wizard,
+            "_run_join_suggestion",
+            lambda **_kw: pytest.fail("pipeline ran despite idempotent skip"),
+        )
+
+        outcome = wizard._stage_joins(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "4 canonical join" in outcome.message
+
+    def test_skipped_when_entity_store_empty(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same cross-stage dependency as `_stage_metrics`: joins
+        # anchor on entities. The pipeline silently returns [] when
+        # entities are empty; we surface the missing prerequisite
+        # instead.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_join_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(
+            wizard,
+            "_run_join_suggestion",
+            lambda **_kw: pytest.fail("pipeline ran despite empty entity store"),
+        )
+
+        outcome = wizard._stage_joins(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "entity store is empty" in outcome.message
+        assert outcome.next_step is not None
+        assert "schemabrain entities suggest --apply" in outcome.next_step
+
+    def test_skipped_when_store_file_missing(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No store file at all → treat as empty entity store.
+        cfg = _pg_config(base_config)
+        assert not cfg.store_path.exists()
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        outcome = wizard._stage_joins(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "entity store is empty" in outcome.message
+
+    def test_failed_on_schema_version_mismatch(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        peek_failure = StageOutcome(
+            stage=5,
+            name="joins",
+            status="failed",
+            message="store created with schema v10 but installed schemabrain expects v12",
+            next_step=f"delete {cfg.store_path} and re-run",
+        )
+        monkeypatch.setattr(wizard, "_peek_join_count", lambda _p, _sid: peek_failure)
+
+        outcome = wizard._stage_joins(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "v10" in outcome.message
+
+    def test_failed_when_entity_peek_returns_outcome(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `_peek_entity_count` may return a StageOutcome on a schema
+        # mismatch — the joins stage must re-shape it to stage=5,
+        # name="joins" so the renderer routes correctly.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_join_count", lambda _p, _sid: 0)
+
+        entity_peek_failure = StageOutcome(
+            stage=3,
+            name="entities",
+            status="failed",
+            message="entity-side schema mismatch",
+            next_step=f"delete {cfg.store_path} and re-run",
+        )
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: entity_peek_failure)
+
+        outcome = wizard._stage_joins(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert outcome.stage == 5
+        assert outcome.name == "joins"
+        assert "entity-side schema mismatch" in outcome.message
+
+    def test_done_on_successful_apply(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_join_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 4)
+        canned = wizard._JoinApplyResult(applied_count=3, candidates_proposed=3)
+
+        captured: dict[str, object] = {}
+
+        def _fake_run(**kwargs: object) -> wizard._JoinApplyResult:
+            captured.update(kwargs)
+            return canned
+
+        monkeypatch.setattr(wizard, "_run_join_suggestion", _fake_run)
+
+        outcome = wizard._stage_joins(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "3 canonical join" in outcome.message
+        assert "FK + query-log evidence" in outcome.message
+        # Confirm the source_id was passed through.
+        assert captured["source_id"] == "abcd1234"
+
+    def test_skipped_when_no_evidence(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The suggester returned zero candidates — no FK constraints
+        # AND no query-log evidence. Skipped, not failed, because this
+        # is a legitimate "nothing to suggest" state, not a bug.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_join_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 4)
+        empty = wizard._JoinApplyResult(applied_count=0, candidates_proposed=0)
+        monkeypatch.setattr(wizard, "_run_join_suggestion", lambda **_kw: empty)
+
+        outcome = wizard._stage_joins(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "no canonical joins surfaced" in outcome.message
+        assert outcome.next_step is not None
+        assert "joins apply" in outcome.next_step
+
+    def test_partial_success_reports_skipped_count(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Some joins applied, others tripped on a TOCTOU
+        # IntegrityError. Surface the count + skip reason so the
+        # user can act on the partial.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_join_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 4)
+        partial = wizard._JoinApplyResult(
+            applied_count=2,
+            candidates_proposed=4,
+            skip_reason="IntegrityError at 'order_customer'",
+        )
+        monkeypatch.setattr(wizard, "_run_join_suggestion", lambda **_kw: partial)
+
+        outcome = wizard._stage_joins(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "2 of 4" in outcome.message
+        assert "IntegrityError at 'order_customer'" in outcome.message
+        assert outcome.next_step is not None
+        assert "joins suggest --dry-run" in outcome.next_step
+
+    def test_skipped_when_pipeline_raises_empty_schema(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Defensive: `_run_join_suggestion` may raise
+        # `_EmptySchemaAtWizard` if a future refactor adds that path.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_join_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 4)
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._EmptySchemaAtWizard()
+
+        monkeypatch.setattr(wizard, "_run_join_suggestion", _raise)
+
+        outcome = wizard._stage_joins(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "FK constraints" in outcome.message
+
+
+# ----- _peek_join_count ----------------------------------------------------
+
+
+class TestPeekJoinCount:
+    """Mirror of `TestPeekMetricCount`."""
+
+    def test_returns_zero_for_fresh_store(self, tmp_path: Path) -> None:
+        from schemabrain.core.store import SQLiteStore
+
+        store_path = tmp_path / "peek_join.db"
+        with SQLiteStore(store_path):
+            pass
+
+        assert wizard._peek_join_count(store_path, "missing_source") == 0
+
+    def test_returns_failed_outcome_on_schema_mismatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.core.store import SchemaVersionMismatchError
+
+        store_path = tmp_path / "mismatch_join.db"
+        store_path.touch()
+
+        def _raise_mismatch(*_a: object, **_kw: object) -> None:
+            raise SchemaVersionMismatchError("v10 != v12")
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore.__init__", _raise_mismatch)
+
+        outcome = wizard._peek_join_count(store_path, "src")
+
+        assert isinstance(outcome, StageOutcome)
+        assert outcome.status == "failed"
+        assert outcome.stage == 5
+        assert outcome.name == "joins"
+
+    def test_returns_failed_outcome_on_os_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store_path = tmp_path / "unreadable_join.db"
+        store_path.touch()
+
+        def _raise_os(*_a: object, **_kw: object) -> None:
+            raise OSError("read-only filesystem")
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore.__init__", _raise_os)
+
+        outcome = wizard._peek_join_count(store_path, "src")
+
+        assert isinstance(outcome, StageOutcome)
+        assert outcome.status == "failed"
+        assert "store unreadable" in outcome.message
+        assert outcome.stage == 5
+
+
+# ----- _run_join_suggestion ------------------------------------------------
+
+
+class TestRunJoinSuggestionSmoke:
+    """Mirror of `TestRunMetricSuggestionSmoke`. Substitutes the
+    SQLite store + `suggest_canonical_joins` so the function's
+    wiring is verified without standing up Postgres.
+    """
+
+    def test_pipeline_invoked_and_writes_applied(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+
+        class _FakeCanonical:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        class _FakeCandidate:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def to_canonical_join(self) -> object:
+                return _FakeCanonical(self.name)
+
+        applied_writes: list[str] = []
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def write_canonical_join(self, join: object, *, source_connection_id: str) -> None:
+                applied_writes.append(join.name)  # type: ignore[attr-defined]
+
+        def _fake_suggest(*, store: object, source_connection_id: str) -> list[object]:
+            return [_FakeCandidate("customer_order"), _FakeCandidate("order_product")]
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr("schemabrain.joins.suggest.suggest_canonical_joins", _fake_suggest)
+
+        result = wizard._run_join_suggestion(cfg=cfg, source_id="abcd1234")
+
+        assert result.applied_count == 2
+        assert result.candidates_proposed == 2
+        assert applied_writes == ["customer_order", "order_product"]
+        assert result.skip_reason is None
+
+    def test_partial_apply_breaks_on_integrity_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Verify the `except IntegrityError: break` path: write 0
+        # succeeds, write 1 raises, applied=1.
+        from sqlite3 import IntegrityError
+
+        cfg = _pg_config(base_config)
+
+        class _FakeCanonical:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        class _FakeCandidate:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def to_canonical_join(self) -> object:
+                return _FakeCanonical(self.name)
+
+        applied: list[str] = []
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def write_canonical_join(self, join: object, *, source_connection_id: str) -> None:
+                if join.name == "ghost_join":  # type: ignore[attr-defined]
+                    raise IntegrityError("FOREIGN KEY constraint failed")
+                applied.append(join.name)  # type: ignore[attr-defined]
+
+        def _fake_suggest(*, store: object, source_connection_id: str) -> list[object]:
+            return [_FakeCandidate("customer_order"), _FakeCandidate("ghost_join")]
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr("schemabrain.joins.suggest.suggest_canonical_joins", _fake_suggest)
+
+        result = wizard._run_join_suggestion(cfg=cfg, source_id="abcd1234")
+
+        assert result.applied_count == 1
+        assert applied == ["customer_order"]
+        assert result.skip_reason is not None
+        assert "IntegrityError" in result.skip_reason
+        assert "ghost_join" in result.skip_reason
+
+    def test_empty_candidate_list_returns_zero_applied(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+        def _fake_suggest(*, store: object, source_connection_id: str) -> list[object]:
+            return []
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr("schemabrain.joins.suggest.suggest_canonical_joins", _fake_suggest)
+
+        result = wizard._run_join_suggestion(cfg=cfg, source_id="abcd1234")
+
+        assert result.applied_count == 0
+        assert result.candidates_proposed == 0
+        assert result.skip_reason is None
+
+
+# ----- WizardConfig: no_joins default -------------------------------------
+
+
+class TestWizardConfigJoinsDefaults:
+    def _build(self, **overrides: object) -> WizardConfig:
+        fields: dict[str, object] = {
+            "source_url": "sqlite:///:memory:",
+            "store_path": Path("/tmp/test-joins.db"),  # nosec B108 — never opened
+            "host": "manual",
+            "env_var_name": "SCHEMABRAIN_DATABASE_URL",
+            "skip_index": False,
+            "no_entities": False,
+            "enrich": False,
+            "entities_max_cost_usd": None,
+            "assume_yes": False,
+        }
+        fields.update(overrides)
+        return WizardConfig(**fields)  # type: ignore[arg-type]
+
+    def test_no_joins_defaults_to_false(self) -> None:
+        cfg = self._build()
+        assert cfg.no_joins is False
+
+    def test_no_joins_accepts_true(self) -> None:
+        cfg = self._build(no_joins=True)
+        assert cfg.no_joins is True
+
+
 # ----- _stage_wire_host ----------------------------------------------------
 
 
@@ -2635,7 +3087,7 @@ class TestStageNextStep:
         ctx = WizardContext(config=base_config)
         outcome = wizard._stage_next_step(ctx)
 
-        assert outcome.stage == 6
+        assert outcome.stage == 7
         assert outcome.status == "done"
         # Brief status line — the renderer's closing block carries the
         # actionable next-step copy.
@@ -2646,8 +3098,8 @@ class TestStageNextStep:
 
 
 class TestDefaultStages:
-    def test_six_stages_in_order(self) -> None:
-        assert [s.stage for s in DEFAULT_STAGES] == [1, 2, 3, 4, 5, 6]
+    def test_seven_stages_in_order(self) -> None:
+        assert [s.stage for s in DEFAULT_STAGES] == [1, 2, 3, 4, 5, 6, 7]
 
     def test_stage_names_match_contract(self) -> None:
         assert [s.name for s in DEFAULT_STAGES] == [
@@ -2655,16 +3107,18 @@ class TestDefaultStages:
             "index",
             "entities",
             "metrics",
+            "joins",
             "wire_host",
             "next_step",
         ]
 
-    def test_stages_3_and_4_are_continue_on_fail(self) -> None:
-        # Entity + metric suggestion are best-effort: a failure in
-        # either records a `failed` outcome but lets the wizard wire
-        # the host and print the next step.
+    def test_stages_3_4_5_are_continue_on_fail(self) -> None:
+        # Entity + metric + canonical-join suggestion are all
+        # best-effort: a failure in any of them records a `failed`
+        # outcome but lets the wizard wire the host and print the
+        # next step.
         abort_flags = [s.abort_on_fail for s in DEFAULT_STAGES]
-        assert abort_flags == [True, True, False, False, True, True]
+        assert abort_flags == [True, True, False, False, False, True, True]
 
 
 # ----- module exports ------------------------------------------------------
@@ -2698,6 +3152,7 @@ class TestStageHandlerSignature:
                 assume_yes=True,
                 no_metrics=True,
                 metrics_max_cost_usd=None,
+                no_joins=True,
             )
         )
 
@@ -2707,9 +3162,10 @@ class TestStageHandlerSignature:
         idx_outcome = wizard._stage_index(ctx)
         ent_outcome = wizard._stage_entities(ctx)
         met_outcome = wizard._stage_metrics(ctx)
+        join_outcome = wizard._stage_joins(ctx)
         next_outcome = wizard._stage_next_step(ctx)
 
-        for outcome in (idx_outcome, ent_outcome, met_outcome, next_outcome):
+        for outcome in (idx_outcome, ent_outcome, met_outcome, join_outcome, next_outcome):
             assert isinstance(outcome, StageOutcome)
 
 
