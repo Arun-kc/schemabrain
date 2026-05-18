@@ -45,6 +45,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inspect customer` drill.
 
 ### Added
+- **`schemabrain init` dbt-import branch.** The activation wizard now
+  auto-detects a compiled dbt project and routes stages 3 (entities)
+  and 4 (metrics) through the dbt-manifest importer instead of the
+  Anthropic-backed LLM pipeline when one is found. No new stage —
+  the existing seven-stage layout is preserved; the new behaviour is
+  a conditional branch INSIDE stages 3 and 4. Stage 5 (joins) is
+  unchanged because dbt has no canonical-join concept; the
+  deterministic FK + query-log path runs regardless.
+
+  Detection happens during stage 1 (`source_check`) and writes to
+  `WizardContext.dbt_manifest_path: Path | None`. Search order:
+  (1) explicit `--from-dbt PATH` flag — wizard ABORTS at stage 1
+  if the path is missing or the source is non-Postgres (the dbt
+  importer needs a live Postgres connection for column
+  verification); (2) `$DBT_PROJECT_DIR/target/manifest.json` if the
+  env var is set AND the file exists; (3) walk cwd up to 3 parents
+  looking for a `dbt_project.yml` sentinel, then use
+  `<dir>/target/manifest.json` if compiled. Auto-detection is
+  best-effort — a missing manifest falls through to LLM-suggest
+  silently.
+
+  New flag: `--from-dbt PATH`. No cost cap (dbt import doesn't call
+  the LLM); no API-key check inside the dbt branch (sits BEFORE the
+  API-key check in stages 3 and 4 so dbt mode works without
+  `ANTHROPIC_API_KEY`). When dbt mode is active, stage 1's outcome
+  carries a next-step hint surfacing that stages 3 and 4 will route
+  through dbt; outcome messages use "imported from dbt" provenance
+  text instead of "(cost $N)".
+
+  `_EntityApplyResult` and `_MetricApplyResult` gain a
+  `source: Literal["llm", "dbt"] = "llm"` field. PR C of the wizard
+  semantic-layer expansion arc; closes the arc.
 - **`schemabrain init` canonical-join suggestion stage.** The activation
   wizard is now seven stages instead of six: `source_check → index →
   entities → metrics → joins → wire_host → next_step`. Stage 5 (joins)
