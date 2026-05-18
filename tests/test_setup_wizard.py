@@ -1490,6 +1490,157 @@ class TestStageEntities:
         assert "1 entity created" in outcome.message
 
 
+class TestStageEntitiesLlmConfirmation:
+    """Pre-LLM confirmation pause PR: `_stage_entities` pauses for
+    user confirmation in interactive sessions before calling the
+    LLM. Tests cover the three branch outcomes:
+
+      1. `cfg.skip_llm_confirm=True` → prompt fully bypassed
+      2. TTY + user proceeds → LLM call happens (regression test for
+         existing behaviour)
+      3. TTY + user cancels → outcome is `skipped` with "user
+         cancelled the LLM call" message
+
+    The dbt branch sits BEFORE the api-key check (and BEFORE the
+    confirmation prompt), so dbt mode does NOT trigger the prompt —
+    verified in a separate test.
+    """
+
+    def test_skip_llm_confirm_bypasses_prompt(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config, skip_llm_confirm=True)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        canned = wizard._EntityApplyResult(applied_count=3, cost_usd=0.005, llm_model="sonnet-4.6")
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", lambda **_kw: canned)
+
+        # Force-isatty to ensure the prompt-helper would normally
+        # fire — `skip_llm_confirm=True` must short-circuit ahead of
+        # it. If the bypass leaks, this test would hang on input().
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "3 entities created" in outcome.message
+
+    def test_prompt_fires_in_tty_and_proceeds_on_enter(
+        self,
+        base_config: WizardConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Default `skip_llm_confirm=False`. TTY + user-pressed-Enter
+        # → LLM call happens.
+        cfg = _pg_config(base_config)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        canned = wizard._EntityApplyResult(applied_count=2, cost_usd=0.003, llm_model="sonnet-4.6")
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", lambda **_kw: canned)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda: "")
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "2 entities created" in outcome.message
+        # The prompt actually rendered.
+        captured = capsys.readouterr()
+        assert "Anthropic" in captured.err
+        assert "entities" in captured.err
+
+    def test_user_cancels_with_ctrl_c(
+        self,
+        base_config: WizardConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        cfg = _pg_config(base_config)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(
+            wizard,
+            "_run_entity_suggestion",
+            lambda **_kw: pytest.fail("LLM call happened despite user cancelling"),
+        )
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+        def _raise_ki() -> str:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("builtins.input", _raise_ki)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert outcome.stage == 3
+        assert outcome.name == "entities"
+        assert "user cancelled" in outcome.message
+        assert outcome.next_step is not None
+        assert "--yes" in outcome.next_step
+
+    def test_non_tty_auto_bypass_keeps_llm_path_running(
+        self,
+        base_config: WizardConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The default pytest stdin is non-TTY, so the prompt helper
+        # returns True without reading input. The LLM call should
+        # still happen. This is the contract that keeps every
+        # pre-existing test green.
+        cfg = _pg_config(base_config)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        canned = wizard._EntityApplyResult(applied_count=4, cost_usd=0.01, llm_model="sonnet-4.6")
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", lambda **_kw: canned)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda: pytest.fail("input() should not be called in non-TTY mode"),
+        )
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "4 entities created" in outcome.message
+
+    def test_dbt_branch_does_not_trigger_prompt(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # dbt path sits BEFORE the api-key check and BEFORE the
+        # confirmation prompt. With `ctx.dbt_manifest_path` set, the
+        # prompt must not fire (no LLM call → no consent needed).
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        ctx = WizardContext(config=cfg)
+        ctx.dbt_manifest_path = tmp_path / "manifest.json"
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        canned = wizard._EntityApplyResult(
+            applied_count=5,
+            cost_usd=0.0,
+            llm_model="dbt-import",
+            candidates_proposed=5,
+            source="dbt",
+        )
+        monkeypatch.setattr(wizard, "_run_entities_from_dbt", lambda **_kw: canned)
+        # Force TTY + sentinel-input: would hang or fail if the
+        # prompt fired on the dbt branch.
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda: pytest.fail("prompt fired on the dbt branch"),
+        )
+
+        outcome = wizard._stage_entities(ctx)
+
+        assert outcome.status == "done"
+        assert "5 entities imported from dbt" in outcome.message
+
+
 class TestStageEntitiesDbtBranch:
     """PR C: stage 3 routes through `_run_entities_from_dbt` when
     `ctx.dbt_manifest_path` is set.
@@ -2437,6 +2588,114 @@ class TestStageMetrics:
         assert "DbtOwnedMetricError at 'aov'" in outcome.message
         assert outcome.next_step is not None
         assert "metrics suggest --dry-run" in outcome.next_step
+
+
+class TestStageMetricsLlmConfirmation:
+    """Pre-LLM confirmation pause PR: `_stage_metrics` parallels
+    `_stage_entities`. Same three branches: skip_llm_confirm bypass,
+    TTY+Enter proceeds, TTY+Ctrl-C cancels.
+    """
+
+    def _ready_cfg(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch, **overrides: object
+    ) -> WizardConfig:
+        cfg = _pg_config(base_config, **overrides)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 4)
+        return cfg
+
+    def test_skip_llm_confirm_bypasses_prompt(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = self._ready_cfg(base_config, monkeypatch, skip_llm_confirm=True)
+        canned = wizard._MetricApplyResult(applied_count=3, cost_usd=0.005, llm_model="sonnet-4.6")
+        monkeypatch.setattr(wizard, "_run_metric_suggestion", lambda **_kw: canned)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "3 metrics created" in outcome.message
+
+    def test_prompt_fires_in_tty_and_proceeds_on_enter(
+        self,
+        base_config: WizardConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        cfg = self._ready_cfg(base_config, monkeypatch)
+        canned = wizard._MetricApplyResult(applied_count=2, cost_usd=0.003, llm_model="sonnet-4.6")
+        monkeypatch.setattr(wizard, "_run_metric_suggestion", lambda **_kw: canned)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda: "")
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        captured = capsys.readouterr()
+        assert "metrics" in captured.err
+        assert "Anthropic" in captured.err
+
+    def test_user_cancels_with_ctrl_c(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = self._ready_cfg(base_config, monkeypatch)
+        monkeypatch.setattr(
+            wizard,
+            "_run_metric_suggestion",
+            lambda **_kw: pytest.fail("LLM call happened despite user cancelling"),
+        )
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+        def _raise_ki() -> str:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("builtins.input", _raise_ki)
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert outcome.stage == 4
+        assert outcome.name == "metrics"
+        assert "user cancelled" in outcome.message
+        assert outcome.next_step is not None
+        assert "--yes" in outcome.next_step
+
+    def test_dbt_branch_does_not_trigger_prompt(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 4)
+        ctx = WizardContext(config=cfg)
+        ctx.dbt_manifest_path = tmp_path / "manifest.json"
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        canned = wizard._MetricApplyResult(
+            applied_count=6,
+            cost_usd=0.0,
+            llm_model="dbt-import",
+            candidates_proposed=6,
+            source="dbt",
+        )
+        monkeypatch.setattr(wizard, "_run_metrics_from_dbt", lambda **_kw: canned)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda: pytest.fail("prompt fired on the dbt branch"),
+        )
+
+        outcome = wizard._stage_metrics(ctx)
+
+        assert outcome.status == "done"
+        assert "6 metrics imported from dbt" in outcome.message
 
 
 class TestStageMetricsDbtBranch:
@@ -3965,6 +4224,119 @@ class TestWizardConfigDbtDefaults:
         path = Path("/some/dbt/target/manifest.json")  # nosec B108 — never opened
         cfg = self._build(from_dbt=path)
         assert cfg.from_dbt == path
+
+
+class TestWizardConfigSkipLlmConfirmDefault:
+    """Pre-LLM confirmation pause PR: `skip_llm_confirm` defaults to
+    False so existing programmatic callers get the new pause unless
+    they opt out. Non-TTY environments auto-suppress at runtime; the
+    CLI's `--yes` flag opts out at construction time.
+    """
+
+    def _build(self, **overrides: object) -> WizardConfig:
+        fields: dict[str, object] = {
+            "source_url": "sqlite:///:memory:",
+            "store_path": Path("/tmp/test-skip.db"),  # nosec B108 — never opened
+            "host": "manual",
+            "env_var_name": "SCHEMABRAIN_DATABASE_URL",
+            "skip_index": False,
+            "no_entities": False,
+            "enrich": False,
+            "entities_max_cost_usd": None,
+            "assume_yes": False,
+        }
+        fields.update(overrides)
+        return WizardConfig(**fields)  # type: ignore[arg-type]
+
+    def test_skip_llm_confirm_defaults_to_false(self) -> None:
+        cfg = self._build()
+        assert cfg.skip_llm_confirm is False
+
+    def test_skip_llm_confirm_accepts_true(self) -> None:
+        cfg = self._build(skip_llm_confirm=True)
+        assert cfg.skip_llm_confirm is True
+
+
+class TestPromptLlmConfirmation:
+    """Pre-LLM confirmation pause PR: direct tests for the helper.
+
+    Production flow gates this with `cfg.skip_llm_confirm` before
+    calling, so these tests cover the helper's pure behavior:
+    auto-bypass when stdin isn't a TTY, Enter → proceed, Ctrl-C / EOF
+    → cancelled.
+    """
+
+    def test_returns_true_when_stdin_not_tty(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Default pytest stdin is non-TTY. Helper returns True without
+        # printing anything.
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        result = wizard._prompt_llm_confirmation(stage_label="entities", cost_cap_usd=1.0)
+        assert result is True
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_proceeds_when_user_presses_enter(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        # input() returns the empty string on bare Enter.
+        monkeypatch.setattr("builtins.input", lambda: "")
+        result = wizard._prompt_llm_confirmation(stage_label="entities", cost_cap_usd=1.0)
+        assert result is True
+        captured = capsys.readouterr()
+        # Prompt mentions both the stage label and the cap.
+        assert "entities" in captured.err
+        assert "$1.00" in captured.err
+        assert "Press Enter" in captured.err
+        assert "Ctrl-C" in captured.err
+
+    def test_cancels_on_keyboard_interrupt(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+        def _raise_ki() -> str:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("builtins.input", _raise_ki)
+        result = wizard._prompt_llm_confirmation(stage_label="metrics", cost_cap_usd=0.5)
+        assert result is False
+        captured = capsys.readouterr()
+        # The helper prints a trailing newline after ^C so the next
+        # rendered line lands on a clean row.
+        assert captured.err.endswith("\n")
+
+    def test_cancels_on_eof(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Closing stdin mid-prompt (pipe closure) raises EOFError;
+        # treat same as user cancellation.
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+        def _raise_eof() -> str:
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", _raise_eof)
+        result = wizard._prompt_llm_confirmation(stage_label="metrics", cost_cap_usd=0.5)
+        assert result is False
+
+    def test_cost_cap_formatted_with_two_decimals(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda: "")
+        wizard._prompt_llm_confirmation(stage_label="entities", cost_cap_usd=0.50)
+        captured = capsys.readouterr()
+        assert "$0.50" in captured.err
+
+    def test_stage_label_baked_into_prompt(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda: "")
+        wizard._prompt_llm_confirmation(stage_label="custom-stage", cost_cap_usd=2.0)
+        captured = capsys.readouterr()
+        assert "custom-stage" in captured.err
 
 
 class TestWizardContextDbtManifestPath:

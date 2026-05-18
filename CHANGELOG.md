@@ -45,6 +45,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inspect customer` drill.
 
 ### Added
+- **`schemabrain init` pre-LLM confirmation pause.** Each LLM-driven
+  wizard stage (entities + metrics) now pauses for an Enter-to-continue
+  confirmation before calling Anthropic. The prompt shows the stage
+  label and the cost ceiling that's active for that stage:
+
+      This stage calls Anthropic to suggest entities (cap: $1.00).
+      Press Enter to continue, or Ctrl-C to skip this stage.
+
+  `Ctrl-C` skips the stage cleanly (records a `skipped` outcome with
+  "user cancelled the LLM call" and lets the wizard continue to the
+  next stage — same best-effort posture as the existing skip
+  branches). Joins is unaffected — it's deterministic, no LLM call.
+  dbt-mode is unaffected — the dbt branch runs before the prompt, so
+  importing from a dbt manifest never asks for confirmation.
+
+  **Auto-suppression in non-interactive environments**: the prompt
+  helper checks `sys.stdin.isatty()` and returns "proceed" without
+  printing or reading when stdin isn't a TTY. CI runs, pytest, and
+  scripted pipelines all get the previous frictionless behaviour.
+  The whole feature is purely an interactive-terminal affordance.
+
+  Two new opt-out flags:
+  - `--skip-llm-confirm` — narrow opt-out: skip the LLM-prompt only,
+    leave the host-overwrite prompt firing for existing entries.
+  - `--yes` (existing flag, semantics extended) — superset shorthand:
+    skip BOTH the LLM-prompt and the host-overwrite prompt. The right
+    flag for CI / scripted runs. `--yes` help text updated.
+
+  New `WizardConfig.skip_llm_confirm: bool = False` field, appended
+  with default so existing callers stay valid. The CLI dispatch layer
+  derives `effective_skip_llm_confirm = args.skip_llm_confirm or
+  args.assume_yes`, encoding the locked design that `--yes` is the
+  superset shorthand without silently mutating the existing
+  `assume_yes` field's meaning.
 - **`schemabrain init` dbt-import branch.** The activation wizard now
   auto-detects a compiled dbt project and routes stages 3 (entities)
   and 4 (metrics) through the dbt-manifest importer instead of the
