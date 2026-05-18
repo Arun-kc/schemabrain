@@ -5075,12 +5075,11 @@ def _render_pending_entity_block(wizard_result: object, *, console: object) -> N
         console.print("  schemabrain entities suggest --apply")  # type: ignore[attr-defined]
         console.print()  # type: ignore[attr-defined]
         return
-    # Generic recovery: any other skipped/failed status. Covers
-    # `--skip-index` (no schema to analyse), non-Postgres source,
-    # already-curated store (status=skipped, message="already curated:
-    # N entity/ies present..." — for that one the retry pointer is
-    # the right copy too, since re-running entities suggest is
-    # idempotent and the user may have meant to curate fresh).
+    # Generic recovery: any other skipped/failed status (--skip-index,
+    # non-Postgres source, transient failure, LLM-returned-zero-
+    # candidates, partial write). The two prefixes that DO carry
+    # tailored copy are short-circuited above; everything else lands
+    # here.
     console.print("Stage 3 did not curate entities (see above). Retry when ready:")  # type: ignore[attr-defined]
     console.print("  schemabrain entities suggest --apply")  # type: ignore[attr-defined]
     console.print()  # type: ignore[attr-defined]

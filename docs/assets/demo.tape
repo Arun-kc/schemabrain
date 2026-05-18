@@ -12,11 +12,13 @@
 #   3. MCP get_metric call — Claude resolves a metric through the server
 #   4. schemabrain tail   — live stream of the tool call from act 3
 #
-# Prerequisites for re-recording:
+# Prerequisites for re-recording — see CONTRIBUTING.md, section
+# "Recording the demo asset", for the full setup script:
 #   - A running Postgres at localhost:5432 with the bundled ecommerce
-#     fixture applied (see README quickstart for the one-liner).
+#     fixture applied.
 #   - ANTHROPIC_API_KEY exported in the recording shell so stage 3 of
-#     init does not skip.
+#     init does NOT skip (a skipped stage 3 means no entities are
+#     applied and Act 3's get_metric call has nothing to resolve).
 #   - vhs installed (`brew install vhs` or
 #     `go install github.com/charmbracelet/vhs@latest`).
 
@@ -74,7 +76,11 @@ Type "    --store-path ./demo.db \\"
 Enter
 Type "    --question 'What was revenue by month last quarter?'"
 Enter
-Sleep 12s
+# Haiku tool-use loops typically run 8–20s depending on how many
+# turns Claude takes (max 8 per the demo's cap). 18s leaves headroom
+# for the worst-case run without consistently cutting mid-answer.
+# If the answer still gets clipped at re-render time, bump higher.
+Sleep 18s
 
 # --- Act 4: tail ----------------------------------------------------------
 Type "# Every tool call lands here in real time."

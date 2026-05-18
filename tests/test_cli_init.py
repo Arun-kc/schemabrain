@@ -1644,9 +1644,7 @@ class TestPendingEntityBlock:
             backup_made=False,
         )
 
-    def _result_with_entities_outcome(
-        self, entities_outcome: object, tmp_path: Path
-    ) -> object:
+    def _result_with_entities_outcome(self, entities_outcome: object, tmp_path: Path) -> object:
         from schemabrain.setup.wizard import WizardResult
 
         outcomes = (
@@ -1804,6 +1802,31 @@ class TestPendingEntityBlock:
                 "failed",
                 "LLM returned 0 candidates (cost $0.0042)",
                 "re-run `schemabrain entities suggest --dry-run` to inspect",
+            ),
+            tmp_path,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        assert "Stage 3 did not curate entities" in captured.err
+        assert "schemabrain entities suggest --apply" in captured.err
+
+    def test_pending_block_for_skip_index_branch(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # User passed --skip-index. Stage 2 skipped, so stage 3 also
+        # skipped (no indexed schema to analyse). The renderer falls
+        # through to the generic retry pointer — without this test, a
+        # future refactor that adds a "skipped because --skip-index"
+        # short-circuit guard in `_render_pending_entity_block` could
+        # regress the user-visible copy silently.
+        from schemabrain.cli import _render_wizard_result
+
+        result = self._result_with_entities_outcome(
+            self._make_outcome(
+                3,
+                "entities",
+                "skipped",
+                "skipped because --skip-index is set (no indexed schema to analyse)",
             ),
             tmp_path,
         )

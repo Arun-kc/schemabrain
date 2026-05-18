@@ -38,7 +38,7 @@ Schema Brain fixes all four and serves the result through a stable MCP tool surf
 - Indexes your database schema, profiles each column, and generates a one-paragraph LLM description per column (Claude Haiku 4.5 by default; Sonnet 4.6 for cryptic abbreviations).
 - Embeds the descriptions locally with `BAAI/bge-small-en-v1.5` via `fastembed` — no second API vendor.
 - Stores everything in a single SQLite file. No Qdrant, no Redis, no ops.
-- Serves five MCP tools: [`find_relevant_tables`, `describe_table`, `describe_column`, `suggest_joins`, `get_example_queries`](docs/mcp-tools.md). Every response includes a token estimate so agents can budget context.
+- Serves nine MCP tools — five physical-schema tools (`find_relevant_tables`, `describe_table`, `describe_column`, `suggest_joins`, `get_example_queries`) plus four semantic-layer tools (`list_entities`, `describe_entity`, `resolve_join`, `get_metric`). Full reference in [`docs/mcp-tools.md`](docs/mcp-tools.md). Every response includes a token estimate so agents can budget context.
 - Mines observed queries from `pg_stat_statements` so `get_example_queries` returns the SQL agents (or humans) have actually run against your tables — not invented examples.
 
 ---
@@ -693,7 +693,7 @@ The semantic substrate (first-class entities like `customer` instead of `public.
 Postgres 16+ (primary target) and SQLite (for development and demos). Adding Snowflake / BigQuery / MySQL is mostly a new `DataSource` implementation plus a profiler tweak — on the v1 roadmap.
 
 **Why MCP and not a REST API?**
-The consumer is an agent, not a service. MCP standardizes tool registration, schema description, and request/response transport. Agents (Claude Desktop, the Anthropic SDK, custom ones) discover Schema Brain natively and get four tools — no API wrapper, no SDK to maintain per language.
+The consumer is an agent, not a service. MCP standardizes tool registration, schema description, and request/response transport. Agents (Claude Desktop, the Anthropic SDK, custom ones) discover Schema Brain natively and get its [tool surface](docs/mcp-tools.md) — no API wrapper, no SDK to maintain per language.
 
 **Why local embeddings instead of OpenAI / Voyage?**
 One LLM provider (Anthropic) and one local vector model is simpler than two API vendors. Embeddings change rarely, the model is bounded (one short description per column), and ~30 ms per query embed on a laptop is fast enough. Local-first also means you can index a private schema without exposing it to a second vendor.

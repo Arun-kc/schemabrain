@@ -1,9 +1,10 @@
 # End-to-end ecommerce example
 
 A complete Schema Brain setup for the bundled ecommerce fixture
-(6 tables: `users`, `orders`, `order_items`, `products`, `categories`,
-`product_categories`). Walks from `pip install` to an MCP agent that
-resolves a *validated* metric end-to-end — no hallucinated SQL.
+(7 tables: `users`, `addresses`, `orders`, `order_items`, `products`,
+`categories`, `product_categories`). Walks from `pip install` to an
+MCP agent that resolves a *validated* metric end-to-end — no
+hallucinated SQL.
 
 This is a starter pack, not a template. Real users authoring entities
 and metrics for their own schemas will write something different —
@@ -56,9 +57,9 @@ schemabrain index --url-env DATABASE_URL --store-path ./demo.db
 ```
 
 Pulls every user-visible table into a fresh SQLite store at
-`./demo.db`. ~3 seconds against the ecommerce fixture. No LLM calls
-yet — `--enrich` would add per-column descriptions but isn't needed
-for this walkthrough.
+`./demo.db`. A few seconds against the ecommerce fixture on a recent
+laptop. No LLM calls yet — `--enrich` would add per-column
+descriptions but isn't needed for this walkthrough.
 
 ### 2. Apply the entities
 
@@ -109,7 +110,7 @@ metric whose anchor entity or measure column doesn't exist.
 schemabrain inspect --store-path ./demo.db
 ```
 
-Should report `6 tables · 24 columns · 3 entities · 3 metrics · 1 join`.
+Should report `7 tables · 30 columns · 3 entities · 3 metrics · 1 join`.
 Drill in:
 
 ```bash
@@ -131,10 +132,14 @@ python examples/anthropic_demo.py \
     --question 'What was the total revenue per month last quarter?'
 ```
 
-…or, after `schemabrain init` has wired Claude Desktop, ask the same
-question in the desktop UI. Claude calls `get_metric("total_revenue",
-by="month")` and gets validated rows back — the SQL is compiled by
-Schema Brain from the YAML you applied, not invented by the agent.
+…or, after `schemabrain init` has wired Claude Desktop (see the
+top-level [README quickstart](../../README.md#quickstart) if you
+haven't yet), ask the same question in the desktop UI. Claude is free
+to call the validated `get_metric("total_revenue", by="month")` tool
+or to compose an answer from the schema-introspection tools — exactly
+which path it picks depends on the agent's reasoning. When it does
+take the `get_metric` route, the SQL is compiled by Schema Brain from
+the YAML you applied, not invented by the agent.
 
 ### 7. Watch the tool call live
 
@@ -143,6 +148,11 @@ In another terminal:
 ```bash
 schemabrain tail --follow
 ```
+
+Tail reads `~/.schemabrain/events.jsonl` by default. If you started
+`schemabrain serve` with `--events-path` or `--no-events`, see
+[docs/observability.md](../../docs/observability.md) for how to point
+`tail` at the matching file or re-enable emission.
 
 Each MCP call streams as one JSON line — tool name, arguments, status,
 duration. Pair this with the audit table for the durable record:

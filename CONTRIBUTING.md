@@ -1,6 +1,6 @@
 # Contributing to Schema Brain
 
-Thanks for your interest. Schema Brain is pre-alpha and the public surface
+Thanks for your interest. Schema Brain is alpha and the public surface
 is small, but the engineering bar is intentionally high — the goal is a
 codebase that stays maintainable as it grows.
 
@@ -159,11 +159,12 @@ comment, push back; reasoned disagreement is welcome.
 
 ## Recording the demo asset
 
-The README's hero block references `docs/assets/demo.gif`, a ~45-second
-scripted recording of the activation arc: `init` → `inspect` → MCP
+The README's hero block points readers at a scripted ~45-second
+recording of the activation arc: `init` → `inspect` → MCP
 `get_metric` call → `tail` streams it live. The recording is
 reproducible — it ships as a [`vhs`](https://github.com/charmbracelet/vhs)
-tape at [`docs/assets/demo.tape`](docs/assets/demo.tape).
+tape at [`docs/assets/demo.tape`](docs/assets/demo.tape) which renders
+to `docs/assets/demo.gif`.
 
 To re-render after a user-visible CLI change:
 
@@ -181,9 +182,11 @@ git add docs/assets/demo.gif
 ```
 
 Acceptance bar: clean run, no error frames, total duration under 60s,
-file size under 4 MB (GitHub's display threshold for inline `<img>`).
-If the recording busts the size budget, lower `Set FontSize` first
-(it's the biggest lever), then trim sleeps in the tape.
+GIF size under ~4 MB (keeps page-load fast for readers on slower
+connections; GitHub's hard inline-image cap is much higher but a
+trim file rewards the 80th-percentile reader). If the recording
+busts the size budget, lower `Set FontSize` first (it's the biggest
+lever), then trim sleeps in the tape.
 
 ## Reporting bugs and requesting features
 
