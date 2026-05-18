@@ -212,6 +212,34 @@ def profiling_pg_url(pg_url: str) -> str:
                     "VALUES (50, 'yes', 1), (75, 'no', 2), (NULL, 'yes', 3);"
                 )
             )
+            # Regression table for the no-equality column-type bug: the
+            # 2026-05-18 manual smoke against AdventureWorks crashed the
+            # profiler with `psycopg.errors.UndefinedFunction: could not
+            # identify an equality operator for type xml` because the
+            # batched profile query emitted `COUNT(DISTINCT col)` against
+            # an `xml` column. The fix is to detect no-equality types and
+            # substitute `NULL::bigint` for the DISTINCT slot. Two such
+            # types here — `xml` (AW's actual offender) and `point` (a
+            # representative geometric type) — to lock in that `_supports_
+            # distinct` short-circuits on more than just xml.
+            conn.execute(
+                text(
+                    "CREATE TABLE profiling.no_equality_types ("
+                    "id BIGINT NOT NULL, "
+                    "doc XML, "
+                    "loc POINT"
+                    ");"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO profiling.no_equality_types (id, doc, loc) "
+                    "VALUES "
+                    "(1, '<r><a/></r>'::xml, '(1,1)'::point), "
+                    "(2, '<r><b/></r>'::xml, '(2,2)'::point), "
+                    "(3, NULL, NULL);"
+                )
+            )
     finally:
         engine.dispose()
     return pg_url
