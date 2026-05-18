@@ -4770,6 +4770,28 @@ _STAGE_PANEL_BORDER: dict[str, str] = {
     "failed": "red",
 }
 
+# Soft cap for wizard stage/abort panel width. Without this cap, the
+# `expand=False` panels stretch to fit their longest body line — fine
+# for short "✓ source reachable" outcomes, awful for long failure or
+# recovery messages that blow the panel out to 200+ columns and force
+# horizontal scrolling. 100 cells comfortably fits the longest
+# recovery-hint sentences while still wrapping in modern 100/120/140
+# column terminals. `min(console.width, ...)` keeps the panel from
+# exceeding the actual terminal so narrow terminals (80) still render
+# inside their viewport.
+_STAGE_PANEL_MAX_WIDTH = 100
+
+
+def _wizard_panel_width(console: object) -> int:
+    """Width budget for one wizard Panel, soft-capped at `_STAGE_PANEL_MAX_WIDTH`.
+
+    Reads `console.width` via getattr with a defensive fallback so a
+    Console implementation without a `.width` attribute (custom stub
+    in tests) doesn't crash the renderer. Falls back to the soft cap.
+    """
+    detected = getattr(console, "width", _STAGE_PANEL_MAX_WIDTH)
+    return min(detected, _STAGE_PANEL_MAX_WIDTH)
+
 # Total stage count for the wizard pipeline. Used as the abort
 # denominator ("stage N of 7") so an early abort still labels the
 # pipeline shape correctly. Must stay in sync with `DEFAULT_STAGES`.
@@ -5016,6 +5038,7 @@ def _render_wizard_after(result: object, *, host_display: str | None, console: o
                 border_style=border,
                 expand=False,
                 padding=(0, 1),
+                width=_wizard_panel_width(console),
             )
         )
         # Stage-4 follow-up details (config path, backup, manual
@@ -5074,7 +5097,15 @@ def _render_abort_panel(result: object, *, total: int, console: object) -> None:
             body_lines.append("")
             body_lines.append(f"[dim]{aborted.next_step}[/]")
     body = "\n".join(body_lines) if body_lines else "(no failure detail recorded)"
-    console.print(Panel(body, title=title, border_style="red", expand=False))  # type: ignore[attr-defined]
+    console.print(  # type: ignore[attr-defined]
+        Panel(
+            body,
+            title=title,
+            border_style="red",
+            expand=False,
+            width=_wizard_panel_width(console),
+        )
+    )
 
 
 def _render_closing_block(
