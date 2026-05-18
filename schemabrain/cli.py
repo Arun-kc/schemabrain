@@ -83,6 +83,7 @@ from schemabrain import __version__
 from schemabrain.connectors._url import safe_engine_url
 from schemabrain.connectors.base import DataSource
 from schemabrain.connectors.postgres import PostgresDataSource
+from schemabrain.core.entity import Entity
 from schemabrain.core.metric import DbtOwnedMetricError
 from schemabrain.core.models import Table
 from schemabrain.core.store import DbtOwnedEntityError, SQLiteStore
@@ -145,6 +146,12 @@ from schemabrain.joins.yaml_grammar import (
 from schemabrain.logging_config import configure_logging
 from schemabrain.mcp.metric_executor import EngineMetricExecutor
 from schemabrain.mcp.server import run_stdio
+from schemabrain.metrics.suggest import (
+    MetricCandidate,
+    MetricSuggestionParseError,
+    MetricSuggestionPipeline,
+    MetricSuggestionResult,
+)
 from schemabrain.metrics.yaml_grammar import (
     MetricYamlError,
     parse_metric_yaml_file,
@@ -417,6 +424,18 @@ def main(argv: list[str] | None = None) -> int:
                 store_path=args.store_path,
                 positional_url=args.source,
                 url_env=args.url_env,
+            )
+        if args.metrics_action == "suggest":
+            return _cmd_metrics_suggest(
+                positional_url=args.source,
+                url_env=args.url_env,
+                store_path=args.store_path,
+                dry_run=args.dry_run,
+                out_dir=args.out_dir,
+                apply=args.apply,
+                top_k=args.top_k,
+                provider=args.provider,
+                max_cost_usd=args.max_cost_usd,
             )
         parser.error(f"unknown metrics action: {args.metrics_action}")  # pragma: no cover
     # argparse `required=True` on subparsers prevents reaching here, but
@@ -1148,6 +1167,85 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="VARNAME",
         default=None,
         help="Name of the environment variable that holds the source URL.",
+    )
+
+    p_metrics_suggest = metrics_sub.add_parser(
+        "suggest",
+        help="LLM-suggest metric candidates anchored on existing entities.",
+    )
+    p_metrics_suggest.add_argument(
+        "--source",
+        default=None,
+        help="The same source URL passed to `index`. DEPRECATED when "
+        "the URL contains a password; prefer --url-env.",
+    )
+    p_metrics_suggest.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL. "
+        "Preferred over --source so credentials never appear in argv.",
+    )
+    p_metrics_suggest.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    # The three output modes are mutually exclusive; argparse enforces.
+    # Mirrors `entities suggest` and `joins suggest` so users learn the
+    # pattern once.
+    metrics_mode_group = p_metrics_suggest.add_mutually_exclusive_group(required=True)
+    metrics_mode_group.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print candidates (metric body + envelope) to stdout. No "
+        "files written, no store writes. Best mode for cost/quality "
+        "previews.",
+    )
+    metrics_mode_group.add_argument(
+        "--out-dir",
+        dest="out_dir",
+        default=None,
+        help="Directory to write one YAML file per candidate "
+        "(<metric_name>.yaml) plus a sidecar `_suggestion_metadata.json` "
+        "carrying confidence/rationale. The per-metric YAML is "
+        "`metrics apply`-ready: edit, then apply per file.",
+    )
+    metrics_mode_group.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write candidates directly to the local store with "
+        "origin='suggested'. Skips the review step — use --out-dir if "
+        "you want a chance to edit before committing.",
+    )
+    p_metrics_suggest.add_argument(
+        "--top-k",
+        dest="top_k",
+        type=int,
+        default=_DEFAULT_SUGGEST_TOP_K,
+        help=f"Maximum number of candidates to keep (default: "
+        f"{_DEFAULT_SUGGEST_TOP_K}). The cap is both communicated to "
+        f"the LLM and enforced post-parse.",
+    )
+    p_metrics_suggest.add_argument(
+        "--provider",
+        choices=["anthropic", "stub"],
+        default="anthropic",
+        help="LLM provider. `anthropic` is the production default; "
+        "`stub` reads the canned response from "
+        "$SCHEMABRAIN_STUB_RESPONSE and is intended for CI smoke "
+        "tests, not for real schemas.",
+    )
+    p_metrics_suggest.add_argument(
+        "--max-cost-usd",
+        dest="max_cost_usd",
+        type=float,
+        default=None,
+        help=f"Hard cap on USD spend per run (default: "
+        f"${_DEFAULT_SUGGEST_MAX_COST_USD:.2f}). Aborts cleanly when "
+        f"reached. Reads {_SUGGEST_COST_ENV_VAR} if unset; CLI "
+        f"flag wins on conflict.",
     )
 
     p_doctor = sub.add_parser(
@@ -2614,17 +2712,30 @@ def _render_apply(
     return 0
 
 
-def _partial_write_message(written: list[str], total: int, error: str) -> str:
-    """Prefix an apply-mode error with the count of entities that landed.
+def _partial_write_message(
+    written: list[str],
+    total: int,
+    error: str,
+    *,
+    item_label: str = "entities",
+) -> str:
+    """Prefix an apply-mode error with the count of items that landed.
 
-    `write_entity` commits per call, so a failure mid-loop leaves the
-    store in a partial-write state. The user needs to know which
-    entities landed and which didn't so they can re-run cleanly.
+    Per-item writes commit independently (each is its own SQLite
+    transaction), so a failure mid-loop leaves the store in a partial-
+    write state. The user needs to know which items landed and which
+    didn't so they can re-run cleanly.
+
+    `item_label` names the kind of item being written — "entities" for
+    `_render_apply` (the entity-suggest path), "metrics" for
+    `_render_metrics_apply`. Without the label, a metrics-apply error
+    would falsely say "N of M entities were written", confusing anyone
+    debugging a partially applied metric batch.
     """
     if not written:
         return error
     return (
-        f"{len(written)} of {total} entities were written before this "
+        f"{len(written)} of {total} {item_label} were written before this "
         f"failure ({', '.join(repr(n) for n in written)}). "
         f"Re-running --apply is safe (UPSERT semantics) once the "
         f"underlying issue is fixed. {error}"
@@ -3433,6 +3544,451 @@ def _cmd_metrics_list(
             f"origin={metric.origin}"
         )
     return 0
+
+
+def _cmd_metrics_suggest(
+    *,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+    dry_run: bool,
+    out_dir: str | None,
+    apply: bool,
+    top_k: int,
+    provider: str,
+    max_cost_usd: float | None,
+) -> int:
+    """LLM-suggest metrics for an indexed schema's entities.
+
+    Orchestrates: resolve source -> read entities + tables from store ->
+    build LLM client (anthropic or stub) wrapped in CostCeilingGuard ->
+    run suggest pipeline -> render output per mode (dry-run / out-dir /
+    apply). Mirror of `_cmd_entities_suggest` — same cost-ceiling
+    contract, same env-var precedence, same exit-code surface.
+
+    The pre-flight refuses with a guided error when no entities exist
+    for this source. Metrics anchor on entities (FK enforced at write
+    time), so suggesting against an empty entity set would either
+    produce 0 candidates (wasted LLM call) or candidates that all fail
+    at apply time.
+
+    Exit codes:
+      0: success
+      1: user-input class (empty entities, malformed LLM output,
+         ceiling breached, anchor-FK violation)
+      2: structural (missing URL, missing API key, unwritable store)
+    """
+    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if source_url is None:
+        return 2
+    if _resolve_url(source_url) is None:  # pragma: no cover — defensive
+        return 2
+    source_id = _make_source_id(source_url)
+
+    # Resolve the cost ceiling: CLI flag > env var > default. Same
+    # precedence as `entities suggest`.
+    if max_cost_usd is None:
+        env_value = os.environ.get(_SUGGEST_COST_ENV_VAR)
+        if env_value is not None:
+            try:
+                max_cost_usd = float(env_value)
+            except ValueError:
+                _render_guided(
+                    GuidedError(
+                        kind="suggest_cost_env_malformed",
+                        message=f"{_SUGGEST_COST_ENV_VAR}={env_value!r} is not a valid number",
+                        why="cost ceiling must be a positive float (USD)",
+                        fix=f"unset {_SUGGEST_COST_ENV_VAR} or set it to a number "
+                        f"(e.g. {_SUGGEST_COST_ENV_VAR}=0.50)",
+                        next_step="see `schemabrain metrics suggest --help`",
+                    )
+                )
+                return 2
+        else:
+            max_cost_usd = _DEFAULT_SUGGEST_MAX_COST_USD
+
+    # Build the LLM client. Stub reads canned YAML from env (so the
+    # multi-line response stays out of argv). Anthropic reads
+    # ANTHROPIC_API_KEY — same env source as `entities suggest`.
+    llm_client: LLMClient
+    if provider == "stub":
+        canned = os.environ.get(_SUGGEST_STUB_RESPONSE_ENV_VAR)
+        if canned is None:
+            # `--provider stub` is meaningful only with a canned response.
+            # Match the `entities suggest` shape: warn loudly to stderr
+            # and default to an empty candidate list so a misconfigured
+            # CI job that forgot to set the env var fails noisily rather
+            # than silently exiting 0.
+            print(
+                f"warning: --provider stub with {_SUGGEST_STUB_RESPONSE_ENV_VAR} "
+                f"unset; defaulting to an empty candidate list. Set "
+                f"{_SUGGEST_STUB_RESPONSE_ENV_VAR} to provide a canned response.",
+                file=sys.stderr,
+            )
+            canned = "candidates: []"
+        llm_client = FakeLLMClient(text_provider=lambda _s, _u: canned)
+    else:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            _render_guided(
+                GuidedError(
+                    kind="anthropic_api_key_missing",
+                    message="ANTHROPIC_API_KEY is not set",
+                    why="metric suggestion uses Claude (Sonnet 4.6) to "
+                    "analyse your entity bindings; the SDK needs a key",
+                    fix="export ANTHROPIC_API_KEY=sk-ant-... and re-run, OR "
+                    "use --provider stub for offline runs",
+                    next_step="get a key at https://console.anthropic.com/settings/keys",
+                )
+            )
+            return 2
+        llm_client = anthropic_sonnet_46_client(
+            api_key=api_key
+        )  # pragma: no cover — needs real ANTHROPIC_API_KEY
+
+    guard = CostCeilingGuard(inner=llm_client, max_cost_usd=max_cost_usd)
+    pipeline = MetricSuggestionPipeline(llm=guard)
+
+    # Read entities + tables. Bail with a guided error rather than
+    # calling the LLM with an empty entity set.
+    try:
+        entities, tables = _load_entities_and_tables_for_source(
+            store_path=store_path,
+            source_id=source_id,
+        )
+    except OSError as e:  # pragma: no cover — disk/permission failure not simulatable in CI
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+    if not entities:
+        _render_guided(
+            GuidedError(
+                kind="suggest_metrics_no_entities",
+                message="no entities in the local store for this source",
+                why="metric suggestion needs at least one entity to anchor "
+                "candidates on (every metric binds to one entity)",
+                fix="run `schemabrain entities apply` or "
+                "`schemabrain entities suggest --apply` first, then re-run",
+                next_step="verify with `schemabrain entities list`",
+            )
+        )
+        return 1
+    if not tables:
+        # Defensive — an entity exists but its bound table isn't indexed.
+        # Operationally rare (write_entity FK requires the table row),
+        # but a manual mid-run table delete could land here.
+        _render_guided(
+            GuidedError(
+                kind="suggest_metrics_no_tables",
+                message="no indexed tables in the local store for this source",
+                why="metric suggestion serialises column lists from each "
+                "entity's bound table; missing tables would force the LLM "
+                "to guess column names blind",
+                fix="run `schemabrain index --url-env DATABASE_URL` first",
+                next_step="verify with `schemabrain entities list`",
+            )
+        )
+        return 1
+
+    try:
+        result = pipeline.propose_from_entities(entities, tables, top_k=top_k)
+    except CostCeilingExceededError as exc:
+        _render_guided(
+            GuidedError(
+                kind="suggest_cost_ceiling_exceeded",
+                message=str(exc),
+                why="the suggested prompt would exceed --max-cost-usd",
+                fix="re-run with a higher --max-cost-usd (or set "
+                f"{_SUGGEST_COST_ENV_VAR} in your environment)",
+                next_step="use --provider stub for cost-free smoke testing",
+            )
+        )
+        return 1
+    except MetricSuggestionParseError as exc:
+        _render_guided(
+            GuidedError(
+                kind="suggest_llm_output_malformed",
+                message=f"LLM returned unparseable YAML: {exc}",
+                why="the suggestion grammar requires strict YAML with a "
+                "top-level `candidates` list",
+                fix="re-run; transient LLM hiccups usually clear on retry. "
+                "Repeated failures suggest a prompt issue worth filing.",
+                next_step="if reproducible, please open an issue with the LLM response captured",
+            )
+        )
+        return 1
+
+    if dry_run:
+        _render_metrics_dry_run(result)
+        return 0
+    if out_dir is not None:
+        return _render_metrics_to_out_dir(result, Path(out_dir))
+    if not apply:  # pragma: no cover — argparse mutex group makes this unreachable
+        # `assert` would be stripped under `python -O`, silently
+        # returning None (which sys.exit treats as 0). Use an
+        # explicit raise so the invariant survives optimization.
+        raise RuntimeError(
+            "unreachable: argparse mutex group requires --dry-run, --out-dir, or --apply"
+        )
+    return _render_metrics_apply(result, store_path=store_path, source_id=source_id)
+
+
+def _load_entities_and_tables_for_source(
+    *,
+    store_path: str,
+    source_id: str,
+) -> tuple[list[Entity], list[Table]]:
+    """Read every indexed Entity and Table for `source_id` from the local store.
+
+    Single read pass, single context-manager scope — both lists hydrate
+    in one open of the store. Returns empty lists if the store has no
+    rows for this source (the suggest CLI's "did you index yet?" /
+    "did you define entities?" checks fire on that).
+    """
+    with SQLiteStore(store_path) as store:
+        entities = store.list_entities(source_connection_id=source_id)
+        names = store.list_tables(source_connection_id=source_id)
+        tables: list[Table] = []
+        for schema, name in names:
+            table = store.get_table(schema, name, source_connection_id=source_id)
+            if table is not None:
+                tables.append(table)
+        return entities, tables
+
+
+def _render_metrics_dry_run(result: MetricSuggestionResult) -> None:
+    """Print metric-suggestion candidates to stdout in human-readable form.
+
+    Each candidate is rendered as a YAML body (the apply-ready metric
+    grammar) with envelope fields (confidence, rationale) as comment
+    lines above. A trailing summary reports total cost and the LLM
+    model. Same shape as `_render_dry_run` for entities.
+    """
+    if not result.candidates:
+        print("no candidates suggested.")
+        return
+    for candidate in result.candidates:
+        print(_format_metric_candidate_for_dry_run(candidate))
+        print()
+    print(
+        f"-- {len(result.candidates)} candidate(s) | "
+        f"model: {result.llm_model} | "
+        f"cost: ${result.total_cost_usd:.4f}"
+    )
+
+
+def _format_metric_candidate_for_dry_run(candidate: MetricCandidate) -> str:
+    """Render one MetricCandidate as YAML body + envelope comments.
+
+    Body matches the canonical metric YAML grammar (so it could be
+    copy-pasted into a file and applied verbatim). Envelope fields
+    appear as `# <field>: <value>` comments above the body — visible
+    to humans, invisible to `parse_metric_yaml`.
+    """
+    rationale = _collapse_newlines(candidate.rationale or "(no rationale provided)")
+    lines: list[str] = [
+        f"# confidence: {candidate.confidence}",
+        f"# rationale: {rationale}",
+    ]
+    lines.extend(_format_metric_yaml_body(candidate).splitlines())
+    return "\n".join(lines)
+
+
+def _format_metric_yaml_body(candidate: MetricCandidate) -> str:
+    """Render the canonical metric YAML body — apply-ready, no envelope.
+
+    Uses `yaml.safe_dump` for the description scalar so an LLM-supplied
+    value containing colons, newlines, or other YAML-special characters
+    is properly quoted/escaped. Manual string concatenation here would
+    open the door to YAML injection where a malicious or careless
+    description string fragments the document. The dumped value is
+    spliced back into a hand-rolled key-order layout so the file
+    matches the same field ordering that `metrics apply` and the
+    bundled fixtures use.
+    """
+    metric = candidate.metric
+    body: dict[str, object] = {
+        "version": 1,
+        "name": metric.name,
+    }
+    if metric.description:
+        body["description"] = metric.description
+    body["entity"] = metric.entity
+    body["measure"] = {"agg": metric.measure.agg, "column": metric.measure.column}
+    if metric.time_dimension is not None:
+        body["time_dimension"] = metric.time_dimension
+        body["time_grains"] = list(metric.time_grains)
+    body["origin"] = metric.origin
+    # `sort_keys=False` preserves the insertion order set above.
+    # `allow_unicode=True` keeps non-ASCII (e.g., metric descriptions
+    # in any language) human-readable instead of `\u` escaped.
+    # `default_flow_style=False` forces block style on nested mappings
+    # (the `measure:` key) so the rendered body matches the bundled
+    # fixtures byte-for-byte where possible.
+    return yaml.safe_dump(
+        body,
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=True,
+    ).rstrip()
+
+
+def _render_metrics_to_out_dir(result: MetricSuggestionResult, out_dir: Path) -> int:
+    """Write one apply-ready YAML per candidate plus a metadata sidecar.
+
+    Per-metric YAML is the canonical metric grammar — clean of
+    envelope fields. The sidecar `_suggestion_metadata.json` carries
+    confidence/rationale keyed by metric name, so a human reviewing
+    the directory can see the LLM's reasoning without it leaking into
+    the persisted metric rows.
+
+    Refuses to overwrite existing files: a user who has hand-edited a
+    previous run's YAML in this directory should not lose that edit
+    silently. The conflict check fires before any write, so a partial
+    write isn't possible either.
+
+    Filesystem errors (unwritable parent, disk-full mid-write,
+    permission denied on `mkdir`) surface as a guided error with
+    exit code 2. The mkdir-then-conflict-check-then-write sequence
+    runs inside one try/except so a disk-full failure during the
+    write loop is reported without a raw Python traceback.
+    """
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # Pre-check for conflicts so we either write everything or
+        # write nothing — no partial overwrites of user-edited files.
+        conflicts: list[str] = []
+        for candidate in result.candidates:
+            if (out_dir / f"{candidate.metric.name}.yaml").exists():
+                conflicts.append(f"{candidate.metric.name}.yaml")
+        sidecar = out_dir / "_suggestion_metadata.json"
+        if sidecar.exists():
+            conflicts.append("_suggestion_metadata.json")
+        if conflicts:
+            _render_guided(
+                GuidedError(
+                    kind="suggest_metrics_out_dir_conflict",
+                    message=f"{out_dir} already contains: {', '.join(sorted(conflicts))}",
+                    why="overwriting existing files would lose any hand-edits "
+                    "made between suggest runs",
+                    fix="pass --out-dir to a fresh directory, or delete the conflicting files first",
+                    next_step="for review-then-apply workflows, copy the "
+                    "edited files elsewhere before re-running suggest",
+                )
+            )
+            return 1
+
+        metadata: dict[str, dict[str, object]] = {}
+        for candidate in result.candidates:
+            yaml_path = out_dir / f"{candidate.metric.name}.yaml"
+            yaml_path.write_text(_format_metric_yaml_body(candidate) + "\n")
+            metadata[candidate.metric.name] = {
+                "confidence": candidate.confidence,
+                "rationale": candidate.rationale,
+            }
+        sidecar.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+    except OSError as e:
+        # Mid-loop OSError leaves a partial directory (some YAMLs
+        # written, sidecar maybe not). Flag the partial state so the
+        # operator doesn't `metrics apply` on a half-written directory.
+        _render_guided(
+            GuidedError(
+                kind="suggest_metrics_out_dir_unwritable",
+                message=f"cannot write candidates to {out_dir!r}: {e}",
+                why="filesystem write failed (unwritable parent, disk full, "
+                "or permission denied); the directory may contain a partial "
+                "set of YAML files",
+                fix="check the path is writable and has free space, then "
+                "delete any partial output and re-run",
+                next_step=f"`ls {out_dir!r}` to inspect what landed before failure",
+            )
+        )
+        return 2
+    print(
+        f"wrote {len(result.candidates)} candidate(s) to {out_dir} | "
+        f"model: {result.llm_model} | "
+        f"cost: ${result.total_cost_usd:.4f}"
+    )
+    return 0
+
+
+def _render_metrics_apply(
+    result: MetricSuggestionResult,
+    *,
+    store_path: str,
+    source_id: str,
+) -> int:
+    """Write suggested metric candidates to the store with origin='suggested'.
+
+    `store.write_metric` commits per call (each is its own SQLite
+    transaction). If candidate N fails (anchor-entity FK violation or
+    dbt-guard refusal), candidates 0..N-1 are already durably
+    committed. The error message names how many metrics landed before
+    the failure so the user knows the state of the store without
+    having to query it manually.
+
+    **Stop-on-first-failure policy.** This handler bails on the first
+    failing candidate and does NOT attempt the remaining ones — mirror
+    of `_render_apply` for entities. The asymmetric counterpart is
+    `_cmd_joins_suggest`, which aggregates failures across candidates
+    and exits 1 at the end. The asymmetry is deliberate: failures here
+    are typically schema-shape issues (missing anchor entity, dbt
+    ownership conflict) that surface once and would surface again on
+    every remaining candidate, so continuing produces noise without
+    information. Re-run after fixing the named issue; the `--apply`
+    write is idempotent (UPSERT semantics), so already-applied
+    candidates won't double-write.
+    """
+    written: list[str] = []
+    total = len(result.candidates)
+    try:
+        with SQLiteStore(store_path) as store:
+            for candidate in result.candidates:
+                try:
+                    store.write_metric(candidate.metric, source_connection_id=source_id)
+                except DbtOwnedMetricError as exc:
+                    _metric_error(
+                        _partial_write_message(written, total, str(exc), item_label="metrics")
+                    )
+                    return 1
+                except sqlite3.IntegrityError:
+                    # FK violation — the anchor entity doesn't exist
+                    # for this source. CHECK violations are ruled out
+                    # by the dataclass invariants. Drop the raw SQLite
+                    # text ("FOREIGN KEY constraint failed") so the
+                    # user sees the actionable fix, not database lingo.
+                    _metric_error(
+                        _partial_write_message(
+                            written,
+                            total,
+                            f"metric {candidate.metric.name!r} anchors on entity "
+                            f"{candidate.metric.entity!r}, which is not present in "
+                            f"the store. Run `schemabrain entities apply` first.",
+                            item_label="metrics",
+                        )
+                    )
+                    return 1
+                written.append(candidate.metric.name)
+    except OSError as e:  # pragma: no cover — store-path-unwritable path is covered by sibling list/apply OSError tests
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+
+    for name in written:
+        print(f"applied metric: {name}")
+    print(
+        f"-- {len(written)}/{total} metric(s) applied | "
+        f"model: {result.llm_model} | "
+        f"cost: ${result.total_cost_usd:.4f}"
+    )
+    return 0
+
+
+def _metric_error(message: str) -> None:
+    """Print a metric-write error to stderr.
+
+    Symmetric with `_entity_error` — keeps the suggest-apply summary
+    style consistent between the two surfaces.
+    """
+    print(f"error: {message}", file=sys.stderr)
 
 
 def _render_joins_suggest_dry_run(
