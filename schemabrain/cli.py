@@ -2366,10 +2366,10 @@ def _cmd_entities_apply(
     source_id = _make_source_id(source_url)
 
     yaml_files, path_failures = _expand_yaml_paths(yaml_paths)
-    if not yaml_files and not path_failures:
-        # Defensive: nargs="+" guarantees ≥ 1 path, _expand_yaml_paths
-        # routes invalid paths to failures, so reaching here means a
-        # caller bypassed argparse. Treat as a structural error.
+    if not yaml_files and not path_failures:  # pragma: no cover — defensive
+        # nargs="+" guarantees ≥ 1 path, _expand_yaml_paths routes
+        # invalid paths to failures, so reaching here means a caller
+        # bypassed argparse. Treat as a structural error.
         print("error: no entity YAML paths provided", file=sys.stderr)
         return 2
 
@@ -3416,9 +3416,9 @@ def _cmd_joins_apply(
     source_id = _make_source_id(source_url)
 
     yaml_files, path_failures = _expand_yaml_paths(yaml_paths)
-    if not yaml_files and not path_failures:
-        # Defensive: nargs="+" guarantees ≥ 1 path; reaching here means
-        # a caller bypassed argparse.
+    if not yaml_files and not path_failures:  # pragma: no cover — defensive
+        # nargs="+" guarantees ≥ 1 path; reaching here means a caller
+        # bypassed argparse.
         print("error: no canonical-join YAML paths provided", file=sys.stderr)
         return 2
 
@@ -3563,9 +3563,9 @@ def _cmd_metrics_apply(
     source_id = _make_source_id(source_url)
 
     yaml_files, path_failures = _expand_yaml_paths(yaml_paths)
-    if not yaml_files and not path_failures:
-        # Defensive: nargs="+" guarantees ≥ 1 path; reaching here means
-        # a caller bypassed argparse.
+    if not yaml_files and not path_failures:  # pragma: no cover — defensive
+        # nargs="+" guarantees ≥ 1 path; reaching here means a caller
+        # bypassed argparse.
         print("error: no metric YAML paths provided", file=sys.stderr)
         return 2
 
