@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   routes the agent to `list_entities` and `find_relevant_tables`;
   success envelope chains to `describe_entity`. Charter-compliant
   (description ≤500 chars, "instead when" disambiguation, sibling
-  composition). 24 dedicated tests covering impl-level edge cases,
+  composition). 25 dedicated tests covering impl-level edge cases,
   envelope round-trip, and the `result_summary` extractor for the
   audit row + tail render. Closes the demo-vision Act 3 gap.
 
