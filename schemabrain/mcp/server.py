@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -89,6 +89,9 @@ from schemabrain.semantic.compiler import (
     UnknownMetricError,
     UnreachableEntityError,
 )
+
+if TYPE_CHECKING:
+    from opentelemetry.trace import Tracer
 
 _DEFAULT_LIMIT = 10
 _DEFAULT_MAX_HOPS = 6
@@ -166,6 +169,7 @@ def build_server(
     server_session_id: str | None = None,
     audit_writer: AuditWriter | None = None,
     pii_block: frozenset[PIICategory] = frozenset(),
+    tracer: Tracer | None = None,
 ) -> FastMCP:
     """Build (but do not run) a configured `FastMCP` app.
 
@@ -194,6 +198,14 @@ def build_server(
     agents see a real hash rather than the v0 stub. Defaults to None
     (no audit writes) so test contexts that don't care don't pay the
     SQLite syscall cost.
+
+    `tracer` is the optional OpenTelemetry tracer. When non-None, each
+    tool call is wrapped in a span tagged with `gen_ai.*` attributes
+    that flow over OTLP/HTTP to whatever endpoint
+    `OTEL_EXPORTER_OTLP_ENDPOINT` points at (Langfuse, Phoenix,
+    OpenLIT, otel-tui, etc.). Constructed via `init_tracer_from_env()`
+    in `_cmd_serve`; defaults to None so test contexts and the
+    `schemabrain[otel]`-not-installed case pay zero overhead.
     """
     app = FastMCP(_SERVER_NAME, instructions=_SERVER_INSTRUCTIONS)
     _bus = event_bus if event_bus is not None else NullEventBus()
@@ -208,6 +220,7 @@ def build_server(
             server_session_id=_session_id,
             audit_writer=audit_writer,
             source_connection_id=source_connection_id,
+            tracer=tracer,
         )
 
     @app.tool(
@@ -1055,6 +1068,7 @@ def run_stdio(
     server_session_id: str | None = None,
     audit_writer: AuditWriter | None = None,
     pii_block: frozenset[PIICategory] = frozenset(),
+    tracer: Tracer | None = None,
 ) -> None:
     """Build the server and run it forever on stdio.
 
@@ -1100,6 +1114,7 @@ def run_stdio(
         server_session_id=session_id,
         audit_writer=audit_writer,
         pii_block=pii_block,
+        tracer=tracer,
     )
     bus.emit(
         Event(

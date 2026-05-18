@@ -2067,6 +2067,15 @@ def _cmd_serve(
             )
             audit_writer = None
 
+    # Optional OpenTelemetry tracing. `init_tracer_from_env` returns
+    # None unless BOTH the `schemabrain[otel]` extra is installed AND
+    # `OTEL_EXPORTER_OTLP_ENDPOINT` is set in the environment. When
+    # either is missing the serve process runs with span emission
+    # disabled — same posture as the events bus and audit writer.
+    from schemabrain.observability import init_tracer_from_env
+
+    tracer = init_tracer_from_env()
+
     try:
         with SQLiteStore(store_path) as store:
             run_stdio(
@@ -2077,6 +2086,7 @@ def _cmd_serve(
                 event_bus=bus,
                 audit_writer=audit_writer,
                 pii_block=pii_block,
+                tracer=tracer,
             )
     except OSError as e:
         # Unwritable directory, missing parent, etc. Surface as a

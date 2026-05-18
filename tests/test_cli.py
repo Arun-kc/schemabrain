@@ -2324,6 +2324,7 @@ class TestServeSubcommand:
             server_session_id=None,
             audit_writer=None,
             pii_block=frozenset(),
+            tracer=None,
         ) -> None:
             captured["store_is_sqlite_store"] = isinstance(store, SQLiteStore)
             captured["source_connection_id"] = source_connection_id

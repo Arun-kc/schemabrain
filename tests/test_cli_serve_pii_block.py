@@ -27,6 +27,7 @@ def _patch_run_stdio_capture(monkeypatch: pytest.MonkeyPatch) -> dict:
         server_session_id=None,
         audit_writer=None,
         pii_block=frozenset(),
+        tracer=None,
     ) -> None:
         captured["pii_block"] = pii_block
 
