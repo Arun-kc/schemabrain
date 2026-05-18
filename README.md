@@ -1,12 +1,22 @@
 # Schema Brain
 
-> The SQL-boundary safety layer for AI agents that touch real databases. Schema intelligence and LLM-enriched semantics today; validate-before-execute, PII-tagged refusal, and sub-query rewrite landing in v2.
-
 [![CI](https://github.com/Arun-kc/schemabrain/actions/workflows/ci.yml/badge.svg)](https://github.com/Arun-kc/schemabrain/actions/workflows/ci.yml)
 [![Python 3.11 | 3.12](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**Status: 0.2.0a1 (alpha preview).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the v1 roadmap. APIs may change before v1 — pin the version (`pip install schemabrain==0.2.0a1`) if you need stability.
+> **The agent never writes SQL. Schema Brain does, from definitions you control.**
+
+Bring your own dbt models, or let Schema Brain suggest entities and metrics from
+your schema. Agents query in domain terms (`get_metric("revenue", by="month")`)
+and get back validated rows. One MCP install. Postgres + SQLite today.
+
+> **Note:** A scripted demo recording (init → inspect → MCP call → tail) is in production. The reproducible recording script lives at [`docs/assets/demo.tape`](docs/assets/demo.tape) — see [CONTRIBUTING.md](CONTRIBUTING.md#recording-the-demo-asset) if you want to render it locally with [`vhs`](https://github.com/charmbracelet/vhs).
+
+- **One command from `pip install` to wired agent** — `schemabrain init` walks source → index → entities → host config in five stages.
+- **Validated metrics, not invented SQL** — entities, metrics, and canonical joins compile to parameterized SQL the agent never sees.
+- **Watch what the agent does** — `schemabrain tail` streams every tool call live; every call is also logged to a tamper-evident audit table.
+
+**Status: 0.3.0 (alpha).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the v1 roadmap. The longer-term position is the **SQL-boundary safety layer for AI agents** — see [Where this is going](#where-this-is-going).
 
 ---
 
@@ -55,7 +65,7 @@ The open-source landscape thinned in 2026: Vanna's public repo was frozen as the
 
 | Project | License | First-party MCP | Status |
 |---|---|---|---|
-| **Schema Brain** | MIT | ✅ | Active — `0.2.0a1` alpha |
+| **Schema Brain** | MIT | ✅ | Active — `0.3.0` alpha |
 | [Vanna AI](https://github.com/vanna-ai/vanna) | MIT (repo frozen) | ❌ | OSS archived 2026-03; project moved commercial (Vanna 2.0 / Cloud / Enterprise) |
 | [Reference Postgres MCP](https://github.com/modelcontextprotocol/servers-archived) | MIT | ✅ | Archived 2025-05; no first-party successor named |
 | [Atlan](https://atlan.com) | Closed-source | ✅ | SaaS-only, enterprise pricing |
@@ -204,7 +214,27 @@ schemabrain doctor --url-env DATABASE_URL --store-path ./schemabrain.db
 connectivity (`SELECT 1` + read-only session verification on Postgres).
 Pass `--json` for machine-readable output suitable for CI / monitoring.
 
-For the headless Anthropic-SDK path, see [`examples/anthropic_demo.py`](examples/anthropic_demo.py) and [`docs/setup.md`](docs/setup.md).
+For the headless Anthropic-SDK path, see [`examples/anthropic_demo.py`](examples/anthropic_demo.py) and [`docs/setup.md`](docs/setup.md). An end-to-end walkthrough that exercises entities, metrics, AND canonical joins lives at [`examples/ecommerce/`](examples/ecommerce/).
+
+### Inspect the MCP surface (optional)
+
+Want to see exactly what shape the tools expose to an agent — every
+argument, every JSON schema, every response envelope — without
+booting Claude Desktop? Use the [official MCP Inspector](https://github.com/modelcontextprotocol/inspector):
+
+```bash
+export DATABASE_URL="postgresql+psycopg://postgres:local@localhost:5432/postgres"
+
+# Requires Node.js 18+. No install — npx runs the latest published version.
+npx @modelcontextprotocol/inspector \
+    schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+A browser tab opens with every registered tool, its description, the
+input JSON schema (with per-argument descriptions), and a live
+call-and-response panel — useful for verifying the server boots cleanly
+and for hand-driving tools when you're debugging an agent's behaviour.
+Full walkthrough in [docs/setup.md](docs/setup.md#inspecting-tool-shapes-with-the-official-mcp-inspector).
 
 ---
 
