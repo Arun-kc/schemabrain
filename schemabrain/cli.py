@@ -376,6 +376,7 @@ def main(argv: list[str] | None = None) -> int:
             metrics_max_cost_usd=args.metrics_max_cost_usd,
             assume_yes=args.assume_yes,
             print_only=args.print_only,
+            from_dbt=args.from_dbt,
         )
     if args.command == "tail":
         return _cmd_tail(
@@ -1388,6 +1389,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "still wires the MCP host; you can curate joins later via "
         "`schemabrain joins suggest --apply`. The join suggester is "
         "deterministic (FK + query-log mining) — no LLM cost, no API key.",
+    )
+    p_init.add_argument(
+        "--from-dbt",
+        dest="from_dbt",
+        metavar="PATH",
+        default=None,
+        help="Import entities + metrics from a compiled dbt manifest "
+        "(`target/manifest.json`) instead of running the LLM suggester. "
+        "Stage 5 (joins) still uses FK + query-log mining since dbt has "
+        "no canonical-join concept. The wizard also auto-detects a manifest "
+        "from $DBT_PROJECT_DIR or the cwd-walk fallback when this flag "
+        "is omitted; pass --from-dbt to force a specific path.",
     )
     p_init.add_argument(
         "--yes",
@@ -4231,6 +4244,7 @@ def _cmd_init(
     metrics_max_cost_usd: float | None,
     assume_yes: bool,
     print_only: bool,
+    from_dbt: str | None = None,
 ) -> int:
     """Run the activation wizard and render the multi-stage outcome.
 
@@ -4299,6 +4313,7 @@ def _cmd_init(
         no_metrics=no_metrics,
         metrics_max_cost_usd=metrics_max_cost_usd,
         no_joins=no_joins,
+        from_dbt=Path(from_dbt) if from_dbt else None,
     )
 
     interactive = _stderr_is_interactive_tty()

@@ -8,13 +8,23 @@ host, and print the next step.
 
 Stages in order:
 
-  1. source_check  — URL reachable + (Postgres) read-only session
+  1. source_check  — URL reachable + (Postgres) read-only session,
+                     plus dbt-project auto-detection (PR C). When a
+                     manifest is found, stages 3 and 4 import from
+                     dbt instead of calling the LLM.
   2. index         — cache-aware DDL introspection into the local store
   3. entities      — Anthropic-backed entity suggestion (cost-capped)
-  4. metrics       — Anthropic-backed metric suggestion anchored on entities
-                     (cost-capped, requires entities present)
+                     OR dbt-manifest import when `ctx.dbt_manifest_path`
+                     is set
+  4. metrics       — Anthropic-backed metric suggestion anchored on
+                     entities (cost-capped, requires entities present)
+                     OR dbt-manifest import when `ctx.dbt_manifest_path`
+                     is set
   5. joins         — deterministic canonical-join suggestion from FK +
-                     query-log evidence (no LLM, requires entities present)
+                     query-log evidence (no LLM, requires entities
+                     present). Unchanged by dbt mode — dbt does not
+                     have a canonical-join concept, so the FK +
+                     query-log path runs regardless.
   6. wire_host     — write the MCP host config (or print the snippet)
   7. next_step     — render the "ask Claude X" hint
 
@@ -136,9 +146,11 @@ class WizardConfig:
 
     `no_metrics` / `metrics_max_cost_usd` are stage-4 knobs added in
     PR A. `no_joins` is the stage-5 knob added in PR B (joins is
-    deterministic — no cost cap needed). New fields are appended
-    (with defaults) so existing callers constructing this dataclass
-    with positional or keyword arguments remain valid.
+    deterministic — no cost cap needed). `from_dbt` is the PR C knob
+    — when set, stage 1 validates the path and stages 3 + 4 import
+    from the dbt manifest instead of calling the LLM. New fields are
+    appended (with defaults) so existing callers constructing this
+    dataclass with positional or keyword arguments remain valid.
     """
 
     source_url: str
@@ -153,6 +165,7 @@ class WizardConfig:
     no_metrics: bool = False
     metrics_max_cost_usd: float | None = None
     no_joins: bool = False
+    from_dbt: Path | None = None
 
     def __post_init__(self) -> None:
         if self.host not in _VALID_HOSTS:
@@ -183,11 +196,19 @@ class WizardContext:
     Intentionally non-frozen: stages need a single back-channel for
     the host install result, and threading a sentinel through every
     `StageOutcome` would muddy the contract.
+
+    `dbt_manifest_path` is populated by stage 1 (`_stage_source_check`)
+    when either `cfg.from_dbt` is set (explicit) or auto-detection
+    finds a manifest under cwd. Stages 3 and 4 branch on this field
+    to decide between dbt-import and LLM-suggest. `None` means
+    LLM-suggest mode. Set only by stage 1; downstream stages MUST
+    treat it as read-only.
     """
 
     config: WizardConfig
     outcomes: list[StageOutcome] = field(default_factory=list)
     host_install_result: InitResult | None = None
+    dbt_manifest_path: Path | None = None
 
 
 StageHandler = Callable[[WizardContext], StageOutcome]
@@ -357,6 +378,16 @@ def _stage_source_check(ctx: WizardContext) -> StageOutcome:
     Wraps the same validators `init_flow.init` runs as its first two
     preconditions. SQLite sources skip the read-only check (no
     session-level read-only setting exists in SQLite).
+
+    Stage 1 also handles dbt-project detection (PR C). When
+    `cfg.from_dbt` is set explicitly, the path is validated and the
+    wizard aborts if it does not exist. When `cfg.from_dbt` is None,
+    the helper auto-detects a manifest via cwd-walk + `DBT_PROJECT_DIR`
+    env var. Detection writes the result to `ctx.dbt_manifest_path`;
+    stages 3 and 4 read that field to decide between dbt-import and
+    LLM-suggest. Stage 1 never fails the wizard for missing
+    auto-detection — that's the LLM-suggest path. The explicit
+    `--from-dbt PATH` case is the only path that aborts.
     """
     cfg = ctx.config
     try:
@@ -366,13 +397,126 @@ def _stage_source_check(ctx: WizardContext) -> StageOutcome:
             _validate_source_read_only(cfg.source_url)
     except InitRefusal as refusal:
         return _failed_from_refusal(stage=1, name="source_check", error=refusal.error)
-    message = "Postgres reachable · session is read-only" if is_postgres else "source reachable"
+
+    # ----- dbt-project detection (PR C) ----------------------------
+    #
+    # `cfg.from_dbt` set explicitly: validate the path exists.
+    # If it doesn't, abort — the user asked for a specific manifest
+    # and a missing file is a configuration mistake worth surfacing.
+    # If it exists, also refuse on non-Postgres source (dbt importer
+    # requires a live Postgres connection for schema verification).
+    if cfg.from_dbt is not None:
+        if not cfg.from_dbt.exists():
+            return StageOutcome(
+                stage=1,
+                name="source_check",
+                status="failed",
+                message=f"--from-dbt path {cfg.from_dbt} does not exist",
+                next_step="check the path, run `dbt compile` to produce "
+                "target/manifest.json, or omit --from-dbt to auto-detect "
+                "or fall back to LLM-suggest",
+            )
+        if not is_postgres:
+            return StageOutcome(
+                stage=1,
+                name="source_check",
+                status="failed",
+                message="--from-dbt requires a Postgres source "
+                "(the dbt importer verifies model columns against the live schema)",
+                next_step="point --source at the Postgres URL the dbt project "
+                "targets, or omit --from-dbt to fall back to LLM-suggest",
+            )
+        ctx.dbt_manifest_path = cfg.from_dbt
+    elif is_postgres:
+        # Auto-detect only on Postgres sources. Best-effort — if no
+        # manifest is found (or one is found without a Postgres
+        # source-compatibility check), stages 3 and 4 fall through to
+        # the LLM-suggest path.
+        ctx.dbt_manifest_path = _auto_detect_dbt_manifest()
+
+    base_message = (
+        "Postgres reachable · session is read-only" if is_postgres else "source reachable"
+    )
+    if ctx.dbt_manifest_path is not None:
+        return StageOutcome(
+            stage=1,
+            name="source_check",
+            status="done",
+            message=f"{base_message} · dbt manifest detected at {ctx.dbt_manifest_path}",
+            next_step="stages 3 and 4 will import entities + metrics from dbt "
+            "instead of calling the LLM",
+        )
     return StageOutcome(
         stage=1,
         name="source_check",
         status="done",
-        message=message,
+        message=base_message,
     )
+
+
+# Walk this many parents up from cwd looking for a `dbt_project.yml`
+# sentinel. Empirical: 3 levels covers nested-monorepo layouts where
+# the dbt project sits under `analytics/` or `etl/` from the
+# Schema Brain run directory. Beyond 3 invites cross-project misfires.
+_DBT_DETECT_PARENT_LIMIT: int = 3
+
+
+def _auto_detect_dbt_manifest(*, cwd: Path | None = None) -> Path | None:
+    """Search the operator's working tree for a compiled dbt manifest.
+
+    Search order:
+      1. `$DBT_PROJECT_DIR` env var, if set → probe
+         `$DBT_PROJECT_DIR/target/manifest.json`. If that file exists,
+         return it.
+      2. Otherwise, starting at `cwd`, walk up to
+         `_DBT_DETECT_PARENT_LIMIT` parents looking for a directory
+         containing `dbt_project.yml`. If found, return
+         `<that_dir>/target/manifest.json` IF that file exists.
+      3. Otherwise, return `None`.
+
+    Detection silently returns `None` rather than raising — a missing
+    manifest just means LLM-suggest mode. The `--from-dbt PATH`
+    branch in `_stage_source_check` handles the user-explicit case
+    where a missing path SHOULD fail loudly.
+
+    `cwd` is dependency-injected so tests can drive the walk against
+    `tmp_path` without monkeypatching `Path.cwd`. Production callers
+    pass `cwd=None`, which falls back to `Path.cwd()`.
+
+    Compiled-manifest requirement: a `dbt_project.yml` without
+    `target/manifest.json` means the user hasn't run `dbt compile` —
+    importing nothing would be confusing. Falling through to
+    LLM-suggest is the right behaviour. Users who want the dbt path
+    can run `dbt compile` then re-run `schemabrain init`.
+    """
+    # Step 1: explicit env var trumps cwd-walk.
+    env_dir = os.environ.get("DBT_PROJECT_DIR")
+    if env_dir:
+        manifest = Path(env_dir) / "target" / "manifest.json"
+        if manifest.exists():
+            return manifest
+        # If the env is set but the manifest is absent, fall through
+        # to the cwd-walk rather than refuse — `DBT_PROJECT_DIR` may
+        # be set as a default while the user is working in a different
+        # tree.
+
+    # Step 2: cwd-walk for a `dbt_project.yml` sentinel.
+    start = cwd if cwd is not None else Path.cwd()
+    candidate: Path = start
+    for _ in range(_DBT_DETECT_PARENT_LIMIT + 1):
+        if (candidate / "dbt_project.yml").is_file():
+            manifest = candidate / "target" / "manifest.json"
+            if manifest.exists():
+                return manifest
+            # `dbt_project.yml` is present but no compiled manifest.
+            # Stop walking — there's no point checking parents above
+            # the dbt project root.
+            return None
+        parent = candidate.parent
+        if parent == candidate:  # pragma: no cover — filesystem root
+            break
+        candidate = parent
+    return None
 
 
 # ----- stage 2: index ------------------------------------------------------
@@ -622,7 +766,8 @@ _WIZARD_INDEX_CRYPTIC_CONCURRENCY: int = 2
 
 
 def _stage_entities(ctx: WizardContext) -> StageOutcome:
-    """Suggest + apply entities via the Anthropic-backed pipeline.
+    """Suggest + apply entities via the Anthropic-backed pipeline,
+    OR import from dbt when `ctx.dbt_manifest_path` is set (PR C).
 
     Decision tree:
 
@@ -630,17 +775,21 @@ def _stage_entities(ctx: WizardContext) -> StageOutcome:
       2. `cfg.skip_index` → skipped (no schema to analyse).
       3. Non-Postgres source → skipped (entities need an indexed
          Postgres schema today).
-      4. `ANTHROPIC_API_KEY` missing → skipped with hint (entity
-         suggestion is aspirational; a missing key is not a wizard-
-         fatal condition).
-      5. Store already has entities for this `source_id` → skipped
+      4. Store already has entities for this `source_id` → skipped
          (idempotent re-run).
-      6. Otherwise, run the pipeline + apply candidates and emit
+      5. **dbt-import branch (PR C)**: `ctx.dbt_manifest_path` set →
+         call `_run_entities_from_dbt` instead of the LLM pipeline.
+         Sits BEFORE the API-key check because dbt import doesn't
+         require an API key.
+      6. `ANTHROPIC_API_KEY` missing → skipped with hint (entity
+         suggestion is aspirational; a missing key is not a wizard-
+         fatal condition). LLM path only.
+      7. Otherwise, run the pipeline + apply candidates and emit
          `done` with the applied count + cost.
 
-    Stage 3 is the only `abort_on_fail=False` stage in the canonical
-    pipeline: a failure here records a `failed` outcome but lets the
-    wizard wire the host and print the next step.
+    Stage 3 is `abort_on_fail=False`: a failure here records a
+    `failed` outcome but lets the wizard wire the host and print
+    the next step.
     """
     cfg = ctx.config
 
@@ -691,6 +840,67 @@ def _stage_entities(ctx: WizardContext) -> StageOutcome:
                 next_step="run `schemabrain entities suggest --apply` directly "
                 "to re-curate from a fresh prompt",
             )
+
+    # PR C: dbt-import branch. Sits before the API-key check because
+    # the dbt path doesn't call the LLM. Stage 1 (source_check)
+    # populated `ctx.dbt_manifest_path` if a manifest was detected
+    # or `--from-dbt` was set.
+    if ctx.dbt_manifest_path is not None:
+        try:
+            result = _run_entities_from_dbt(
+                cfg=cfg,
+                manifest_path=ctx.dbt_manifest_path,
+                source_id=source_id,
+            )
+        except _DbtImportFailedAtWizard as exc:
+            return StageOutcome(
+                stage=3,
+                name="entities",
+                status="failed",
+                message=exc.message,
+                next_step=exc.next_step,
+            )
+        plural = "y" if result.applied_count == 1 else "ies"
+        if result.applied_count == 0:
+            message = (
+                f"dbt manifest planned {result.candidates_proposed} entit"
+                f"{'y' if result.candidates_proposed == 1 else 'ies'} but "
+                f"none could be written"
+                if result.candidates_proposed > 0
+                else "dbt manifest contained 0 importable models"
+            )
+            return StageOutcome(
+                stage=3,
+                name="entities",
+                status="failed",
+                message=message,
+                next_step="check the audit log for write failures, "
+                "or omit --from-dbt to fall back to LLM-suggest",
+            )
+        if result.applied_count < result.candidates_proposed:
+            suffix = (
+                f"; {result.candidates_proposed - result.applied_count} "
+                f"skipped: {result.skip_reason}"
+                if result.skip_reason
+                else ""
+            )
+            return StageOutcome(
+                stage=3,
+                name="entities",
+                status="done",
+                message=(
+                    f"{result.applied_count} of {result.candidates_proposed} "
+                    f"entit{plural} imported from dbt{suffix}"
+                ),
+                next_step="inspect the audit log for skipped entities, or re-run "
+                "`schemabrain import dbt --dry-run` to preview",
+            )
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="done",
+            message=f"{result.applied_count} entit{plural} imported from dbt",
+        )
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -789,7 +999,7 @@ def _stage_entities(ctx: WizardContext) -> StageOutcome:
 
 @dataclass(frozen=True)
 class _EntityApplyResult:
-    """Internal outcome of `_run_entity_suggestion`.
+    """Internal outcome of `_run_entity_suggestion` or `_run_entities_from_dbt`.
 
     `applied_count` is the number of entities that landed in the
     store (writes commit per call; a partial-success run reports
@@ -798,6 +1008,12 @@ class _EntityApplyResult:
     started failing mid-loop and `skip_reason` carries the exception
     name + the candidate that triggered it so the renderer can
     surface partial state.
+
+    `source` distinguishes the LLM path from the dbt-import path
+    (PR C). In dbt mode, `cost_usd` is always 0.0 and `llm_model`
+    carries the sentinel `"dbt-import"` — the stage handler uses
+    `source` to render different message text rather than
+    string-matching the sentinel.
     """
 
     applied_count: int
@@ -805,6 +1021,7 @@ class _EntityApplyResult:
     llm_model: str
     candidates_proposed: int = 0
     skip_reason: str | None = None
+    source: Literal["llm", "dbt"] = "llm"
 
 
 # Wizard-internal exception wrappers. The pipeline's
@@ -829,6 +1046,22 @@ class _SuggestionParseAtWizard(Exception):
 
 class _EmptySchemaAtWizard(Exception):
     pass
+
+
+class _DbtImportFailedAtWizard(Exception):
+    """Wraps `DbtManifestParseError` / `DbtMetricImportError` /
+    `OperationalError` raised inside the dbt-import path (PR C).
+
+    `message` is the human-readable error, `next_step` is the
+    recovery hint to surface in the failed `StageOutcome`. Stage
+    handlers catch this and translate into a `StageOutcome` of
+    `status="failed"`.
+    """
+
+    def __init__(self, message: str, next_step: str) -> None:
+        super().__init__(message)
+        self.message = message
+        self.next_step = next_step
 
 
 def _peek_entity_count(store_path: Path, source_id: str) -> int | StageOutcome:
@@ -976,6 +1209,90 @@ def _run_entity_suggestion(
 _WIZARD_ENTITIES_DEFAULT_COST_CAP_USD: float = 1.0
 
 
+# Sentinel `llm_model` value carried in `_EntityApplyResult` /
+# `_MetricApplyResult` when the dbt-import path produced the row.
+# The stage handler reads `result.source` (not this sentinel) for
+# branching the message; this literal is a human-readable artifact
+# only — surfaces in audit-log entries and `--json` output mode if
+# either consumer ever cares.
+_DBT_IMPORT_MODEL_LABEL: str = "dbt-import"
+
+
+def _run_entities_from_dbt(
+    *,
+    cfg: WizardConfig,
+    manifest_path: Path,
+    source_id: str,
+) -> _EntityApplyResult:
+    """Import entities from a compiled dbt manifest.
+
+    Mirror of `_run_entity_suggestion` for the dbt path. Calls
+    `parse_dbt_manifest` → `plan_dbt_import` → `apply_dbt_import_plan`
+    against the live Postgres source (for column verification) and
+    the local SQLite store.
+
+    Translates `DbtManifestParseError`, `DbtImportError`, and
+    `OperationalError` into `_DbtImportFailedAtWizard` so the stage
+    handler renders a clean `failed` outcome instead of an
+    unhandled traceback.
+
+    `applied_count` totals successful writes across all three
+    writable buckets (`to_add` + `to_update` + `to_take_ownership`)
+    minus any per-entity write failures. `candidates_proposed` is
+    the planned-writes count so the partial-success branch of the
+    stage handler renders the same "N of M" message format the
+    LLM path uses.
+    """
+    from sqlalchemy.exc import OperationalError as _SAOperationalError
+
+    from schemabrain.connectors.postgres import PostgresDataSource
+    from schemabrain.core.store import SQLiteStore
+    from schemabrain.imports.dbt import (
+        DbtManifestParseError,
+        apply_dbt_import_plan,
+        parse_dbt_manifest,
+        plan_dbt_import,
+    )
+
+    try:
+        manifest = parse_dbt_manifest(manifest_path)
+    except DbtManifestParseError as exc:
+        raise _DbtImportFailedAtWizard(
+            f"dbt manifest unreadable: {exc}",
+            next_step="run `dbt compile` in the dbt project to regenerate "
+            "target/manifest.json, or omit --from-dbt to fall back to LLM-suggest",
+        ) from exc
+
+    try:
+        with (
+            SQLiteStore(cfg.store_path) as store,
+            PostgresDataSource(cfg.source_url) as source,
+        ):
+            plan = plan_dbt_import(manifest, source, store, source_connection_id=source_id)
+            result = apply_dbt_import_plan(plan, store, source_connection_id=source_id)
+    except _SAOperationalError as exc:
+        raise _DbtImportFailedAtWizard(
+            f"Postgres connection failed during dbt import: {exc}",
+            next_step="verify the source URL + credentials, then re-run",
+        ) from exc
+
+    planned_writes = len(plan.to_add) + len(plan.to_update) + len(plan.to_take_ownership)
+    applied_count = planned_writes - len(result.write_failures)
+    skip_reason: str | None = None
+    if result.write_failures:
+        first = result.write_failures[0]
+        skip_reason = f"{first.entity_name}: {first.message}"
+
+    return _EntityApplyResult(
+        applied_count=applied_count,
+        cost_usd=0.0,
+        llm_model=_DBT_IMPORT_MODEL_LABEL,
+        candidates_proposed=planned_writes,
+        skip_reason=skip_reason,
+        source="dbt",
+    )
+
+
 # ----- stage 4: metrics ----------------------------------------------------
 
 
@@ -1099,6 +1416,76 @@ def _stage_metrics(ctx: WizardContext) -> StageOutcome:
             "then re-run `schemabrain init` (or `schemabrain metrics suggest --apply`)",
         )
 
+    # PR C: dbt-import branch. Mirror of the entities-stage dbt
+    # branch. Sits before the API-key check because the dbt path
+    # doesn't call the LLM.
+    if ctx.dbt_manifest_path is not None:
+        try:
+            result = _run_metrics_from_dbt(
+                cfg=cfg,
+                manifest_path=ctx.dbt_manifest_path,
+                source_id=source_id,
+            )
+        except _DbtImportFailedAtWizard as exc:
+            return StageOutcome(
+                stage=4,
+                name="metrics",
+                status="failed",
+                message=exc.message,
+                next_step=exc.next_step,
+            )
+        except _EmptySchemaAtWizard:
+            # Defensive: entities were dropped between the peek and
+            # the dbt-metrics open. Same handling as the LLM path.
+            return StageOutcome(
+                stage=4,
+                name="metrics",
+                status="skipped",
+                message="entity store became empty between checks — re-run after entities curate",
+                next_step="run `schemabrain entities suggest --apply` first, then re-run",
+            )
+        plural = "" if result.applied_count == 1 else "s"
+        if result.applied_count == 0:
+            message = (
+                f"dbt manifest planned {result.candidates_proposed} "
+                f"metric{'' if result.candidates_proposed == 1 else 's'} but "
+                f"none could be written"
+                if result.candidates_proposed > 0
+                else "dbt manifest contained 0 importable simple metrics"
+            )
+            return StageOutcome(
+                stage=4,
+                name="metrics",
+                status="failed",
+                message=message,
+                next_step="check the audit log for write failures, "
+                "or omit --from-dbt to fall back to LLM-suggest",
+            )
+        if result.applied_count < result.candidates_proposed:
+            suffix = (
+                f"; {result.candidates_proposed - result.applied_count} "
+                f"skipped: {result.skip_reason}"
+                if result.skip_reason
+                else ""
+            )
+            return StageOutcome(
+                stage=4,
+                name="metrics",
+                status="done",
+                message=(
+                    f"{result.applied_count} of {result.candidates_proposed} "
+                    f"metric{plural} imported from dbt{suffix}"
+                ),
+                next_step="inspect the audit log for skipped metrics, or re-run "
+                "`schemabrain import dbt --include-metrics --dry-run` to preview",
+            )
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="done",
+            message=f"{result.applied_count} metric{plural} imported from dbt",
+        )
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         return StageOutcome(
@@ -1194,13 +1581,16 @@ def _stage_metrics(ctx: WizardContext) -> StageOutcome:
 
 @dataclass(frozen=True)
 class _MetricApplyResult:
-    """Internal outcome of `_run_metric_suggestion`.
+    """Internal outcome of `_run_metric_suggestion` or `_run_metrics_from_dbt`.
 
     Mirrors `_EntityApplyResult` field-for-field — see that dataclass
     for the partial-success semantics. The `skip_reason` carries the
     exception name + the candidate name that triggered it when writes
     started failing mid-loop (typically `DbtOwnedMetricError` on a
     name collision with a dbt-imported metric).
+
+    `source` distinguishes the LLM path from the dbt-import path
+    (PR C). Same convention as `_EntityApplyResult`.
     """
 
     applied_count: int
@@ -1208,6 +1598,7 @@ class _MetricApplyResult:
     llm_model: str
     candidates_proposed: int = 0
     skip_reason: str | None = None
+    source: Literal["llm", "dbt"] = "llm"
 
 
 def _peek_metric_count(store_path: Path, source_id: str) -> int | StageOutcome:
@@ -1361,6 +1752,66 @@ def _run_metric_suggestion(
 # `metrics suggest` CLI's default so a wizard run and a direct
 # `metrics suggest` run see the same ceiling.
 _WIZARD_METRICS_DEFAULT_COST_CAP_USD: float = 0.5
+
+
+def _run_metrics_from_dbt(
+    *,
+    cfg: WizardConfig,
+    manifest_path: Path,
+    source_id: str,
+) -> _MetricApplyResult:
+    """Import metrics from a compiled dbt manifest.
+
+    Mirror of `_run_metric_suggestion` for the dbt path. Calls
+    `parse_dbt_metrics` against the manifest, scoped to the entity
+    names already present in the store (set by stage 3, whether via
+    dbt import or LLM-suggest). Writes each `Metric` via
+    `store.write_metric` with the same per-call commit + partial-
+    success semantics the LLM path uses.
+
+    Translates `DbtMetricImportError` into `_DbtImportFailedAtWizard`
+    so the stage handler renders a clean `failed` outcome.
+    """
+    from sqlite3 import IntegrityError
+
+    from schemabrain.core.store import DbtOwnedMetricError, SQLiteStore
+    from schemabrain.imports.dbt_metrics import DbtMetricImportError, parse_dbt_metrics
+
+    with SQLiteStore(cfg.store_path) as store:
+        entity_names = {e.name for e in store.list_entities(source_connection_id=source_id)}
+        if not entity_names:
+            # Defensive race: caller's `_peek_entity_count > 0` guard
+            # passed, but entities were dropped between the peek and
+            # the open. Same shape as the LLM path treats this.
+            raise _EmptySchemaAtWizard()
+
+        try:
+            metrics, _skipped = parse_dbt_metrics(manifest_path, imported_entity_names=entity_names)
+        except DbtMetricImportError as exc:
+            raise _DbtImportFailedAtWizard(
+                f"dbt metric import failed: {exc}",
+                next_step="run `dbt compile` to regenerate target/manifest.json, "
+                "or omit --from-dbt to fall back to LLM-suggest",
+            ) from exc
+
+        applied = 0
+        skip_reason: str | None = None
+        for metric in metrics:
+            try:
+                store.write_metric(metric, source_connection_id=source_id)
+            except (DbtOwnedMetricError, IntegrityError) as exc:
+                skip_reason = f"{type(exc).__name__} at '{metric.name}'"
+                break
+            applied += 1
+
+    return _MetricApplyResult(
+        applied_count=applied,
+        cost_usd=0.0,
+        llm_model=_DBT_IMPORT_MODEL_LABEL,
+        candidates_proposed=len(metrics),
+        skip_reason=skip_reason,
+        source="dbt",
+    )
 
 
 # ----- stage 5: joins ------------------------------------------------------

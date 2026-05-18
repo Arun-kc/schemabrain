@@ -621,6 +621,170 @@ class TestStageSourceCheck:
         assert "schemabrain doctor" in outcome.next_step
 
 
+class TestStageSourceCheckDbtDetection:
+    """PR C: stage 1 populates `ctx.dbt_manifest_path` when either
+    `cfg.from_dbt` is set explicitly or auto-detection finds a manifest.
+
+    Tests the integration; the unit-level filesystem-probe tests live
+    in `TestAutoDetectDbtManifest`.
+    """
+
+    def _pg_config(self, base_config: WizardConfig, **overrides: object) -> WizardConfig:
+        fields: dict[str, object] = {
+            "source_url": "postgresql+psycopg://u:p@localhost/db",
+            "store_path": base_config.store_path,
+            "host": base_config.host,
+            "env_var_name": base_config.env_var_name,
+            "skip_index": base_config.skip_index,
+            "no_entities": base_config.no_entities,
+            "enrich": base_config.enrich,
+            "entities_max_cost_usd": base_config.entities_max_cost_usd,
+            "assume_yes": base_config.assume_yes,
+        }
+        fields.update(overrides)
+        return WizardConfig(**fields)  # type: ignore[arg-type]
+
+    def test_explicit_from_dbt_with_valid_path_populates_ctx(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text("{}")
+        cfg = self._pg_config(base_config, from_dbt=manifest)
+        monkeypatch.setattr(wizard, "_validate_source_reachable", lambda _url: None)
+        monkeypatch.setattr(wizard, "_validate_source_read_only", lambda _url: None)
+
+        ctx = WizardContext(config=cfg)
+        outcome = wizard._stage_source_check(ctx)
+
+        assert outcome.status == "done"
+        assert ctx.dbt_manifest_path == manifest
+        assert "dbt manifest detected" in outcome.message
+        assert outcome.next_step is not None
+        assert "stages 3 and 4 will import" in outcome.next_step
+
+    def test_explicit_from_dbt_with_missing_path_fails_stage(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        missing = tmp_path / "does_not_exist.json"
+        cfg = self._pg_config(base_config, from_dbt=missing)
+        monkeypatch.setattr(wizard, "_validate_source_reachable", lambda _url: None)
+        monkeypatch.setattr(wizard, "_validate_source_read_only", lambda _url: None)
+
+        ctx = WizardContext(config=cfg)
+        outcome = wizard._stage_source_check(ctx)
+
+        assert outcome.status == "failed"
+        assert outcome.stage == 1
+        assert "does not exist" in outcome.message
+        assert outcome.next_step is not None
+        assert "dbt compile" in outcome.next_step
+        # Context should not have a manifest path on failure.
+        assert ctx.dbt_manifest_path is None
+
+    def test_explicit_from_dbt_with_sqlite_source_fails_stage(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+    ) -> None:
+        # The dbt importer requires Postgres for live schema verification.
+        # Surface that as a stage-1 failure rather than a stage-3 surprise.
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text("{}")
+        # base_config has SQLite source.
+        cfg = WizardConfig(
+            source_url=base_config.source_url,
+            store_path=base_config.store_path,
+            host=base_config.host,
+            env_var_name=base_config.env_var_name,
+            skip_index=base_config.skip_index,
+            no_entities=base_config.no_entities,
+            enrich=base_config.enrich,
+            entities_max_cost_usd=base_config.entities_max_cost_usd,
+            assume_yes=base_config.assume_yes,
+            from_dbt=manifest,
+        )
+
+        ctx = WizardContext(config=cfg)
+        outcome = wizard._stage_source_check(ctx)
+
+        assert outcome.status == "failed"
+        assert "Postgres" in outcome.message
+        assert ctx.dbt_manifest_path is None
+
+    def test_auto_detect_runs_for_postgres_source(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # When --from-dbt is not set, auto-detect kicks in. Inject a
+        # canned manifest via the `_auto_detect_dbt_manifest` seam so
+        # we don't depend on the test's actual cwd.
+        manifest = tmp_path / "auto_manifest.json"
+        manifest.write_text("{}")
+        cfg = self._pg_config(base_config)
+        monkeypatch.setattr(wizard, "_validate_source_reachable", lambda _url: None)
+        monkeypatch.setattr(wizard, "_validate_source_read_only", lambda _url: None)
+        monkeypatch.setattr(wizard, "_auto_detect_dbt_manifest", lambda: manifest)
+
+        ctx = WizardContext(config=cfg)
+        outcome = wizard._stage_source_check(ctx)
+
+        assert outcome.status == "done"
+        assert ctx.dbt_manifest_path == manifest
+        assert "dbt manifest detected" in outcome.message
+
+    def test_auto_detect_skipped_for_sqlite_source(
+        self,
+        base_config: WizardConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # SQLite source: even if a manifest is "detectable", the
+        # wizard skips dbt mode because the dbt importer needs a live
+        # Postgres connection for column verification.
+        monkeypatch.setattr(wizard, "_validate_source_reachable", lambda _url: None)
+        sentinel_called: list[bool] = []
+
+        def _should_not_run() -> None:  # pragma: no cover — guard
+            sentinel_called.append(True)
+            raise AssertionError("auto-detect ran for SQLite source")
+
+        monkeypatch.setattr(wizard, "_auto_detect_dbt_manifest", _should_not_run)
+
+        ctx = WizardContext(config=base_config)
+        outcome = wizard._stage_source_check(ctx)
+
+        assert outcome.status == "done"
+        assert ctx.dbt_manifest_path is None
+        assert sentinel_called == []
+
+    def test_auto_detect_returns_none_leaves_ctx_unset(
+        self,
+        base_config: WizardConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        cfg = self._pg_config(base_config)
+        monkeypatch.setattr(wizard, "_validate_source_reachable", lambda _url: None)
+        monkeypatch.setattr(wizard, "_validate_source_read_only", lambda _url: None)
+        monkeypatch.setattr(wizard, "_auto_detect_dbt_manifest", lambda: None)
+
+        ctx = WizardContext(config=cfg)
+        outcome = wizard._stage_source_check(ctx)
+
+        assert outcome.status == "done"
+        assert ctx.dbt_manifest_path is None
+        # No dbt-related next_step when no manifest detected.
+        assert outcome.next_step is None
+        # Base message preserved — no `dbt manifest detected` suffix.
+        assert "dbt manifest" not in outcome.message
+
+
 # ----- _stage_index --------------------------------------------------------
 
 
@@ -1324,6 +1488,204 @@ class TestStageEntities:
 
         assert outcome.status == "done"
         assert "1 entity created" in outcome.message
+
+
+class TestStageEntitiesDbtBranch:
+    """PR C: stage 3 routes through `_run_entities_from_dbt` when
+    `ctx.dbt_manifest_path` is set.
+
+    The dbt branch sits BEFORE the API-key check, so these tests
+    intentionally do NOT set `ANTHROPIC_API_KEY` to confirm the
+    dbt path is reached without an API key.
+    """
+
+    def _ctx_with_dbt(
+        self,
+        base_config: WizardConfig,
+        manifest_path: Path,
+    ) -> WizardContext:
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        ctx = WizardContext(config=cfg)
+        ctx.dbt_manifest_path = manifest_path
+        return ctx
+
+    def test_done_on_successful_dbt_import(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ctx = self._ctx_with_dbt(base_config, tmp_path / "manifest.json")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        canned = wizard._EntityApplyResult(
+            applied_count=8,
+            cost_usd=0.0,
+            llm_model="dbt-import",
+            candidates_proposed=8,
+            skip_reason=None,
+            source="dbt",
+        )
+        captured: dict[str, object] = {}
+
+        def _fake_run(**kwargs: object) -> wizard._EntityApplyResult:
+            captured.update(kwargs)
+            return canned
+
+        monkeypatch.setattr(wizard, "_run_entities_from_dbt", _fake_run)
+
+        outcome = wizard._stage_entities(ctx)
+
+        assert outcome.status == "done"
+        assert "8 entities imported from dbt" in outcome.message
+        # No cost suffix on dbt path.
+        assert "cost" not in outcome.message
+        # Confirm the manifest path was threaded through.
+        assert captured["manifest_path"] == tmp_path / "manifest.json"
+
+    def test_done_singular_entity_uses_y_suffix(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ctx = self._ctx_with_dbt(base_config, tmp_path / "manifest.json")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        canned = wizard._EntityApplyResult(
+            applied_count=1,
+            cost_usd=0.0,
+            llm_model="dbt-import",
+            candidates_proposed=1,
+            source="dbt",
+        )
+        monkeypatch.setattr(wizard, "_run_entities_from_dbt", lambda **_kw: canned)
+
+        outcome = wizard._stage_entities(ctx)
+
+        assert outcome.status == "done"
+        assert "1 entity imported from dbt" in outcome.message
+
+    def test_partial_success_reports_skip_count_and_reason(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ctx = self._ctx_with_dbt(base_config, tmp_path / "manifest.json")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        partial = wizard._EntityApplyResult(
+            applied_count=5,
+            cost_usd=0.0,
+            llm_model="dbt-import",
+            candidates_proposed=7,
+            skip_reason="ghost_model: bound table not in store",
+            source="dbt",
+        )
+        monkeypatch.setattr(wizard, "_run_entities_from_dbt", lambda **_kw: partial)
+
+        outcome = wizard._stage_entities(ctx)
+
+        assert outcome.status == "done"
+        assert "5 of 7 entities imported from dbt" in outcome.message
+        assert "2 skipped" in outcome.message
+        assert "ghost_model" in outcome.message
+        assert outcome.next_step is not None
+        assert "audit log" in outcome.next_step
+
+    def test_failed_when_zero_applied_with_candidates_proposed(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ctx = self._ctx_with_dbt(base_config, tmp_path / "manifest.json")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        result = wizard._EntityApplyResult(
+            applied_count=0,
+            cost_usd=0.0,
+            llm_model="dbt-import",
+            candidates_proposed=4,
+            source="dbt",
+        )
+        monkeypatch.setattr(wizard, "_run_entities_from_dbt", lambda **_kw: result)
+
+        outcome = wizard._stage_entities(ctx)
+
+        assert outcome.status == "failed"
+        assert "planned 4 entities" in outcome.message
+        assert "none could be written" in outcome.message
+        assert outcome.next_step is not None
+        assert "omit --from-dbt" in outcome.next_step
+
+    def test_failed_when_zero_candidates_proposed(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ctx = self._ctx_with_dbt(base_config, tmp_path / "manifest.json")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        result = wizard._EntityApplyResult(
+            applied_count=0,
+            cost_usd=0.0,
+            llm_model="dbt-import",
+            candidates_proposed=0,
+            source="dbt",
+        )
+        monkeypatch.setattr(wizard, "_run_entities_from_dbt", lambda **_kw: result)
+
+        outcome = wizard._stage_entities(ctx)
+
+        assert outcome.status == "failed"
+        assert "0 importable models" in outcome.message
+
+    def test_failed_when_dbt_import_raises_helper_exception(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ctx = self._ctx_with_dbt(base_config, tmp_path / "manifest.json")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._DbtImportFailedAtWizard(
+                "dbt manifest unreadable: missing file",
+                next_step="run `dbt compile` then re-run",
+            )
+
+        monkeypatch.setattr(wizard, "_run_entities_from_dbt", _raise)
+
+        outcome = wizard._stage_entities(ctx)
+
+        assert outcome.status == "failed"
+        assert "manifest unreadable" in outcome.message
+        assert outcome.next_step == "run `dbt compile` then re-run"
+
+    def test_dbt_branch_bypassed_when_already_curated(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Already-curated check runs BEFORE the dbt branch. An
+        # idempotent re-run on a store with entities short-circuits
+        # whether or not dbt mode is active.
+        ctx = self._ctx_with_dbt(base_config, tmp_path / "manifest.json")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 5)
+        monkeypatch.setattr(
+            wizard,
+            "_run_entities_from_dbt",
+            lambda **_kw: pytest.fail("dbt path ran despite already-curated"),
+        )
+
+        outcome = wizard._stage_entities(ctx)
+
+        assert outcome.status == "skipped"
+        assert "already curated" in outcome.message
 
 
 class TestResolveEntitiesCostCap:
@@ -2075,6 +2437,222 @@ class TestStageMetrics:
         assert "DbtOwnedMetricError at 'aov'" in outcome.message
         assert outcome.next_step is not None
         assert "metrics suggest --dry-run" in outcome.next_step
+
+
+class TestStageMetricsDbtBranch:
+    """PR C: stage 4 routes through `_run_metrics_from_dbt` when
+    `ctx.dbt_manifest_path` is set. Sits AFTER the entity-empty
+    cross-stage check (metrics still need entities to anchor on,
+    whether imported from dbt or LLM-suggested) and BEFORE the
+    API-key check.
+    """
+
+    def _ctx_with_dbt_and_entities(
+        self,
+        base_config: WizardConfig,
+        manifest_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> WizardContext:
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 4)
+        ctx = WizardContext(config=cfg)
+        ctx.dbt_manifest_path = manifest_path
+        return ctx
+
+    def test_done_on_successful_dbt_metric_import(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ctx = self._ctx_with_dbt_and_entities(base_config, tmp_path / "manifest.json", monkeypatch)
+        # No API key set — confirms the dbt branch runs ahead of the
+        # api-key check.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        canned = wizard._MetricApplyResult(
+            applied_count=6,
+            cost_usd=0.0,
+            llm_model="dbt-import",
+            candidates_proposed=6,
+            source="dbt",
+        )
+        captured: dict[str, object] = {}
+
+        def _fake_run(**kwargs: object) -> wizard._MetricApplyResult:
+            captured.update(kwargs)
+            return canned
+
+        monkeypatch.setattr(wizard, "_run_metrics_from_dbt", _fake_run)
+
+        outcome = wizard._stage_metrics(ctx)
+
+        assert outcome.status == "done"
+        assert "6 metrics imported from dbt" in outcome.message
+        assert "cost" not in outcome.message
+        assert captured["manifest_path"] == tmp_path / "manifest.json"
+
+    def test_done_singular_metric_no_plural_s(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ctx = self._ctx_with_dbt_and_entities(base_config, tmp_path / "manifest.json", monkeypatch)
+        canned = wizard._MetricApplyResult(
+            applied_count=1,
+            cost_usd=0.0,
+            llm_model="dbt-import",
+            candidates_proposed=1,
+            source="dbt",
+        )
+        monkeypatch.setattr(wizard, "_run_metrics_from_dbt", lambda **_kw: canned)
+
+        outcome = wizard._stage_metrics(ctx)
+
+        assert outcome.status == "done"
+        assert "1 metric imported from dbt" in outcome.message
+        # Make sure the plural-s is absent.
+        assert "1 metrics" not in outcome.message
+
+    def test_partial_success_reports_skip_count_and_reason(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ctx = self._ctx_with_dbt_and_entities(base_config, tmp_path / "manifest.json", monkeypatch)
+        partial = wizard._MetricApplyResult(
+            applied_count=4,
+            cost_usd=0.0,
+            llm_model="dbt-import",
+            candidates_proposed=6,
+            skip_reason="DbtOwnedMetricError at 'revenue'",
+            source="dbt",
+        )
+        monkeypatch.setattr(wizard, "_run_metrics_from_dbt", lambda **_kw: partial)
+
+        outcome = wizard._stage_metrics(ctx)
+
+        assert outcome.status == "done"
+        assert "4 of 6 metrics imported from dbt" in outcome.message
+        assert "2 skipped" in outcome.message
+        assert "DbtOwnedMetricError" in outcome.message
+
+    def test_failed_when_zero_applied_with_candidates_proposed(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ctx = self._ctx_with_dbt_and_entities(base_config, tmp_path / "manifest.json", monkeypatch)
+        result = wizard._MetricApplyResult(
+            applied_count=0,
+            cost_usd=0.0,
+            llm_model="dbt-import",
+            candidates_proposed=3,
+            source="dbt",
+        )
+        monkeypatch.setattr(wizard, "_run_metrics_from_dbt", lambda **_kw: result)
+
+        outcome = wizard._stage_metrics(ctx)
+
+        assert outcome.status == "failed"
+        assert "planned 3 metrics" in outcome.message
+        assert "none could be written" in outcome.message
+
+    def test_failed_when_zero_candidates_proposed(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ctx = self._ctx_with_dbt_and_entities(base_config, tmp_path / "manifest.json", monkeypatch)
+        result = wizard._MetricApplyResult(
+            applied_count=0,
+            cost_usd=0.0,
+            llm_model="dbt-import",
+            candidates_proposed=0,
+            source="dbt",
+        )
+        monkeypatch.setattr(wizard, "_run_metrics_from_dbt", lambda **_kw: result)
+
+        outcome = wizard._stage_metrics(ctx)
+
+        assert outcome.status == "failed"
+        assert "0 importable simple metrics" in outcome.message
+
+    def test_failed_when_dbt_import_raises_helper_exception(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ctx = self._ctx_with_dbt_and_entities(base_config, tmp_path / "manifest.json", monkeypatch)
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._DbtImportFailedAtWizard(
+                "dbt metric import failed: bad shape",
+                next_step="run `dbt compile` then re-run",
+            )
+
+        monkeypatch.setattr(wizard, "_run_metrics_from_dbt", _raise)
+
+        outcome = wizard._stage_metrics(ctx)
+
+        assert outcome.status == "failed"
+        assert "metric import failed" in outcome.message
+        assert outcome.next_step == "run `dbt compile` then re-run"
+
+    def test_skipped_when_empty_schema_race(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Defensive: entities were dropped between the peek and the
+        # dbt-metrics open. The dbt branch catches _EmptySchemaAtWizard
+        # and emits a clean skipped outcome rather than crashing.
+        ctx = self._ctx_with_dbt_and_entities(base_config, tmp_path / "manifest.json", monkeypatch)
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._EmptySchemaAtWizard()
+
+        monkeypatch.setattr(wizard, "_run_metrics_from_dbt", _raise)
+
+        outcome = wizard._stage_metrics(ctx)
+
+        assert outcome.status == "skipped"
+        assert "empty between checks" in outcome.message
+
+    def test_dbt_branch_bypassed_when_entity_store_empty(
+        self,
+        base_config: WizardConfig,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Cross-stage dep check runs BEFORE the dbt branch. Empty
+        # entity store → skipped with entity-curation pointer.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(
+            wizard,
+            "_run_metrics_from_dbt",
+            lambda **_kw: pytest.fail("dbt path ran despite empty entity store"),
+        )
+        ctx = WizardContext(config=cfg)
+        ctx.dbt_manifest_path = tmp_path / "manifest.json"
+
+        outcome = wizard._stage_metrics(ctx)
+
+        assert outcome.status == "skipped"
+        assert "entity store is empty" in outcome.message
 
 
 # ----- _resolve_metrics_cost_cap -------------------------------------------
@@ -2966,6 +3544,373 @@ class TestRunJoinSuggestionSmoke:
         assert result.skip_reason is None
 
 
+# ----- _run_entities_from_dbt (PR C) --------------------------------------
+
+
+class TestRunEntitiesFromDbtSmoke:
+    """Mirror of `TestRunEntitySuggestionSmoke` for the dbt path.
+    Substitutes `parse_dbt_manifest`, `PostgresDataSource`,
+    `SQLiteStore`, `plan_dbt_import`, and `apply_dbt_import_plan` so
+    the wiring is verified without Postgres or a real manifest file.
+    """
+
+    def _patch_dbt_deps(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        plan: object,
+        result: object,
+        parse_raises: Exception | None = None,
+        connect_raises: Exception | None = None,
+    ) -> None:
+        """Stub every dbt-import dependency the helper imports."""
+
+        def _fake_parse(_path: object) -> object:
+            if parse_raises is not None:
+                raise parse_raises
+            return object()  # opaque manifest token
+
+        monkeypatch.setattr("schemabrain.imports.dbt.parse_dbt_manifest", _fake_parse)
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+        class _FakeSource:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                if connect_raises is not None:
+                    raise connect_raises
+
+            def __enter__(self) -> _FakeSource:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr("schemabrain.connectors.postgres.PostgresDataSource", _FakeSource)
+        monkeypatch.setattr(
+            "schemabrain.imports.dbt.plan_dbt_import",
+            lambda *_a, **_kw: plan,
+        )
+        monkeypatch.setattr(
+            "schemabrain.imports.dbt.apply_dbt_import_plan",
+            lambda *_a, **_kw: result,
+        )
+
+    def test_returns_applied_count_from_three_writable_buckets(
+        self,
+        base_config: WizardConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        cfg = _pg_config(base_config)
+
+        # Use SimpleNamespace stubs — `DbtImportPlan` + `DbtImportResult`
+        # are frozen dataclasses with complex inner types; here we only
+        # need shape-compatible attributes.
+        from types import SimpleNamespace
+
+        plan = SimpleNamespace(
+            to_add=(object(), object()),
+            to_update=(object(),),
+            to_take_ownership=(object(),),
+        )
+        result = SimpleNamespace(write_failures=())
+
+        self._patch_dbt_deps(monkeypatch, plan=plan, result=result)
+
+        out = wizard._run_entities_from_dbt(
+            cfg=cfg,
+            manifest_path=tmp_path / "manifest.json",
+            source_id="abcd1234",
+        )
+
+        # 2 to_add + 1 to_update + 1 to_take_ownership = 4 planned writes
+        # No failures → applied == planned.
+        assert out.applied_count == 4
+        assert out.candidates_proposed == 4
+        assert out.cost_usd == 0.0
+        assert out.llm_model == wizard._DBT_IMPORT_MODEL_LABEL
+        assert out.source == "dbt"
+        assert out.skip_reason is None
+
+    def test_partial_write_failures_reported(
+        self,
+        base_config: WizardConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from types import SimpleNamespace
+
+        cfg = _pg_config(base_config)
+        plan = SimpleNamespace(
+            to_add=(object(), object(), object()),
+            to_update=(),
+            to_take_ownership=(),
+        )
+        result = SimpleNamespace(
+            write_failures=(
+                SimpleNamespace(entity_name="ghost_model", message="bound table missing"),
+            ),
+        )
+        self._patch_dbt_deps(monkeypatch, plan=plan, result=result)
+
+        out = wizard._run_entities_from_dbt(
+            cfg=cfg,
+            manifest_path=tmp_path / "manifest.json",
+            source_id="abcd1234",
+        )
+
+        # 3 planned, 1 failed → 2 applied.
+        assert out.applied_count == 2
+        assert out.candidates_proposed == 3
+        assert out.skip_reason is not None
+        assert "ghost_model" in out.skip_reason
+        assert "bound table missing" in out.skip_reason
+
+    def test_manifest_parse_error_translates_to_helper_exception(
+        self,
+        base_config: WizardConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from schemabrain.imports.dbt import DbtManifestParseError
+
+        cfg = _pg_config(base_config)
+        from types import SimpleNamespace
+
+        self._patch_dbt_deps(
+            monkeypatch,
+            plan=SimpleNamespace(to_add=(), to_update=(), to_take_ownership=()),
+            result=SimpleNamespace(write_failures=()),
+            parse_raises=DbtManifestParseError("missing target/manifest.json"),
+        )
+
+        with pytest.raises(wizard._DbtImportFailedAtWizard) as exc_info:
+            wizard._run_entities_from_dbt(
+                cfg=cfg,
+                manifest_path=tmp_path / "manifest.json",
+                source_id="abcd1234",
+            )
+
+        assert "missing target/manifest.json" in exc_info.value.message
+        assert "dbt compile" in exc_info.value.next_step
+
+    def test_postgres_operational_error_translates_to_helper_exception(
+        self,
+        base_config: WizardConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from sqlalchemy.exc import OperationalError
+
+        cfg = _pg_config(base_config)
+        from types import SimpleNamespace
+
+        self._patch_dbt_deps(
+            monkeypatch,
+            plan=SimpleNamespace(to_add=(), to_update=(), to_take_ownership=()),
+            result=SimpleNamespace(write_failures=()),
+            connect_raises=OperationalError("statement", {}, "connection refused"),
+        )
+
+        with pytest.raises(wizard._DbtImportFailedAtWizard) as exc_info:
+            wizard._run_entities_from_dbt(
+                cfg=cfg,
+                manifest_path=tmp_path / "manifest.json",
+                source_id="abcd1234",
+            )
+
+        assert "Postgres connection failed" in exc_info.value.message
+        assert "source URL" in exc_info.value.next_step
+
+
+# ----- _run_metrics_from_dbt (PR C) ---------------------------------------
+
+
+class TestRunMetricsFromDbtSmoke:
+    """Mirror of `TestRunMetricSuggestionSmoke` for the dbt path.
+    Substitutes `parse_dbt_metrics` + `SQLiteStore`. No Postgres
+    connection needed for the metric importer — `parse_dbt_metrics`
+    reads only the manifest JSON.
+    """
+
+    def _patch_store(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        entity_names: set[str],
+        write_metric: object,
+    ) -> None:
+        # Closure captures `write_metric` + `entity_names` so the
+        # nested class can reach them without re-binding to the
+        # class body's local namespace.
+        captured_write = write_metric
+        captured_names = entity_names
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_entities(self, *, source_connection_id: str) -> list[object]:
+                # Return a list of objects whose `.name` attribute
+                # matches the supplied names.
+                from types import SimpleNamespace
+
+                return [SimpleNamespace(name=n) for n in captured_names]
+
+            def write_metric(self, metric: object, *, source_connection_id: str) -> None:
+                # type: ignore[misc] — captured_write is a callable
+                # from the enclosing closure.
+                captured_write(metric, source_connection_id=source_connection_id)  # type: ignore[operator]
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+
+    def test_writes_each_metric_returned_by_parser(
+        self,
+        base_config: WizardConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from types import SimpleNamespace
+
+        cfg = _pg_config(base_config)
+        written: list[str] = []
+
+        def _write_metric(metric: object, *, source_connection_id: str) -> None:
+            written.append(metric.name)  # type: ignore[attr-defined]
+
+        self._patch_store(
+            monkeypatch,
+            entity_names={"customer", "order"},
+            write_metric=_write_metric,
+        )
+
+        canned_metrics = (
+            SimpleNamespace(name="revenue"),
+            SimpleNamespace(name="orders_placed"),
+        )
+
+        def _fake_parse_metrics(
+            _path: object, *, imported_entity_names: set[str]
+        ) -> tuple[tuple[object, ...], tuple[object, ...]]:
+            assert imported_entity_names == {"customer", "order"}
+            return canned_metrics, ()
+
+        monkeypatch.setattr(
+            "schemabrain.imports.dbt_metrics.parse_dbt_metrics", _fake_parse_metrics
+        )
+
+        out = wizard._run_metrics_from_dbt(
+            cfg=cfg,
+            manifest_path=tmp_path / "manifest.json",
+            source_id="abcd1234",
+        )
+
+        assert out.applied_count == 2
+        assert out.candidates_proposed == 2
+        assert out.cost_usd == 0.0
+        assert out.llm_model == wizard._DBT_IMPORT_MODEL_LABEL
+        assert out.source == "dbt"
+        assert written == ["revenue", "orders_placed"]
+
+    def test_dbt_owned_error_breaks_loop_with_skip_reason(
+        self,
+        base_config: WizardConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from schemabrain.core.store import DbtOwnedMetricError
+
+        cfg = _pg_config(base_config)
+        written: list[str] = []
+
+        def _write_metric(metric: object, *, source_connection_id: str) -> None:
+            name = metric.name  # type: ignore[attr-defined]
+            if name == "aov":
+                raise DbtOwnedMetricError("aov is owned by another dbt project")
+            written.append(name)
+
+        self._patch_store(monkeypatch, entity_names={"order"}, write_metric=_write_metric)
+        canned = (SimpleNamespace(name="revenue"), SimpleNamespace(name="aov"))
+        monkeypatch.setattr(
+            "schemabrain.imports.dbt_metrics.parse_dbt_metrics",
+            lambda _p, *, imported_entity_names: (canned, ()),
+        )
+
+        out = wizard._run_metrics_from_dbt(
+            cfg=cfg,
+            manifest_path=tmp_path / "manifest.json",
+            source_id="abcd1234",
+        )
+
+        assert out.applied_count == 1
+        assert written == ["revenue"]
+        assert out.skip_reason is not None
+        assert "DbtOwnedMetricError" in out.skip_reason
+        assert "aov" in out.skip_reason
+
+    def test_metric_parse_error_translates_to_helper_exception(
+        self,
+        base_config: WizardConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from schemabrain.imports.dbt_metrics import DbtMetricImportError
+
+        cfg = _pg_config(base_config)
+        self._patch_store(monkeypatch, entity_names={"order"}, write_metric=lambda *a, **kw: None)
+
+        def _raise(_p: object, *, imported_entity_names: set[str]) -> None:
+            raise DbtMetricImportError("manifest schema v9 < v11")
+
+        monkeypatch.setattr("schemabrain.imports.dbt_metrics.parse_dbt_metrics", _raise)
+
+        with pytest.raises(wizard._DbtImportFailedAtWizard) as exc_info:
+            wizard._run_metrics_from_dbt(
+                cfg=cfg,
+                manifest_path=tmp_path / "manifest.json",
+                source_id="abcd1234",
+            )
+
+        assert "metric import failed" in exc_info.value.message
+        assert "dbt compile" in exc_info.value.next_step
+
+    def test_empty_entity_set_raises_empty_schema_at_wizard(
+        self,
+        base_config: WizardConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # Defensive race: caller's `_peek_entity_count > 0` guard
+        # passed, but entities were dropped between the peek and the
+        # open. Same shape as the LLM path.
+        cfg = _pg_config(base_config)
+        self._patch_store(monkeypatch, entity_names=set(), write_metric=lambda *a, **kw: None)
+
+        with pytest.raises(wizard._EmptySchemaAtWizard):
+            wizard._run_metrics_from_dbt(
+                cfg=cfg,
+                manifest_path=tmp_path / "manifest.json",
+                source_id="abcd1234",
+            )
+
+
 # ----- WizardConfig: no_joins default -------------------------------------
 
 
@@ -2992,6 +3937,192 @@ class TestWizardConfigJoinsDefaults:
     def test_no_joins_accepts_true(self) -> None:
         cfg = self._build(no_joins=True)
         assert cfg.no_joins is True
+
+
+class TestWizardConfigDbtDefaults:
+    """PR C: WizardConfig.from_dbt defaults to None + accepts Path."""
+
+    def _build(self, **overrides: object) -> WizardConfig:
+        fields: dict[str, object] = {
+            "source_url": "sqlite:///:memory:",
+            "store_path": Path("/tmp/test-dbt.db"),  # nosec B108 — never opened
+            "host": "manual",
+            "env_var_name": "SCHEMABRAIN_DATABASE_URL",
+            "skip_index": False,
+            "no_entities": False,
+            "enrich": False,
+            "entities_max_cost_usd": None,
+            "assume_yes": False,
+        }
+        fields.update(overrides)
+        return WizardConfig(**fields)  # type: ignore[arg-type]
+
+    def test_from_dbt_defaults_to_none(self) -> None:
+        cfg = self._build()
+        assert cfg.from_dbt is None
+
+    def test_from_dbt_accepts_path(self) -> None:
+        path = Path("/some/dbt/target/manifest.json")  # nosec B108 — never opened
+        cfg = self._build(from_dbt=path)
+        assert cfg.from_dbt == path
+
+
+class TestWizardContextDbtManifestPath:
+    """PR C: WizardContext.dbt_manifest_path defaults to None + is mutable."""
+
+    def test_dbt_manifest_path_defaults_to_none(self) -> None:
+        cfg = WizardConfig(
+            source_url="sqlite:///:memory:",
+            store_path=Path("/tmp/x.db"),  # nosec B108 — never opened
+            host="manual",
+            env_var_name="X",
+            skip_index=False,
+            no_entities=False,
+            enrich=False,
+            entities_max_cost_usd=None,
+            assume_yes=False,
+        )
+        ctx = WizardContext(config=cfg)
+        assert ctx.dbt_manifest_path is None
+
+    def test_dbt_manifest_path_is_mutable(self) -> None:
+        # `WizardContext` is intentionally non-frozen so stage 1 can
+        # populate dbt_manifest_path as a back-channel.
+        cfg = WizardConfig(
+            source_url="sqlite:///:memory:",
+            store_path=Path("/tmp/x.db"),  # nosec B108 — never opened
+            host="manual",
+            env_var_name="X",
+            skip_index=False,
+            no_entities=False,
+            enrich=False,
+            entities_max_cost_usd=None,
+            assume_yes=False,
+        )
+        ctx = WizardContext(config=cfg)
+        ctx.dbt_manifest_path = Path("/some/path/manifest.json")
+        assert ctx.dbt_manifest_path == Path("/some/path/manifest.json")
+
+
+# ----- _auto_detect_dbt_manifest ------------------------------------------
+
+
+class TestAutoDetectDbtManifest:
+    """PR C: filesystem probe for a compiled dbt manifest.
+
+    Search order (per the helper's contract):
+      1. $DBT_PROJECT_DIR/target/manifest.json if env set and file exists
+      2. Walk cwd up to _DBT_DETECT_PARENT_LIMIT parents looking for
+         a dbt_project.yml sentinel; if found, return
+         <dir>/target/manifest.json if it exists
+      3. None
+    """
+
+    def test_returns_none_when_no_dbt_project(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DBT_PROJECT_DIR", raising=False)
+        # Empty tmp_path → no dbt_project.yml anywhere on the walk.
+        assert wizard._auto_detect_dbt_manifest(cwd=tmp_path) is None
+
+    def test_returns_manifest_when_present_in_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DBT_PROJECT_DIR", raising=False)
+        (tmp_path / "dbt_project.yml").write_text("name: test_project")
+        target = tmp_path / "target"
+        target.mkdir()
+        manifest = target / "manifest.json"
+        manifest.write_text("{}")
+
+        result = wizard._auto_detect_dbt_manifest(cwd=tmp_path)
+
+        assert result == manifest
+
+    def test_returns_none_when_dbt_project_yml_but_no_compiled_manifest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # dbt_project.yml is present but `dbt compile` hasn't run yet.
+        # The helper must NOT return the missing path (it'd crash
+        # parse_dbt_manifest downstream); instead, fall through to None
+        # so the wizard runs LLM-suggest.
+        monkeypatch.delenv("DBT_PROJECT_DIR", raising=False)
+        (tmp_path / "dbt_project.yml").write_text("name: test_project")
+        # Note: no target/manifest.json
+
+        assert wizard._auto_detect_dbt_manifest(cwd=tmp_path) is None
+
+    def test_walks_up_to_parent_limit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # dbt_project.yml at tmp_path/, cwd at tmp_path/a/b/c (3 levels
+        # below). The walk should find it.
+        monkeypatch.delenv("DBT_PROJECT_DIR", raising=False)
+        (tmp_path / "dbt_project.yml").write_text("name: test_project")
+        target = tmp_path / "target"
+        target.mkdir()
+        manifest = target / "manifest.json"
+        manifest.write_text("{}")
+        nested = tmp_path / "a" / "b" / "c"
+        nested.mkdir(parents=True)
+
+        assert wizard._auto_detect_dbt_manifest(cwd=nested) == manifest
+
+    def test_does_not_walk_beyond_parent_limit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # dbt_project.yml at tmp_path/, cwd 4 levels below.
+        # _DBT_DETECT_PARENT_LIMIT is 3; the walk shouldn't reach it.
+        monkeypatch.delenv("DBT_PROJECT_DIR", raising=False)
+        (tmp_path / "dbt_project.yml").write_text("name: test_project")
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "manifest.json").write_text("{}")
+        too_deep = tmp_path / "a" / "b" / "c" / "d"
+        too_deep.mkdir(parents=True)
+
+        assert wizard._auto_detect_dbt_manifest(cwd=too_deep) is None
+
+    def test_env_var_overrides_cwd_walk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # $DBT_PROJECT_DIR points at a different project; cwd has its
+        # own dbt_project.yml. The env-var-derived path wins.
+        env_project = tmp_path / "env_project"
+        env_project.mkdir()
+        env_target = env_project / "target"
+        env_target.mkdir()
+        env_manifest = env_target / "manifest.json"
+        env_manifest.write_text("{}")
+
+        cwd_project = tmp_path / "cwd_project"
+        cwd_project.mkdir()
+        (cwd_project / "dbt_project.yml").write_text("name: cwd_project")
+        (cwd_project / "target").mkdir()
+        (cwd_project / "target" / "manifest.json").write_text("{}")
+
+        monkeypatch.setenv("DBT_PROJECT_DIR", str(env_project))
+
+        assert wizard._auto_detect_dbt_manifest(cwd=cwd_project) == env_manifest
+
+    def test_env_var_with_missing_manifest_falls_through_to_cwd_walk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # $DBT_PROJECT_DIR set but no compiled manifest there. Fall
+        # through to cwd walk rather than refuse — env may be set as a
+        # global default while the user works elsewhere.
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        monkeypatch.setenv("DBT_PROJECT_DIR", str(empty_dir))
+
+        cwd_project = tmp_path / "cwd_project"
+        cwd_project.mkdir()
+        (cwd_project / "dbt_project.yml").write_text("name: cwd_project")
+        (cwd_project / "target").mkdir()
+        cwd_manifest = cwd_project / "target" / "manifest.json"
+        cwd_manifest.write_text("{}")
+
+        assert wizard._auto_detect_dbt_manifest(cwd=cwd_project) == cwd_manifest
 
 
 # ----- _stage_wire_host ----------------------------------------------------
