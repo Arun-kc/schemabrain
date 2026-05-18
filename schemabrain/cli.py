@@ -397,6 +397,13 @@ def main(argv: list[str] | None = None) -> int:
             store_path=args.store_path,
             json_mode=args.json_mode,
         )
+    if args.command == "inspect":
+        return _cmd_inspect(
+            name=args.name,
+            positional_url=args.source,
+            url_env=args.url_env,
+            store_path=args.store_path,
+        )
     if args.command == "metrics":
         if args.metrics_action == "apply":
             return _cmd_metrics_apply(
@@ -1401,6 +1408,38 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit JSON to stdout instead of the rich-rendered report to stderr. "
         "Pipe-friendly for CI / monitoring scripts.",
+    )
+
+    p_inspect = sub.add_parser(
+        "inspect",
+        help="Browse the indexed schema + semantic-layer surface (no LLM, no source)",
+    )
+    p_inspect.add_argument(
+        "name",
+        nargs="?",
+        default=None,
+        help="Optional entity name to drill into. Omit for a summary of the whole store.",
+    )
+    p_inspect.add_argument(
+        "--source",
+        default=None,
+        help="Source URL — DEPRECATED when the URL contains a password; "
+        "prefer --url-env. Optional: omit to operate across every source "
+        "in the store. Required only when the store carries entities "
+        "from multiple sources AND you're drilling by name.",
+    )
+    p_inspect.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL. "
+        "Mutually exclusive with --source.",
+    )
+    p_inspect.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
     )
 
     return parser
@@ -4550,6 +4589,175 @@ def _cmd_check(
     else:
         render_report(report, console=_stderr_console(), source_label=canonical)
     return report.exit_code
+
+
+def _cmd_inspect(
+    *,
+    name: str | None,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+) -> int:
+    """Run `schemabrain inspect` and render either the summary or an
+    entity drill view.
+
+    No live source connection is needed — the inspect surface is
+    purely a store reader. The `--source` / `--url-env` flag is
+    therefore OPTIONAL and only used to scope reads to one source
+    when the store carries entities from multiple sources.
+
+    When drilling (`name` is supplied) and no source is given, the
+    handler walks every source the store knows about and renders
+    every match for `name` in succession. A drilled name that
+    resolves to zero entities exits 1 with a guided error.
+
+    Exit codes:
+      - 0: rendered successfully (empty store and missing-name-with-
+        zero-matches at the cross-source level both exit 0/1
+        respectively)
+      - 1: drilled name not found in any source
+      - 2: operational refusal (--source + --url-env conflict, bad
+        store, malformed URL)
+    """
+    from schemabrain.core.store import SchemaVersionMismatchError
+    from schemabrain.inspect import (
+        build_entity_detail,
+        build_summary,
+        render_entity_detail,
+        render_summary,
+    )
+
+    source_id: str | None = None
+    if positional_url is not None or url_env is not None:
+        source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+        if source_url is None:
+            return 2
+        source_id = _make_source_id(source_url)
+
+    store_p = Path(store_path)
+    if not store_p.exists():
+        _render_guided(
+            GuidedError(
+                kind="inspect_store_missing",
+                message=f"store not found at {store_path}",
+                why="`schemabrain inspect` reads from the local SQLite "
+                "store; without a store there is nothing to inspect",
+                fix=f"run `schemabrain index --url-env DBURL --store-path "
+                f"{store_path}` to populate it",
+                next_step="re-run `schemabrain inspect` after `index` completes",
+            )
+        )
+        return 2
+
+    console = _stderr_console()
+    try:
+        with SQLiteStore(store_p) as store:
+            if name is None:
+                summary = build_summary(store=store, source_connection_id=source_id)
+                render_summary(summary, console=console)
+                return 0
+
+            # Drill mode. If no `--source` filter was supplied we walk
+            # every source in the store and render every match. This
+            # keeps the operator UX simple in the common one-source
+            # case (no flag required) while still surfacing
+            # multi-source matches when they exist.
+            if source_id is not None:
+                candidate_sources = [source_id]
+            else:
+                # `list_entities()` with no filter walks every source.
+                # We dedupe to the unique source set via the entity
+                # rows' implicit source-id grouping. The
+                # `Store.list_entities` Protocol returns just Entity
+                # rows without exposing `source_connection_id`, so
+                # we fall back to the raw store-private path: enumerate
+                # via the table list and walk by entity name.
+                source_ids = _list_source_ids_with_entity(store, name)
+                if not source_ids:
+                    print(
+                        f"error: no entity named {name!r} in {store_path!r}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                candidate_sources = source_ids
+
+            rendered = False
+            for sid in candidate_sources:
+                detail = build_entity_detail(
+                    store=store,
+                    entity_name=name,
+                    source_connection_id=sid,
+                )
+                if detail is None:
+                    continue
+                if rendered:
+                    console.print()
+                render_entity_detail(detail, console=console)
+                rendered = True
+
+            if not rendered:
+                print(
+                    f"error: no entity named {name!r} in {store_path!r}",
+                    file=sys.stderr,
+                )
+                return 1
+            return 0
+
+    except SchemaVersionMismatchError as exc:
+        _render_guided(
+            GuidedError(
+                kind="inspect_schema_version_mismatch",
+                message=str(exc),
+                why="the local store was written by a different schemabrain version",
+                fix="delete the store file and re-run `schemabrain index`, "
+                "or downgrade to a matching schemabrain version",
+                next_step=f"rm {store_path} && schemabrain index ...",
+            )
+        )
+        return 2
+    except sqlite3.OperationalError as exc:
+        # Partial-migration shape (missing `column_pii_tags`, missing
+        # `entities`) — the schema-version check passed but the SQL
+        # surface is inconsistent. Surface as exit 2 with the SQLite
+        # error name so the operator can grep for the missing table.
+        _render_guided(
+            GuidedError(
+                kind="inspect_store_inconsistent",
+                message=f"sqlite3.OperationalError: {exc}",
+                why="the local store passed the schema-version check but "
+                "a required table or column is missing — likely a "
+                "partial migration or hand-edited store",
+                fix="delete the store file and re-run `schemabrain index` to rebuild from scratch",
+                next_step=f"rm {store_path} && schemabrain index ...",
+            )
+        )
+        return 2
+
+
+def _list_source_ids_with_entity(store: SQLiteStore, entity_name: str) -> list[str]:
+    """Walk every source-id known to the store and return those that
+    carry an entity named `entity_name`. Cross-source drill helper.
+
+    `Store.list_entities` doesn't expose the per-row `source_connection_id`,
+    so we read it via the underlying SQLite connection. A partial-
+    migration store missing the `entities` table is the only realistic
+    failure mode at v12 — we swallow `sqlite3.OperationalError` and
+    return `[]` so the caller renders the documented "no entity named
+    X" message instead of an uncaught traceback.
+    """
+    # `SQLiteStore` exposes its connection via `_require_conn` (used
+    # by `get_column_pii_tags`). Inspect is read-only here so direct
+    # SELECT is appropriate; mirrors the audit-CLI's raw-SQL reader
+    # pattern.
+    conn = store._require_conn()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT source_connection_id FROM entities WHERE name = ?",
+            (entity_name,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [r[0] for r in rows]
 
 
 def _cmd_fixture_path(name: str) -> int:
