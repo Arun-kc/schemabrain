@@ -1,0 +1,11 @@
+version: 1
+name: customer_orders
+description: Links each order to the customer who placed it.
+source_entity: order
+target_entity: customer
+"on":
+  - source: user_id
+    target: id
+# Many orders for one customer — the metric compiler needs this
+# direction-aware fan-out signal.
+cardinality: many_to_one

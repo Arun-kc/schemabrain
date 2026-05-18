@@ -1,6 +1,6 @@
 # Contributing to Schema Brain
 
-Thanks for your interest. Schema Brain is pre-alpha and the public surface
+Thanks for your interest. Schema Brain is alpha and the public surface
 is small, but the engineering bar is intentionally high — the goal is a
 codebase that stays maintainable as it grows.
 
@@ -156,6 +156,37 @@ Before requesting review:
 The maintainer reviews every PR. Expect direct, opinionated feedback —
 that's how the codebase stays coherent. If you disagree with a review
 comment, push back; reasoned disagreement is welcome.
+
+## Recording the demo asset
+
+The README's hero block points readers at a scripted ~45-second
+recording of the activation arc: `init` → `inspect` → MCP
+`get_metric` call → `tail` streams it live. The recording is
+reproducible — it ships as a [`vhs`](https://github.com/charmbracelet/vhs)
+tape at [`docs/assets/demo.tape`](docs/assets/demo.tape) which renders
+to `docs/assets/demo.gif`.
+
+To re-render after a user-visible CLI change:
+
+```bash
+# Prerequisites
+brew install vhs                                      # macOS; see vhs README for Linux
+docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=local --name sb-pg postgres:16-alpine
+docker exec -i sb-pg psql -U postgres -d postgres < $(uv run schemabrain fixture-path ecommerce.sql)
+export DATABASE_URL='postgresql+psycopg://postgres:local@localhost:5432/postgres'
+export ANTHROPIC_API_KEY=sk-ant-...                   # stage 3 of init needs this; otherwise skip
+
+# Render
+vhs docs/assets/demo.tape
+git add docs/assets/demo.gif
+```
+
+Acceptance bar: clean run, no error frames, total duration under 60s,
+GIF size under ~4 MB (keeps page-load fast for readers on slower
+connections; GitHub's hard inline-image cap is much higher but a
+trim file rewards the 80th-percentile reader). If the recording
+busts the size budget, lower `Set FontSize` first (it's the biggest
+lever), then trim sleeps in the tape.
 
 ## Reporting bugs and requesting features
 

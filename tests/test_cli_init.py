@@ -1601,6 +1601,267 @@ class TestWizardRenderer:
         assert _redact_stderr_credentials(text) == text
 
 
+class TestPendingEntityBlock:
+    """Tests for the context-aware closing-block branch that surfaces
+    stage 3's recovery action when entity curation didn't complete.
+
+    Without this block, a wizard run that skipped entities (missing
+    API key, --no-entities, failure) lands the user at "ask the agent
+    to list entities" — and the agent honestly answers "no entities
+    are configured." The block restores the trajectory by surfacing
+    `entities suggest --apply` (and the env-var export when relevant)
+    above the audit/tail hints.
+    """
+
+    def _make_outcome(
+        self,
+        stage: int,
+        name: str,
+        status: str,
+        message: str,
+        next_step: str | None = None,
+    ) -> object:
+        from schemabrain.setup.wizard import StageOutcome
+
+        return StageOutcome(
+            stage=stage,
+            name=name,
+            status=status,  # type: ignore[arg-type]
+            message=message,
+            next_step=next_step,
+        )
+
+    def _written_host_result(self, tmp_path: Path) -> object:
+        from schemabrain.setup.hosts import SchemabrainSnippet
+        from schemabrain.setup.init_flow import InitResult
+
+        snippet = SchemabrainSnippet(command="uvx", args=("schemabrain==0.3.0", "serve"), env={})
+        return InitResult(
+            host="claude-desktop",
+            snippet=snippet,
+            state="written",
+            config_path=tmp_path / "claude_desktop_config.json",
+            backup_made=False,
+        )
+
+    def _result_with_entities_outcome(self, entities_outcome: object, tmp_path: Path) -> object:
+        from schemabrain.setup.wizard import WizardResult
+
+        outcomes = (
+            self._make_outcome(1, "source_check", "done", "ok"),
+            self._make_outcome(2, "index", "done", "indexed"),
+            entities_outcome,
+            self._make_outcome(4, "wire_host", "done", "wired"),
+            self._make_outcome(5, "next_step", "done", "Ready"),
+        )
+        return WizardResult(
+            outcomes=outcomes,  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._written_host_result(tmp_path),  # type: ignore[arg-type]
+        )
+
+    def test_no_pending_block_when_entities_done(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Happy path: stage 3 applied N entities → closing block does
+        # NOT surface any recovery copy; the user is told to ask the
+        # agent directly.
+        from schemabrain.cli import _render_wizard_result
+
+        result = self._result_with_entities_outcome(
+            self._make_outcome(3, "entities", "done", "3 entities created (cost $0.0123)"),
+            tmp_path,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        # Closing-block invariants still hold.
+        assert "Restart Claude Desktop" in captured.err
+        assert "list the entities Schema Brain knows about" in captured.err
+        # Pending-action copy absent.
+        assert "To curate entities" not in captured.err
+        assert "Curate entities when ready" not in captured.err
+        assert "Stage 3 did not curate entities" not in captured.err
+
+    def test_pending_block_for_api_key_missing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The most common dead-end the launch audit flagged:
+        # ANTHROPIC_API_KEY isn't set → entities skipped → closing
+        # block must surface `export ... && entities suggest --apply`.
+        from schemabrain.cli import _render_wizard_result
+
+        result = self._result_with_entities_outcome(
+            self._make_outcome(
+                3,
+                "entities",
+                "skipped",
+                "ANTHROPIC_API_KEY not set; entity suggestion skipped",
+                "export ANTHROPIC_API_KEY=sk-ant-... and then run "
+                "`schemabrain entities suggest --apply`",
+            ),
+            tmp_path,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        # Headline framing names what's missing.
+        assert "To curate entities" in captured.err
+        # Both required actions surface.
+        assert "ANTHROPIC_API_KEY=sk-ant-" in captured.err
+        assert "schemabrain entities suggest --apply" in captured.err
+        # The audit/tail hints + thesis tagline still close out.
+        assert "schemabrain tail" in captured.err
+        assert "The agent reads. It doesn't write." in captured.err
+
+    def test_pending_block_for_no_entities_opt_out(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # User passed --no-entities. The closing block surfaces a
+        # softer "when ready" pointer rather than a corrective message
+        # — the user opted out deliberately.
+        from schemabrain.cli import _render_wizard_result
+
+        result = self._result_with_entities_outcome(
+            self._make_outcome(
+                3,
+                "entities",
+                "skipped",
+                "--no-entities set; not running entity suggestion",
+                "run `schemabrain entities suggest --apply` later to curate entities",
+            ),
+            tmp_path,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        assert "Curate entities when ready" in captured.err
+        assert "schemabrain entities suggest --apply" in captured.err
+        # The api-key-specific copy must NOT fire on this branch.
+        assert "ANTHROPIC_API_KEY=sk-ant-" not in captured.err
+
+    def test_pending_block_for_generic_skip(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Catch-all: non-Postgres source, --skip-index, etc. The
+        # renderer falls back to the generic retry pointer.
+        from schemabrain.cli import _render_wizard_result
+
+        result = self._result_with_entities_outcome(
+            self._make_outcome(
+                3,
+                "entities",
+                "skipped",
+                "entity suggestion needs a Postgres source",
+            ),
+            tmp_path,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        assert "Stage 3 did not curate entities" in captured.err
+        assert "schemabrain entities suggest --apply" in captured.err
+
+    def test_no_pending_block_when_already_curated(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Idempotent re-run: stage 3 short-circuits with "already
+        # curated: N entity/ies present" because the store already has
+        # entities. Status is `skipped` but the user is in the happy
+        # path — the closing block must NOT show a recovery pointer
+        # (entities exist; asking the agent to list them works).
+        from schemabrain.cli import _render_wizard_result
+
+        result = self._result_with_entities_outcome(
+            self._make_outcome(
+                3,
+                "entities",
+                "skipped",
+                "already curated: 3 entity/ies present for this source",
+                "run `schemabrain entities suggest --apply` directly "
+                "to re-curate from a fresh prompt",
+            ),
+            tmp_path,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        # No pending-action copy fires.
+        assert "To curate entities" not in captured.err
+        assert "Curate entities when ready" not in captured.err
+        assert "Stage 3 did not curate entities" not in captured.err
+        # Standard closing-block invariants still hold.
+        assert "list the entities Schema Brain knows about" in captured.err
+
+    def test_pending_block_for_failed_stage(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Stage 3 has abort_on_fail=False — a `failed` status reaches
+        # the closing block. Generic retry pointer fires.
+        from schemabrain.cli import _render_wizard_result
+
+        result = self._result_with_entities_outcome(
+            self._make_outcome(
+                3,
+                "entities",
+                "failed",
+                "LLM returned 0 candidates (cost $0.0042)",
+                "re-run `schemabrain entities suggest --dry-run` to inspect",
+            ),
+            tmp_path,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        assert "Stage 3 did not curate entities" in captured.err
+        assert "schemabrain entities suggest --apply" in captured.err
+
+    def test_pending_block_for_skip_index_branch(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # User passed --skip-index. Stage 2 skipped, so stage 3 also
+        # skipped (no indexed schema to analyse). The renderer falls
+        # through to the generic retry pointer — without this test, a
+        # future refactor that adds a "skipped because --skip-index"
+        # short-circuit guard in `_render_pending_entity_block` could
+        # regress the user-visible copy silently.
+        from schemabrain.cli import _render_wizard_result
+
+        result = self._result_with_entities_outcome(
+            self._make_outcome(
+                3,
+                "entities",
+                "skipped",
+                "skipped because --skip-index is set (no indexed schema to analyse)",
+            ),
+            tmp_path,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        assert "Stage 3 did not curate entities" in captured.err
+        assert "schemabrain entities suggest --apply" in captured.err
+
+    def test_pending_block_omitted_when_no_entities_outcome(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Defensive: an exotic stage list missing the entities stage
+        # entirely. The closing block must not crash and must not
+        # render the pending block.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        outcomes = (
+            self._make_outcome(1, "source_check", "done", "ok"),
+            self._make_outcome(4, "wire_host", "done", "wired"),
+        )
+        result = WizardResult(
+            outcomes=outcomes,  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._written_host_result(tmp_path),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        assert "To curate entities" not in captured.err
+        assert "Curate entities when ready" not in captured.err
+        assert "Stage 3 did not curate entities" not in captured.err
+        # Closing-block invariants still hold.
+        assert "Restart Claude Desktop" in captured.err
+
+
 class TestPositiveFloatValidator:
     def test_accepts_positive_value(self) -> None:
         from schemabrain.cli import _positive_float

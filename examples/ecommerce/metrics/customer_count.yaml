@@ -1,0 +1,12 @@
+version: 1
+name: customer_count
+description: |
+  Distinct customers who placed at least one order in the requested
+  window. count_distinct on the user_id captures repeat customers
+  exactly once per bucket.
+entity: order
+measure:
+  agg: count_distinct
+  column: user_id
+time_dimension: order.placed_at
+time_grains: [week, month]

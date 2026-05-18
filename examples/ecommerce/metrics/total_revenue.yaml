@@ -1,0 +1,9 @@
+version: 1
+name: total_revenue
+description: Sum of order totals (cents). One row per requested grain.
+entity: order
+measure:
+  agg: sum
+  column: total_cents
+time_dimension: order.placed_at
+time_grains: [day, week, month]
