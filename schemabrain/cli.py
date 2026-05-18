@@ -4941,7 +4941,7 @@ def _render_wizard_after(result: object, *, host_display: str | None, console: o
         )
         return
     if host_result is not None:
-        _render_closing_block(host_result, host_display=host_display, console=console)
+        _render_closing_block(result, host_display=host_display, console=console)
 
 
 def _render_abort_panel(result: object, *, total: int, console: object) -> None:
@@ -4971,7 +4971,7 @@ def _render_abort_panel(result: object, *, total: int, console: object) -> None:
 
 
 def _render_closing_block(
-    host_result: object,
+    wizard_result: object,
     *,
     host_display: str | None,
     console: object,
@@ -4984,6 +4984,8 @@ def _render_closing_block(
       Restart Claude Desktop, then ask:
       > list the entities Schema Brain knows about
 
+      [pending-action block, only when stage 3 did not curate entities]
+
       Inspect activity:  schemabrain tail --follow
       Review the audit:  schemabrain audit list
 
@@ -4991,11 +4993,23 @@ def _render_closing_block(
 
     Manual mode swaps the restart line for "Add the snippet above to
     your host config, then ask:" since there's nothing to restart yet.
+
+    The pending-action block surfaces stage 3's recovery hint inside
+    the closing block — so a user who skipped entity curation (missing
+    `ANTHROPIC_API_KEY`, `--no-entities`, or a stage failure) sees the
+    next concrete step without scrolling back up to the stage list.
+    Without this block the user lands at "ask: list the entities ..."
+    and the agent honestly answers "no entities are configured" — a
+    dead end. The block restores the trajectory.
     """
     from schemabrain.setup.init_flow import InitResult
+    from schemabrain.setup.wizard import WizardResult
 
-    if not isinstance(host_result, InitResult):
+    if not isinstance(wizard_result, WizardResult):
         return  # pragma: no cover — defensive; caller already narrowed
+    host_result = wizard_result.host_install_result
+    if not isinstance(host_result, InitResult):
+        return  # pragma: no cover — defensive; caller only calls this after a stage-4 success
     console.print("[dim]" + "─" * 62 + "[/]")  # type: ignore[attr-defined]
     if host_result.state == "printed_only":
         console.print("Add the snippet above to your host config, then ask:")  # type: ignore[attr-defined]
@@ -5004,10 +5018,67 @@ def _render_closing_block(
         console.print(f"Restart {target}, then ask:")  # type: ignore[attr-defined]
     console.print("[cyan]>[/] list the entities Schema Brain knows about")  # type: ignore[attr-defined]
     console.print()  # type: ignore[attr-defined]
+    _render_pending_entity_block(wizard_result, console=console)
     console.print("Inspect activity:  [bold]schemabrain tail --follow[/]")  # type: ignore[attr-defined]
     console.print("Review the audit:  [bold]schemabrain audit list[/]")  # type: ignore[attr-defined]
     console.print()  # type: ignore[attr-defined]
     console.print("[dim]The agent reads. It doesn't write. That's the whole point.[/]")  # type: ignore[attr-defined]
+
+
+def _render_pending_entity_block(wizard_result: object, *, console: object) -> None:
+    """Surface stage 3 (entities) recovery hint when curation did not complete.
+
+    Scans `wizard_result.outcomes` for the entities stage. Renders one
+    of three short blocks based on the outcome's status + message
+    prefix:
+
+    - `ANTHROPIC_API_KEY not set` (skipped) → API-key recovery
+    - `--no-entities set` (skipped, explicit opt-out) → opt-in pointer
+    - any other `skipped`/`failed` outcome → generic retry pointer
+
+    Renders nothing when stage 3 succeeded (`status="done"` with
+    applied_count > 0) or when stage 3 didn't run (wizard aborted
+    earlier — the abort panel covers that path).
+
+    The match strings here are coupled to the prefixes the wizard
+    handler writes in `schemabrain/setup/wizard.py::_stage_entities`.
+    If you change them there, update this matcher too — the closing
+    block surfaces the same recovery action the stage's dim
+    `next_step` line shows below the stage outcome, so the two must
+    say compatible things.
+    """
+    from schemabrain.setup.wizard import WizardResult
+
+    if not isinstance(wizard_result, WizardResult):
+        return  # pragma: no cover — defensive; caller already narrowed
+    entities_outcome = next(
+        (o for o in wizard_result.outcomes if o.name == "entities"),
+        None,
+    )
+    if entities_outcome is None or entities_outcome.status == "done":
+        return
+    if entities_outcome.message.startswith("ANTHROPIC_API_KEY not set"):
+        console.print(  # type: ignore[attr-defined]
+            "To curate entities (let Schema Brain understand customer/order/...):"
+        )
+        console.print("  [dim]export[/] ANTHROPIC_API_KEY=sk-ant-...")  # type: ignore[attr-defined]
+        console.print("  schemabrain entities suggest --apply")  # type: ignore[attr-defined]
+        console.print()  # type: ignore[attr-defined]
+        return
+    if entities_outcome.message.startswith("--no-entities set"):
+        console.print("Curate entities when ready:")  # type: ignore[attr-defined]
+        console.print("  schemabrain entities suggest --apply")  # type: ignore[attr-defined]
+        console.print()  # type: ignore[attr-defined]
+        return
+    # Generic recovery: any other skipped/failed status. Covers
+    # `--skip-index` (no schema to analyse), non-Postgres source,
+    # already-curated store (status=skipped, message="already curated:
+    # N entity/ies present..." — for that one the retry pointer is
+    # the right copy too, since re-running entities suggest is
+    # idempotent and the user may have meant to curate fresh).
+    console.print("Stage 3 did not curate entities (see above). Retry when ready:")  # type: ignore[attr-defined]
+    console.print("  schemabrain entities suggest --apply")  # type: ignore[attr-defined]
+    console.print()  # type: ignore[attr-defined]
 
 
 def _stage_display_name(name: str) -> str:
