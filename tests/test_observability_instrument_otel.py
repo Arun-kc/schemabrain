@@ -50,11 +50,6 @@ class _FakeError:
 
 
 @dataclass
-class _FakeMatches:
-    matches: list[Any]
-
-
-@dataclass
 class _FakeResponse:
     status: str
     data: Any = None
@@ -101,7 +96,7 @@ class TestSuccessPath:
         def fake_tool(query: str, limit: int = 5) -> _FakeResponse:
             return _FakeResponse(
                 status="success",
-                data=_FakeMatches(matches=[1, 2, 3]),
+                data=[1, 2, 3],
             )
 
         result = fake_tool(query="customer churn", limit=3)
@@ -195,7 +190,7 @@ class TestNoTracerPath:
         def fake_tool() -> _FakeResponse:
             return _FakeResponse(
                 status="success",
-                data=_FakeMatches(matches=[1]),
+                data=[1],
             )
 
         result = fake_tool()
@@ -232,7 +227,7 @@ class TestSpanWrapsTheCall:
             captured_span_during_call.append(otel_trace.get_current_span())
             return _FakeResponse(
                 status="success",
-                data=_FakeMatches(matches=[1]),
+                data=[1],
             )
 
         fake_tool()

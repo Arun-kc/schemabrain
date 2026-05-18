@@ -91,17 +91,34 @@ class TestRegistryLookup:
 
 class TestFindRelevantTables:
     def test_counts_matches(self) -> None:
+        # The extractor operates on the envelope's `data` field, which
+        # for `find_relevant_tables` is a bare `list[TableHit]` — not
+        # an object with a `.matches` attribute. The previous
+        # `.matches` probe was a copy-paste bug that always returned
+        # `{}`; the fix counts the list directly.
         ext = get_result_extractor("find_relevant_tables")
-        result = ext(_FakeMatches(matches=[1, 2, 3]))
-        assert result == {"matches": 3}
+        assert ext([1, 2, 3]) == {"matches": 3}
 
-    def test_no_matches_attribute(self) -> None:
+    def test_empty_list_counts_zero(self) -> None:
         ext = get_result_extractor("find_relevant_tables")
-        assert ext(object()) == {}
+        assert ext([]) == {"matches": 0}
 
     def test_data_none(self) -> None:
         ext = get_result_extractor("find_relevant_tables")
         assert ext(None) == {}
+
+    def test_extractor_swallows_unexpected_exceptions(self) -> None:
+        """Mirror of the `find_relevant_entities` swallow test. The
+        extractor MUST NEVER raise — audit + tail rendering depend on
+        it returning `{}` on any unexpected shape.
+        """
+
+        class _LenRaiser:
+            def __len__(self) -> int:
+                raise RuntimeError("synthetic")
+
+        ext = get_result_extractor("find_relevant_tables")
+        assert ext(_LenRaiser()) == {}
 
 
 class TestDescribeTable:

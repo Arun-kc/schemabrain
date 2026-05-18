@@ -122,6 +122,7 @@ class TestToolRegistry:
         names = {t.name for t in asyncio.run(server_with_one_table.list_tools())}
         assert names == {
             "find_relevant_tables",
+            "find_relevant_entities",
             "describe_table",
             "describe_column",
             "suggest_joins",
@@ -149,6 +150,7 @@ class TestToolRegistry:
         # the cheap check; a CI lint refines this.
         all_tool_names = {
             "find_relevant_tables",
+            "find_relevant_entities",
             "describe_table",
             "describe_column",
             "suggest_joins",

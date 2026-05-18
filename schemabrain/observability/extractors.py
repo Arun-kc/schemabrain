@@ -24,11 +24,36 @@ def default_result_extractor(_data: Any) -> dict[str, Any]:
 
 
 def _find_relevant_tables_summary(data: Any) -> dict[str, Any]:
+    """Pulls a `{"matches": N}` summary from a `list[TableHit]`.
+
+    `data` is the bare list (the envelope's `data` field), not an object
+    with a `.matches` attribute — see `_list_entities_summary` /
+    `_find_relevant_entities_summary` for the same pattern. The previous
+    `.matches` attribute probe was a copy-paste bug: it always returned
+    `{}` because lists have no such attribute. The summary now actually
+    fires for the tail render + audit row.
+    """
     try:
-        matches = getattr(data, "matches", None)
-        if matches is None:
+        if data is None:
             return {}
-        return {"matches": len(matches)}
+        return {"matches": len(data)}
+    except Exception:
+        return {}
+
+
+def _find_relevant_entities_summary(data: Any) -> dict[str, Any]:
+    """Pulls a `{"matches": N}` summary from a `list[EntityHit]`.
+
+    `data` is the bare list (the envelope's `data` field), not an
+    object with a `.matches` attribute — see `_list_entities_summary`
+    for the same pattern. Returns `{}` on `None` so the audit row and
+    OTel span stay clean when the tool short-circuits before producing
+    any result.
+    """
+    try:
+        if data is None:
+            return {}
+        return {"matches": len(data)}
     except Exception:
         return {}
 
@@ -131,6 +156,7 @@ def _get_metric_summary(data: Any) -> dict[str, Any]:
 
 _REGISTRY: dict[str, ResultExtractor] = {
     "find_relevant_tables": _find_relevant_tables_summary,
+    "find_relevant_entities": _find_relevant_entities_summary,
     "describe_table": _describe_table_summary,
     "describe_column": _describe_column_summary,
     "suggest_joins": _suggest_joins_summary,

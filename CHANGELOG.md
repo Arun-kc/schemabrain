@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`find_relevant_entities` MCP tool** (10th MCP tool, 5th
+  semantic-layer tool). Embedding-cosine retrieval scoped to curated
+  entities: per-entity score = MAX cosine across the columns of the
+  entity's bound table — same MAX aggregation as
+  `find_relevant_tables`, gated by the entity-binding lookup so only
+  curated entities surface. Reuses the existing column embedding
+  index (no new embedding work). Returns a `list[EntityHit]` with
+  `name`, `score`, `qualified_table`, `best_column`,
+  `best_column_description`, and `token_estimate`. Empty envelope
+  routes the agent to `list_entities` and `find_relevant_tables`;
+  success envelope chains to `describe_entity`. Charter-compliant
+  (description ≤500 chars, "instead when" disambiguation, sibling
+  composition). 24 dedicated tests covering impl-level edge cases,
+  envelope round-trip, and the `result_summary` extractor for the
+  audit row + tail render. Closes the demo-vision Act 3 gap.
+
 ### Fixed
 - **PII classifier — four bug shapes surfaced by the 2026-05-18
   production-DB smoke** (`docs/internal/manual_smoke_2026_05_18.md`).

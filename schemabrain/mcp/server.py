@@ -1,10 +1,11 @@
 """FastMCP server wiring for Schema Brain.
 
 `build_server(store, source_connection_id, embedder)` returns a
-configured `FastMCP` instance with seven tools registered:
-`find_relevant_tables`, `describe_table`, `describe_column`,
-`suggest_joins`, `get_example_queries`, `list_entities`, and
-`describe_entity`.
+configured `FastMCP` instance with ten tools registered. Five
+physical-schema tools: `find_relevant_tables`, `describe_table`,
+`describe_column`, `suggest_joins`, `get_example_queries`. Five
+semantic-layer tools: `find_relevant_entities`, `list_entities`,
+`describe_entity`, `resolve_join`, `get_metric`.
 
 This module is the *boundary* between Schema Brain's pure-function tool
 implementations (in `mcp/*.py`) and the MCP transport. Two boundary
@@ -45,6 +46,7 @@ from schemabrain.mcp.envelope import (
     ToolError,
     ToolResponse,
 )
+from schemabrain.mcp.find_relevant_entities import find_relevant_entities_impl
 from schemabrain.mcp.find_relevant_tables import find_relevant_tables_impl
 from schemabrain.mcp.get_example_queries import get_example_queries_impl
 from schemabrain.mcp.get_metric import get_metric_impl
@@ -57,6 +59,7 @@ from schemabrain.mcp.shapes import (
     ColumnDetail,
     ColumnNotFoundError,
     EntityDetail,
+    EntityHit,
     EntityNotFoundError,
     EntitySummary,
     ExampleQueriesResult,
@@ -102,13 +105,15 @@ _SERVER_INSTRUCTIONS = (
     "`describe_table` for one table's full shape, `describe_column` to "
     "drill into a single column (with join graph), `suggest_joins` for "
     "FK-graph paths between tables, `get_example_queries` for real SQL "
-    "patterns from query logs. Semantic-layer tools: `list_entities` to "
-    "survey defined entities, `describe_entity` for one entity's full "
-    "column shape with PII sensitivity, `resolve_join` to return the "
-    "canonical SQL JOIN between two entities (with ambiguity refusal "
-    "when multiple canonical joins exist). Every tool returns a "
-    "`ToolResponse` envelope (status / data / error / confidence / "
-    "follow_up_hints) per the agent-UX charter v1.1."
+    "patterns from query logs. Semantic-layer tools: "
+    "`find_relevant_entities` to discover entities by semantic query, "
+    "`list_entities` to survey defined entities, `describe_entity` for "
+    "one entity's full column shape with PII sensitivity, `resolve_join` "
+    "to return the canonical SQL JOIN between two entities (with "
+    "ambiguity refusal when multiple canonical joins exist), `get_metric` "
+    "to compute a validated aggregation against an entity. Every tool "
+    "returns a `ToolResponse` envelope (status / data / error / "
+    "confidence / follow_up_hints) per the agent-UX charter v1.1."
 )
 
 _logger = logging.getLogger(__name__)
@@ -287,6 +292,95 @@ def build_server(
             data=hits,
             confidence=_confidence_from_score(top_score),
             follow_up_hints=["describe_table"],
+        )
+
+    @app.tool(
+        description=(
+            "Use this when the user describes a business object (e.g. "
+            "'our customers', 'revenue data', 'product catalog'). "
+            "Returns ranked entities — domain-named bindings to physical "
+            "tables — so the agent stays in business terms. Use "
+            "`find_relevant_tables` instead when no entities are curated. "
+            "Common compositions: "
+            "chain to `describe_entity` for one entity's full shape; "
+            "chain to `resolve_join` to wire two entities together; "
+            "chain to `get_metric` to compute a validated aggregation."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
+    @_trace("find_relevant_entities")
+    def find_relevant_entities(
+        query: Annotated[
+            str,
+            Field(
+                description=(
+                    "Natural-language description of the business object "
+                    "the user is asking about (e.g. 'customers', 'revenue', "
+                    "'product catalog'). Embedded with the same model used "
+                    "to index column descriptions, then ranked by cosine "
+                    "similarity against the columns of each entity's bound "
+                    "table. Per-entity score is the MAX across columns."
+                ),
+            ),
+        ],
+        limit: Annotated[
+            int,
+            Field(
+                description=(
+                    "Maximum number of ranked entity hits to return. "
+                    "Default 10. Use a small value (3-5) for narrow "
+                    "exploratory queries; use 10-20 when surveying an "
+                    "unfamiliar semantic layer."
+                ),
+            ),
+        ] = _DEFAULT_LIMIT,
+    ) -> ToolResponse[list[EntityHit]]:
+        try:
+            hits = find_relevant_entities_impl(
+                store=store,
+                source_connection_id=source_connection_id,
+                embedder=embedder,
+                query=query,
+                limit=limit,
+            )
+        except Exception as exc:
+            return _wrap_internal_error(exc)
+        if not hits:
+            # Two sub-cases under `empty`, distinguished by hint routing
+            # so the agent gets a different signal for each:
+            #   (a) NO entities curated yet → `list_entities` would
+            #       also return empty, so omit it from hints and route
+            #       the agent only to `find_relevant_tables` (physical
+            #       discovery as the next move).
+            #   (b) Entities curated but none semantically match → both
+            #       hints are useful: `list_entities` so the agent can
+            #       confirm the entity surface, `find_relevant_tables`
+            #       as a physical-side fallback.
+            # The probe is a second call to `list_entities` rather than
+            # threading state out of the impl — keeps the impl's return
+            # shape narrow (`list[EntityHit]`) and the differentiation
+            # logic local to the envelope-shaping boundary.
+            entities = store.list_entities(source_connection_id=source_connection_id)
+            hints = (
+                ["find_relevant_tables"]
+                if not entities
+                else [
+                    "list_entities",
+                    "find_relevant_tables",
+                ]
+            )
+            return ToolResponse[list[EntityHit]](
+                status="empty",
+                data=[],
+                confidence=None,
+                follow_up_hints=hints,
+            )
+        top_score = hits[0].score
+        return ToolResponse[list[EntityHit]](
+            status="success",
+            data=hits,
+            confidence=_confidence_from_score(top_score),
+            follow_up_hints=["describe_entity"],
         )
 
     @app.tool(
