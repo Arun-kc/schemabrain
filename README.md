@@ -53,10 +53,14 @@ Real Claude Desktop session against the bundled e-commerce fixture (7 tables, 30
 Meanwhile in the operator's terminal, `schemabrain tail` streamed every tool call Claude made:
 
 ```
-14:32:08.221  describe_table  public.users              → columns=12  tokens=380  in 11ms
-14:32:08.224  describe_table  public.products           → columns=7   tokens=180  in  9ms
-14:32:08.227  describe_table  public.order_items        → columns=5   tokens=140  in 10ms
-14:32:08.231  describe_table  public.product_categories → columns=3   tokens=  90 in  8ms
+14:32:08.221  describe_table  qualified_name='public.users'
+              → columns=12 tokens=380 in 11ms
+14:32:08.224  describe_table  qualified_name='public.products'
+              → columns=7 tokens=180 in 9ms
+14:32:08.227  describe_table  qualified_name='public.order_items'
+              → columns=5 tokens=140 in 10ms
+14:32:08.231  describe_table  qualified_name='public.product_categories'
+              → columns=3 tokens=90 in 8ms
 ```
 
 Every call is auditable, replayable, and PII-aware. See [Observe the agent](#observe-the-agent) for the full surface.
@@ -168,7 +172,7 @@ Or skip entity curation entirely by passing `--no-entities` to `init`.
 schemabrain doctor --url-env DATABASE_URL --store-path ./schemabrain.db
 ```
 
-11 checks across host config, local store, and source connectivity. Exit 0 means everything's good. Pass `--json` for CI/monitoring output.
+Up to 11 checks across host config, local store, and source connectivity (the full set runs for Claude Desktop on macOS/Windows with a Postgres source URL — other host/OS combinations skip the inapplicable checks). Exit 0 means everything's good. Pass `--json` for CI/monitoring output.
 
 ### 5. Restart your MCP host and ask the test question
 

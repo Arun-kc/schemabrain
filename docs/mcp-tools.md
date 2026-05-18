@@ -105,8 +105,7 @@ within `max_hops` land in `unreachable_pairs`.
 
 Returns SQL statements that have actually been observed running against a
 table, sourced from `pg_stat_statements`. Each example carries an
-observation count, first/last seen timestamps, and a sensitivity tag
-+ PII category set.
+observation count, a sensitivity tag, and a sorted PII category list.
 
 Run `schemabrain mine-queries --source $DATABASE_URL --store-path ./schemabrain.db`
 once (or on a schedule) to populate the example-queries cache from
@@ -116,12 +115,10 @@ recovery hint.
 ```json
 {
   "qualified_name": "public.orders",
-  "items": [
+  "queries": [
     {
       "sql_text": "SELECT id, user_id, total_cents FROM public.orders WHERE created_at >= $1",
       "observation_count": 1247,
-      "first_seen_at": 1736064000,
-      "last_seen_at": 1736150400,
       "source": "pg_stat_statements",
       "sensitivity": "public",
       "pii_categories": []
@@ -196,8 +193,8 @@ discovery.
 ### `describe_entity(name: str) -> EntityDetail`
 
 The entity's bound table, identity column, description, and full column
-list with PII sensitivity tags. One round-trip gives the agent everything
-it needs to compose SQL against the entity.
+list. One round-trip gives the agent everything it needs to compose SQL
+against the entity.
 
 ```json
 {
@@ -208,11 +205,17 @@ it needs to compose SQL against the entity.
   "origin": "manual",
   "columns": [
     {"name": "id", "data_type": "bigint", "nullable": false, "description": "...", "pii_sensitivity": "public"},
-    {"name": "email", "data_type": "text", "nullable": false, "description": "...", "pii_sensitivity": "pii"}
+    {"name": "email", "data_type": "text", "nullable": false, "description": "...", "pii_sensitivity": "public"}
   ],
   "token_estimate": 184
 }
 ```
+
+`pii_sensitivity` is currently hardcoded to `"public"` on every column —
+the wire shape is locked so the upcoming column-level classification can
+fill it without a breaking change. Block-on-sensitivity routing today
+flows through `get_metric` (which propagates `pii_categories` from the
+classifier), not through this field.
 
 Pass `name` as a bare identifier — `customer`, not `public.customer`. The
 schema qualifier belongs on the bound table, not the entity name. Errors
@@ -237,11 +240,21 @@ confirmed the join so `sql_skeleton` renders predictably.
 }
 ```
 
-When 2+ canonical joins exist between the pair (billing vs shipping
-address, primary vs secondary user), the response is `status="error"` with
-`error.kind="ambiguous_join"`, listing candidate names. Pass the right one
-back via the `name` arg. Use `suggest_joins` instead when you only have
-physical table names.
+Error envelope (`status="error"`) carries one of four `error.kind` values,
+each with a recovery hint the agent can act on directly:
+
+- `ambiguous_join` — 2+ canonical joins exist (billing vs shipping
+  address, primary vs secondary user). Response lists candidate names;
+  re-call with the right `name`.
+- `no_canonical_join` — no canonical join between the pair exists.
+  Recovery routes to `suggest_joins` for an FK-graph-discovered fallback.
+- `unknown_join_name` — `name` arg was passed but doesn't match any
+  canonical join in the store. Response lists candidate names; pick one.
+- `join_name_mismatch` — `name` arg references a real canonical join,
+  but not the one between this entity pair. Response carries the actual
+  canonical name for the pair; re-call with that.
+
+Use `suggest_joins` instead when you only have physical table names.
 
 ### `get_metric(name: str, group_by: tuple[str, ...] = (), filters: tuple[MetricFilterArg, ...] = (), time_grain: str | None = None, limit: int = 1000) -> MetricResult`
 
@@ -273,7 +286,10 @@ parameter-binds.
   `lte`, `gt`, `gte`, `in`, `not_in`, `is_null`, `not_null`.
 - Values bind as parameters — never inlined into SQL.
 - `fan_out_join_names` flags joins where the cardinality could inflate
-  rows; the agent should warn the user when the list is non-empty.
+  rows. When the list is non-empty the envelope downgrades to
+  `status="degraded"` with `confidence="MEDIUM"` — this is the
+  machine-readable signal the agent should surface to the user, not the
+  list itself.
 - `pii_categories` propagates the MAX-sensitivity + UNION-categories of
   every column touched, and is what `--pii-block` filters against.
 
