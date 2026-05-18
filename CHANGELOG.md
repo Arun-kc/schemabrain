@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Documentation sync with the wizard semantic-layer arc (PRs #60–#63).**
+  README, `docs/setup.md`, and `docs/assets/demo.tape` still described
+  the pre-arc 5-stage entities-only wizard. All three are now in sync
+  with the shipped 7-stage flow:
+  - **README hero + Quickstart §3** — the "five stages" claim is gone;
+    the wizard is now described as seven stages (source check → index →
+    entities → metrics → joins → wire host → next) with auto-detection
+    of a dbt manifest routing stages 3 and 4 through the importer when
+    present. Sample wizard-output block updated to show `[1/7]…[7/7]`
+    with the new metrics + joins lines.
+  - **README "What each stage does"** — expanded from 5 entries to 7,
+    documenting `Curate metrics` (LLM, cost-capped, anchored on
+    entities) and `Curate joins` (deterministic FK + query-log mining,
+    no cost cap). New paragraphs document the best-effort posture for
+    stages 3–5, the pre-LLM Enter-to-continue pause for stages 3–4,
+    and the dbt source-of-truth path.
+  - **README "Import from dbt"** — now surfaces the `init --from-dbt
+    PATH` first-class flag and the auto-detect rules
+    (`$DBT_PROJECT_DIR/target/manifest.json` or cwd-walk for
+    `dbt_project.yml`) alongside the existing standalone
+    `schemabrain import dbt` command.
+  - **`docs/setup.md`** — wizard description updated from 5 to 7
+    stages with matching descriptions of the new flags
+    (`--no-metrics`, `--metrics-max-cost-usd`, `--no-joins`,
+    `--from-dbt`, `--skip-llm-confirm`). The pre-existing comment
+    about `ANTHROPIC_API_KEY` now mentions both LLM-driven stages.
+  - **`docs/assets/demo.tape`** — header comments corrected from the
+    internally-broken "five stages: doctor → connect → entities (LLM)
+    → joins → metrics" copy (stage names didn't match reality, count
+    was wrong) to the actual 7-stage sequence. Recording shell now
+    needs `--skip-llm-confirm` on the `init` invocation so the
+    Enter-to-continue prompt doesn't hang the recording in a TTY
+    shell. Sleep budget after `init` bumped from 20s to 30s to cover
+    the second LLM stage (metrics) on top of the existing entities
+    call.
+
 - **Documentation accuracy pass (pre-tag audit).** Three-agent verification
   of README, `docs/mcp-tools.md`, and `docs/assets/demo.tape` against the
   shipped code surfaced the following inaccuracies, all now corrected:

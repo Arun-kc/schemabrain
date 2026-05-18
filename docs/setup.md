@@ -24,23 +24,32 @@ pip install schemabrain
 # the bare postgresql:// scheme fails with ModuleNotFoundError).
 export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"
 
-# Optional: an Anthropic key unlocks the entity-suggestion stage
-# (stage 3). Without it the wizard skips stage 3 gracefully and you
-# can curate entities later via `schemabrain entities suggest --apply`.
+# Optional: an Anthropic key unlocks the LLM-driven stages
+# (entities = stage 3, metrics = stage 4). Without it those stages
+# skip gracefully and you can curate later via
+# `schemabrain entities suggest --apply` and
+# `schemabrain metrics suggest --apply`. Stage 5 (joins) is
+# deterministic and runs regardless.
 export ANTHROPIC_API_KEY=sk-ant-...
 
 schemabrain init --url-env DATABASE_URL --store-path ./schemabrain.db
 ```
 
-The wizard runs five stages:
+The wizard runs seven stages:
 
-1. **Source check** — validates URL reachable + read-only on Postgres.
+1. **Source check** — validates URL reachable + read-only on Postgres. Auto-detects a dbt manifest from `$DBT_PROJECT_DIR/target/manifest.json` or by walking up from the cwd for a `dbt_project.yml`. When found, stages 3 and 4 route through the dbt importer instead of the LLM. Force a manifest with `--from-dbt PATH`.
 2. **Index schema** — DDL introspection into `./schemabrain.db`. Cost-free by default; `--enrich` opts in to LLM column descriptions ($0.10–$2.00 for a 50-table schema).
-3. **Curate entities** — Claude Sonnet 4.6 proposes domain entities. Soft-skips if `ANTHROPIC_API_KEY` is absent. Cap spend with `--entities-max-cost-usd N`.
-4. **Wire host** — writes `schemabrain` into Claude Desktop's `mcpServers` block. Use `--host claude-code` for Claude Code (`claude mcp add`) or `--print-only` for any other host (paste-ready snippet to stdout).
-5. **Next step** — prints what to ask the agent first.
+3. **Curate entities** — Claude Sonnet 4.6 proposes domain entities (or dbt manifest is the source of truth when detected). Soft-skips if `ANTHROPIC_API_KEY` is absent. Cap spend with `--entities-max-cost-usd N`. Opt out with `--no-entities`.
+4. **Curate metrics** — Claude Sonnet 4.6 proposes aggregations anchored on the curated entities (or dbt metrics are imported). Cap spend with `--metrics-max-cost-usd N`. Opt out with `--no-metrics`.
+5. **Curate joins** — mines FK constraints + `pg_stat_statements` query log to surface canonical joins. Deterministic — no LLM call, no cost cap. Opt out with `--no-joins`.
+6. **Wire host** — writes `schemabrain` into Claude Desktop's `mcpServers` block. Use `--host claude-code` for Claude Code (`claude mcp add`) or `--print-only` for any other host (paste-ready snippet to stdout).
+7. **Next step** — prints what to ask the agent first.
 
-Re-runs are idempotent: stages 2 and 3 auto-skip when the work is already done. Use `--skip-index` to opt out of stage 2 and `--no-entities` to opt out of stage 3.
+Stages 3, 4, and 5 are best-effort: a failure records the issue and prints a guided next step, but doesn't abort the wizard. Stages 1, 2, 6, and 7 abort on failure.
+
+Before each LLM-driven stage (entities + metrics), the wizard pauses for Enter-to-continue with the cost cap formatted in the prompt. Skip the pause in scripted runs with `--skip-llm-confirm`; the full superset `--yes` skips both the LLM pause and the host-overwrite prompt. The pause auto-suppresses in non-TTY environments (CI, pytest).
+
+Re-runs are idempotent: every stage auto-skips when the work is already done. Use `--skip-index` to opt out of stage 2, `--no-entities` / `--no-metrics` / `--no-joins` to opt out of stages 3 / 4 / 5 individually.
 
 ## 0a. Manual flow (advanced)
 
