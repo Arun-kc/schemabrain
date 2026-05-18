@@ -648,19 +648,15 @@ def _stage_entities(ctx: WizardContext) -> StageOutcome:
             message="entity suggestion needs a Postgres source",
         )
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return StageOutcome(
-            stage=3,
-            name="entities",
-            status="skipped",
-            message="ANTHROPIC_API_KEY not set; entity suggestion skipped",
-            next_step="export ANTHROPIC_API_KEY=sk-ant-... and then run "
-            "`schemabrain entities suggest --apply`",
-        )
-
+    # Already-curated check must run BEFORE the API-key check. An
+    # idempotent re-run on a store that already has entities does NOT
+    # need ANTHROPIC_API_KEY — but if the env-var check ran first, the
+    # user saw "ANTHROPIC_API_KEY not set" on every re-run even though
+    # the store was fine, and the closing block surfaced the same
+    # misleading recovery hint. Reordering keeps the wizard honest:
+    # the env-var prompt fires only when the wizard actually intends
+    # to call the LLM.
     source_id = _source_id_for(cfg.source_url)
-
     if cfg.store_path.exists():
         existing = _peek_entity_count(cfg.store_path, source_id)
         if isinstance(existing, StageOutcome):
@@ -674,6 +670,17 @@ def _stage_entities(ctx: WizardContext) -> StageOutcome:
                 next_step="run `schemabrain entities suggest --apply` directly "
                 "to re-curate from a fresh prompt",
             )
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="skipped",
+            message="ANTHROPIC_API_KEY not set; entity suggestion skipped",
+            next_step="export ANTHROPIC_API_KEY=sk-ant-... and then run "
+            "`schemabrain entities suggest --apply`",
+        )
 
     max_cost = _resolve_entities_cost_cap(cfg.entities_max_cost_usd)
 

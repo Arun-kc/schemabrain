@@ -1760,6 +1760,36 @@ class TestPendingEntityBlock:
         assert "Stage 3 did not curate entities" in captured.err
         assert "schemabrain entities suggest --apply" in captured.err
 
+    def test_no_pending_block_when_already_curated(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Idempotent re-run: stage 3 short-circuits with "already
+        # curated: N entity/ies present" because the store already has
+        # entities. Status is `skipped` but the user is in the happy
+        # path — the closing block must NOT show a recovery pointer
+        # (entities exist; asking the agent to list them works).
+        from schemabrain.cli import _render_wizard_result
+
+        result = self._result_with_entities_outcome(
+            self._make_outcome(
+                3,
+                "entities",
+                "skipped",
+                "already curated: 3 entity/ies present for this source",
+                "run `schemabrain entities suggest --apply` directly "
+                "to re-curate from a fresh prompt",
+            ),
+            tmp_path,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        # No pending-action copy fires.
+        assert "To curate entities" not in captured.err
+        assert "Curate entities when ready" not in captured.err
+        assert "Stage 3 did not curate entities" not in captured.err
+        # Standard closing-block invariants still hold.
+        assert "list the entities Schema Brain knows about" in captured.err
+
     def test_pending_block_for_failed_stage(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

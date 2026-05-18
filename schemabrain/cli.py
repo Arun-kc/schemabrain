@@ -5057,6 +5057,11 @@ def _render_pending_entity_block(wizard_result: object, *, console: object) -> N
     )
     if entities_outcome is None or entities_outcome.status == "done":
         return
+    if entities_outcome.message.startswith("already curated:"):
+        # Idempotent re-run on a store that already has entities. The
+        # status is `skipped` but the user is in the happy path: the
+        # ask line is honest. No pending block.
+        return
     if entities_outcome.message.startswith("ANTHROPIC_API_KEY not set"):
         console.print(  # type: ignore[attr-defined]
             "To curate entities (let Schema Brain understand customer/order/...):"
