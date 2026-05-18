@@ -1,0 +1,108 @@
+# Schema Brain demo stack.
+#
+# `docker compose up` brings up three containers:
+#
+#   - `postgres`        — Postgres 16 (alpine), bound to localhost:5433.
+#   - `fixture-loader`  — one-shot: applies the bundled ecommerce.sql
+#                         once Postgres is healthy, then exits 0.
+#   - `schemabrain`     — one-shot: indexes the demo schema into a
+#                         persisted volume, then exits 0.
+#
+# After `docker compose up` reaches `Done`, the demo is ready. To wire
+# Claude Desktop (or any MCP host) at the indexed store, add an entry
+# pointing at `docker run` — see README.md → "Run via Docker" for the
+# copy-paste config block. The store volume (`sb-data`) survives
+# `docker compose down` so re-indexing is unnecessary across runs.
+#
+# This file is the demo path. For production wiring point Schema Brain
+# at your real DATABASE_URL via `schemabrain init --url-env DATABASE_URL`
+# and skip the demo stack entirely.
+#
+# Troubleshooting: if `docker compose ps` shows the `schemabrain`
+# container missing after `up`, run `docker compose logs fixture-loader`
+# — `ON_ERROR_STOP=1` exits the loader non-zero on any SQL error and
+# the schemabrain container's `service_completed_successfully` gate
+# then blocks it from starting against a partial fixture.
+
+# Pin the project name (and therefore the default network name to
+# `schemabrain_default`) so the `docker run --network schemabrain_default`
+# example in README.md works regardless of which directory the repo
+# was cloned into.
+name: schemabrain
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sb-postgres
+    environment:
+      POSTGRES_PASSWORD: local
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+    ports:
+      # Bind to localhost only — the demo stack is not meant to be
+      # reachable from anywhere except the developer machine. Port
+      # 5433 avoids clashing with a developer-local Postgres on 5432.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - sb-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+  fixture-loader:
+    # Re-use the Postgres image so `psql` is on PATH. One-shot
+    # container — exits 0 once the load completes.
+    image: postgres:16-alpine
+    container_name: sb-fixture-loader
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: local
+    volumes:
+      # Mount the bundled SQL fixture read-only into the loader.
+      - ./schemabrain/eval/fixtures/ecommerce.sql:/fixtures/ecommerce.sql:ro
+    # ON_ERROR_STOP=1 makes a malformed fixture file fail the load
+    # instead of partial-applying it; the schemabrain container's
+    # `service_completed_successfully` dependency surfaces the error.
+    command: >
+      psql -h postgres -U postgres -d postgres -v ON_ERROR_STOP=1
+      -f /fixtures/ecommerce.sql
+
+  schemabrain:
+    # Build from the repo Dockerfile by default — swap to
+    # `image: ghcr.io/arun-kc/schemabrain:latest` to pull the published
+    # multi-arch image instead. Both shapes work today.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: schemabrain:local
+    container_name: schemabrain
+    depends_on:
+      fixture-loader:
+        condition: service_completed_successfully
+    environment:
+      # The CLI honours --url-env to keep the URL out of argv even
+      # inside a container — same hygiene as a host install.
+      DATABASE_URL: postgresql+psycopg://postgres:local@postgres:5432/postgres
+    volumes:
+      # Persist the indexed store across `docker compose down` so
+      # repeated `up` runs don't re-index the same schema.
+      - sb-data:/data
+    # One-shot indexer. `--no-enrich` keeps the demo zero-cost (no
+    # Anthropic key needed); flip the flag and set ANTHROPIC_API_KEY
+    # via env for the real enrichment path.
+    command:
+      - index
+      - --url-env
+      - DATABASE_URL
+      - --store-path
+      - /data/store.db
+      - --no-enrich
+
+volumes:
+  sb-pg-data:
+  sb-data:
