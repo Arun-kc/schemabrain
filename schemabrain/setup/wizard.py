@@ -148,9 +148,20 @@ class WizardConfig:
     PR A. `no_joins` is the stage-5 knob added in PR B (joins is
     deterministic — no cost cap needed). `from_dbt` is the PR C knob
     — when set, stage 1 validates the path and stages 3 + 4 import
-    from the dbt manifest instead of calling the LLM. New fields are
-    appended (with defaults) so existing callers constructing this
-    dataclass with positional or keyword arguments remain valid.
+    from the dbt manifest instead of calling the LLM.
+
+    `skip_llm_confirm` bypasses the interactive "Press Enter to
+    continue" pause that fires before each LLM-driven stage
+    (entities + metrics). The CLI's `--yes` flag implies this; it is
+    also the field a programmatic caller sets when constructing a
+    `WizardConfig` directly. The pause auto-suppresses in non-TTY
+    environments (CI, pytest, scripts) regardless of this field, so
+    the field only matters when the wizard is actually running
+    interactively.
+
+    New fields are appended (with defaults) so existing callers
+    constructing this dataclass with positional or keyword arguments
+    remain valid.
     """
 
     source_url: str
@@ -166,6 +177,7 @@ class WizardConfig:
     metrics_max_cost_usd: float | None = None
     no_joins: bool = False
     from_dbt: Path | None = None
+    skip_llm_confirm: bool = False
 
     def __post_init__(self) -> None:
         if self.host not in _VALID_HOSTS:
@@ -367,6 +379,50 @@ def _failed_from_refusal(
         next_step=error.next_step
         or "run `schemabrain doctor --source $URL` for a deeper diagnostic",
     )
+
+
+def _prompt_llm_confirmation(*, stage_label: str, cost_cap_usd: float) -> bool:
+    """Pause for user confirmation before calling the LLM.
+
+    Returns True if the wizard should proceed (user pressed Enter,
+    OR stdin is non-TTY so the prompt was auto-suppressed). Returns
+    False if the user cancelled (Ctrl-C / EOF) — the caller then
+    emits a `skipped` outcome and the wizard continues to the next
+    stage.
+
+    Auto-suppression: pytest captures stdin → `isatty()` is False →
+    this function returns True without printing or reading, keeping
+    every existing test green without changes. CI environments
+    (GitHub Actions, etc.) are similarly non-interactive; the pause
+    is purely an interactive-terminal affordance.
+
+    `stage_label` and `cost_cap_usd` are baked into the prompt copy
+    so the user sees exactly which stage they're authorising and
+    the maximum cost the cost-ceiling guard will accept. We do NOT
+    show an estimated cost — token-count estimates are heuristic
+    and can mislead; the cap is the load-bearing number.
+    """
+    if not sys.stdin.isatty():
+        return True
+    print(
+        f"  This stage calls Anthropic to suggest {stage_label} (cap: ${cost_cap_usd:.2f}).",
+        file=sys.stderr,
+    )
+    print(
+        "  Press Enter to continue, or Ctrl-C to skip this stage. ",
+        end="",
+        file=sys.stderr,
+        flush=True,
+    )
+    try:
+        input()
+    except (EOFError, KeyboardInterrupt):
+        # `^C` doesn't emit its own newline when caught here, so a
+        # follow-up renderer line would land mid-cursor. Print one
+        # explicitly so the stage-skipped line renders on a clean row.
+        print("", file=sys.stderr)
+        return False
+    return True
 
 
 # ----- stage 1: source_check -----------------------------------------------
@@ -914,6 +970,22 @@ def _stage_entities(ctx: WizardContext) -> StageOutcome:
         )
 
     max_cost = _resolve_entities_cost_cap(cfg.entities_max_cost_usd)
+
+    # Interactive confirmation pause before calling the LLM.
+    # Auto-suppressed in non-TTY environments (CI, pytest) and when
+    # `cfg.skip_llm_confirm` is True (set by `--yes`). User Ctrl-C
+    # turns into a `skipped` outcome rather than aborting the wizard.
+    if not cfg.skip_llm_confirm and not _prompt_llm_confirmation(
+        stage_label="entities", cost_cap_usd=max_cost
+    ):
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="skipped",
+            message="user cancelled the LLM call",
+            next_step="re-run with `--yes` to skip the prompt, "
+            "or run `schemabrain entities suggest --apply` directly",
+        )
 
     try:
         result = _run_entity_suggestion(
@@ -1498,6 +1570,21 @@ def _stage_metrics(ctx: WizardContext) -> StageOutcome:
         )
 
     max_cost = _resolve_metrics_cost_cap(cfg.metrics_max_cost_usd)
+
+    # Interactive confirmation pause before calling the LLM. Same
+    # auto-suppression contract as _stage_entities: non-TTY stdin OR
+    # `cfg.skip_llm_confirm=True` bypasses the prompt.
+    if not cfg.skip_llm_confirm and not _prompt_llm_confirmation(
+        stage_label="metrics", cost_cap_usd=max_cost
+    ):
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="skipped",
+            message="user cancelled the LLM call",
+            next_step="re-run with `--yes` to skip the prompt, "
+            "or run `schemabrain metrics suggest --apply` directly",
+        )
 
     try:
         result = _run_metric_suggestion(

@@ -2298,6 +2298,118 @@ class TestPendingJoinsBlock:
         assert "Restart Claude Desktop" in captured.err
 
 
+class TestCmdInitSkipLlmConfirmDispatch:
+    """Pre-LLM confirmation pause PR: the CLI dispatch layer threads
+    `--skip-llm-confirm` and `--yes` into `WizardConfig.skip_llm_confirm`.
+    Per the locked design, `--yes` is a superset shorthand that
+    implies the LLM-prompt skip.
+
+    Test strategy: monkeypatch `run_default_wizard` to capture the
+    `WizardConfig` that `_cmd_init` constructs, then inspect the
+    field. The fake returns an aborted WizardResult so `_cmd_init`
+    returns exit code 2 without touching real wiring.
+    """
+
+    def _capture_run_default_wizard(self, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+        from schemabrain.setup.wizard import StageOutcome, WizardResult
+
+        captured: list[object] = []
+
+        def _fake_run(cfg: object, *, stage_context: object = None) -> WizardResult:
+            captured.append(cfg)
+            return WizardResult(
+                outcomes=(
+                    StageOutcome(
+                        stage=1,
+                        name="source_check",
+                        status="failed",
+                        message="forced stop for dispatch test",
+                        next_step="n/a",
+                    ),
+                ),
+                aborted=True,
+                host_install_result=None,
+            )
+
+        monkeypatch.setattr("schemabrain.setup.wizard.run_default_wizard", _fake_run)
+        return captured
+
+    def _common_args(self, tmp_path: Path) -> list[str]:
+        return [
+            "init",
+            "--source",
+            "sqlite:///:memory:",
+            "--host",
+            "manual",
+            "--store-path",
+            str(tmp_path / "wizard.db"),
+        ]
+
+    def test_default_skip_llm_confirm_is_false(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured = self._capture_run_default_wizard(monkeypatch)
+        main(self._common_args(tmp_path))
+        assert len(captured) == 1
+        cfg = captured[0]
+        assert cfg.skip_llm_confirm is False  # type: ignore[attr-defined]
+        assert cfg.assume_yes is False  # type: ignore[attr-defined]
+
+    def test_skip_llm_confirm_flag_alone_does_not_set_assume_yes(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Narrow opt-out: `--skip-llm-confirm` sets only
+        # `skip_llm_confirm`, leaves `assume_yes` False so the
+        # host-overwrite prompt still fires for an existing entry.
+        captured = self._capture_run_default_wizard(monkeypatch)
+        main([*self._common_args(tmp_path), "--skip-llm-confirm"])
+        cfg = captured[0]
+        assert cfg.skip_llm_confirm is True  # type: ignore[attr-defined]
+        assert cfg.assume_yes is False  # type: ignore[attr-defined]
+
+    def test_yes_flag_implies_skip_llm_confirm(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Locked design: `--yes` is a superset shorthand that sets
+        # BOTH fields. Users opt into the fully-non-interactive
+        # wizard for CI / scripted runs.
+        captured = self._capture_run_default_wizard(monkeypatch)
+        main([*self._common_args(tmp_path), "--yes"])
+        cfg = captured[0]
+        assert cfg.assume_yes is True  # type: ignore[attr-defined]
+        assert cfg.skip_llm_confirm is True  # type: ignore[attr-defined]
+
+    def test_y_short_flag_implies_skip_llm_confirm(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # `-y` is the short form; same superset semantics.
+        captured = self._capture_run_default_wizard(monkeypatch)
+        main([*self._common_args(tmp_path), "-y"])
+        cfg = captured[0]
+        assert cfg.assume_yes is True  # type: ignore[attr-defined]
+        assert cfg.skip_llm_confirm is True  # type: ignore[attr-defined]
+
+    def test_both_flags_together_idempotent(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Passing both flags is redundant but legal.
+        captured = self._capture_run_default_wizard(monkeypatch)
+        main([*self._common_args(tmp_path), "--yes", "--skip-llm-confirm"])
+        cfg = captured[0]
+        assert cfg.assume_yes is True  # type: ignore[attr-defined]
+        assert cfg.skip_llm_confirm is True  # type: ignore[attr-defined]
+
+
 class TestPositiveFloatValidator:
     def test_accepts_positive_value(self) -> None:
         from schemabrain.cli import _positive_float

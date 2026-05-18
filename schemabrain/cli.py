@@ -377,6 +377,7 @@ def main(argv: list[str] | None = None) -> int:
             assume_yes=args.assume_yes,
             print_only=args.print_only,
             from_dbt=args.from_dbt,
+            skip_llm_confirm=args.skip_llm_confirm,
         )
     if args.command == "tail":
         return _cmd_tail(
@@ -1407,8 +1408,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "-y",
         dest="assume_yes",
         action="store_true",
-        help="Overwrite an existing schemabrain entry in the host config without "
-        "prompting. Only the schemabrain entry is touched; other entries are preserved.",
+        help="Run the wizard fully non-interactively: overwrite an existing "
+        "schemabrain entry in the host config without prompting, AND skip the "
+        "Enter-to-continue pause before each LLM-driven stage. Equivalent to "
+        "passing both `--skip-llm-confirm` and the legacy host-overwrite "
+        "auto-confirm. Use in CI / scripted environments.",
+    )
+    p_init.add_argument(
+        "--skip-llm-confirm",
+        dest="skip_llm_confirm",
+        action="store_true",
+        help="Skip the Enter-to-continue pause that fires before each "
+        "LLM-driven stage (entities + metrics). Does not affect the "
+        "host-overwrite prompt (use --yes for that too). The pause is "
+        "auto-suppressed in non-TTY environments regardless of this flag.",
     )
     p_init.add_argument(
         "--print-only",
@@ -4245,6 +4258,7 @@ def _cmd_init(
     assume_yes: bool,
     print_only: bool,
     from_dbt: str | None = None,
+    skip_llm_confirm: bool = False,
 ) -> int:
     """Run the activation wizard and render the multi-stage outcome.
 
@@ -4300,6 +4314,12 @@ def _cmd_init(
         # _resolve_url_source already rendered a guided error.
         return 2
 
+    # `--yes` is a superset shorthand: it implies the LLM-prompt
+    # skip AND the host-overwrite auto-confirm. A user who only
+    # wants the LLM-prompt skip (e.g., they want to be asked before
+    # overwriting an existing host config) can pass
+    # `--skip-llm-confirm` alone.
+    effective_skip_llm_confirm = skip_llm_confirm or assume_yes
     cfg = WizardConfig(
         source_url=source_url,
         store_path=Path(store_path),
@@ -4314,6 +4334,7 @@ def _cmd_init(
         metrics_max_cost_usd=metrics_max_cost_usd,
         no_joins=no_joins,
         from_dbt=Path(from_dbt) if from_dbt else None,
+        skip_llm_confirm=effective_skip_llm_confirm,
     )
 
     interactive = _stderr_is_interactive_tty()
