@@ -457,6 +457,71 @@ and `pii_categories` lists the categories that triggered the refusal.
 
 ---
 
+## Inspect the indexed surface (alpha)
+
+`schemabrain inspect` is the operator-side browser for everything
+Schema Brain has indexed — same view the agent sees, no agent needed.
+No LLM call, no source connection, just the local store.
+
+```bash
+schemabrain inspect --store-path ./schemabrain.db
+```
+
+```
+Schema Brain inspect
+7 tables · 30 columns · 2 entities · 1 metric · 1 join
+
+Entities:
+  customer
+  order
+
+Metrics:
+  total_revenue
+
+Joins:
+  customer_orders
+
+Drill into one: `schemabrain inspect <name>`
+```
+
+Drill into one entity for the full detail view:
+
+```bash
+schemabrain inspect customer --store-path ./schemabrain.db
+```
+
+```
+Entity: customer
+────────────────────────────────────────────────────────────
+Description:  A registered user who can place orders.
+Binding:      public.users
+Identity:     id
+Origin:       manual
+
+Columns:
+  id          bigint       not null  pk identity  public
+  email       text         not null              pii (contact)
+  full_name   text         not null              pii (contact)
+  created_at  timestamptz  not null              public
+
+Related entities:
+  order  outgoing  one_to_many  via `customer_orders`
+      customer.id = order.customer_id
+
+Anchored metrics:
+  (no metrics anchored on this entity)
+```
+
+`--source` / `--url-env` is optional — supply one only when the store
+carries entities from multiple sources and you want to scope the view
+to one of them. Drilling with no `--source` walks every source and
+renders every match.
+
+Exit codes: `0` rendered, `1` drilled name not found, `2` operational
+refusal (missing store, malformed flags).
+
+---
+
 ## Detect drift (alpha)
 
 `schemabrain check` walks every persisted entity, metric, and

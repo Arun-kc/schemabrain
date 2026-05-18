@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `schemabrain inspect [<name>]` subcommand — store-only schema
+  browser. Bare `inspect` renders a summary of every indexed table,
+  entity, metric, and canonical join. `inspect <name>` drills into
+  one entity with full columns (including PII sensitivity + category
+  tags), related entities (bidirectional join traversal, with
+  `outgoing` / `incoming` direction labels and cardinality), and
+  anchored metrics. No LLM, no live source — pure local store
+  reader. Exit codes: `0` rendered, `1` drilled name not found,
+  `2` operational refusal. When no `--source` / `--url-env` is
+  supplied, drilling walks every source the store knows about and
+  renders every match — the common one-source case stays
+  flag-free.
 - `schemabrain check` subcommand — walks every persisted entity,
   metric, and canonical join and reports drift against the live source
   schema. Detects five drift kinds: `table_missing`,
