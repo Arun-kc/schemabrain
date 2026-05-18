@@ -3413,6 +3413,67 @@ class TestRunMetricSuggestionSmoke:
                 cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=1.0
             )
 
+    def test_translates_metric_suggestion_parse_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Regression for a reviewer finding on PR fix/cli-smoke-findings:
+        # MetricSuggestionParseError is the metrics-side parse error
+        # (sibling of entities.suggest.SuggestionParseError, NOT a
+        # subclass). Without the explicit catch, it fell through to
+        # `except Exception` and the user saw a misleading
+        # "LLM call failed: max_tokens..." recovery hint when the real
+        # issue was a malformed LLM YAML response. The fix routes both
+        # parse-error types to _SuggestionParseAtWizard.
+        from schemabrain.metrics.suggest import MetricSuggestionParseError
+
+        cfg = _pg_config(base_config)
+
+        class _MetricParseStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _MetricParseStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_entities(self, *, source_connection_id: str) -> list[object]:
+                return [object()]
+
+            def list_tables(self, *, source_connection_id: str) -> list[tuple[str, str]]:
+                return [("public", "t")]
+
+            def get_table(self, *_a: object, **_kw: object) -> object:
+                return object()
+
+        class _MetricParsePipeline:
+            def __init__(self, *, llm: object) -> None:
+                pass
+
+            def propose_from_entities(self, _entities: object, _tables: object) -> object:
+                raise MetricSuggestionParseError("bad metric YAML")
+
+        class _MetricParseGuard:
+            def __init__(self, **_kw: object) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _MetricParseStore)
+        monkeypatch.setattr(
+            "schemabrain.metrics.suggest.MetricSuggestionPipeline", _MetricParsePipeline
+        )
+        monkeypatch.setattr("schemabrain.entities.suggest.CostCeilingGuard", _MetricParseGuard)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        # Must surface as _SuggestionParseAtWizard, NOT _LLMClientErrorAtWizard.
+        with pytest.raises(wizard._SuggestionParseAtWizard):
+            wizard._run_metric_suggestion(
+                cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=1.0
+            )
+
     def test_translates_runtime_error_to_llm_client_error(
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:

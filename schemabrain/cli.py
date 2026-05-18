@@ -2292,8 +2292,18 @@ def _expand_yaml_paths(yaml_paths: list[str]) -> tuple[list[Path], list[tuple[st
     for raw in yaml_paths:
         path = Path(raw)
         if path.is_dir():
+            try:
+                children = list(path.iterdir())
+            except OSError as exc:
+                # PermissionError (read-protected dir) and any other
+                # iterdir-side OS error becomes a failure entry rather
+                # than crashing the CLI with a raw traceback. The
+                # `is_dir()` check above already passed, so this is
+                # an access / FS-level issue, not a missing-path one.
+                failures.append((raw, f"could not list directory {raw!r}: {exc}"))
+                continue
             dir_files = sorted(
-                p for p in path.iterdir() if p.is_file() and p.suffix.lower() in (".yaml", ".yml")
+                p for p in children if p.is_file() and p.suffix.lower() in (".yaml", ".yml")
             )
             if not dir_files:
                 failures.append((raw, f"no `.yaml`/`.yml` files found in directory {raw!r}"))
@@ -2303,6 +2313,9 @@ def _expand_yaml_paths(yaml_paths: list[str]) -> tuple[list[Path], list[tuple[st
                 if resolved in seen:
                     continue
                 seen.add(resolved)
+                # Store the original path (not `resolved`) so the apply
+                # loop's error messages reference the path the user
+                # actually typed; `resolved` is dedup-only.
                 yaml_files.append(f)
         elif path.is_file():
             if path.suffix.lower() not in (".yaml", ".yml"):
@@ -2400,9 +2413,18 @@ def _cmd_entities_apply(
                 except sqlite3.DatabaseError as exc:
                     # Non-Integrity DB-level errors (disk full, WAL
                     # checkpoint failure, CHECK on a corrupted store)
-                    # are structural — return exit 2 immediately
-                    # rather than continuing the loop with a broken
-                    # store. Preserves the prior single-file behaviour.
+                    # are structural — exit 2 immediately rather than
+                    # continuing the loop with a broken store. Flush
+                    # the per-file summary first so the user can see
+                    # which files DID land before the structural error
+                    # (e.g. "applied 5 of 10 then disk filled"); the
+                    # single-file predecessor had no summary to flush
+                    # but multi-file callers lose real applied-file
+                    # confirmation if we skip this.
+                    for name in applied:
+                        print(f"applied entity: {name}")
+                    for file_str, message in failures:
+                        print(f"error in {file_str}: {message}", file=sys.stderr)
                     _render_guided(
                         GuidedError(
                             kind="entities_apply_store_error",

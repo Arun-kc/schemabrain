@@ -1288,6 +1288,13 @@ def _run_entity_suggestion(
             raise _CostCeilingExceededAtWizard(str(exc)) from exc
         except SuggestionParseError as exc:
             raise _SuggestionParseAtWizard(str(exc)) from exc
+        except ValueError:
+            # Defensive: `propose_from_tables` raises ValueError on
+            # empty inputs / negative top_k — the `_EmptySchemaAtWizard`
+            # guard above makes these unreachable today, but re-
+            # raising keeps any future drift loud rather than hidden
+            # behind a misleading "LLM call failed" message.
+            raise
         except Exception as exc:
             # Narrow scope: only the LLM round-trip is inside this try.
             # Local validation, store reads, and the apply-loop happen
@@ -1297,8 +1304,10 @@ def _run_entity_suggestion(
             # by elimination an LLM-client or network failure — surface
             # it as a structured `_LLMClientErrorAtWizard` so the stage
             # handler can produce a failed StageOutcome instead of
-            # letting the wizard crash mid-pipeline.
-            raise _LLMClientErrorAtWizard(str(exc) or type(exc).__name__) from exc
+            # letting the wizard crash mid-pipeline. `repr(exc)`
+            # fallback (instead of `type(exc).__name__`) preserves
+            # argument visibility when `str(exc)` is empty.
+            raise _LLMClientErrorAtWizard(str(exc) or repr(exc)) from exc
 
         applied = 0
         skip_reason: str | None = None
@@ -1834,7 +1843,10 @@ def _run_metric_suggestion(
         CostCeilingGuard,
         SuggestionParseError,
     )
-    from schemabrain.metrics.suggest import MetricSuggestionPipeline
+    from schemabrain.metrics.suggest import (
+        MetricSuggestionParseError,
+        MetricSuggestionPipeline,
+    )
 
     llm = anthropic_sonnet_46_client(api_key=api_key)
     guard = CostCeilingGuard(inner=llm, max_cost_usd=max_cost_usd)
@@ -1867,15 +1879,35 @@ def _run_metric_suggestion(
             result = pipeline.propose_from_entities(entities, tables)
         except CostCeilingExceededError as exc:
             raise _CostCeilingExceededAtWizard(str(exc)) from exc
-        except SuggestionParseError as exc:
+        except (SuggestionParseError, MetricSuggestionParseError) as exc:
+            # `MetricSuggestionParseError` is the metrics-side parse
+            # error (a sibling of entities.suggest.SuggestionParseError,
+            # not a subclass). Without explicitly catching it here, a
+            # bad-LLM-metric-YAML hit fell into the `except Exception`
+            # net below and was misclassified as an LLM client error
+            # — the user saw a max_tokens recovery hint when the real
+            # fix was a retry. Both branches converge on the same
+            # `_SuggestionParseAtWizard` translation so the stage
+            # handler shows the same "transient LLM hiccups" hint.
             raise _SuggestionParseAtWizard(str(exc)) from exc
+        except ValueError:
+            # Defensive: `propose_from_entities` raises ValueError on
+            # empty inputs / negative top_k — the guards earlier in
+            # this function make these unreachable today, but re-
+            # raising keeps any future drift loud rather than hidden
+            # behind a misleading "LLM call failed" message.
+            raise
         except Exception as exc:
             # Same narrow-scope LLM-error wrapper as stage 3 — see
             # `_run_entity_suggestion` for the rationale. Re-raising as
             # `_LLMClientErrorAtWizard` keeps stage 4's failure path
             # structured (failed StageOutcome with recovery hint)
-            # rather than crashing the wizard mid-pipeline.
-            raise _LLMClientErrorAtWizard(str(exc) or type(exc).__name__) from exc
+            # rather than crashing the wizard mid-pipeline. `repr(exc)`
+            # fallback (instead of `type(exc).__name__`) preserves
+            # argument visibility when `str(exc)` is empty, so a bare
+            # `RuntimeError()` surfaces as "RuntimeError()" not just
+            # "RuntimeError" — better signal for the operator.
+            raise _LLMClientErrorAtWizard(str(exc) or repr(exc)) from exc
 
         applied = 0
         skip_reason: str | None = None
