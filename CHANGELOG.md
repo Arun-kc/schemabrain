@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **PII classifier — four bug shapes surfaced by the 2026-05-18
+  production-DB smoke** (`docs/internal/manual_smoke_2026_05_18.md`).
+  - **S1** `<noun>_name` columns in non-PII tables no longer classify
+    as `pii (contact)`. A denylist of thing-noun prefixes
+    (`product`, `brand`, `category`, `language`, etc.) suppresses the
+    bare-name rule for `^<prefix>_name$` shapes. People-noun shapes
+    (`customer_name`, `user_name`, `display_name`, `full_name`) still
+    classify as before.
+  - **S2** `<token>_id` INTEGER FK columns no longer inherit PII
+    categories from the referenced table's keyword. The classifier
+    accepts a new `column_type` parameter; when type is integer-like
+    AND the name matches the `<x>_id` shape, the matched category
+    set is intersected with the FK-safe allowlist (`credential`,
+    `online_identifier`, `government_id`, `health`,
+    `demographic_protected`). `address_id BIGINT` now classifies as
+    `public`; `patient_id BIGINT` keeps `health`.
+  - **S3** `date_of_birth` / `birthdate` / `dob` / `birth_date` now
+    classify as `demographic_protected` instead of `contact`,
+    aligning with HIPAA Safe Harbor + GDPR Article 9.
+  - **S4** False negatives covered: `drivers_license` /
+    `drivers_license_number` (plural variants joined the
+    government_id rule), `face_embedding` / `face_print` /
+    `face_vector` (biometric rule), `patient_id` / `insurance_id` /
+    `health_record_id` (new health rule), `age` (joined the
+    demographic_protected rule).
+- **Indexer** now passes `Column.data_type` to `classify_column` so
+  the S2 integer-FK guard fires on live introspection.
+
+### Added
+- Synthetic PII regression fixture at
+  `schemabrain/eval/fixtures/pii_mockup.sql` (5 tables, ~62 columns
+  exercising every PIICategory plus the S1-S4 bug shapes) and a
+  matching snapshot test at `tests/pii/test_pii_mockup_snapshot.py`
+  that pins the desired `(column → (sensitivity, categories))`
+  mapping for every column. Future rule changes that regress against
+  the smoke's findings fail CI before merge.
+
 ## [0.3.0] - 2026-05-18
 
 This release rounds out the v1 semantic-layer arc. Every layer the

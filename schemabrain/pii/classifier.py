@@ -1,9 +1,8 @@
 """Heuristic PII classifier — regex on column name → category set.
 
 The classifier produces `(sensitivity, categories)` for one column based
-on its name and (a hook for future use) its shape patterns. v1 only
-reads the column name; shape signal is in the signature so a future
-heuristic refinement does not change callers.
+on its name, its declared data type (for the integer-FK guard), and (a
+hook for future use) its shape patterns.
 
 Rules are module-level constants: a tuple of `(compiled_regex,
 frozenset[PIICategory])` pairs. A column matching multiple rules carries
@@ -32,6 +31,31 @@ snake_case overwhelmingly, so `_` must act as a segment boundary for
 keyword matching. The `_kw()` helper wraps each keyword in
 `(?<![A-Za-z0-9])…(?![A-Za-z0-9])` lookarounds so any non-alphanumeric
 character (including `_`, `-`, `.`, start, end) terminates the keyword.
+
+## Two refinements on top of the raw regex pass
+
+The 2026-05-18 production-DB smoke (`docs/internal/manual_smoke_2026_05_18.md`)
+exposed two systematic false-positive shapes that pure column-name
+regex cannot disambiguate:
+
+  - `<noun>_name` in non-PII contexts (e.g. `product_name` in a catalog
+    table) matched the bare `name` rule and tagged catalog columns as
+    `pii (contact)`. Handled here by `_NON_PII_NAME_RE` — when a
+    column matches `^<denylist>_name$`, the name rule is skipped in
+    the loop. The bare-`name` case (a column literally named `name`
+    in a lookup table) is a known remaining limitation — there is no
+    column-level signal that distinguishes it from `customers.name`,
+    and we accept that over-tagging per the docstring posture.
+
+  - `<token>_id` integer FKs whose name contains a category keyword
+    (e.g. `address_id BIGINT` matching `address` → `contact`) tagged
+    the FK as PII when the actual PII lives on the referenced table.
+    Handled here by an integer-FK guard: when the column's declared
+    type is integer-like AND the name matches `^[a-z][a-z_]*_id$`,
+    the matched category set is intersected with `_FK_SAFE_CATEGORIES`
+    — the categories where the FK itself remains PII even as an
+    integer reference (e.g. `patient_id` is HIPAA-sensitive, `cookie_id`
+    is an online identifier, `national_id` is a government ID).
 """
 
 from __future__ import annotations
@@ -57,6 +81,21 @@ def _kw(*alternatives: str) -> re.Pattern[str]:
     return re.compile(rf"(?<![A-Za-z0-9])(?:{alts})(?![A-Za-z0-9])", re.IGNORECASE)
 
 
+# The "name" rule is referenced separately by `classify_column` so it
+# can be suppressed for `<denylist>_name` shapes (S1 guard). Holding it
+# as a named module constant keeps the lookup branch-free (`is` check
+# against the canonical pattern object) rather than relying on a label
+# field threaded through every other rule's row.
+_NAME_RULE_PATTERN: Final[re.Pattern[str]] = _kw(
+    "name",
+    "user_name",
+    "customer_name",
+    "display_name",
+    "legal_name",
+    "contact_name",
+)
+_NAME_RULE_CATS: Final[frozenset[PIICategory]] = frozenset({"contact"})
+
 # Rule table — `(compiled_regex, frozenset[PIICategory])`. Order is
 # stable for deterministic iteration but does NOT imply precedence:
 # every matching rule contributes its categories via set union.
@@ -77,22 +116,10 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
     ),
     # Bare name variants — common ecommerce/CRM shapes (`user_name`,
     # `customer_name`, `display_name`, `legal_name`). The `name`
-    # alternative covers the bare column too.
-    (
-        _kw(
-            "name",
-            "user_name",
-            "customer_name",
-            "display_name",
-            "legal_name",
-            "contact_name",
-        ),
-        frozenset({"contact"}),
-    ),
-    (
-        _kw("dob", "date_of_birth", "birth_date", "birthdate"),
-        frozenset({"contact"}),
-    ),
+    # alternative covers the bare column too. This rule is held as
+    # `_NAME_RULE_PATTERN` above so the S1 denylist can skip it on
+    # `<noun>_name` shapes (`product_name`, `category_name`, etc.).
+    (_NAME_RULE_PATTERN, _NAME_RULE_CATS),
     (_kw("zip", "zip_code", "postal_code"), frozenset({"contact"})),
     (_kw("city", "state", "country"), frozenset({"contact"})),
     # ---- financial ----
@@ -129,11 +156,34 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
         ),
         frozenset({"health"}),
     ),
+    # `patient` matches `patient_id`, `patient_name`, `patient_age`,
+    # etc. `insurance_id` and `health_record` cover HIPAA insurance
+    # identifiers + medical record references that the existing `mrn`
+    # rule misses. `patient` deliberately matches as a substring per
+    # the breadth-over-precision posture — `patient_satisfaction_score`
+    # will over-tag, which is consistent with the design.
+    (
+        _kw("patient", "insurance_id", "health_record"),
+        frozenset({"health"}),
+    ),
     # ---- genetic ----
     (_kw("genome", "genotype", "dna_seq", "rsid"), frozenset({"genetic"})),
     # ---- biometric ----
+    # `face_embedding`/`face_print`/`face_vector` are common shapes for
+    # the BYTEA / vector storage of facial biometrics; the existing
+    # `face_id` / `face_hash` rule misses them.
     (
-        _kw("fingerprint", "face_id", "face_hash", "voiceprint", "iris", "biometric"),
+        _kw(
+            "fingerprint",
+            "face_id",
+            "face_hash",
+            "face_embedding",
+            "face_print",
+            "face_vector",
+            "voiceprint",
+            "iris",
+            "biometric",
+        ),
         frozenset({"biometric"}),
     ),
     # ---- behavioral ----
@@ -150,7 +200,7 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
         frozenset({"online_identifier"}),
     ),
     (
-        _kw("cookie_id", "device_id", "idfa", "gaid"),
+        _kw("cookie_id", "device_id", "session_id", "idfa", "gaid"),
         frozenset({"online_identifier"}),
     ),
     (
@@ -168,8 +218,19 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
     # ---- government_id ----
     (_kw("ssn", "tin", "nino"), frozenset({"government_id"})),
     (_kw("passport"), frozenset({"government_id"})),
+    # Plural `drivers_license` / `drivers_license_number` join the
+    # singular variants — both shapes are common.
     (
-        _kw("driver_license", "dl_number", "dl_no", "driver_license_number"),
+        _kw(
+            "driver_license",
+            "driver_licence",
+            "drivers_license",
+            "drivers_licence",
+            "dl_number",
+            "dl_no",
+            "driver_license_number",
+            "drivers_license_number",
+        ),
         frozenset({"government_id"}),
     ),
     (_kw("tax_id"), frozenset({"government_id"})),
@@ -181,6 +242,14 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
     (_kw("lat", "latitude", "lon", "lng", "longitude"), frozenset({"location"})),
     (_kw("geolocation", "gps", "coords", "coord"), frozenset({"location"})),
     # ---- demographic_protected ----
+    # DOB and birthdate variants live here, NOT in `contact`. DOB is
+    # a HIPAA Safe Harbor identifier and a GDPR Article 9 attribute;
+    # tagging it `contact` (as v1 did) understates the sensitivity
+    # bucket the audit pipeline should group it under.
+    (
+        _kw("dob", "date_of_birth", "birth_date", "birthdate"),
+        frozenset({"demographic_protected"}),
+    ),
     (
         _kw("race", "ethnicity", "religion"),
         frozenset({"demographic_protected"}),
@@ -198,8 +267,13 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
         ),
         frozenset({"demographic_protected"}),
     ),
+    # `age` is a HIPAA Safe Harbor identifier (ages > 89 specifically,
+    # but the column itself is the demographic attribute) and a GDPR
+    # demographic attribute. Joins the same demographic_protected
+    # group as gender / nationality.
     (
         _kw(
+            "age",
             "gender",
             "sex",
             "disability",
@@ -216,23 +290,174 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
 RULE_COUNT: Final[int] = len(_RULES)
 
 
+# ----- S1: `<noun>_name` denylist ----------------------------------
+# Common thing-noun prefixes that should NOT classify when paired
+# with `_name`. The classifier suppresses the `_NAME_RULE_PATTERN`
+# match for columns of shape `^<prefix>_name$`. Other rule matches
+# on the same column still fire — e.g. `country_name` still matches
+# the `country` rule (contact). The S1 fix targets the specific
+# false-positive shape the production smoke surfaced (`product_name`
+# in catalog tables), not the broader question of table-level context.
+_NON_PII_NAME_PREFIXES: Final[frozenset[str]] = frozenset(
+    {
+        "product",
+        "brand",
+        "category",
+        "language",
+        "currency",
+        "tag",
+        "event",
+        "company",
+        "organization",
+        "team",
+        "department",
+        "region",
+        "zone",
+        "feature",
+        "setting",
+        "field",
+        "column",
+        "table",
+        "database",
+        "service",
+        "process",
+        "task",
+        "job",
+        "file",
+        "directory",
+        "folder",
+        "bucket",
+        "device",
+        "app",
+        "module",
+        "plugin",
+        "report",
+        "dashboard",
+        "widget",
+        "channel",
+        "topic",
+        "queue",
+        "host",
+        "cluster",
+    }
+)
+_NON_PII_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    rf"^(?:{'|'.join(sorted(_NON_PII_NAME_PREFIXES))})_name$",
+    re.IGNORECASE,
+)
+
+
+# ----- S2: integer-FK guard ----------------------------------------
+# Categories where the FK itself remains PII even as an integer
+# reference. Examples:
+#   - `patient_id BIGINT` is a HIPAA identifier even though the actual
+#     name/DOB live on the patients table.
+#   - `cookie_id BIGINT` is an online identifier.
+#   - `national_id BIGINT` is a government ID.
+# Categories outside this set (`contact`, `financial`, `payment_card`,
+# `location`, `behavioral`, `biometric`, `genetic`) are inherited
+# only through the referenced row; the integer FK itself doesn't
+# leak that content, so the guard strips them.
+_FK_SAFE_CATEGORIES: Final[frozenset[PIICategory]] = frozenset(
+    {
+        "credential",
+        "online_identifier",
+        "government_id",
+        "health",
+        "demographic_protected",
+    }
+)
+# Integer-like data type prefixes (lowercased). Postgres, MySQL,
+# SQLite, SQLAlchemy default reflection — all covered. The matcher
+# strips `(N)` parameterisation suffixes before comparison, so
+# `INTEGER(11)` and `BIGINT(20)` work too.
+_INTEGER_TYPE_PREFIXES: Final[frozenset[str]] = frozenset(
+    {
+        "int",
+        "integer",
+        "bigint",
+        "smallint",
+        "tinyint",
+        "mediumint",
+        "int2",
+        "int4",
+        "int8",
+        "serial",
+        "bigserial",
+        "smallserial",
+        "number",  # Oracle
+        "numeric",  # Postgres NUMERIC with no precision args
+    }
+)
+# Column-name shape for the FK guard: `<word>_id`, all lowercase
+# alphanumeric segments. Excludes bare `id` (PKs) and shapes like
+# `id_card` (which wouldn't match the rule's id-keyword anyway).
+_FK_SHAPE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*_id$",
+    re.IGNORECASE,
+)
+
+
+def _is_integer_type(column_type: str) -> bool:
+    """Return True when `column_type` is an integer-like SQL type.
+
+    Strips `(N[, M])` parameter suffixes and `[]` array suffixes so
+    `BIGINT(20)`, `INTEGER(11)`, and `int4[]` all classify as integer.
+    """
+    bare = column_type.split("(", 1)[0].split("[", 1)[0].strip().lower()
+    return bare in _INTEGER_TYPE_PREFIXES
+
+
 def classify_column(
     column_name: str,
+    column_type: str | None = None,
     shape_patterns: tuple[str, ...] = (),  # reserved for future heuristics
 ) -> tuple[Sensitivity, frozenset[PIICategory]]:
-    """Classify a single column by name.
+    """Classify a single column by name (and optionally declared type).
 
     Returns `(sensitivity, categories)`:
       - `sensitivity` is `"pii"` if any category matched, else `"public"`.
-      - `categories` is the union of all matched rules' category sets.
+      - `categories` is the union of all matched rules' category sets,
+        subject to two refinements:
+
+          * S1 guard — when `column_name` is a `<noun>_name` shape in
+            the non-PII-noun denylist, the bare-name / `<x>_name`
+            contact rule is skipped. Other rule matches still fire.
+
+          * S2 guard — when `column_type` is integer-like AND
+            `column_name` matches the `<token>_id` FK shape, the
+            matched category set is intersected with
+            `_FK_SAFE_CATEGORIES`. The remaining categories are those
+            where the FK itself remains PII even as an integer ref.
+
+    `column_type` is optional; passing `None` (the v0.3.0 default
+    behaviour) skips the S2 guard. Callers that have the source-of-
+    truth data type (the indexer) should pass it through.
 
     `shape_patterns` is in the signature so a future heuristic refinement
     can read it without changing the contract. v1 ignores it.
     """
+    # S1: detect `<denylist>_name` shape up front so the name rule
+    # can be skipped in the loop. Set membership check via fullmatch
+    # so suffix collisions don't slip through.
+    skip_name_rule = _NON_PII_NAME_RE.fullmatch(column_name) is not None
+
     matched: set[PIICategory] = set()
     for pattern, cats in _RULES:
+        if skip_name_rule and pattern is _NAME_RULE_PATTERN:
+            continue
         if pattern.search(column_name):
             matched.update(cats)
+
+    # S2: integer-FK guard. Apply AFTER all rules so we can intersect
+    # the union with the FK-safe allowlist rather than per-rule logic.
+    if (
+        column_type is not None
+        and _is_integer_type(column_type)
+        and _FK_SHAPE_RE.fullmatch(column_name)
+    ):
+        matched &= _FK_SAFE_CATEGORIES
+
     if not matched:
         return ("public", frozenset())
     return ("pii", frozenset(matched))

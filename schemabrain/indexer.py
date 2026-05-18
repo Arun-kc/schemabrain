@@ -422,6 +422,7 @@ def index(
             classified = {
                 col.name: classify_column(
                     col.name,
+                    column_type=col.data_type,
                     shape_patterns=stats[col.name].shape_patterns if col.name in stats else (),
                 )
                 for col in table.columns
