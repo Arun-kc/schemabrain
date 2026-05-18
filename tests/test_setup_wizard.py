@@ -1371,6 +1371,32 @@ class TestStageEntities:
         assert outcome.status == "skipped"
         assert "no indexed tables" in outcome.message
 
+    def test_failed_on_llm_client_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Regression: max_tokens (or any other RuntimeError from
+        # anthropic_client._extract_text, plus broader SDK/network
+        # errors) must surface as a structured failed StageOutcome —
+        # not an unhandled traceback that crashes the wizard.
+        cfg = _pg_config(base_config)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._LLMClientErrorAtWizard(
+                "Anthropic hit max_tokens before finishing the description."
+            )
+
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", _raise)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "LLM call failed" in outcome.message
+        assert "max_tokens" in outcome.message
+        assert outcome.next_step is not None
+        assert "max_tokens" in outcome.next_step
+
     def test_failed_when_pipeline_returns_zero_candidates(
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2177,6 +2203,66 @@ class TestRunEntitySuggestionSmoke:
                 cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=1.0
             )
 
+    def test_translates_runtime_error_to_llm_client_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Regression for the post-PR-#65 smoke finding: the bare
+        # RuntimeError raised by anthropic_client._extract_text on a
+        # `max_tokens` truncation propagated through the pipeline and
+        # crashed the wizard with a traceback. The fix wraps the
+        # pipeline call in a catch-all that re-raises as
+        # _LLMClientErrorAtWizard so the stage handler can produce a
+        # structured failed StageOutcome.
+        cfg = _pg_config(base_config)
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_tables(self, *, source_connection_id: str) -> list[tuple[str, str]]:
+                return [("public", "t")]
+
+            def get_table(self, *_a: object, **_kw: object) -> object:
+                return object()
+
+        class _RaisingPipeline:
+            def __init__(self, *, llm: object) -> None:
+                pass
+
+            def propose_from_tables(self, _tables: object) -> object:
+                # The exact shape the user hit in the 2026-05-18 smoke.
+                raise RuntimeError(
+                    "Anthropic hit max_tokens before finishing the description. "
+                    "The reply was truncated; either the model went off-prompt "
+                    "or max_output_tokens needs raising."
+                )
+
+        class _FakeGuard:
+            def __init__(self, **_kw: object) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr(
+            "schemabrain.entities.suggest.EntitySuggestionPipeline", _RaisingPipeline
+        )
+        monkeypatch.setattr("schemabrain.entities.suggest.CostCeilingGuard", _FakeGuard)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        with pytest.raises(wizard._LLMClientErrorAtWizard) as excinfo:
+            wizard._run_entity_suggestion(
+                cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=1.0
+            )
+        assert "max_tokens" in excinfo.value.message
+
     def test_partial_apply_breaks_on_integrity_error(
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2509,6 +2595,35 @@ class TestStageMetrics:
 
         assert outcome.status == "skipped"
         assert "no indexed tables" in outcome.message
+
+    def test_failed_on_llm_client_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Stage-4 mirror of TestStageEntities.test_failed_on_llm_client_error.
+        # Regression for the post-PR-#65 smoke finding: max_tokens (or
+        # any other LLM-side RuntimeError) must surface as a structured
+        # failed StageOutcome instead of crashing the wizard.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 5)
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._LLMClientErrorAtWizard(
+                "Anthropic hit max_tokens before finishing the description."
+            )
+
+        monkeypatch.setattr(wizard, "_run_metric_suggestion", _raise)
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "LLM call failed" in outcome.message
+        assert "max_tokens" in outcome.message
+        assert outcome.next_step is not None
+        assert "metrics apply" in outcome.next_step
 
     def test_failed_when_pipeline_returns_zero_candidates(
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
@@ -3297,6 +3412,64 @@ class TestRunMetricSuggestionSmoke:
             wizard._run_metric_suggestion(
                 cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=1.0
             )
+
+    def test_translates_runtime_error_to_llm_client_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Stage-4 mirror of the same regression test on the entity side.
+        # The bare RuntimeError raised by anthropic_client._extract_text
+        # on `max_tokens` truncation must be re-raised as
+        # _LLMClientErrorAtWizard so the stage handler can produce a
+        # structured failed StageOutcome.
+        cfg = _pg_config(base_config)
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_entities(self, *, source_connection_id: str) -> list[object]:
+                return [object()]
+
+            def list_tables(self, *, source_connection_id: str) -> list[tuple[str, str]]:
+                return [("public", "t")]
+
+            def get_table(self, *_a: object, **_kw: object) -> object:
+                return object()
+
+        class _RaisingPipeline:
+            def __init__(self, *, llm: object) -> None:
+                pass
+
+            def propose_from_entities(self, _entities: object, _tables: object) -> object:
+                raise RuntimeError(
+                    "Anthropic hit max_tokens before finishing the description."
+                )
+
+        class _FakeGuard:
+            def __init__(self, **_kw: object) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr(
+            "schemabrain.metrics.suggest.MetricSuggestionPipeline", _RaisingPipeline
+        )
+        monkeypatch.setattr("schemabrain.entities.suggest.CostCeilingGuard", _FakeGuard)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        with pytest.raises(wizard._LLMClientErrorAtWizard) as excinfo:
+            wizard._run_metric_suggestion(
+                cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=1.0
+            )
+        assert "max_tokens" in excinfo.value.message
 
     def test_partial_apply_breaks_on_dbt_owned_error(
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch

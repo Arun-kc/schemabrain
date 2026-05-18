@@ -1011,6 +1011,16 @@ def _stage_entities(ctx: WizardContext) -> StageOutcome:
             message=f"LLM returned unparseable response: {exc.message}",
             next_step="re-run — transient LLM hiccups usually clear",
         )
+    except _LLMClientErrorAtWizard as exc:
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="failed",
+            message=f"LLM call failed: {exc.message}",
+            next_step="re-run — transient LLM/network errors usually clear. "
+            "If the message mentions `max_tokens`, the model went off-prompt; "
+            "re-run or curate entities by hand via `schemabrain entities apply`.",
+        )
     except _EmptySchemaAtWizard:
         return StageOutcome(
             stage=3,
@@ -1118,6 +1128,29 @@ class _SuggestionParseAtWizard(Exception):
 
 class _EmptySchemaAtWizard(Exception):
     pass
+
+
+class _LLMClientErrorAtWizard(Exception):
+    """Wraps any LLM client-side failure surfaced from `propose_from_*`.
+
+    Today's known triggers: the bare `RuntimeError` raised by
+    `enrichment.anthropic_client._extract_text` when the model hits
+    `max_tokens` or returns a non-text first block. Also catches
+    network / SDK errors (HTTP timeouts, rate-limit `APIError`
+    subclasses) that aren't classified by the more-specific
+    `CostCeilingExceededError` / `SuggestionParseError` catches.
+
+    Without this wrapper, those exceptions propagate through
+    `pipeline.propose_from_*` → `_run_*_suggestion` → stage handler →
+    `run_wizard` → `_cmd_init` → user sees an unhandled traceback,
+    which violates the documented "best-effort" contract for stages
+    3 / 4 / 5 (failure records a guided StageOutcome, doesn't abort
+    the wizard).
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
 
 
 class _DbtImportFailedAtWizard(Exception):
@@ -1255,6 +1288,17 @@ def _run_entity_suggestion(
             raise _CostCeilingExceededAtWizard(str(exc)) from exc
         except SuggestionParseError as exc:
             raise _SuggestionParseAtWizard(str(exc)) from exc
+        except Exception as exc:
+            # Narrow scope: only the LLM round-trip is inside this try.
+            # Local validation, store reads, and the apply-loop happen
+            # outside, so a bug there still surfaces as a traceback (we
+            # want loud failure on local programming bugs). Anything
+            # escaping `propose_from_tables` that isn't already typed is
+            # by elimination an LLM-client or network failure — surface
+            # it as a structured `_LLMClientErrorAtWizard` so the stage
+            # handler can produce a failed StageOutcome instead of
+            # letting the wizard crash mid-pipeline.
+            raise _LLMClientErrorAtWizard(str(exc) or type(exc).__name__) from exc
 
         applied = 0
         skip_reason: str | None = None
@@ -1610,6 +1654,16 @@ def _stage_metrics(ctx: WizardContext) -> StageOutcome:
             message=f"LLM returned unparseable response: {exc.message}",
             next_step="re-run — transient LLM hiccups usually clear",
         )
+    except _LLMClientErrorAtWizard as exc:
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="failed",
+            message=f"LLM call failed: {exc.message}",
+            next_step="re-run — transient LLM/network errors usually clear. "
+            "If the message mentions `max_tokens`, the model went off-prompt; "
+            "re-run or curate metrics by hand via `schemabrain metrics apply`.",
+        )
     except _EmptySchemaAtWizard:
         return StageOutcome(
             stage=4,
@@ -1815,6 +1869,13 @@ def _run_metric_suggestion(
             raise _CostCeilingExceededAtWizard(str(exc)) from exc
         except SuggestionParseError as exc:
             raise _SuggestionParseAtWizard(str(exc)) from exc
+        except Exception as exc:
+            # Same narrow-scope LLM-error wrapper as stage 3 — see
+            # `_run_entity_suggestion` for the rationale. Re-raising as
+            # `_LLMClientErrorAtWizard` keeps stage 4's failure path
+            # structured (failed StageOutcome with recovery hint)
+            # rather than crashing the wizard mid-pipeline.
+            raise _LLMClientErrorAtWizard(str(exc) or type(exc).__name__) from exc
 
         applied = 0
         skip_reason: str | None = None
