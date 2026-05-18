@@ -18,7 +18,13 @@
 #     fixture applied.
 #   - ANTHROPIC_API_KEY exported in the recording shell so stage 3 of
 #     init does NOT skip (a skipped stage 3 means no entities are
-#     applied and Act 3's get_metric call has nothing to resolve).
+#     applied and Act 3's get_metric call has nothing to resolve, AND
+#     Act 2's `inspect customer` drill exits 1 with a guided error
+#     instead of rendering — the recording will look broken).
+#   - Pre-warm the fastembed model cache by running `schemabrain init`
+#     manually once before recording. The Sleep budget below assumes
+#     the embedding model is already on disk; a cold first-run download
+#     can take 30s+ on its own.
 #   - vhs installed (`brew install vhs` or
 #     `go install github.com/charmbracelet/vhs@latest`).
 
@@ -45,9 +51,11 @@ Enter
 Sleep 400ms
 Type "schemabrain init --url-env DATABASE_URL --store-path ./demo.db"
 Enter
-# The wizard renders five stages with per-stage timing — leave room
-# for it to print to completion before continuing.
-Sleep 8s
+# The wizard renders five stages: doctor → connect → entities (LLM) →
+# joins → metrics. Stage 3 makes a live Haiku call which adds 5–10s
+# on top of indexing. 20s is the headroom needed for a warm-cache run;
+# bump higher if mid-stage cuts appear at re-render time.
+Sleep 20s
 
 # --- Act 2: inspect -------------------------------------------------------
 Type "# Look at the surface the agent will see — no LLM call needed."

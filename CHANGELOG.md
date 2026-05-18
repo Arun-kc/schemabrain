@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Documentation accuracy pass (pre-tag audit).** Three-agent verification
+  of README, `docs/mcp-tools.md`, and `docs/assets/demo.tape` against the
+  shipped code surfaced the following inaccuracies, all now corrected:
+  - **README Sample-session `tail` excerpt** now shows the actual two-line
+    renderer output (event header on line 1, indented `→ result in Nms` on
+    line 2) — the previous single-line condensation didn't match what
+    `schemabrain tail` actually prints.
+  - **README §4 doctor check count** softened from `11 checks` to
+    `up to 11 checks`. The full set runs for Claude Desktop on macOS/Windows
+    with a Postgres source URL; Linux, claude-code, and source-less
+    invocations skip the inapplicable checks.
+  - **`docs/mcp-tools.md` `get_example_queries` response sample** keyed
+    into `items` but the actual `ExampleQueriesResult` field is `queries`.
+    Sample also advertised `first_seen_at` / `last_seen_at` fields that
+    don't exist on `ExampleQueryItem`. Both corrected to match the model.
+  - **`docs/mcp-tools.md` `describe_entity` sample** showed
+    `pii_sensitivity: "pii"` on the `email` column, but the field is
+    currently hardcoded to `"public"` on every column (a wire-shape
+    placeholder for upcoming column-level classification). Sample now
+    matches the actual response; prose explains the placeholder.
+  - **`docs/mcp-tools.md` `get_metric`** now documents that non-empty
+    `fan_out_join_names` downgrades the envelope to `status="degraded"`
+    with `confidence="MEDIUM"` — the machine-readable signal the agent
+    should key on, previously left implicit.
+  - **`docs/mcp-tools.md` `resolve_join`** previously only documented
+    `error.kind="ambiguous_join"`. Now also documents the three other
+    real error kinds: `no_canonical_join`, `unknown_join_name`,
+    `join_name_mismatch`, each with its recovery hint.
+- **`docs/assets/demo.tape`** — `Sleep 8s` after `schemabrain init`
+  bumped to `Sleep 20s` to cover the stage-3 Haiku call on top of
+  indexing. Header comment now also flags that `schemabrain init` must
+  be run manually once before recording to warm the fastembed model
+  cache (a cold first-run download can exceed the entire act's Sleep
+  budget on its own), and that a skipped stage 3 will also break Act 2's
+  `inspect customer` drill.
+
 ### Added
 - **`find_relevant_entities` MCP tool** (10th MCP tool, 5th
   semantic-layer tool). Embedding-cosine retrieval scoped to curated
