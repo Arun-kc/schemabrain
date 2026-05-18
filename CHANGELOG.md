@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-18
+
+This release rounds out the v1 semantic-layer arc. Every layer the
+Charter v1.1 envelope promises — entities, metrics, joins — now ships
+with a `suggest` LLM authoring surface, a store-only `inspect`
+browser, drift detection via `check`, and optional OpenTelemetry span
+emission so existing observability stacks see every MCP tool call.
+The one-command Docker demo stack lands alongside.
+
 ### Added
+- `schemabrain metrics suggest` subcommand — LLM-driven metric
+  suggestion to match the existing `entities suggest` and
+  `joins suggest` surfaces. Reads the local entity store, sends the
+  schema slice and bound tables to Claude (Anthropic), and emits one
+  `Metric` per response candidate with confidence + rationale.
+  Three apply modes: `--dry-run` (preview), `--out-dir DIR` (write
+  YAML sidecars), `--apply` (write straight to the store with
+  per-candidate confirmation). `--top-k N` caps the candidate set;
+  `--max-cost-usd` plus `SCHEMABRAIN_MAX_LLM_COST_USD` enforce a
+  spend ceiling. Refuses on empty entities, unknown anchor entity,
+  empty stub response, out-dir conflicts, missing API key, malformed
+  cost env var, and unwritable out-dir — each with a guided error and
+  exit 2.
 - `schemabrain inspect [<name>]` subcommand — store-only schema
   browser. Bare `inspect` renders a summary of every indexed table,
   entity, metric, and canonical join. `inspect <name>` drills into
@@ -39,6 +61,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`sb-data`) that survives `docker compose down`. README's "Run via
   Docker" section documents the `docker run`-based MCP host wiring
   on top of the demo volume.
+- `schemabrain[otel]` optional extra — emits one OpenTelemetry span
+  per MCP tool call when both the extra is installed AND
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Spans carry `gen_ai.*`
+  semantic-convention attributes plus schemabrain-specific result
+  facets (matches, columns, paths, rows, fingerprint). Span name is
+  `execute_tool`; status maps to OTel `OK` for the four success
+  envelope variants and `ERROR` for `error` / `refused`. OTLP/HTTP
+  exporter speaks to Langfuse, Phoenix, OpenLIT, otel-tui,
+  otel-desktop-viewer, Datadog — see `docs/observability.md` for
+  per-backend recipes. Off by default; zero overhead when the
+  endpoint env var is unset. Without the extra, `pip install
+  schemabrain` works identically.
+- `entities list` subcommand — completes the symmetry with
+  `joins list` and `metrics list`. Renders the alphabetised entity
+  catalog for a given source.
+
+### Changed
+- Version bump to `0.3.0` — the v1 semantic-layer arc end-state.
+  Per the locked versioning policy in
+  `project_versioning_policy.md`, `1.0.0` waits until the MCP / CLI /
+  Store-Protocol surface has been used in anger by external users
+  without a forced break. The roadmap milestone "v1" and the semver
+  number `1.0.0` are deliberately decoupled.
+- `Development Status` PyPI classifier bumped `2 - Pre-Alpha` →
+  `3 - Alpha`.
+- `audit list --limit` now rejects negative values at parse time. SQLite
+  treats `LIMIT -1` as "unlimited", which silently returned the entire
+  audit history when a user typo'd a positive number. Argparse converter
+  blocks any value below zero with a clear message.
+- `audit list` and `audit verify` read paths now warn on schema-version
+  drift. The read paths open the store with raw `sqlite3.connect` to
+  bypass SQLiteStore's strict `SchemaVersionMismatchError`; a future-
+  version store or tampered meta row was rendering with no signal that
+  drift had occurred. New `_warn_on_schema_drift` helper distinguishes
+  three cases: meta-table missing (silent — pre-v11 store), meta-row
+  missing (warn), and version mismatch (warn with capped echo).
+- `UnknownMetricError.metric_name` echo is now capped at 200 chars.
+  Closes a 100 KB context-window-exhaustion vector where an agent
+  passing a hostile long metric name would have flooded the error
+  message into the response envelope.
+
+### Documentation
+- `docs/observability.md` expanded with OTel integration section:
+  span shape, attribute map, status mapping, per-backend recipes
+  (Langfuse / Phoenix / OpenLIT / otel-tui), and limits (orphan
+  spans, no args on spans, semantic-conventions migration risk).
+- `docs/adr/` expanded from one to four ADRs:
+  - `0002-store-protocol-seam.md` — Store as the universal write
+    substrate seam across v1 (SQLite local) and v3 (hosted Postgres).
+  - `0003-versioning-policy.md` — strict-semver interpretation;
+    `1.0.0` waits for battle-tested API.
+  - `0004-observability-event-bus.md` — the JSONL event bus as
+    three-consumer substrate (tail / audit / OTel), with the OTel
+    emission decisions locked.
 
 ## [0.2.0a1] - 2026-05-15
 
@@ -247,6 +323,7 @@ First public preview. Live on PyPI as `schemabrain==0.1.0a1`.
 - MIT license; SSH-signed commits; CI on Python 3.11 + 3.12 (Linux
   unit) plus Docker Postgres integration with `--cov-fail-under=99`.
 
-[Unreleased]: https://github.com/Arun-kc/schemabrain/compare/v0.2.0a1...HEAD
+[Unreleased]: https://github.com/Arun-kc/schemabrain/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Arun-kc/schemabrain/compare/v0.2.0a1...v0.3.0
 [0.2.0a1]: https://github.com/Arun-kc/schemabrain/releases/tag/v0.2.0a1
 [0.1.0a1]: https://github.com/Arun-kc/schemabrain/releases/tag/v0.1.0a1
