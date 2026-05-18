@@ -5,10 +5,11 @@ Covers:
   - `StageOutcome` validation invariants
   - `WizardResult.aborted_at` property
   - `run_wizard` state machine (happy path + abort-on-fail per stage +
-    continue-on-fail at stage 3)
+    continue-on-fail at stages 3 and 4)
   - Production stage handlers (`_stage_source_check`, `_stage_index`,
-    `_stage_entities`, `_stage_wire_host`, `_stage_next_step`) via
-    monkeypatched dependencies — no real database is required.
+    `_stage_entities`, `_stage_metrics`, `_stage_wire_host`,
+    `_stage_next_step`) via monkeypatched dependencies — no real
+    database is required.
 """
 
 from __future__ import annotations
@@ -206,6 +207,29 @@ class TestWizardConfigInvariants:
         cfg = self._build(entities_max_cost_usd=0.5)
         assert cfg.entities_max_cost_usd == 0.5
 
+    def test_rejects_zero_metrics_max_cost(self) -> None:
+        with pytest.raises(ValueError, match="metrics_max_cost_usd"):
+            self._build(metrics_max_cost_usd=0)
+
+    def test_rejects_negative_metrics_max_cost(self) -> None:
+        with pytest.raises(ValueError, match="metrics_max_cost_usd"):
+            self._build(metrics_max_cost_usd=-1.0)
+
+    def test_accepts_none_metrics_max_cost(self) -> None:
+        cfg = self._build(metrics_max_cost_usd=None)
+        assert cfg.metrics_max_cost_usd is None
+
+    def test_accepts_positive_metrics_max_cost(self) -> None:
+        cfg = self._build(metrics_max_cost_usd=0.25)
+        assert cfg.metrics_max_cost_usd == 0.25
+
+    def test_no_metrics_defaults_to_false(self) -> None:
+        # New optional field — existing positional + keyword callers
+        # should not need to know it exists. Default must be `False`
+        # to preserve the prior wizard behaviour (run the stage).
+        cfg = self._build()
+        assert cfg.no_metrics is False
+
 
 # ----- WizardResult.aborted_at --------------------------------------------
 
@@ -318,7 +342,7 @@ class TestRunWizardStateMachine:
         # `run_default_wizard` delegates to `run_wizard` with `DEFAULT_STAGES`.
         # We monkeypatch all the substrate calls so the wizard runs end-to-end
         # without a live database or a real host config — the assertion is that
-        # the default stage list reaches stage 5 with this stubbing in place.
+        # the default stage list reaches stage 6 with this stubbing in place.
         # `skip_index=True` short-circuits the stage-2 Postgres-only refusal
         # without us having to stub the whole indexer pipeline.
         cfg = WizardConfig(
@@ -356,11 +380,12 @@ class TestRunWizardStateMachine:
 
         result = run_default_wizard(cfg)
         assert result.aborted is False
-        assert len(result.outcomes) == 5
+        assert len(result.outcomes) == 6
         assert [o.name for o in result.outcomes] == [
             "source_check",
             "index",
             "entities",
+            "metrics",
             "wire_host",
             "next_step",
         ]
@@ -1713,6 +1738,810 @@ class TestRunEntitySuggestionSmoke:
         assert applied == ["orders"]
 
 
+# ----- _stage_metrics ------------------------------------------------------
+
+
+class TestStageMetrics:
+    """Tests for `_stage_metrics`.
+
+    Mirror of `TestStageEntities`. The metrics stage adds one branch
+    on top of the entity tree: an empty entity store skips the stage
+    with a pointer at entity curation first. Tests cover all six
+    skip branches + the four LLM-result branches (done /
+    cost-ceiling / parse-error / empty-schema / zero-candidates /
+    partial-success).
+    """
+
+    def test_skipped_when_no_metrics_flag_set(self, base_config: WizardConfig) -> None:
+        cfg = _pg_config(base_config, no_metrics=True)
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert outcome.stage == 4
+        assert outcome.name == "metrics"
+        assert "--no-metrics" in outcome.message
+        assert "metrics suggest" in (outcome.next_step or "")
+
+    def test_skipped_when_skip_index_set(self, base_config: WizardConfig) -> None:
+        cfg = _pg_config(base_config, skip_index=True)
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "--skip-index" in outcome.message
+
+    def test_skipped_for_non_postgres_source(self, base_config: WizardConfig) -> None:
+        # base_config has sqlite:///:memory:
+        outcome = wizard._stage_metrics(WizardContext(config=base_config))
+
+        assert outcome.status == "skipped"
+        assert "Postgres" in outcome.message
+
+    def test_skipped_when_anthropic_key_missing(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Stage 4 is best-effort — missing key is `skipped`, not `failed`.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        # Pretend the store has zero metrics AND one entity so we
+        # reach the API-key check (the empty-entity guard would short-
+        # circuit earlier otherwise).
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 3)
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "ANTHROPIC_API_KEY" in outcome.message
+
+    def test_skipped_when_metrics_already_present(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 7)
+        monkeypatch.setattr(
+            wizard,
+            "_run_metric_suggestion",
+            lambda **_kw: pytest.fail("pipeline ran despite idempotent skip"),
+        )
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "7 metric" in outcome.message
+
+    def test_skipped_when_entity_store_empty(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The cross-stage dependency PR A introduces: metrics anchor
+        # on entities, and an empty entity store means the pipeline
+        # has nothing to anchor on. The stage must short-circuit
+        # cleanly with a pointer at entity curation first — instead
+        # of letting the pipeline raise `ValueError`.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(
+            wizard,
+            "_run_metric_suggestion",
+            lambda **_kw: pytest.fail("pipeline ran despite empty entity store"),
+        )
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "entity store is empty" in outcome.message
+        assert outcome.next_step is not None
+        assert "schemabrain entities suggest --apply" in outcome.next_step
+
+    def test_skipped_when_store_file_missing(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No store file at all → treat as empty entity store. Stage 2
+        # was skipped AND no prior session indexed; there are no
+        # entities to anchor on.
+        cfg = _pg_config(base_config)
+        # Do NOT touch the store path — it should not exist.
+        assert not cfg.store_path.exists()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "entity store is empty" in outcome.message
+
+    def test_failed_on_schema_version_mismatch(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        peek_failure = StageOutcome(
+            stage=4,
+            name="metrics",
+            status="failed",
+            message="store created with schema v10 but installed schemabrain expects v12",
+            next_step=f"delete {cfg.store_path} and re-run",
+        )
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: peek_failure)
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "v10" in outcome.message
+
+    def test_failed_when_entity_peek_returns_outcome(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `_peek_entity_count` may return a StageOutcome on a schema
+        # mismatch or filesystem error. The metrics stage must
+        # translate that stage-3-shaped outcome into a stage-4-shaped
+        # one so the renderer routes the line correctly.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+
+        entity_peek_failure = StageOutcome(
+            stage=3,
+            name="entities",
+            status="failed",
+            message="entity-side schema mismatch",
+            next_step=f"delete {cfg.store_path} and re-run",
+        )
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: entity_peek_failure)
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert outcome.stage == 4
+        assert outcome.name == "metrics"
+        assert "entity-side schema mismatch" in outcome.message
+
+    def test_done_on_successful_apply(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 5)
+        canned = wizard._MetricApplyResult(applied_count=6, cost_usd=0.0080, llm_model="sonnet-4.6")
+        captured: dict[str, object] = {}
+
+        def _fake_run(**kwargs: object) -> wizard._MetricApplyResult:
+            captured.update(kwargs)
+            return canned
+
+        monkeypatch.setattr(wizard, "_run_metric_suggestion", _fake_run)
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "6 metric" in outcome.message
+        assert "$0.0080" in outcome.message
+        # Confirm the wizard's cost cap was passed through.
+        assert isinstance(captured["max_cost_usd"], float)
+
+    def test_failed_on_cost_ceiling(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 5)
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._CostCeilingExceededAtWizard("cost ceiling exceeded")
+
+        monkeypatch.setattr(wizard, "_run_metric_suggestion", _raise)
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert outcome.next_step is not None
+        assert "--metrics-max-cost-usd" in outcome.next_step
+
+    def test_failed_on_parse_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 5)
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._SuggestionParseAtWizard("invalid YAML")
+
+        monkeypatch.setattr(wizard, "_run_metric_suggestion", _raise)
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "unparseable" in outcome.message
+
+    def test_skipped_on_empty_schema(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 5)
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._EmptySchemaAtWizard()
+
+        monkeypatch.setattr(wizard, "_run_metric_suggestion", _raise)
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "skipped"
+        assert "no indexed tables" in outcome.message
+
+    def test_failed_when_pipeline_returns_zero_candidates(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 5)
+
+        empty = wizard._MetricApplyResult(
+            applied_count=0,
+            cost_usd=0.0021,
+            llm_model="x",
+            candidates_proposed=0,
+        )
+        monkeypatch.setattr(wizard, "_run_metric_suggestion", lambda **_kw: empty)
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "0 candidates" in outcome.message
+
+    def test_failed_when_all_candidates_rejected(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # All candidates collided with dbt-imported metrics — applied=0
+        # but candidates_proposed > 0.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 5)
+
+        rejected = wizard._MetricApplyResult(
+            applied_count=0,
+            cost_usd=0.0050,
+            llm_model="x",
+            candidates_proposed=4,
+            skip_reason="DbtOwnedMetricError at 'revenue'",
+        )
+        monkeypatch.setattr(wizard, "_run_metric_suggestion", lambda **_kw: rejected)
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "4 candidates" in outcome.message
+        assert "none could be applied" in outcome.message
+
+    def test_partial_success_reports_skipped_count(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Some metrics applied, others collided mid-loop. Surface the
+        # count + the skip reason so the user can act on the partial.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 5)
+
+        partial = wizard._MetricApplyResult(
+            applied_count=3,
+            cost_usd=0.0150,
+            llm_model="x",
+            candidates_proposed=5,
+            skip_reason="DbtOwnedMetricError at 'aov'",
+        )
+        monkeypatch.setattr(wizard, "_run_metric_suggestion", lambda **_kw: partial)
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert "3 of 5" in outcome.message
+        assert "DbtOwnedMetricError at 'aov'" in outcome.message
+        assert outcome.next_step is not None
+        assert "metrics suggest --dry-run" in outcome.next_step
+
+
+# ----- _resolve_metrics_cost_cap -------------------------------------------
+
+
+class TestResolveMetricsCostCap:
+    def test_uses_explicit_flag_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SCHEMABRAIN_MAX_LLM_COST_USD", "5.0")
+        assert wizard._resolve_metrics_cost_cap(0.25) == 0.25
+
+    def test_falls_back_to_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SCHEMABRAIN_MAX_LLM_COST_USD", "1.25")
+        assert wizard._resolve_metrics_cost_cap(None) == 1.25
+
+    def test_falls_back_to_package_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SCHEMABRAIN_MAX_LLM_COST_USD", raising=False)
+        assert wizard._resolve_metrics_cost_cap(None) == wizard._WIZARD_METRICS_DEFAULT_COST_CAP_USD
+
+    def test_invalid_env_var_warns_and_uses_default(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("SCHEMABRAIN_MAX_LLM_COST_USD", "not-a-number")
+        result = wizard._resolve_metrics_cost_cap(None)
+        captured = capsys.readouterr()
+        assert result == wizard._WIZARD_METRICS_DEFAULT_COST_CAP_USD
+        assert "not a valid number" in captured.err
+
+    def test_non_positive_env_var_warns_and_uses_default(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("SCHEMABRAIN_MAX_LLM_COST_USD", "-1.0")
+        result = wizard._resolve_metrics_cost_cap(None)
+        captured = capsys.readouterr()
+        assert result == wizard._WIZARD_METRICS_DEFAULT_COST_CAP_USD
+        assert "must be positive" in captured.err
+
+
+# ----- _peek_metric_count --------------------------------------------------
+
+
+class TestPeekMetricCount:
+    """Mirror of `TestPeekEntityCount`."""
+
+    def test_returns_zero_for_fresh_store(self, tmp_path: Path) -> None:
+        from schemabrain.core.store import SQLiteStore
+
+        store_path = tmp_path / "peek_metric.db"
+        with SQLiteStore(store_path):
+            pass
+
+        assert wizard._peek_metric_count(store_path, "missing_source") == 0
+
+    def test_returns_failed_outcome_on_schema_mismatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.core.store import SchemaVersionMismatchError
+
+        store_path = tmp_path / "mismatch_metric.db"
+        store_path.touch()
+
+        def _raise_mismatch(*_a: object, **_kw: object) -> None:
+            raise SchemaVersionMismatchError("v10 != v12")
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore.__init__", _raise_mismatch)
+
+        outcome = wizard._peek_metric_count(store_path, "src")
+
+        assert isinstance(outcome, StageOutcome)
+        assert outcome.status == "failed"
+        assert outcome.stage == 4
+        assert outcome.name == "metrics"
+
+    def test_returns_failed_outcome_on_os_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store_path = tmp_path / "unreadable_metric.db"
+        store_path.touch()
+
+        def _raise_os(*_a: object, **_kw: object) -> None:
+            raise OSError("read-only filesystem")
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore.__init__", _raise_os)
+
+        outcome = wizard._peek_metric_count(store_path, "src")
+
+        assert isinstance(outcome, StageOutcome)
+        assert outcome.status == "failed"
+        assert "store unreadable" in outcome.message
+        assert outcome.stage == 4
+
+
+# ----- _run_metric_suggestion ----------------------------------------------
+
+
+class TestRunMetricSuggestionSmoke:
+    """Mirror of `TestRunEntitySuggestionSmoke`. Substitutes every
+    external dependency (LLM client, pipeline, cost guard, SQLite
+    store) so the function's wiring is verified without standing up
+    Anthropic or Postgres.
+    """
+
+    def test_pipeline_invoked_and_writes_applied(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.metrics.suggest import MetricSuggestionResult
+
+        cfg = _pg_config(base_config)
+
+        class _FakeMetric:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        class _FakeCandidate:
+            def __init__(self, name: str) -> None:
+                self.metric = _FakeMetric(name=name)
+
+        canned = MetricSuggestionResult(
+            candidates=(_FakeCandidate("revenue"), _FakeCandidate("orders_placed")),  # type: ignore[arg-type]
+            total_cost_usd=0.0080,
+            llm_model="sonnet-4.6",
+        )
+
+        applied_writes: list[str] = []
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_entities(self, *, source_connection_id: str) -> list[object]:
+                return [object(), object()]
+
+            def list_tables(self, *, source_connection_id: str) -> list[tuple[str, str]]:
+                return [("public", "orders"), ("public", "users")]
+
+            def get_table(self, _schema: str, name: str, *, source_connection_id: str) -> object:
+                return object()
+
+            def write_metric(self, metric: object, *, source_connection_id: str) -> None:
+                applied_writes.append(metric.name)  # type: ignore[attr-defined]
+
+        class _FakePipeline:
+            def __init__(self, *, llm: object) -> None:
+                pass
+
+            def propose_from_entities(
+                self, _entities: object, _tables: object
+            ) -> MetricSuggestionResult:
+                return canned
+
+        class _FakeGuard:
+            def __init__(self, *, inner: object, max_cost_usd: float) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr("schemabrain.metrics.suggest.MetricSuggestionPipeline", _FakePipeline)
+        monkeypatch.setattr("schemabrain.entities.suggest.CostCeilingGuard", _FakeGuard)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        result = wizard._run_metric_suggestion(
+            cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=0.5
+        )
+
+        assert result.applied_count == 2
+        assert result.cost_usd == 0.0080
+        assert result.llm_model == "sonnet-4.6"
+        assert applied_writes == ["revenue", "orders_placed"]
+
+    def test_raises_empty_schema_when_no_entities(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Defensive race: caller already gated on `_peek_entity_count
+        # == 0`, but entities were dropped between the peek and the
+        # open. Treat the same as empty schema.
+        cfg = _pg_config(base_config)
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_entities(self, *, source_connection_id: str) -> list[object]:
+                return []
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        with pytest.raises(wizard._EmptySchemaAtWizard):
+            wizard._run_metric_suggestion(
+                cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=0.5
+            )
+
+    def test_raises_empty_schema_when_no_tables(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config)
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_entities(self, *, source_connection_id: str) -> list[object]:
+                return [object()]
+
+            def list_tables(self, *, source_connection_id: str) -> list[tuple[str, str]]:
+                return []
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        with pytest.raises(wizard._EmptySchemaAtWizard):
+            wizard._run_metric_suggestion(
+                cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=0.5
+            )
+
+    def test_raises_empty_schema_when_tables_unloadable(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `list_tables` returns names but `get_table` returns None for
+        # each — the cache row exists but the table fingerprints are
+        # missing. Treat as empty-schema.
+        cfg = _pg_config(base_config)
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_entities(self, *, source_connection_id: str) -> list[object]:
+                return [object()]
+
+            def list_tables(self, *, source_connection_id: str) -> list[tuple[str, str]]:
+                return [("public", "ghost")]
+
+            def get_table(self, *_a: object, **_kw: object) -> None:
+                return None
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        with pytest.raises(wizard._EmptySchemaAtWizard):
+            wizard._run_metric_suggestion(
+                cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=0.5
+            )
+
+    def test_translates_cost_ceiling_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.entities.suggest import CostCeilingExceededError
+
+        cfg = _pg_config(base_config)
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_entities(self, *, source_connection_id: str) -> list[object]:
+                return [object()]
+
+            def list_tables(self, *, source_connection_id: str) -> list[tuple[str, str]]:
+                return [("public", "t")]
+
+            def get_table(self, *_a: object, **_kw: object) -> object:
+                return object()
+
+        class _RaisingPipeline:
+            def __init__(self, *, llm: object) -> None:
+                pass
+
+            def propose_from_entities(self, _entities: object, _tables: object) -> object:
+                raise CostCeilingExceededError(
+                    cumulative_cost_usd=0.5,
+                    next_call_estimate_usd=0.6,
+                    max_cost_usd=1.0,
+                )
+
+        class _FakeGuard:
+            def __init__(self, **_kw: object) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr(
+            "schemabrain.metrics.suggest.MetricSuggestionPipeline", _RaisingPipeline
+        )
+        monkeypatch.setattr("schemabrain.entities.suggest.CostCeilingGuard", _FakeGuard)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        with pytest.raises(wizard._CostCeilingExceededAtWizard):
+            wizard._run_metric_suggestion(
+                cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=1.0
+            )
+
+    def test_translates_parse_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.entities.suggest import SuggestionParseError
+
+        cfg = _pg_config(base_config)
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_entities(self, *, source_connection_id: str) -> list[object]:
+                return [object()]
+
+            def list_tables(self, *, source_connection_id: str) -> list[tuple[str, str]]:
+                return [("public", "t")]
+
+            def get_table(self, *_a: object, **_kw: object) -> object:
+                return object()
+
+        class _RaisingPipeline:
+            def __init__(self, *, llm: object) -> None:
+                pass
+
+            def propose_from_entities(self, _entities: object, _tables: object) -> object:
+                raise SuggestionParseError("bad YAML")
+
+        class _FakeGuard:
+            def __init__(self, **_kw: object) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr(
+            "schemabrain.metrics.suggest.MetricSuggestionPipeline", _RaisingPipeline
+        )
+        monkeypatch.setattr("schemabrain.entities.suggest.CostCeilingGuard", _FakeGuard)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        with pytest.raises(wizard._SuggestionParseAtWizard):
+            wizard._run_metric_suggestion(
+                cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=1.0
+            )
+
+    def test_partial_apply_breaks_on_dbt_owned_error(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Verify the `except (DbtOwnedMetricError, IntegrityError): break`
+        # path: write 0 succeeds, write 1 raises, applied=1.
+        from schemabrain.core.store import DbtOwnedMetricError
+        from schemabrain.metrics.suggest import MetricSuggestionResult
+
+        cfg = _pg_config(base_config)
+
+        class _FakeMetric:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        class _FakeCandidate:
+            def __init__(self, name: str) -> None:
+                self.metric = _FakeMetric(name=name)
+
+        canned = MetricSuggestionResult(
+            candidates=(_FakeCandidate("revenue"), _FakeCandidate("aov")),  # type: ignore[arg-type]
+            total_cost_usd=0.01,
+            llm_model="sonnet-4.6",
+        )
+
+        applied: list[str] = []
+
+        class _FakeStore:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+            def list_entities(self, *, source_connection_id: str) -> list[object]:
+                return [object()]
+
+            def list_tables(self, *, source_connection_id: str) -> list[tuple[str, str]]:
+                return [("public", "orders")]
+
+            def get_table(self, *_a: object, **_kw: object) -> object:
+                return object()
+
+            def write_metric(self, metric: object, *, source_connection_id: str) -> None:
+                if metric.name == "aov":  # type: ignore[attr-defined]
+                    raise DbtOwnedMetricError("aov is owned by dbt")
+                applied.append(metric.name)  # type: ignore[attr-defined]
+
+        class _FakePipeline:
+            def __init__(self, *, llm: object) -> None:
+                pass
+
+            def propose_from_entities(
+                self, _entities: object, _tables: object
+            ) -> MetricSuggestionResult:
+                return canned
+
+        class _FakeGuard:
+            def __init__(self, **_kw: object) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _FakeStore)
+        monkeypatch.setattr("schemabrain.metrics.suggest.MetricSuggestionPipeline", _FakePipeline)
+        monkeypatch.setattr("schemabrain.entities.suggest.CostCeilingGuard", _FakeGuard)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda *, api_key: object(),
+        )
+
+        result = wizard._run_metric_suggestion(
+            cfg=cfg, source_id="abcd1234", api_key="sk-ant-test", max_cost_usd=1.0
+        )
+
+        assert result.applied_count == 1
+        assert applied == ["revenue"]
+        assert result.skip_reason is not None
+        assert "DbtOwnedMetricError" in result.skip_reason
+        assert "aov" in result.skip_reason
+
+
 # ----- _stage_wire_host ----------------------------------------------------
 
 
@@ -1806,7 +2635,7 @@ class TestStageNextStep:
         ctx = WizardContext(config=base_config)
         outcome = wizard._stage_next_step(ctx)
 
-        assert outcome.stage == 5
+        assert outcome.stage == 6
         assert outcome.status == "done"
         # Brief status line — the renderer's closing block carries the
         # actionable next-step copy.
@@ -1817,21 +2646,25 @@ class TestStageNextStep:
 
 
 class TestDefaultStages:
-    def test_five_stages_in_order(self) -> None:
-        assert [s.stage for s in DEFAULT_STAGES] == [1, 2, 3, 4, 5]
+    def test_six_stages_in_order(self) -> None:
+        assert [s.stage for s in DEFAULT_STAGES] == [1, 2, 3, 4, 5, 6]
 
     def test_stage_names_match_contract(self) -> None:
         assert [s.name for s in DEFAULT_STAGES] == [
             "source_check",
             "index",
             "entities",
+            "metrics",
             "wire_host",
             "next_step",
         ]
 
-    def test_only_stage_3_is_continue_on_fail(self) -> None:
+    def test_stages_3_and_4_are_continue_on_fail(self) -> None:
+        # Entity + metric suggestion are best-effort: a failure in
+        # either records a `failed` outcome but lets the wizard wire
+        # the host and print the next step.
         abort_flags = [s.abort_on_fail for s in DEFAULT_STAGES]
-        assert abort_flags == [True, True, False, True, True]
+        assert abort_flags == [True, True, False, False, True, True]
 
 
 # ----- module exports ------------------------------------------------------
@@ -1863,6 +2696,8 @@ class TestStageHandlerSignature:
                 enrich=False,
                 entities_max_cost_usd=None,
                 assume_yes=True,
+                no_metrics=True,
+                metrics_max_cost_usd=None,
             )
         )
 
@@ -1871,9 +2706,10 @@ class TestStageHandlerSignature:
         # monkeypatched dependencies.
         idx_outcome = wizard._stage_index(ctx)
         ent_outcome = wizard._stage_entities(ctx)
+        met_outcome = wizard._stage_metrics(ctx)
         next_outcome = wizard._stage_next_step(ctx)
 
-        for outcome in (idx_outcome, ent_outcome, next_outcome):
+        for outcome in (idx_outcome, ent_outcome, met_outcome, next_outcome):
             assert isinstance(outcome, StageOutcome)
 
 

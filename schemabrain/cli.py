@@ -369,8 +369,10 @@ def main(argv: list[str] | None = None) -> int:
             env_var=args.env_var,
             skip_index=args.skip_index,
             no_entities=args.no_entities,
+            no_metrics=args.no_metrics,
             enrich=args.enrich,
             entities_max_cost_usd=args.entities_max_cost_usd,
+            metrics_max_cost_usd=args.metrics_max_cost_usd,
             assume_yes=args.assume_yes,
             print_only=args.print_only,
         )
@@ -1355,6 +1357,24 @@ def _build_parser() -> argparse.ArgumentParser:
         type=_positive_float,
         default=None,
         help="Cost ceiling for the entity-suggestion stage (USD). Must be "
+        "positive. Defaults to $SCHEMABRAIN_MAX_LLM_COST_USD or the package "
+        "default. The pipeline aborts cleanly if the next call would exceed "
+        "this cap.",
+    )
+    p_init.add_argument(
+        "--no-metrics",
+        dest="no_metrics",
+        action="store_true",
+        help="Skip the wizard's metric-suggestion stage. The wizard still "
+        "wires the MCP host; you can curate metrics later via "
+        "`schemabrain metrics suggest --apply`.",
+    )
+    p_init.add_argument(
+        "--metrics-max-cost-usd",
+        dest="metrics_max_cost_usd",
+        type=_positive_float,
+        default=None,
+        help="Cost ceiling for the metric-suggestion stage (USD). Must be "
         "positive. Defaults to $SCHEMABRAIN_MAX_LLM_COST_USD or the package "
         "default. The pipeline aborts cleanly if the next call would exceed "
         "this cap.",
@@ -4194,33 +4214,37 @@ def _cmd_init(
     env_var: str,
     skip_index: bool,
     no_entities: bool,
+    no_metrics: bool,
     enrich: bool,
     entities_max_cost_usd: float | None,
+    metrics_max_cost_usd: float | None,
     assume_yes: bool,
     print_only: bool,
 ) -> int:
     """Run the activation wizard and render the multi-stage outcome.
 
-    The wizard executes five stages: validate the source, index the
-    schema, suggest entities, wire the MCP host, print the next-step
-    hint. See `schemabrain.setup.wizard` for the per-stage contracts.
+    The wizard executes six stages: validate the source, index the
+    schema, suggest entities, suggest metrics anchored on those
+    entities, wire the MCP host, print the next-step hint. See
+    `schemabrain.setup.wizard` for the per-stage contracts.
 
     Exit codes:
-      - 0: wizard reached stage 5 (whether or not stage 3 was
-        skipped or failed — entity curation is best-effort)
-      - 1: stage 4 succeeded but Claude Code's `claude mcp add`
-        shell-out failed (the snippet is still printable from the
-        rendered output so the user can fall back to running it)
-      - 2: the wizard aborted before reaching stage 5 (stage 1, 2,
-        or 4 failed, or the URL flags were malformed)
+      - 0: wizard reached stage 6 (whether or not stage 3 or 4 was
+        skipped or failed — entity + metric curation are best-effort)
+      - 1: stage 5 (wire_host) succeeded but Claude Code's `claude
+        mcp add` shell-out failed (the snippet is still printable
+        from the rendered output so the user can fall back to running
+        it)
+      - 2: the wizard aborted before reaching stage 6 (stage 1, 2,
+        or 5 failed, or the URL flags were malformed)
 
-    Interactive recovery: if stage 4 fails because a different
+    Interactive recovery: if stage 5 fails because a different
     schemabrain entry already exists in the host config, the user
     is prompted to confirm an overwrite. Declining returns 0 with
     no changes.
 
     `--print-only` is an alias for `--host manual` — when either is
-    set, stage 4 never writes; the snippet renders to stdout.
+    set, stage 5 never writes; the snippet renders to stdout.
     """
     from dataclasses import replace as _dc_replace
     from typing import get_args as _get_args
@@ -4259,6 +4283,8 @@ def _cmd_init(
         enrich=enrich,
         entities_max_cost_usd=entities_max_cost_usd,
         assume_yes=assume_yes,
+        no_metrics=no_metrics,
+        metrics_max_cost_usd=metrics_max_cost_usd,
     )
 
     interactive = _stderr_is_interactive_tty()
@@ -4684,9 +4710,9 @@ _STAGE_GLYPHS: dict[str, str] = {
 }
 
 # Total stage count for the wizard pipeline. Used as the abort
-# denominator ("stage N of 5") so an early abort still labels the
+# denominator ("stage N of 6") so an early abort still labels the
 # pipeline shape correctly. Must stay in sync with `DEFAULT_STAGES`.
-_WIZARD_TOTAL_STAGES: int = 5
+_WIZARD_TOTAL_STAGES: int = 6
 
 
 def _redact_stderr_credentials(stderr_text: str) -> str:
@@ -4861,7 +4887,7 @@ def _render_wizard_result(result: object, *, host_display: str | None = None) ->
       Schema Brain
       Activating Schema Brain for Claude Desktop. ~30s.
 
-        [N/5] <stage display name>
+        [N/6] <stage display name>
               <glyph> <message>
               <indented next_step, if present>
 
@@ -4893,7 +4919,7 @@ def _render_wizard_after(result: object, *, host_display: str | None, console: o
 
     if not isinstance(result, WizardResult):
         raise TypeError(f"_render_wizard_after expected WizardResult, got {type(result).__name__}")
-    # The wizard always has 5 stages even on early abort — using
+    # The wizard always has 6 stages even on early abort — using
     # `len(result.outcomes)` for the denominator would render "of 2"
     # on a stage-2 abort, misleading the user about the pipeline shape.
     total = _WIZARD_TOTAL_STAGES
@@ -4903,7 +4929,7 @@ def _render_wizard_after(result: object, *, host_display: str | None, console: o
         # measured duration (>0.0s) renders dim next to the stage
         # name; 0.0s means peek-and-bypass (skipped) where rendering
         # "0.0s" would mislead.
-        header = f"  [{outcome.stage}/5] {_stage_display_name(outcome.name)}"
+        header = f"  [{outcome.stage}/{total}] {_stage_display_name(outcome.name)}"
         # 50ms threshold: anything faster is below human-perception of
         # "took time" AND would round to "0.0s" anyway. The orchestrator
         # measures every stage including peek-and-bypass skips, so the
@@ -5019,6 +5045,7 @@ def _render_closing_block(
     console.print("[cyan]>[/] list the entities Schema Brain knows about")  # type: ignore[attr-defined]
     console.print()  # type: ignore[attr-defined]
     _render_pending_entity_block(wizard_result, console=console)
+    _render_pending_metrics_block(wizard_result, console=console)
     console.print("Inspect activity:  [bold]schemabrain tail --follow[/]")  # type: ignore[attr-defined]
     console.print("Review the audit:  [bold]schemabrain audit list[/]")  # type: ignore[attr-defined]
     console.print()  # type: ignore[attr-defined]
@@ -5085,12 +5112,80 @@ def _render_pending_entity_block(wizard_result: object, *, console: object) -> N
     console.print()  # type: ignore[attr-defined]
 
 
+def _render_pending_metrics_block(wizard_result: object, *, console: object) -> None:
+    """Surface stage 4 (metrics) recovery hint when curation did not complete.
+
+    Mirror of `_render_pending_entity_block`. Scans
+    `wizard_result.outcomes` for the metrics stage and renders one of
+    four short blocks based on the outcome's status + message prefix:
+
+    - `ANTHROPIC_API_KEY not set` (skipped) → API-key recovery
+    - `--no-metrics set` (skipped, explicit opt-out) → opt-in pointer
+    - `entity store is empty` (skipped, cross-stage dependency) →
+      pointer at curating entities first
+    - any other `skipped`/`failed` outcome → generic retry pointer
+
+    Renders nothing when stage 4 succeeded, was idempotently
+    short-circuited on already-curated, or didn't run (wizard
+    aborted earlier — the abort panel covers that).
+
+    The match strings here are coupled to the prefixes the wizard
+    handler writes in `schemabrain/setup/wizard.py::_stage_metrics`.
+    If you change them there, update this matcher too — the closing
+    block surfaces the same recovery action the stage's dim
+    `next_step` line shows below the stage outcome, so the two must
+    say compatible things.
+    """
+    from schemabrain.setup.wizard import WizardResult
+
+    if not isinstance(wizard_result, WizardResult):
+        return  # pragma: no cover — defensive; caller already narrowed
+    metrics_outcome = next(
+        (o for o in wizard_result.outcomes if o.name == "metrics"),
+        None,
+    )
+    if metrics_outcome is None or metrics_outcome.status == "done":
+        return
+    if metrics_outcome.message.startswith("already curated:"):
+        # Idempotent re-run on a store that already has metrics. The
+        # status is `skipped` but the user is in the happy path. No
+        # pending block.
+        return
+    if metrics_outcome.message.startswith("ANTHROPIC_API_KEY not set"):
+        console.print(  # type: ignore[attr-defined]
+            "To curate metrics (revenue / orders_placed / aov / ...):"
+        )
+        console.print("  [dim]export[/] ANTHROPIC_API_KEY=sk-ant-...")  # type: ignore[attr-defined]
+        console.print("  schemabrain metrics suggest --apply")  # type: ignore[attr-defined]
+        console.print()  # type: ignore[attr-defined]
+        return
+    if metrics_outcome.message.startswith("--no-metrics set"):
+        console.print("Curate metrics when ready:")  # type: ignore[attr-defined]
+        console.print("  schemabrain metrics suggest --apply")  # type: ignore[attr-defined]
+        console.print()  # type: ignore[attr-defined]
+        return
+    if metrics_outcome.message.startswith("entity store is empty"):
+        # Cross-stage dependency surfaced: entities must land before
+        # metrics. The block points at entity curation first so the
+        # user knows the order.
+        console.print("Metrics anchor on entities. Curate entities first, then metrics:")  # type: ignore[attr-defined]
+        console.print("  schemabrain entities suggest --apply")  # type: ignore[attr-defined]
+        console.print("  schemabrain metrics suggest --apply")  # type: ignore[attr-defined]
+        console.print()  # type: ignore[attr-defined]
+        return
+    # Generic recovery: any other skipped/failed status.
+    console.print("Stage 4 did not curate metrics (see above). Retry when ready:")  # type: ignore[attr-defined]
+    console.print("  schemabrain metrics suggest --apply")  # type: ignore[attr-defined]
+    console.print()  # type: ignore[attr-defined]
+
+
 def _stage_display_name(name: str) -> str:
     """Map the wizard's stable stage names to friendlier display strings."""
     return {
         "source_check": "Source check",
         "index": "Index schema",
         "entities": "Curate entities",
+        "metrics": "Curate metrics",
         "wire_host": "Wire host",
         "next_step": "Next",
     }.get(name, name)

@@ -1,22 +1,25 @@
-"""Five-stage activation wizard behind `schemabrain init`.
+"""Six-stage activation wizard behind `schemabrain init`.
 
 The wizard turns a single `schemabrain init` invocation into the
 end-to-end activation surface a new user expects: validate the source,
-index the schema, suggest entities, wire the MCP host, and print the
-next step.
+index the schema, suggest entities, suggest metrics anchored on those
+entities, wire the MCP host, and print the next step.
 
 Stages in order:
 
   1. source_check  — URL reachable + (Postgres) read-only session
   2. index         — cache-aware DDL introspection into the local store
   3. entities      — Anthropic-backed entity suggestion (cost-capped)
-  4. wire_host     — write the MCP host config (or print the snippet)
-  5. next_step     — render the "ask Claude X" hint
+  4. metrics       — Anthropic-backed metric suggestion anchored on entities
+                     (cost-capped, requires entities present)
+  5. wire_host     — write the MCP host config (or print the snippet)
+  6. next_step     — render the "ask Claude X" hint
 
 Each stage produces a `StageOutcome` (`done` / `skipped` / `failed`).
-Stages 1, 2, and 4 abort the wizard on `failed`; stage 3 emits a
-warning outcome and lets stages 4 and 5 finish, because partial
-success (no entities curated yet) is still useful to the user.
+Stages 1, 2, 5, and 6 abort the wizard on `failed`; stages 3 (entities)
+and 4 (metrics) emit a warning outcome and let the wizard continue,
+because partial success (no entities/metrics curated yet) is still
+useful — the MCP host gets wired either way.
 
 The orchestrator is dependency-injected: tests pass synthetic
 `WizardStage` lists to drive the state machine without touching a
@@ -123,9 +126,14 @@ class WizardConfig:
     """Resolved configuration passed to every stage handler.
 
     Carries everything a stage might need to do its work — source URL,
-    store path, host target, plus the flag-driven knobs for stages 2
-    and 3. Frozen so handlers can't mutate the config under each
+    store path, host target, plus the flag-driven knobs for stages 2,
+    3, and 4. Frozen so handlers can't mutate the config under each
     other.
+
+    `no_metrics` / `metrics_max_cost_usd` are stage-4 knobs added in
+    PR A. New fields are appended (with defaults) so existing callers
+    constructing this dataclass with positional or keyword arguments
+    remain valid.
     """
 
     source_url: str
@@ -137,6 +145,8 @@ class WizardConfig:
     enrich: bool
     entities_max_cost_usd: float | None
     assume_yes: bool
+    no_metrics: bool = False
+    metrics_max_cost_usd: float | None = None
 
     def __post_init__(self) -> None:
         if self.host not in _VALID_HOSTS:
@@ -147,6 +157,11 @@ class WizardConfig:
             raise ValueError(
                 "WizardConfig.entities_max_cost_usd must be a positive value "
                 f"or None; got {self.entities_max_cost_usd!r}"
+            )
+        if self.metrics_max_cost_usd is not None and self.metrics_max_cost_usd <= 0:
+            raise ValueError(
+                "WizardConfig.metrics_max_cost_usd must be a positive value "
+                f"or None; got {self.metrics_max_cost_usd!r}"
             )
 
 
@@ -955,7 +970,394 @@ def _run_entity_suggestion(
 _WIZARD_ENTITIES_DEFAULT_COST_CAP_USD: float = 1.0
 
 
-# ----- stage 4: wire_host --------------------------------------------------
+# ----- stage 4: metrics ----------------------------------------------------
+
+
+def _stage_metrics(ctx: WizardContext) -> StageOutcome:
+    """Suggest + apply metrics via the Anthropic-backed pipeline.
+
+    Mirror of `_stage_entities` adapted for metrics. The metric model
+    requires every metric to bind to an existing entity, so the
+    decision tree adds one branch on top of the entity tree: if the
+    entity store is empty, the stage skips with a pointer at
+    `entities suggest --apply` (running the pipeline against zero
+    entities would either crash or hallucinate).
+
+    Decision tree:
+
+      1. `cfg.no_metrics` → skipped (explicit opt-out).
+      2. `cfg.skip_index` → skipped (no schema to analyse).
+      3. Non-Postgres source → skipped (metrics need an indexed
+         Postgres schema today).
+      4. Store already has metrics for this `source_id` → skipped
+         (idempotent re-run). Done BEFORE the API-key + empty-entity
+         checks so a re-run on a fully curated store doesn't moan
+         about a missing key.
+      5. Entity store empty for this `source_id` → skipped with hint
+         pointing at entity curation first. This is the cross-stage
+         dependency PR A introduces: metrics anchor on entities, and
+         an empty entity store means there is nothing for the LLM to
+         anchor on. Running the pipeline anyway would yield
+         `propose_from_entities` raising `ValueError("requires at
+         least one entity")`.
+      6. `ANTHROPIC_API_KEY` missing → skipped with hint.
+      7. Otherwise, run the pipeline + apply candidates and emit
+         `done` with the applied count + cost.
+
+    Like stage 3 (entities), stage 4 (metrics) is `abort_on_fail=False`:
+    a failure here records a `failed` outcome but lets the wizard
+    wire the host and print the next step.
+    """
+    cfg = ctx.config
+
+    if cfg.no_metrics:
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="skipped",
+            message="--no-metrics set; not running metric suggestion",
+            next_step="run `schemabrain metrics suggest --apply` later to curate metrics",
+        )
+
+    if cfg.skip_index:
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="skipped",
+            message="skipped because --skip-index is set (no indexed schema to analyse)",
+        )
+
+    if not is_postgres_url(cfg.source_url):
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="skipped",
+            message="metric suggestion needs a Postgres source",
+        )
+
+    # Already-curated check runs BEFORE the API-key + empty-entity
+    # checks. An idempotent re-run on a fully curated store does NOT
+    # need ANTHROPIC_API_KEY and does NOT need to re-validate entities
+    # — running the pipeline would just collide with the canonical
+    # set. Same reordering rationale as stage 3.
+    source_id = _source_id_for(cfg.source_url)
+    if cfg.store_path.exists():
+        existing = _peek_metric_count(cfg.store_path, source_id)
+        if isinstance(existing, StageOutcome):
+            return existing
+        if existing > 0:
+            return StageOutcome(
+                stage=4,
+                name="metrics",
+                status="skipped",
+                message=f"already curated: {existing} metric/s present for this source",
+                next_step="run `schemabrain metrics suggest --apply` directly "
+                "to re-curate from a fresh prompt",
+            )
+
+    # Cross-stage dependency: metrics anchor on entities. An empty
+    # entity store means the pipeline has nothing to anchor on. The
+    # peek mirrors `_peek_entity_count`; we reuse it directly.
+    if cfg.store_path.exists():
+        entity_count = _peek_entity_count(cfg.store_path, source_id)
+        if isinstance(entity_count, StageOutcome):
+            # Translate the stage-3-shaped outcome into a stage-4
+            # outcome so the renderer's stage label matches the stage
+            # the error is being reported under.
+            return StageOutcome(
+                stage=4,
+                name="metrics",
+                status=entity_count.status,
+                message=entity_count.message,
+                next_step=entity_count.next_step,
+            )
+        if entity_count == 0:
+            return StageOutcome(
+                stage=4,
+                name="metrics",
+                status="skipped",
+                message="entity store is empty; metrics need entities to anchor on",
+                next_step="run `schemabrain entities suggest --apply` first, "
+                "then re-run `schemabrain init` (or `schemabrain metrics suggest --apply`)",
+            )
+    else:
+        # No store file at all means stage 2 (index) was skipped AND
+        # the store doesn't exist yet. Treat the same as the
+        # empty-entity case — there are no entities to anchor on.
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="skipped",
+            message="entity store is empty; metrics need entities to anchor on",
+            next_step="run `schemabrain entities suggest --apply` first, "
+            "then re-run `schemabrain init` (or `schemabrain metrics suggest --apply`)",
+        )
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="skipped",
+            message="ANTHROPIC_API_KEY not set; metric suggestion skipped",
+            next_step="export ANTHROPIC_API_KEY=sk-ant-... and then run "
+            "`schemabrain metrics suggest --apply`",
+        )
+
+    max_cost = _resolve_metrics_cost_cap(cfg.metrics_max_cost_usd)
+
+    try:
+        result = _run_metric_suggestion(
+            cfg=cfg,
+            source_id=source_id,
+            api_key=api_key,
+            max_cost_usd=max_cost,
+        )
+    except _CostCeilingExceededAtWizard as exc:
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="failed",
+            message=exc.message,
+            next_step="re-run with `--metrics-max-cost-usd N` for a higher cap, "
+            "or `--no-metrics` to skip",
+        )
+    except _SuggestionParseAtWizard as exc:
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="failed",
+            message=f"LLM returned unparseable response: {exc.message}",
+            next_step="re-run — transient LLM hiccups usually clear",
+        )
+    except _EmptySchemaAtWizard:
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="skipped",
+            message="no indexed tables for this source — nothing to analyse",
+            next_step="re-run `schemabrain init` after the schema has tables",
+        )
+
+    if result.applied_count == 0:
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="failed",
+            message=(
+                f"LLM returned {result.candidates_proposed} candidates but "
+                f"none could be applied (cost ${result.cost_usd:.4f})"
+            )
+            if result.candidates_proposed > 0
+            else f"LLM returned 0 candidates (cost ${result.cost_usd:.4f})",
+            next_step="re-run `schemabrain metrics suggest --dry-run` to inspect, "
+            "or curate metrics by hand via `schemabrain metrics apply`",
+        )
+
+    if result.candidates_proposed > 0 and result.applied_count < result.candidates_proposed:
+        # Partial-success — same shape as stage 3 reports.
+        suffix = (
+            f"; {result.candidates_proposed - result.applied_count} skipped: {result.skip_reason}"
+            if result.skip_reason
+            else ""
+        )
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="done",
+            message=(
+                f"{result.applied_count} of {result.candidates_proposed} "
+                f"metric{'' if result.applied_count == 1 else 's'} created "
+                f"(cost ${result.cost_usd:.4f}{suffix})"
+            ),
+            next_step="inspect the skipped candidates with "
+            "`schemabrain metrics suggest --dry-run` and apply manually if needed",
+        )
+
+    return StageOutcome(
+        stage=4,
+        name="metrics",
+        status="done",
+        message=(
+            f"{result.applied_count} "
+            f"metric{'' if result.applied_count == 1 else 's'} created "
+            f"(cost ${result.cost_usd:.4f})"
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _MetricApplyResult:
+    """Internal outcome of `_run_metric_suggestion`.
+
+    Mirrors `_EntityApplyResult` field-for-field — see that dataclass
+    for the partial-success semantics. The `skip_reason` carries the
+    exception name + the candidate name that triggered it when writes
+    started failing mid-loop (typically `DbtOwnedMetricError` on a
+    name collision with a dbt-imported metric).
+    """
+
+    applied_count: int
+    cost_usd: float
+    llm_model: str
+    candidates_proposed: int = 0
+    skip_reason: str | None = None
+
+
+def _peek_metric_count(store_path: Path, source_id: str) -> int | StageOutcome:
+    """Open the store read-only and count metrics for `source_id`.
+
+    Mirror of `_peek_entity_count`. The returned `StageOutcome` on
+    failure carries `stage=4, name="metrics"` so the renderer routes
+    the line to the metrics stage label.
+    """
+    from schemabrain.core.store import SchemaVersionMismatchError, SQLiteStore
+
+    try:
+        with SQLiteStore(path=store_path) as store:
+            return len(store.list_metrics(source_connection_id=source_id))
+    except SchemaVersionMismatchError as exc:
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="failed",
+            message=str(exc),
+            next_step=f"delete {store_path} and re-run, "
+            "or install the matching schemabrain version",
+        )
+    except OSError as exc:
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="failed",
+            message=f"store unreadable: {exc}",
+            next_step=f"check filesystem permissions on {store_path.parent}",
+        )
+
+
+def _resolve_metrics_cost_cap(flag_value: float | None) -> float:
+    """Pick the effective metric-suggest cost cap.
+
+    Priority mirrors `_resolve_entities_cost_cap`: explicit
+    `--metrics-max-cost-usd` > `SCHEMABRAIN_MAX_LLM_COST_USD` env var
+    > package default. The env var is shared across all aspirational
+    LLM stages — operators who set it once cap every stage at the
+    same per-stage ceiling.
+    """
+    if flag_value is not None:
+        return flag_value
+    env_value = os.environ.get("SCHEMABRAIN_MAX_LLM_COST_USD")
+    if env_value is not None:
+        try:
+            parsed = float(env_value)
+        except ValueError:
+            print(
+                f"warning: SCHEMABRAIN_MAX_LLM_COST_USD={env_value!r} "
+                f"is not a valid number; using default "
+                f"${_WIZARD_METRICS_DEFAULT_COST_CAP_USD:.2f} cap.",
+                file=sys.stderr,
+            )
+            return _WIZARD_METRICS_DEFAULT_COST_CAP_USD
+        if parsed <= 0:
+            print(
+                f"warning: SCHEMABRAIN_MAX_LLM_COST_USD={env_value!r} "
+                f"must be positive; using default "
+                f"${_WIZARD_METRICS_DEFAULT_COST_CAP_USD:.2f} cap.",
+                file=sys.stderr,
+            )
+            return _WIZARD_METRICS_DEFAULT_COST_CAP_USD
+        return parsed
+    return _WIZARD_METRICS_DEFAULT_COST_CAP_USD
+
+
+def _run_metric_suggestion(
+    *,
+    cfg: WizardConfig,
+    source_id: str,
+    api_key: str,
+    max_cost_usd: float,
+) -> _MetricApplyResult:
+    """Build the metric pipeline, propose candidates, apply them.
+
+    Mirror of `_run_entity_suggestion`. Pulls entities + tables from
+    the store, hands them to `MetricSuggestionPipeline.propose_from_entities`,
+    walks the candidates and writes each via `store.write_metric`.
+
+    Translates the pipeline's exception classes into wizard-internal
+    wrappers shared with stage 3 (`_CostCeilingExceededAtWizard`,
+    `_SuggestionParseAtWizard`, `_EmptySchemaAtWizard`).
+    """
+    from sqlite3 import IntegrityError
+
+    from schemabrain.core.store import DbtOwnedMetricError, SQLiteStore
+    from schemabrain.enrichment.anthropic_client import anthropic_sonnet_46_client
+    from schemabrain.entities.suggest import (
+        CostCeilingExceededError,
+        CostCeilingGuard,
+        SuggestionParseError,
+    )
+    from schemabrain.metrics.suggest import MetricSuggestionPipeline
+
+    llm = anthropic_sonnet_46_client(api_key=api_key)
+    guard = CostCeilingGuard(inner=llm, max_cost_usd=max_cost_usd)
+    pipeline = MetricSuggestionPipeline(llm=guard)
+
+    with SQLiteStore(cfg.store_path) as store:
+        entities = store.list_entities(source_connection_id=source_id)
+        if not entities:
+            # Caller already gated on `_peek_entity_count == 0`. This
+            # is the defensive race — entities were dropped between
+            # the peek and the open. Treat the same as empty schema.
+            raise _EmptySchemaAtWizard()
+        # Pull every table the entities bind to. A binding's
+        # qualified_table is "schema.name"; the pipeline's
+        # `serialize_entities_for_llm` indexes tables by qualified_name,
+        # so we hand it whatever the store has and let the serializer
+        # drop entities whose tables are missing (loudly, via warning).
+        names = store.list_tables(source_connection_id=source_id)
+        if not names:
+            raise _EmptySchemaAtWizard()
+        tables = []
+        for schema, name in names:
+            table = store.get_table(schema, name, source_connection_id=source_id)
+            if table is not None:
+                tables.append(table)
+        if not tables:
+            raise _EmptySchemaAtWizard()
+
+        try:
+            result = pipeline.propose_from_entities(entities, tables)
+        except CostCeilingExceededError as exc:
+            raise _CostCeilingExceededAtWizard(str(exc)) from exc
+        except SuggestionParseError as exc:
+            raise _SuggestionParseAtWizard(str(exc)) from exc
+
+        applied = 0
+        skip_reason: str | None = None
+        for candidate in result.candidates:
+            try:
+                store.write_metric(candidate.metric, source_connection_id=source_id)
+            except (DbtOwnedMetricError, IntegrityError) as exc:
+                skip_reason = f"{type(exc).__name__} at '{candidate.metric.name}'"
+                break
+            applied += 1
+
+    return _MetricApplyResult(
+        applied_count=applied,
+        cost_usd=result.total_cost_usd,
+        llm_model=result.llm_model,
+        candidates_proposed=len(result.candidates),
+        skip_reason=skip_reason,
+    )
+
+
+# Stage-4 cost cap default. Kept aligned with the standalone
+# `metrics suggest` CLI's default so a wizard run and a direct
+# `metrics suggest` run see the same ceiling.
+_WIZARD_METRICS_DEFAULT_COST_CAP_USD: float = 0.5
+
+
+# ----- stage 5: wire_host --------------------------------------------------
 
 
 def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
@@ -979,10 +1381,10 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
             assume_yes=cfg.assume_yes,
         )
     except InitRefusal as refusal:
-        return _failed_from_refusal(stage=4, name="wire_host", error=refusal.error)
+        return _failed_from_refusal(stage=5, name="wire_host", error=refusal.error)
     ctx.host_install_result = result
     return StageOutcome(
-        stage=4,
+        stage=5,
         name="wire_host",
         status="done",
         message=_wire_host_message(result),
@@ -1009,7 +1411,7 @@ def _wire_host_message(result: InitResult) -> str:
     return "manual mode: snippet ready to paste into your host's config"
 
 
-# ----- stage 5: next_step --------------------------------------------------
+# ----- stage 6: next_step --------------------------------------------------
 
 
 def _stage_next_step(ctx: WizardContext) -> StageOutcome:
@@ -1021,7 +1423,7 @@ def _stage_next_step(ctx: WizardContext) -> StageOutcome:
     the end successfully.
     """
     return StageOutcome(
-        stage=5,
+        stage=6,
         name="next_step",
         status="done",
         message="Ready",
@@ -1052,12 +1454,18 @@ DEFAULT_STAGES: tuple[WizardStage, ...] = (
     ),
     WizardStage(
         stage=4,
+        name="metrics",
+        handler=_stage_metrics,
+        abort_on_fail=False,
+    ),
+    WizardStage(
+        stage=5,
         name="wire_host",
         handler=_stage_wire_host,
         abort_on_fail=True,
     ),
     WizardStage(
-        stage=5,
+        stage=6,
         name="next_step",
         handler=_stage_next_step,
         abort_on_fail=True,
