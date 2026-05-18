@@ -46,8 +46,18 @@ _SAMPLE_RAW_CAP = 1000
 # narrow and well-defined; expand only when a real schema surfaces a new gap.
 # Documented as a 2026-05-18 production-DB smoke finding against AdventureWorks
 # (xml columns in humanresources.jobcandidate.resume etc.).
+#
+# `"null"` is included to cover SQLAlchemy's `NullType` fallback: when the
+# dialect doesn't have a Python-side equivalent for a Postgres type (xml,
+# tsvector, custom types, etc.) it falls back to `NullType`, which `str()`s
+# to "NULL". Without this entry, the connector reports `data_type="NULL"`,
+# the profiler thinks the column supports DISTINCT, and the query crashes
+# at runtime. Treating NullType as no-equality is the conservative call:
+# we genuinely don't know if the underlying type supports equality, so
+# don't try.
 _NO_EQUALITY_TYPES: frozenset[str] = frozenset(
     {
+        "null",
         "xml",
         "point",
         "line",

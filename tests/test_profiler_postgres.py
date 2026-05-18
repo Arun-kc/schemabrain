@@ -323,11 +323,16 @@ class TestNoEqualityColumnTypes:
         # `xml` has no equality operator — the pre-fix profiler crashed
         # mid-`profile_table`. Post-fix: profiles cleanly, distinct count
         # falls back to non_null (max-cardinality assumption).
-        table = _make_table(
-            "profiling",
-            "no_equality_types",
-            [("id", "BIGINT"), ("doc", "XML"), ("loc", "POINT")],
-        )
+        #
+        # The Table is built via the real `PostgresDataSource.get_table()`
+        # path rather than handcrafted, because SQLAlchemy doesn't have a
+        # Python-side equivalent for `xml` — it falls back to NullType,
+        # which `str()`s to "NULL". A handcrafted `_make_table(..., "XML")`
+        # bypasses that stringification and miss the real bug — `"null"`
+        # must be in `_NO_EQUALITY_TYPES` for the reflected path to dodge
+        # the DISTINCT emission.
+        with PostgresDataSource(profiling_pg_url) as ds:
+            table = ds.get_table("no_equality_types", "profiling")
         with PostgresProfiler(profiling_pg_url) as profiler:
             stats = profiler.profile_table(table)
         # All three columns must come back.
@@ -346,6 +351,22 @@ class TestNoEqualityColumnTypes:
         assert stats["loc"].null_count == 1
         assert stats["loc"].distinct_count == 2
 
+    def test_reflected_xml_column_resolves_as_null_type(self, profiling_pg_url: str) -> None:
+        # Pins the assumption above: SQLAlchemy's `xml`-to-NullType
+        # fallback renders as `data_type="NULL"`. If a future SQLAlchemy
+        # release adds native xml support, this test will start failing
+        # — at which point we should narrow `_NO_EQUALITY_TYPES` (drop
+        # `"null"`, keep `"xml"`) so we don't suppress DISTINCT on
+        # legitimately-equality-supporting NullType-fallback columns
+        # for OTHER types that gain native support later.
+        with PostgresDataSource(profiling_pg_url) as ds:
+            table = ds.get_table("no_equality_types", "profiling")
+        types = {c.name: c.data_type for c in table.columns}
+        assert types["doc"] == "NULL", (
+            f"SQLAlchemy now reflects 'xml' as {types['doc']!r}; "
+            f"update _NO_EQUALITY_TYPES accordingly."
+        )
+
     def test_supports_distinct_returns_true_for_equality_types(self) -> None:
         # Sanity that the equality-type allow-list logic doesn't flip the
         # answer for ordinary types.
@@ -357,7 +378,16 @@ class TestNoEqualityColumnTypes:
     def test_supports_distinct_returns_false_for_no_equality_types(self) -> None:
         from schemabrain.profiler.postgres import _supports_distinct
 
-        for data_type in ("xml", "XML", "tsvector", "point", "line", "polygon"):
+        for data_type in (
+            "xml",
+            "XML",
+            "tsvector",
+            "point",
+            "line",
+            "polygon",
+            "NULL",  # SQLAlchemy's NullType fallback for unrecognized types
+            "null",
+        ):
             assert not _supports_distinct(data_type), f"{data_type} should not support DISTINCT"
 
     def test_supports_distinct_strips_parameterised_suffix(self) -> None:

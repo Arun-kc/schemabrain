@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import NoSuchTableError
+from sqlalchemy.exc import NoSuchTableError, SAWarning
 from sqlalchemy.pool import NullPool
 
 from schemabrain.connectors._url import safe_engine_url
@@ -105,8 +106,23 @@ class PostgresDataSource:
     def get_table(self, name: str, schema: str) -> Table:
         engine = self._require_engine()
         inspector = inspect(engine)
+        # SAWarning "Did not recognize type 'xml' of column ..." fires when
+        # SQLAlchemy lacks a Python-side equivalent for a Postgres type
+        # (xml, tsvector, geometric types, etc.). The connector reads
+        # `data_type` from the raw inspector dict — the unrecognized type
+        # falls back to NullType but the textual data_type survives — so
+        # we already handle the case the warning is warning about. Under
+        # `filterwarnings = error` the suite would otherwise crash on any
+        # schema with an xml column. Suppress at the narrowest scope:
+        # only this inspector call, only the specific message pattern.
         try:
-            cols_info = inspector.get_columns(name, schema=schema)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"Did not recognize type",
+                    category=SAWarning,
+                )
+                cols_info = inspector.get_columns(name, schema=schema)
         except NoSuchTableError as e:
             raise TableNotFoundError(f"Table {schema}.{name} not found") from e
 
