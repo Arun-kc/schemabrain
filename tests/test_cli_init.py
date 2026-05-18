@@ -1040,9 +1040,7 @@ class TestWizardRenderer:
         with _wizard_stage_context(_BareStage()):
             pass
 
-    def test_stage_panel_caps_width_at_soft_limit(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_stage_panel_caps_width_at_soft_limit(self, capsys: pytest.CaptureFixture[str]) -> None:
         # A long failure message must not blow the panel out past the
         # soft cap (_STAGE_PANEL_MAX_WIDTH = 100). Regression for the
         # post-PR-#65 smoke finding where a 200+ char store-version
@@ -1078,8 +1076,7 @@ class TestWizardRenderer:
         # cells means the cap was ignored.
         max_line = max(len(ln) for ln in captured.err.splitlines() if ln)
         assert max_line <= 104, (
-            f"Expected all panel lines ≤ 104 cells (soft cap = 100); "
-            f"longest line was {max_line}"
+            f"Expected all panel lines ≤ 104 cells (soft cap = 100); longest line was {max_line}"
         )
         # And the long message must still appear in full — wrapping
         # within the panel is fine, truncation is not. Asserting on

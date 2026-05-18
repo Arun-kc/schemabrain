@@ -2293,9 +2293,7 @@ def _expand_yaml_paths(yaml_paths: list[str]) -> tuple[list[Path], list[tuple[st
         path = Path(raw)
         if path.is_dir():
             dir_files = sorted(
-                p
-                for p in path.iterdir()
-                if p.is_file() and p.suffix.lower() in (".yaml", ".yml")
+                p for p in path.iterdir() if p.is_file() and p.suffix.lower() in (".yaml", ".yml")
             )
             if not dir_files:
                 failures.append((raw, f"no `.yaml`/`.yml` files found in directory {raw!r}"))
@@ -4848,6 +4846,7 @@ def _wizard_panel_width(console: object) -> int:
     """
     detected = getattr(console, "width", _STAGE_PANEL_MAX_WIDTH)
     return min(detected, _STAGE_PANEL_MAX_WIDTH)
+
 
 # Total stage count for the wizard pipeline. Used as the abort
 # denominator ("stage N of 7") so an early abort still labels the

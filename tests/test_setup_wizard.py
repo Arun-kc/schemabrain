@@ -3447,9 +3447,7 @@ class TestRunMetricSuggestionSmoke:
                 pass
 
             def propose_from_entities(self, _entities: object, _tables: object) -> object:
-                raise RuntimeError(
-                    "Anthropic hit max_tokens before finishing the description."
-                )
+                raise RuntimeError("Anthropic hit max_tokens before finishing the description.")
 
         class _FakeGuard:
             def __init__(self, **_kw: object) -> None:
