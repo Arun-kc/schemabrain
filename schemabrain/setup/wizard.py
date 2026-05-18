@@ -1294,7 +1294,7 @@ def _run_entity_suggestion(
             # guard above makes these unreachable today, but re-
             # raising keeps any future drift loud rather than hidden
             # behind a misleading "LLM call failed" message.
-            raise
+            raise  # pragma: no cover — defensive; guarded unreachable today
         except Exception as exc:
             # Narrow scope: only the LLM round-trip is inside this try.
             # Local validation, store reads, and the apply-loop happen
@@ -1896,7 +1896,7 @@ def _run_metric_suggestion(
             # this function make these unreachable today, but re-
             # raising keeps any future drift loud rather than hidden
             # behind a misleading "LLM call failed" message.
-            raise
+            raise  # pragma: no cover — defensive; guarded unreachable today
         except Exception as exc:
             # Same narrow-scope LLM-error wrapper as stage 3 — see
             # `_run_entity_suggestion` for the rationale. Re-raising as
