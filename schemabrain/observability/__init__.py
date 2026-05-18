@@ -29,6 +29,12 @@ from schemabrain.observability.extractors import (
     get_result_extractor,
 )
 from schemabrain.observability.instrument import instrument, now_iso_utc
+from schemabrain.observability.otel import (
+    SPAN_NAME,
+    init_tracer_from_env,
+    is_otel_available,
+    set_tool_span_attributes,
+)
 from schemabrain.observability.redactor import EventRedactor
 from schemabrain.observability.tail import (
     TailOptions,
@@ -38,6 +44,7 @@ from schemabrain.observability.tail import (
 )
 
 __all__ = [
+    "SPAN_NAME",
     "Event",
     "EventBus",
     "EventKind",
@@ -50,8 +57,11 @@ __all__ = [
     "TailReader",
     "default_result_extractor",
     "get_result_extractor",
+    "init_tracer_from_env",
     "instrument",
+    "is_otel_available",
     "now_iso_utc",
     "parse_since",
     "render_event_pretty",
+    "set_tool_span_attributes",
 ]

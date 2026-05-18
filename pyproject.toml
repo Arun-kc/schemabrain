@@ -1,6 +1,6 @@
 [project]
 name = "schemabrain"
-version = "0.2.0a1"
+version = "0.3.0"
 description = "An MCP server that gives AI agents deep semantic understanding of any production database."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -10,7 +10,7 @@ authors = [
 ]
 keywords = ["mcp", "database", "semantic", "ai-agents", "postgres", "schema"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -51,6 +51,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Optional OpenTelemetry span emission. Activated when ALL three hold:
+# (1) this extra is installed, (2) `OTEL_EXPORTER_OTLP_ENDPOINT` is
+# set, (3) the operator runs `schemabrain serve`. Without the extra,
+# `pip install schemabrain` works identically — `init_tracer_from_env`
+# returns None and `@instrument` skips span emission. Spans flow over
+# OTLP/HTTP to any OTel-compatible backend: Langfuse, Phoenix,
+# OpenLIT, otel-tui. See `docs/observability.md` for setup recipes.
+otel = [
+    "opentelemetry-sdk>=1.27,<2.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.27,<2.0",
+]
 dev = [
     "pytest>=9.0.3,<10.0",
     "pytest-cov>=5.0,<8.0",

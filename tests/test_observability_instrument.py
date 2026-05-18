@@ -403,3 +403,55 @@ class TestProtocolConformance:
     def test_capturing_bus_satisfies_protocol(self) -> None:
         bus: EventBus = _CapturingBus()
         bus.close()
+
+
+class TestLogFailureOnceDecodesPrefix:
+    """`_log_failure_once` distinguishes audit / otel / bus failures
+    in the human-readable stderr message so root-cause analysis from
+    logs is one-glance rather than `audit:get_metric` ambiguous."""
+
+    def test_audit_prefix_decoded(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import sys
+
+        instr_module = sys.modules["schemabrain.observability.instrument"]
+
+        # Reset the dedup set so a prior test doesn't silence us.
+        monkeypatch.setattr(instr_module, "_emit_failure_logged", set())
+        instr_module._log_failure_once("audit:get_metric", "OSError", OSError("disk full"))
+        out = capsys.readouterr().err
+        assert "dropping audit row for get_metric" in out
+        assert "OSError" in out
+
+    def test_otel_prefix_decoded(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import sys
+
+        instr_module = sys.modules["schemabrain.observability.instrument"]
+
+        monkeypatch.setattr(instr_module, "_emit_failure_logged", set())
+        instr_module._log_failure_once(
+            "otel:find_relevant_tables", "OSError", OSError("export failed")
+        )
+        out = capsys.readouterr().err
+        assert "dropping OTel span attrs for find_relevant_tables" in out
+
+    def test_bare_tool_name_decoded_as_bus_event(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import sys
+
+        instr_module = sys.modules["schemabrain.observability.instrument"]
+
+        monkeypatch.setattr(instr_module, "_emit_failure_logged", set())
+        instr_module._log_failure_once("describe_table", "OSError", OSError("file rotated"))
+        out = capsys.readouterr().err
+        assert "dropping bus event for describe_table" in out

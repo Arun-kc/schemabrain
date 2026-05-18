@@ -9,9 +9,11 @@ got returned. It has three pieces:
    can `emit(Event(...))` into.
 2. **A user-facing tail.** `schemabrain tail` reads the bus and pretty-
    prints each event so the operator can watch alongside the agent.
-3. **(Future) An OTel exporter.** A separate `schemabrain[otel]` extra
-   that ships the same events as `gen_ai.execute_tool` spans into
-   Langfuse / Phoenix / OpenLIT / otel-tui. Not in this release.
+3. **An optional OTel exporter.** The `schemabrain[otel]` extra ships
+   each tool call as one `gen_ai.execute_tool` span to any
+   OTLP/HTTP-speaking backend — Langfuse, Phoenix, OpenLIT, otel-tui,
+   Datadog. Off by default; activated by setting
+   `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
 ## What gets logged
 
@@ -274,20 +276,107 @@ environments).
 
 ## Integrating with existing observability stacks
 
-For now, the recommendation is to tail `events.jsonl` and ship the
-JSON to your stack:
+Two paths, picked based on what you already run.
+
+### Path 1 — tail the JSONL into a log shipper
 
 ```bash
 # Stream into a log shipper that supports stdin
 schemabrain tail --json | your-log-shipper
 
-# Or have your filebeat / promtail / vector tail the file directly
+# Or have filebeat / promtail / vector tail the file directly
 filebeat -c filebeat.yml  # configured to tail ~/.schemabrain/events.jsonl
 ```
 
-A native OpenTelemetry exporter is on the roadmap and will ship as
-an optional `schemabrain[otel]` extra. It will map each event to a
-`gen_ai.execute_tool` span and emit through standard OTLP, so any
-backend that understands OTel `gen_ai.*` conventions (Langfuse,
-Phoenix, OpenLIT, otel-tui, otel-desktop-viewer, Datadog, ...) will
-work without per-backend code.
+Works without any extra dependencies. Best when you already have a
+log-shipping pipeline (ELK, Loki, Splunk).
+
+### Path 2 — emit OTel spans
+
+Install the extra and set the OTLP endpoint:
+
+```bash
+pip install schemabrain[otel]
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+Every MCP tool call becomes one span named `execute_tool` carrying:
+
+- `gen_ai.system = "schemabrain"`
+- `gen_ai.tool.name` = one of the 9 MCP tool names
+- `gen_ai.tool.call.id` = audit fingerprint hex when present
+- `schemabrain.session.id` = the serve process UUID
+- `schemabrain.status` = Charter envelope status
+- `schemabrain.error_kind` = error kind on failure
+- `schemabrain.duration_ms` = wall-clock latency
+- `schemabrain.result.*` = numeric / string fields from the tool's
+  result summary (matches, columns, paths, rows, etc.)
+
+Span status maps to OTel's status code:
+
+| Charter `status` | OTel status |
+|---|---|
+| `success`, `empty`, `partial`, `degraded` | OK |
+| `error`, `refused` | ERROR (description = `error_kind`) |
+
+Spans are sent via OTLP over HTTP/protobuf. All standard OTLP env vars
+work (`OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TIMEOUT`,
+`OTEL_TRACES_SAMPLER`, etc.). When the extra is installed but the
+endpoint env var is unset, span emission is silently off — zero
+overhead. When the env var is set but the extra is not installed, a
+one-shot stderr warning fires so the misconfiguration is visible.
+
+The implementation never fails a tool call because of an OTel error:
+exporter network failures, missing endpoints, or attribute-setting
+crashes all degrade to a single stderr line and the agent gets the
+tool response unchanged.
+
+#### Backend-specific recipes
+
+**Langfuse (self-hosted or cloud):**
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://us.cloud.langfuse.com/api/public/otel
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic <base64(pk:sk)>"
+```
+
+**Phoenix (Arize):**
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:6006
+```
+
+**OpenLIT:**
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+# OpenLIT auto-discovers gen_ai.* attributes; no extra config.
+```
+
+**otel-tui (terminal viewer):**
+
+```bash
+# In one terminal:
+otel-tui
+
+# In another:
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+#### Limits
+
+- Spans are NOT linked into any parent trace your agent harness is
+  emitting. `serve` is a separate process; OTel context propagation
+  across stdio MCP transport isn't standardised yet. Each tool call
+  produces an orphan span — fine for backend dashboards, not for
+  end-to-end agent traces.
+- Tool arguments are NOT attached to spans, even after redaction.
+  The events file (`~/.schemabrain/events.jsonl`) carries redacted
+  args under tighter trust boundaries; span exporters can land in
+  dashboards you don't fully control.
+- The `gen_ai.*` semantic conventions are still experimental as of
+  the OTel spec. One attribute-rename migration is expected before
+  GA; we'll ship the new names in a minor release when the conventions
+  stabilise.
