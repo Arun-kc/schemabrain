@@ -12,7 +12,7 @@ without it, none of these assertions are meaningful.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -20,6 +20,12 @@ from schemabrain.observability import otel as otel_module
 from schemabrain.observability.event import Event
 from schemabrain.observability.instrument import instrument
 from schemabrain.observability.redactor import EventRedactor
+
+if TYPE_CHECKING:
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+    from opentelemetry.trace import Tracer
 
 pytestmark = pytest.mark.skipif(
     not otel_module.is_otel_available(),
@@ -59,7 +65,7 @@ _SESSION = "11111111-2222-3333-4444-555555555555"
 
 
 @pytest.fixture
-def in_memory_tracer() -> tuple[Any, Any]:
+def in_memory_tracer() -> tuple[Tracer, InMemorySpanExporter]:
     """Return (tracer, exporter) wired against an InMemorySpanExporter.
 
     Uses a *private* TracerProvider so the global state isn't trampled
@@ -81,7 +87,7 @@ def in_memory_tracer() -> tuple[Any, Any]:
 
 
 class TestSuccessPath:
-    def test_one_span_per_call(self, in_memory_tracer: tuple[Any, Any]) -> None:
+    def test_one_span_per_call(self, in_memory_tracer: tuple[Tracer, InMemorySpanExporter]) -> None:
         tracer, exporter = in_memory_tracer
         bus = _CapturingBus()
 
@@ -117,7 +123,9 @@ class TestSuccessPath:
         # Bus emission still landed alongside the span.
         assert len(bus.events) == 1
 
-    def test_error_response_marks_span_as_error(self, in_memory_tracer: tuple[Any, Any]) -> None:
+    def test_error_response_marks_span_as_error(
+        self, in_memory_tracer: tuple[Tracer, InMemorySpanExporter]
+    ) -> None:
         tracer, exporter = in_memory_tracer
         bus = _CapturingBus()
 
@@ -145,7 +153,9 @@ class TestSuccessPath:
         # The status description carries the error_kind for dashboards.
         assert span.status.description == "unknown_metric"
 
-    def test_refused_status_marks_span_as_error(self, in_memory_tracer: tuple[Any, Any]) -> None:
+    def test_refused_status_marks_span_as_error(
+        self, in_memory_tracer: tuple[Tracer, InMemorySpanExporter]
+    ) -> None:
         tracer, exporter = in_memory_tracer
         bus = _CapturingBus()
 
@@ -195,7 +205,9 @@ class TestNoTracerPath:
 
 
 class TestSpanWrapsTheCall:
-    def test_span_lifetime_covers_fn_invocation(self, in_memory_tracer: tuple[Any, Any]) -> None:
+    def test_span_lifetime_covers_fn_invocation(
+        self, in_memory_tracer: tuple[Tracer, InMemorySpanExporter]
+    ) -> None:
         """The span must be the current context while fn runs.
 
         Asserts via opentelemetry.trace.get_current_span() called from

@@ -153,6 +153,13 @@ def set_tool_span_attributes(
     """
     if not _OTEL_AVAILABLE:
         return
+    # Past this point, `Status`, `StatusCode`, and the rest of the SDK
+    # surface are non-None — guaranteed by `_OTEL_AVAILABLE`. The assert
+    # is a fail-loud invariant guard: a future refactor that moves code
+    # outside the `if not _OTEL_AVAILABLE: return` boundary trips here
+    # immediately rather than producing a `NoneType is not callable` at
+    # runtime.
+    assert Status is not None and StatusCode is not None
     span.set_attribute("gen_ai.system", _SERVICE_NAME)
     span.set_attribute("gen_ai.tool.name", tool_name)
     if fingerprint_hex is not None:
@@ -168,10 +175,14 @@ def set_tool_span_attributes(
             # and sequences of those. Numeric result counts (matches,
             # columns, paths, queries, entities, rows) pass straight
             # through. Strings (fingerprint hex, entity name, column
-            # qname) too. Other types are skipped silently to avoid
-            # an exporter error mid-call.
+            # qname) too. Other types skip with a one-shot stderr
+            # warning so a future extractor author who returns a list
+            # or dict sees the gap immediately rather than finding an
+            # absent attribute in a dashboard weeks later.
             if isinstance(value, str | bool | int | float):
                 span.set_attribute(f"schemabrain.result.{key}", value)
+            else:
+                _warn_skipped_value_once(tool_name, key, type(value).__name__)
     if status in _OK_STATUSES:
         span.set_status(Status(StatusCode.OK))
     elif status in _ERROR_STATUSES:
@@ -180,3 +191,47 @@ def set_tool_span_attributes(
         # needing to drill into attributes.
         description = error_kind if error_kind is not None else status
         span.set_status(Status(StatusCode.ERROR, description=description))
+    else:
+        # An unrecognised status (Charter enum drift or a typo in a
+        # tool response) leaves the span in OTel's default UNSET state.
+        # Without the warning below, dashboards classify it as neither
+        # OK nor ERROR — error-rate alerts silently miss it. The warn
+        # is one-shot per status string so a long-running serve doesn't
+        # flood stderr.
+        _warn_unknown_status_once(tool_name, status)
+
+
+_skipped_value_logged: set[tuple[str, str, str]] = set()
+
+
+def _warn_skipped_value_once(tool_name: str, key: str, value_type: str) -> None:
+    """One stderr line per (tool, key, value-type) triple."""
+    sentinel = (tool_name, key, value_type)
+    if sentinel in _skipped_value_logged:
+        return
+    _skipped_value_logged.add(sentinel)
+    print(
+        f"schemabrain otel: skipped result_summary[{key!r}] for {tool_name} "
+        f"(unsupported attribute value type {value_type!r}). Span attribute "
+        f"`schemabrain.result.{key}` is missing. Convert to str/int/float/bool "
+        f"in the extractor.",
+        file=sys.stderr,
+    )
+
+
+_unknown_status_logged: set[tuple[str, str]] = set()
+
+
+def _warn_unknown_status_once(tool_name: str, status: str) -> None:
+    """One stderr line per (tool, status) pair."""
+    sentinel = (tool_name, status)
+    if sentinel in _unknown_status_logged:
+        return
+    _unknown_status_logged.add(sentinel)
+    print(
+        f"schemabrain otel: unrecognised status {status!r} on {tool_name} "
+        f"call. Span left in UNSET state — dashboards will NOT classify "
+        f"this as OK or ERROR. Expected one of "
+        f"{sorted(_OK_STATUSES | _ERROR_STATUSES)}.",
+        file=sys.stderr,
+    )

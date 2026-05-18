@@ -24,9 +24,16 @@ from schemabrain.observability import otel as otel_module
 
 
 @pytest.fixture(autouse=True)
-def _reset_warn_flag() -> None:
-    """Reset the one-shot warn flag between tests."""
-    otel_module._warned_extra_missing = False
+def _reset_warn_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reset all one-shot warn flags / dedup sets between tests.
+
+    Uses monkeypatch so the original values are restored automatically
+    on test teardown — safer than direct attribute assignment if a
+    future test relies on a non-default starting state.
+    """
+    monkeypatch.setattr(otel_module, "_warned_extra_missing", False)
+    monkeypatch.setattr(otel_module, "_skipped_value_logged", set())
+    monkeypatch.setattr(otel_module, "_unknown_status_logged", set())
 
 
 class TestIsOtelAvailable:
@@ -204,9 +211,12 @@ class TestSetToolSpanAttributes:
         not otel_module.is_otel_available(),
         reason="`schemabrain[otel]` extra not installed",
     )
-    def test_skips_unsupported_result_value_types(self) -> None:
+    def test_skips_unsupported_result_value_types_with_warn(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         """List / dict / None values in result_summary must be skipped
-        silently rather than crash the exporter."""
+        rather than crash the exporter, AND warn once per type so a
+        future extractor author sees the gap immediately."""
         span = MagicMock()
         otel_module.set_tool_span_attributes(
             span,
@@ -218,14 +228,39 @@ class TestSetToolSpanAttributes:
             fingerprint_hex=None,
             result_summary={
                 "paths": 4,  # int — included
-                "extra_dict": {"nested": True},  # dict — skipped
-                "extra_list": [1, 2, 3],  # list — skipped
+                "extra_dict": {"nested": True},  # dict — skipped + warn
+                "extra_list": [1, 2, 3],  # list — skipped + warn
             },
         )
         attrs = dict(call.args for call in span.set_attribute.call_args_list)
         assert attrs["schemabrain.result.paths"] == 4
         assert "schemabrain.result.extra_dict" not in attrs
         assert "schemabrain.result.extra_list" not in attrs
+        captured = capsys.readouterr()
+        assert "extra_dict" in captured.err
+        assert "extra_list" in captured.err
+        assert "suggest_joins" in captured.err
+
+    @pytest.mark.skipif(
+        not otel_module.is_otel_available(),
+        reason="`schemabrain[otel]` extra not installed",
+    )
+    def test_skipped_value_warn_dedupes(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Same (tool, key, type) triple warns once across many calls."""
+        span = MagicMock()
+        for _ in range(5):
+            otel_module.set_tool_span_attributes(
+                span,
+                tool_name="suggest_joins",
+                server_session_id="s",
+                status="success",
+                duration_ms=1.0,
+                error_kind=None,
+                fingerprint_hex=None,
+                result_summary={"bad": [1, 2, 3]},
+            )
+        captured = capsys.readouterr()
+        assert captured.err.count("schemabrain otel: skipped result_summary") == 1
 
     @pytest.mark.skipif(
         not otel_module.is_otel_available(),
@@ -251,12 +286,15 @@ class TestSetToolSpanAttributes:
         not otel_module.is_otel_available(),
         reason="`schemabrain[otel]` extra not installed",
     )
-    def test_unknown_status_sets_no_span_status(self) -> None:
+    def test_unknown_status_leaves_span_unset_and_warns(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         """A status value outside the OK / ERROR sets — possible if
         Charter adds a new status value before the OTel adapter
-        catches up — emits attributes but DOES NOT call set_status.
-        This is fail-soft: dashboards see the attribute but the span
-        carries OTel's default status."""
+        catches up — emits attributes but does NOT call set_status,
+        leaving the span in OTel's default UNSET state. A one-shot
+        stderr warning fires so dashboards' missing classification
+        doesn't go silent."""
         span = MagicMock()
         otel_module.set_tool_span_attributes(
             span,
@@ -272,6 +310,31 @@ class TestSetToolSpanAttributes:
         assert attrs["schemabrain.status"] == "unrecognised_status_kind"
         # set_status NOT called for an unknown status enum value.
         assert not span.set_status.called
+        captured = capsys.readouterr()
+        assert "unrecognised_status_kind" in captured.err
+        assert "describe_table" in captured.err
+        assert "UNSET" in captured.err
+
+    @pytest.mark.skipif(
+        not otel_module.is_otel_available(),
+        reason="`schemabrain[otel]` extra not installed",
+    )
+    def test_unknown_status_warn_dedupes(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Same (tool, status) pair warns once across many calls."""
+        span = MagicMock()
+        for _ in range(5):
+            otel_module.set_tool_span_attributes(
+                span,
+                tool_name="describe_table",
+                server_session_id="s",
+                status="bogus_kind",
+                duration_ms=1.0,
+                error_kind=None,
+                fingerprint_hex=None,
+                result_summary=None,
+            )
+        captured = capsys.readouterr()
+        assert captured.err.count("schemabrain otel: unrecognised status") == 1
 
     def test_no_op_when_otel_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(otel_module, "_OTEL_AVAILABLE", False)
