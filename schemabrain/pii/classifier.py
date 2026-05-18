@@ -51,11 +51,17 @@ regex cannot disambiguate:
     (e.g. `address_id BIGINT` matching `address` → `contact`) tagged
     the FK as PII when the actual PII lives on the referenced table.
     Handled here by an integer-FK guard: when the column's declared
-    type is integer-like AND the name matches `^[a-z][a-z_]*_id$`,
-    the matched category set is intersected with `_FK_SAFE_CATEGORIES`
-    — the categories where the FK itself remains PII even as an
-    integer reference (e.g. `patient_id` is HIPAA-sensitive, `cookie_id`
-    is an online identifier, `national_id` is a government ID).
+    type is integer-like AND the name matches the `<word>_id` shape
+    (alphanumeric segments separated by underscores, ending in `_id`)
+    AND the column is not a primary key, the matched category set
+    is intersected with `_FK_SAFE_CATEGORIES` — the categories where
+    the FK itself remains PII even as an integer reference (e.g.
+    `patient_id` is HIPAA-sensitive, `cookie_id` is an online
+    identifier, `national_id` is a government ID, `clickstream_id`
+    is a behavioral identifier under GDPR Recital 30). The PK
+    exemption avoids stripping the canonical row-ID's tags on the
+    table that OWNS the row (e.g. a `health_records.health_record_id`
+    PK is the row's identifier, not a reference).
 """
 
 from __future__ import annotations
@@ -240,7 +246,10 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
     ),
     # ---- location ----
     (_kw("lat", "latitude", "lon", "lng", "longitude"), frozenset({"location"})),
-    (_kw("geolocation", "gps", "coords", "coord"), frozenset({"location"})),
+    (
+        _kw("location", "geolocation", "gps", "coords", "coord"),
+        frozenset({"location"}),
+    ),
     # ---- demographic_protected ----
     # DOB and birthdate variants live here, NOT in `contact`. DOB is
     # a HIPAA Safe Harbor identifier and a GDPR Article 9 attribute;
@@ -298,6 +307,24 @@ RULE_COUNT: Final[int] = len(_RULES)
 # the `country` rule (contact). The S1 fix targets the specific
 # false-positive shape the production smoke surfaced (`product_name`
 # in catalog tables), not the broader question of table-level context.
+# Deliberately CONSERVATIVE — only prefixes that are unambiguously
+# non-person attributes across HR / CRM / SaaS schemas. Words that
+# can legitimately denote a person's attribute in some context have
+# been excluded:
+#
+#   - `company`, `organization` — can be a person's employer in
+#     CRM contact rows (legal-entity names paired with a natural
+#     person are GDPR Art. 4(1) personal data).
+#   - `team`, `department` — workforce schemas often use
+#     `team_name` for a person's team affiliation.
+#   - `region`, `zone` — can be a person's geographic region in
+#     HR / payroll tables.
+#
+# Per the docstring posture (over-tag is safer than under-tag), the
+# excluded shapes keep their `contact` tag. Adding to this set is
+# a deliberate action — the test class
+# `TestS1NonPiiNameDenylist::test_pii_named_shapes_still_classify`
+# locks the people-name shapes that must continue to classify.
 _NON_PII_NAME_PREFIXES: Final[frozenset[str]] = frozenset(
     {
         "product",
@@ -307,12 +334,6 @@ _NON_PII_NAME_PREFIXES: Final[frozenset[str]] = frozenset(
         "currency",
         "tag",
         "event",
-        "company",
-        "organization",
-        "team",
-        "department",
-        "region",
-        "zone",
         "feature",
         "setting",
         "field",
@@ -341,8 +362,13 @@ _NON_PII_NAME_PREFIXES: Final[frozenset[str]] = frozenset(
         "cluster",
     }
 )
+# Build the regex with longest-first alternation order so that
+# multi-segment prefixes (if added later) don't get shadowed by a
+# shorter prefix matching first. `fullmatch` already enforces the
+# `_name$` anchor so the risk is small today, but ordering by length
+# is the future-safe construction.
 _NON_PII_NAME_RE: Final[re.Pattern[str]] = re.compile(
-    rf"^(?:{'|'.join(sorted(_NON_PII_NAME_PREFIXES))})_name$",
+    rf"^(?:{'|'.join(sorted(_NON_PII_NAME_PREFIXES, key=len, reverse=True))})_name$",
     re.IGNORECASE,
 )
 
@@ -354,10 +380,14 @@ _NON_PII_NAME_RE: Final[re.Pattern[str]] = re.compile(
 #     name/DOB live on the patients table.
 #   - `cookie_id BIGINT` is an online identifier.
 #   - `national_id BIGINT` is a government ID.
+#   - `clickstream_id BIGINT` is a behavioral identifier (GDPR
+#     Recital 30 covers clickstream identifiers as personal data).
+#   - `location_id BIGINT` is a location identifier (a tracking row's
+#     pointer to a precise GPS sample).
 # Categories outside this set (`contact`, `financial`, `payment_card`,
-# `location`, `behavioral`, `biometric`, `genetic`) are inherited
-# only through the referenced row; the integer FK itself doesn't
-# leak that content, so the guard strips them.
+# `biometric`, `genetic`) are inherited only through the referenced
+# row; the integer FK itself doesn't leak that content, so the guard
+# strips them.
 _FK_SAFE_CATEGORIES: Final[frozenset[PIICategory]] = frozenset(
     {
         "credential",
@@ -365,12 +395,21 @@ _FK_SAFE_CATEGORIES: Final[frozenset[PIICategory]] = frozenset(
         "government_id",
         "health",
         "demographic_protected",
+        "behavioral",
+        "location",
     }
 )
 # Integer-like data type prefixes (lowercased). Postgres, MySQL,
 # SQLite, SQLAlchemy default reflection — all covered. The matcher
-# strips `(N)` parameterisation suffixes before comparison, so
-# `INTEGER(11)` and `BIGINT(20)` work too.
+# strips `(N)` parameterisation suffixes, `[]` array suffixes, and
+# trailing modifiers like `UNSIGNED` / `ZEROFILL` before comparison.
+#
+# NUMERIC / NUMBER are deliberately EXCLUDED: parameterised
+# `NUMERIC(10,2)` and Oracle `NUMBER(5,2)` are decimal types whose
+# FK semantics differ from integer FKs. A column named `rate_id
+# NUMERIC(10,2)` should not have its categories silently stripped.
+# Operators using NUMERIC-as-integer (rare) will get the over-tag
+# fallback, consistent with the breadth-over-precision posture.
 _INTEGER_TYPE_PREFIXES: Final[frozenset[str]] = frozenset(
     {
         "int",
@@ -385,13 +424,16 @@ _INTEGER_TYPE_PREFIXES: Final[frozenset[str]] = frozenset(
         "serial",
         "bigserial",
         "smallserial",
-        "number",  # Oracle
-        "numeric",  # Postgres NUMERIC with no precision args
     }
 )
-# Column-name shape for the FK guard: `<word>_id`, all lowercase
-# alphanumeric segments. Excludes bare `id` (PKs) and shapes like
-# `id_card` (which wouldn't match the rule's id-keyword anyway).
+# Column-name shape for the FK guard: `<word>_id`, alphanumeric
+# segments separated by underscores. Note that this can also match
+# PK columns named `<table>_id` (rare but real — some schemas name
+# the PK after the table). The classifier accepts an explicit
+# `is_primary_key` parameter so the indexer can skip the guard on
+# PKs; callers that don't pass it default to `False` (worst-case
+# guard fires), which is the safe direction for a single misidentified
+# column compared to under-tagging an FK.
 _FK_SHAPE_RE: Final[re.Pattern[str]] = re.compile(
     r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*_id$",
     re.IGNORECASE,
@@ -401,16 +443,25 @@ _FK_SHAPE_RE: Final[re.Pattern[str]] = re.compile(
 def _is_integer_type(column_type: str) -> bool:
     """Return True when `column_type` is an integer-like SQL type.
 
-    Strips `(N[, M])` parameter suffixes and `[]` array suffixes so
-    `BIGINT(20)`, `INTEGER(11)`, and `int4[]` all classify as integer.
+    Strips `(N[, M])` parameter suffixes, `[]` array suffixes, and
+    trailing modifier tokens (`UNSIGNED`, `ZEROFILL`, etc.) so
+    `BIGINT(20)`, `INTEGER(11)`, `int4[]`, `INT UNSIGNED`, and
+    `TINYINT UNSIGNED ZEROFILL` all classify as integer.
     """
-    bare = column_type.split("(", 1)[0].split("[", 1)[0].strip().lower()
-    return bare in _INTEGER_TYPE_PREFIXES
+    # Split off `(N[, M])` and `[]` suffixes, then take the first
+    # whitespace-separated token so MySQL-style modifiers like
+    # `UNSIGNED` / `ZEROFILL` don't poison the lookup.
+    pruned = column_type.split("(", 1)[0].split("[", 1)[0]
+    tokens = pruned.split()
+    if not tokens:
+        return False
+    return tokens[0].lower() in _INTEGER_TYPE_PREFIXES
 
 
 def classify_column(
     column_name: str,
     column_type: str | None = None,
+    is_primary_key: bool = False,
     shape_patterns: tuple[str, ...] = (),  # reserved for future heuristics
 ) -> tuple[Sensitivity, frozenset[PIICategory]]:
     """Classify a single column by name (and optionally declared type).
@@ -425,14 +476,20 @@ def classify_column(
             contact rule is skipped. Other rule matches still fire.
 
           * S2 guard — when `column_type` is integer-like AND
-            `column_name` matches the `<token>_id` FK shape, the
-            matched category set is intersected with
-            `_FK_SAFE_CATEGORIES`. The remaining categories are those
-            where the FK itself remains PII even as an integer ref.
+            `column_name` matches the `<token>_id` FK shape AND
+            `is_primary_key` is `False`, the matched category set
+            is intersected with `_FK_SAFE_CATEGORIES`. The remaining
+            categories are those where the FK itself remains PII
+            even as an integer ref. PKs are exempt because a PK
+            named `<table>_id` is the canonical row identifier, not
+            a reference to a row elsewhere — its tag content should
+            stay intact.
 
-    `column_type` is optional; passing `None` (the v0.3.0 default
-    behaviour) skips the S2 guard. Callers that have the source-of-
-    truth data type (the indexer) should pass it through.
+    `column_type` and `is_primary_key` are optional; passing the
+    defaults (`None`, `False`) skips the S2 guard's type+PK
+    refinements (safe direction — categories are kept, the over-tag
+    posture is preserved). Callers that have the source-of-truth
+    column metadata (the indexer) should pass them through.
 
     `shape_patterns` is in the signature so a future heuristic refinement
     can read it without changing the contract. v1 ignores it.
@@ -451,8 +508,11 @@ def classify_column(
 
     # S2: integer-FK guard. Apply AFTER all rules so we can intersect
     # the union with the FK-safe allowlist rather than per-rule logic.
+    # Skips PKs — a PK named `<table>_id` is the canonical row ID, not
+    # a reference, so the inherited categories belong on the row itself.
     if (
         column_type is not None
+        and not is_primary_key
         and _is_integer_type(column_type)
         and _FK_SHAPE_RE.fullmatch(column_name)
     ):

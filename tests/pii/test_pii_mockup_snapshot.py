@@ -169,11 +169,12 @@ _TABLE_RE: Final[re.Pattern[str]] = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
-# Match `<name> <TYPE>` where TYPE is the FIRST alphanumeric token after
-# the name (we don't care about NULL/NOT NULL/REFERENCES/DEFAULT — the
-# classifier only needs the bare type word for the S2 integer-FK guard).
+# Match `<name> <TYPE>` and capture the rest of the line so we can
+# detect `PRIMARY KEY` markers on inline column definitions. The
+# classifier needs the bare type word (S2 integer-FK guard) and the
+# PK flag (S2 PK exemption).
 _COLUMN_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*([a-z_][a-z0-9_]*)\s+([A-Z][A-Z0-9_]*)",
+    r"^\s*([a-z_][a-z0-9_]*)\s+([A-Z][A-Z0-9_]*)([^,\n]*)",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -187,9 +188,9 @@ _CONSTRAINT_PREFIXES: Final[tuple[str, ...]] = (
 )
 
 
-def _parse_columns(sql: str) -> list[tuple[str, str, str]]:
-    """Yield `(table, column, type)` for every column in the fixture."""
-    out: list[tuple[str, str, str]] = []
+def _parse_columns(sql: str) -> list[tuple[str, str, str, bool]]:
+    """Yield `(table, column, type, is_primary_key)` for every column."""
+    out: list[tuple[str, str, str, bool]] = []
     for table_match in _TABLE_RE.finditer(sql):
         table = table_match.group(1)
         body = table_match.group(2)
@@ -199,14 +200,16 @@ def _parse_columns(sql: str) -> list[tuple[str, str, str]]:
         for col_match in _COLUMN_RE.finditer(body_clean):
             name = col_match.group(1)
             col_type = col_match.group(2).upper()
+            tail = col_match.group(3) or ""
             if name.lower() in _CONSTRAINT_PREFIXES:
                 continue
-            out.append((table, name, col_type))
+            is_pk = "PRIMARY KEY" in tail.upper()
+            out.append((table, name, col_type, is_pk))
     return out
 
 
 @pytest.fixture(scope="module")
-def parsed_columns() -> list[tuple[str, str, str]]:
+def parsed_columns() -> list[tuple[str, str, str, bool]]:
     sql = FIXTURE_PATH.read_text(encoding="utf-8")
     cols = _parse_columns(sql)
     # Sanity: the fixture has 5 tables x ~12 cols = ~60 columns. If
@@ -217,7 +220,7 @@ def parsed_columns() -> list[tuple[str, str, str]]:
 
 class TestMockupSnapshot:
     def test_every_parsed_column_has_an_expected_entry(
-        self, parsed_columns: list[tuple[str, str, str]]
+        self, parsed_columns: list[tuple[str, str, str, bool]]
     ) -> None:
         """Forces author-intent on every column.
 
@@ -227,24 +230,24 @@ class TestMockupSnapshot:
         """
         missing = [
             f"{table}.{col}"
-            for (table, col, _ctype) in parsed_columns
+            for (table, col, _ctype, _pk) in parsed_columns
             if f"{table}.{col}" not in _DESIRED
         ]
         assert not missing, f"fixture columns missing from _DESIRED: {sorted(missing)}"
 
     def test_every_expected_entry_has_a_parsed_column(
-        self, parsed_columns: list[tuple[str, str, str]]
+        self, parsed_columns: list[tuple[str, str, str, bool]]
     ) -> None:
-        parsed_keys = {f"{table}.{col}" for (table, col, _ctype) in parsed_columns}
+        parsed_keys = {f"{table}.{col}" for (table, col, _ctype, _pk) in parsed_columns}
         stale = sorted(set(_DESIRED) - parsed_keys)
         assert not stale, f"_DESIRED entries missing from fixture (stale or typo): {stale}"
 
     def test_classifier_matches_desired_mapping(
-        self, parsed_columns: list[tuple[str, str, str]]
+        self, parsed_columns: list[tuple[str, str, str, bool]]
     ) -> None:
         """The load-bearing assertion — every column matches its pin."""
         failures: list[str] = []
-        for table, col, ctype in parsed_columns:
+        for table, col, ctype, is_pk in parsed_columns:
             key = f"{table}.{col}"
             expected_sens, expected_cats, expected_type = _DESIRED[key]
             # Sanity-check the parsed type matches what we pinned;
@@ -253,10 +256,10 @@ class TestMockupSnapshot:
             assert ctype == expected_type, (
                 f"{key}: parsed type {ctype!r} != snapshot type {expected_type!r}"
             )
-            sens, cats = classify_column(col, column_type=ctype)
+            sens, cats = classify_column(col, column_type=ctype, is_primary_key=is_pk)
             if sens != expected_sens or cats != expected_cats:
                 failures.append(
-                    f"  {key} (type={ctype}): "
+                    f"  {key} (type={ctype}, pk={is_pk}): "
                     f"got ({sens!r}, {sorted(cats)}), "
                     f"expected ({expected_sens!r}, {sorted(expected_cats)})"
                 )

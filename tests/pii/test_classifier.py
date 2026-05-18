@@ -285,14 +285,16 @@ class TestRuleTableInvariants:
         # classifier and bump this assertion alongside. Pinning the
         # count makes accidental rule churn visible at PR review time.
         #
-        # Post-S1-S4 (2026-05-18): the DOB keywords moved from the
-        # contact rule (merged into bare `_kw("dob", "date_of_birth",
-        # "birth_date", "birthdate")` standalone under
-        # demographic_protected, net 0), and a new
-        # `patient`/`insurance_id`/`health_record` rule joined the
-        # health group (net +1). Other extensions (face_embedding,
-        # drivers_license plurals, age) widened existing rules
-        # rather than adding new ones.
+        # Post-S1-S4 (2026-05-18) accounting:
+        #   - DOB rule moved from contact to demographic_protected.
+        #     It was always a standalone tuple, so the migration is
+        #     net 0.
+        #   - New `patient`/`insurance_id`/`health_record` health rule
+        #     added: net +1.
+        #   - Other extensions (face_embedding, drivers_license
+        #     plurals, age) widened existing rules rather than adding
+        #     new ones: net 0.
+        # Total: 40 + 1 = 41.
         assert RULE_COUNT == 41
 
     def test_every_category_has_at_least_one_rule(self) -> None:
@@ -337,9 +339,6 @@ class TestS1NonPiiNameDenylist:
             "category_name",
             "language_name",
             "currency_name",
-            "company_name",
-            "organization_name",
-            "team_name",
             "device_name",
             "file_name",
             "service_name",
@@ -351,6 +350,26 @@ class TestS1NonPiiNameDenylist:
         sensitivity, cats = classify_column(name)
         assert sensitivity == "public", f"{name!r} should not classify"
         assert cats == frozenset()
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            # These shapes can be a person's attribute in HR/CRM
+            # contexts (employer, team affiliation, geographic region).
+            # The denylist deliberately excludes them — they keep their
+            # `contact` tag rather than risk under-reporting.
+            "company_name",
+            "organization_name",
+            "team_name",
+            "department_name",
+            "region_name",
+            "zone_name",
+        ],
+    )
+    def test_ambiguous_name_shapes_keep_contact_tag(self, name: str) -> None:
+        sensitivity, cats = classify_column(name)
+        assert sensitivity == "pii"
+        assert "contact" in cats
 
     @pytest.mark.parametrize(
         ("name", "expected_cat"),
@@ -460,6 +479,69 @@ class TestS2IntegerFkGuard:
         # `int4[]` (Postgres integer array) — guard still applies.
         sensitivity, _ = classify_column("address_id", column_type="int4[]")
         assert sensitivity == "public"
+
+    @pytest.mark.parametrize(
+        "ctype",
+        [
+            "INT UNSIGNED",
+            "BIGINT UNSIGNED",
+            "INTEGER UNSIGNED",
+            "TINYINT UNSIGNED ZEROFILL",
+            "BIGINT(20) UNSIGNED",
+        ],
+    )
+    def test_mysql_unsigned_modifier_recognised(self, ctype: str) -> None:
+        # MySQL emits `INT UNSIGNED` / `BIGINT UNSIGNED` / etc. The
+        # guard must split on whitespace and take the first token
+        # so the modifier doesn't bypass it.
+        sensitivity, _ = classify_column("address_id", column_type=ctype)
+        assert sensitivity == "public", f"{ctype!r} should fire the guard"
+
+    def test_numeric_type_does_not_trigger_guard(self) -> None:
+        # `NUMERIC(10,2)` (Postgres) / `NUMBER(5,2)` (Oracle) are
+        # decimal types whose FK semantics are too distinct from
+        # integer FKs. Skip the guard so `address_id NUMERIC(10,2)`
+        # falls back to over-tagging consistent with the breadth-
+        # over-precision posture.
+        sensitivity, _ = classify_column("address_id", column_type="NUMERIC(10,2)")
+        assert sensitivity == "pii"
+
+    def test_primary_key_skips_guard(self) -> None:
+        # `health_record_id BIGINT PRIMARY KEY` on the `health_records`
+        # table itself is the canonical row identifier, not an FK.
+        # The PK exemption preserves the `health` category that would
+        # otherwise be the only PII tag on the row.
+        sensitivity, cats = classify_column(
+            "health_record_id",
+            column_type="BIGINT",
+            is_primary_key=True,
+        )
+        assert sensitivity == "pii"
+        assert "health" in cats
+
+    def test_non_primary_key_default_still_guards(self) -> None:
+        # Default `is_primary_key=False` keeps the guard firing for
+        # FK shapes. Document the safe-direction default.
+        sensitivity, _ = classify_column("address_id", column_type="BIGINT")
+        assert sensitivity == "public"
+
+    @pytest.mark.parametrize(
+        ("name", "expected_cat"),
+        [
+            # `behavioral` and `location` are now FK-safe so the
+            # FK's primary tag survives the guard.
+            ("clickstream_id", "behavioral"),
+            ("event_log_id", "behavioral"),
+            ("location_id", "location"),
+            ("geolocation_id", "location"),
+        ],
+    )
+    def test_behavioral_and_location_survive_guard(
+        self, name: str, expected_cat: PIICategory
+    ) -> None:
+        sensitivity, cats = classify_column(name, column_type="BIGINT")
+        assert sensitivity == "pii"
+        assert expected_cat in cats
 
     def test_bare_id_not_subject_to_guard(self) -> None:
         # `id` alone is not the FK shape — `^[a-z][a-z0-9]*(?:_[a-z0-9]+)*_id$`
