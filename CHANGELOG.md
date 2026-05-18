@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-18
+
+Patch release driven by the pre-tag manual production-DB smoke against
+Pagila + Northwind + synthetic PII mockup + AdventureWorks-for-Postgres
++ reserved-keyword synthetic. Two surgical fixes; no API surface
+changes. See [`docs/internal/manual_smoke_2026_05_18.md`](docs/internal/manual_smoke_2026_05_18.md)
+for the full smoke report.
+
+### Fixed
+- `schemabrain index` no longer crashes on Postgres column types
+  without an equality operator (`xml`, `tsvector`, `point`, `line`,
+  `lseg`, `box`, `path`, `polygon`, `circle`). The pre-fix batched
+  profile query emitted `COUNT(DISTINCT col)` for every column and
+  raised `psycopg.errors.UndefinedFunction` on first encounter with
+  any such type. AdventureWorks-for-Postgres has 7 xml columns in
+  base tables; the smoke against it surfaced the bug. For affected
+  columns the profiler now substitutes `NULL::bigint` for the
+  DISTINCT slot and falls back to `distinct_count = non_null` (a
+  max-cardinality hedge that's more useful to the downstream LLM
+  cardinality prompt than a misleading zero).
+- Self-join refusal in `CanonicalJoin.__post_init__` now surfaces an
+  actionable workaround in the error message — "model each side as a
+  separate entity (e.g. `manager` and `direct_report`) and define the
+  canonical join on the FK column from one side" — instead of the
+  stale "deferred to v1 wk-15" roadmap reference that v0.3.0 still
+  carried. 10 internal `wk-15` comment references cleaned up across
+  `schemabrain/core/join.py`, `schemabrain/core/store.py`,
+  `schemabrain/core/store_protocol.py`, `schemabrain/joins/suggest.py`,
+  `schemabrain/joins/yaml_grammar.py`, and three test files.
+
+### Documentation
+- New `docs/internal/manual_smoke_2026_05_18.md` captures the full
+  pre-tag smoke report — 5 production-class targets walked end-to-end
+  through the new-user journey. Reference for future smoke runs.
+
 ## [0.3.0] - 2026-05-18
 
 This release rounds out the v1 semantic-layer arc. Every layer the
@@ -323,7 +358,8 @@ First public preview. Live on PyPI as `schemabrain==0.1.0a1`.
 - MIT license; SSH-signed commits; CI on Python 3.11 + 3.12 (Linux
   unit) plus Docker Postgres integration with `--cov-fail-under=99`.
 
-[Unreleased]: https://github.com/Arun-kc/schemabrain/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Arun-kc/schemabrain/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Arun-kc/schemabrain/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Arun-kc/schemabrain/compare/v0.2.0a1...v0.3.0
 [0.2.0a1]: https://github.com/Arun-kc/schemabrain/releases/tag/v0.2.0a1
 [0.1.0a1]: https://github.com/Arun-kc/schemabrain/releases/tag/v0.1.0a1
