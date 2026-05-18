@@ -45,6 +45,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inspect customer` drill.
 
 ### Added
+- **`schemabrain init` metrics suggestion stage.** The activation wizard
+  is now six stages instead of five: `source_check → index → entities →
+  metrics → wire_host → next_step`. Stage 4 (metrics) is best-effort
+  (continues on failure, mirroring stage 3 entities) and skips cleanly
+  with a guided next-step pointer in six conditions:
+  `--no-metrics` opt-out, `--skip-index` set, non-Postgres source, store
+  already has metrics for this source, entity store is empty (the
+  cross-stage dependency — metrics anchor on entities), or
+  `ANTHROPIC_API_KEY` is missing. Two new flags: `--no-metrics` (opt
+  out) and `--metrics-max-cost-usd N` (per-stage USD cost cap;
+  defaults to `$SCHEMABRAIN_MAX_LLM_COST_USD` env var, then to the
+  package default of $0.50). The renderer's closing block grows a
+  parallel pending-metrics block (mirror of pending-entity-block)
+  that surfaces the right recovery action for each skip condition —
+  including the cross-stage hint to curate entities first when the
+  entity store is empty. Stage labels in the rendered output update
+  from `[N/5]` to `[N/6]`; the abort-panel denominator likewise
+  updates. PR A of the wizard semantic-layer expansion arc; metrics
+  precedes joins (PR B) and dbt-import branch (PR C).
 - **`find_relevant_entities` MCP tool** (10th MCP tool, 5th
   semantic-layer tool). Embedding-cosine retrieval scoped to curated
   entities: per-entity score = MAX cosine across the columns of the

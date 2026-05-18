@@ -909,11 +909,11 @@ class TestWizardRenderer:
         captured = capsys.readouterr()
         # Bordered panel — title carries the stage ordinal, body
         # carries the failure message + recovery hint.
-        assert "Stopped at stage 2 of 5" in captured.err
+        assert "Stopped at stage 2 of 6" in captured.err
         assert "source unreachable mid-index" in captured.err
         assert "verify the URL and retry" in captured.err
 
-    def test_aborted_stage_4_without_host_install_result(
+    def test_aborted_wire_host_stage_without_host_install_result(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         from schemabrain.cli import _render_wizard_result
@@ -924,8 +924,9 @@ class TestWizardRenderer:
                 self._make_outcome(1, "source_check", "done", "ok"),
                 self._make_outcome(2, "index", "skipped", "skipped"),
                 self._make_outcome(3, "entities", "skipped", "skipped"),
+                self._make_outcome(4, "metrics", "skipped", "skipped"),
                 self._make_outcome(
-                    4, "wire_host", "failed", "host unavailable", "install host first"
+                    5, "wire_host", "failed", "host unavailable", "install host first"
                 ),
             ),
             aborted=True,
@@ -933,9 +934,9 @@ class TestWizardRenderer:
         )
         _render_wizard_result(result)
         captured = capsys.readouterr()
-        # Abort renders "stage 4 of 5" (denominator hardcoded to the
-        # full pipeline shape, not the count of outcomes seen).
-        assert "Stopped at stage 4 of 5" in captured.err
+        # Abort renders "stage 5 of 6" (denominator is the total
+        # pipeline shape, not the count of outcomes seen).
+        assert "Stopped at stage 5 of 6" in captured.err
 
     def test_stage_context_no_op_for_fast_stages(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Fast stages (source_check, wire_host, next_step) skip the
@@ -1049,8 +1050,9 @@ class TestWizardRenderer:
                 self._make_outcome(1, "source_check", "done", "ok"),
                 self._make_outcome(2, "index", "done", "indexed"),
                 self._make_outcome(3, "entities", "skipped", "skipped"),
-                self._make_outcome(4, "wire_host", "done", "wired"),
-                self._make_outcome(5, "next_step", "done", "Ready"),
+                self._make_outcome(4, "metrics", "skipped", "skipped"),
+                self._make_outcome(5, "wire_host", "done", "wired"),
+                self._make_outcome(6, "next_step", "done", "Ready"),
             ),
             aborted=False,
             host_install_result=self._printed_only_host_result(),  # type: ignore[arg-type]
@@ -1091,13 +1093,14 @@ class TestWizardRenderer:
                 self._make_outcome(1, "source_check", "done", "ok"),
                 self._make_outcome(2, "index", "skipped", "skipped"),
                 self._make_outcome(3, "entities", "skipped", "skipped"),
+                self._make_outcome(4, "metrics", "skipped", "skipped"),
                 self._make_outcome(
-                    4,
+                    5,
                     "wire_host",
                     "done",
                     "Claude Code registration failed; the snippet is printable below",
                 ),
-                self._make_outcome(5, "next_step", "done", "Ready"),
+                self._make_outcome(6, "next_step", "done", "Ready"),
             ),
             aborted=False,
             host_install_result=host_result,
@@ -1135,10 +1138,11 @@ class TestWizardRenderer:
                 self._make_outcome(1, "source_check", "done", "ok"),
                 self._make_outcome(2, "index", "done", "53 tables · 412 columns indexed"),
                 self._make_outcome(3, "entities", "done", "8 entities created (cost $0.0123)"),
+                self._make_outcome(4, "metrics", "done", "6 metrics created (cost $0.0080)"),
                 self._make_outcome(
-                    4, "wire_host", "done", f"wrote schemabrain entry to {cfg_path}"
+                    5, "wire_host", "done", f"wrote schemabrain entry to {cfg_path}"
                 ),
-                self._make_outcome(5, "next_step", "done", "Ready"),
+                self._make_outcome(6, "next_step", "done", "Ready"),
             ),
             aborted=False,
             host_install_result=host_result,
@@ -1168,7 +1172,7 @@ class TestWizardRenderer:
             backup_made=False,
         )
         result = WizardResult(
-            outcomes=(self._make_outcome(4, "wire_host", "done", "wrote schemabrain entry"),),
+            outcomes=(self._make_outcome(5, "wire_host", "done", "wrote schemabrain entry"),),
             aborted=False,
             host_install_result=host_result,
         )
@@ -1194,8 +1198,9 @@ class TestWizardRenderer:
                 self._make_outcome(1, "source_check", "done", "ok"),
                 self._make_outcome(2, "index", "skipped", "skipped"),
                 self._make_outcome(3, "entities", "skipped", "skipped"),
-                self._make_outcome(4, "wire_host", "done", "ok"),
-                self._make_outcome(5, "next_step", "done", "ok"),
+                self._make_outcome(4, "metrics", "skipped", "skipped"),
+                self._make_outcome(5, "wire_host", "done", "ok"),
+                self._make_outcome(6, "next_step", "done", "ok"),
             ),
             aborted=False,
         )
@@ -1365,8 +1370,9 @@ class TestWizardRenderer:
             self._make_outcome(1, "source_check", "done", "ok"),
             self._make_outcome(2, "index", "done", "indexed"),
             self._make_outcome(3, "entities", "skipped", "skipped"),
-            self._make_outcome(4, "wire_host", "done", "wired"),
-            self._make_outcome(5, "next_step", "done", "Ready"),
+            self._make_outcome(4, "metrics", "skipped", "skipped"),
+            self._make_outcome(5, "wire_host", "done", "wired"),
+            self._make_outcome(6, "next_step", "done", "Ready"),
         )
 
     def test_closing_block_renders_on_written_host(
@@ -1647,12 +1653,16 @@ class TestPendingEntityBlock:
     def _result_with_entities_outcome(self, entities_outcome: object, tmp_path: Path) -> object:
         from schemabrain.setup.wizard import WizardResult
 
+        # The metrics outcome here is `done` so the closing block's
+        # metrics-pending branch stays silent; tests in this class
+        # are isolating the entities branch.
         outcomes = (
             self._make_outcome(1, "source_check", "done", "ok"),
             self._make_outcome(2, "index", "done", "indexed"),
             entities_outcome,
-            self._make_outcome(4, "wire_host", "done", "wired"),
-            self._make_outcome(5, "next_step", "done", "Ready"),
+            self._make_outcome(4, "metrics", "done", "2 metrics created (cost $0.0050)"),
+            self._make_outcome(5, "wire_host", "done", "wired"),
+            self._make_outcome(6, "next_step", "done", "Ready"),
         )
         return WizardResult(
             outcomes=outcomes,  # type: ignore[arg-type]
@@ -1846,7 +1856,7 @@ class TestPendingEntityBlock:
 
         outcomes = (
             self._make_outcome(1, "source_check", "done", "ok"),
-            self._make_outcome(4, "wire_host", "done", "wired"),
+            self._make_outcome(5, "wire_host", "done", "wired"),
         )
         result = WizardResult(
             outcomes=outcomes,  # type: ignore[arg-type]
@@ -1858,6 +1868,223 @@ class TestPendingEntityBlock:
         assert "To curate entities" not in captured.err
         assert "Curate entities when ready" not in captured.err
         assert "Stage 3 did not curate entities" not in captured.err
+        # Closing-block invariants still hold.
+        assert "Restart Claude Desktop" in captured.err
+
+
+class TestPendingMetricsBlock:
+    """Tests for the closing-block branch that surfaces stage 4
+    (metrics) recovery when curation didn't complete.
+
+    Mirror of `TestPendingEntityBlock`. The metrics block fires only
+    when stage 4 (`metrics`) did NOT land — skipped on opt-out,
+    missing API key, empty entity store, or failure. Renders nothing
+    when stage 4 succeeded or was idempotently short-circuited on
+    already-curated.
+    """
+
+    def _make_outcome(
+        self,
+        stage: int,
+        name: str,
+        status: str,
+        message: str,
+        next_step: str | None = None,
+    ) -> object:
+        from schemabrain.setup.wizard import StageOutcome
+
+        return StageOutcome(
+            stage=stage,
+            name=name,
+            status=status,  # type: ignore[arg-type]
+            message=message,
+            next_step=next_step,
+        )
+
+    def _written_host_result(self, tmp_path: Path) -> object:
+        from schemabrain.setup.hosts import SchemabrainSnippet
+        from schemabrain.setup.init_flow import InitResult
+
+        snippet = SchemabrainSnippet(command="uvx", args=("schemabrain==0.3.0", "serve"), env={})
+        return InitResult(
+            host="claude-desktop",
+            snippet=snippet,
+            state="written",
+            config_path=tmp_path / "claude_desktop_config.json",
+            backup_made=False,
+        )
+
+    def _result_with_metrics_outcome(self, metrics_outcome: object, tmp_path: Path) -> object:
+        from schemabrain.setup.wizard import WizardResult
+
+        # Entities outcome is `done` so the entity-pending branch
+        # stays silent; this class isolates the metrics branch.
+        outcomes = (
+            self._make_outcome(1, "source_check", "done", "ok"),
+            self._make_outcome(2, "index", "done", "indexed"),
+            self._make_outcome(3, "entities", "done", "4 entities created (cost $0.0123)"),
+            metrics_outcome,
+            self._make_outcome(5, "wire_host", "done", "wired"),
+            self._make_outcome(6, "next_step", "done", "Ready"),
+        )
+        return WizardResult(
+            outcomes=outcomes,  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._written_host_result(tmp_path),  # type: ignore[arg-type]
+        )
+
+    def test_no_pending_block_when_metrics_done(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain.cli import _render_wizard_result
+
+        result = self._result_with_metrics_outcome(
+            self._make_outcome(4, "metrics", "done", "6 metrics created (cost $0.0080)"),
+            tmp_path,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        # Closing-block invariants still hold.
+        assert "Restart Claude Desktop" in captured.err
+        # No metrics-pending copy emitted.
+        assert "To curate metrics" not in captured.err
+        assert "Curate metrics when ready" not in captured.err
+        assert "Metrics anchor on entities" not in captured.err
+        assert "Stage 4 did not curate metrics" not in captured.err
+
+    def test_no_pending_block_when_metrics_already_curated(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Idempotent re-run on a store that already has metrics —
+        # treat as happy path, no pending copy.
+        from schemabrain.cli import _render_wizard_result
+
+        result = self._result_with_metrics_outcome(
+            self._make_outcome(
+                4, "metrics", "skipped", "already curated: 7 metric/s present for this source"
+            ),
+            tmp_path,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        assert "To curate metrics" not in captured.err
+        assert "Curate metrics when ready" not in captured.err
+
+    def test_pending_block_for_api_key_missing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain.cli import _render_wizard_result
+
+        result = self._result_with_metrics_outcome(
+            self._make_outcome(
+                4,
+                "metrics",
+                "skipped",
+                "ANTHROPIC_API_KEY not set; metric suggestion skipped",
+                "export ANTHROPIC_API_KEY=sk-ant-... and then run "
+                "`schemabrain metrics suggest --apply`",
+            ),
+            tmp_path,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        # Headline framing names what's missing.
+        assert "To curate metrics" in captured.err
+        # Both required actions surface.
+        assert "ANTHROPIC_API_KEY=sk-ant-" in captured.err
+        assert "schemabrain metrics suggest --apply" in captured.err
+
+    def test_pending_block_for_no_metrics_opt_out(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain.cli import _render_wizard_result
+
+        result = self._result_with_metrics_outcome(
+            self._make_outcome(
+                4,
+                "metrics",
+                "skipped",
+                "--no-metrics set; not running metric suggestion",
+                "run `schemabrain metrics suggest --apply` later to curate metrics",
+            ),
+            tmp_path,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        # Softer framing for the explicit opt-out.
+        assert "Curate metrics when ready" in captured.err
+        assert "schemabrain metrics suggest --apply" in captured.err
+
+    def test_pending_block_for_empty_entity_store(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The cross-stage dependency: metrics need entities first.
+        # The pending block must name the ordering so the user knows
+        # what to do.
+        from schemabrain.cli import _render_wizard_result
+
+        result = self._result_with_metrics_outcome(
+            self._make_outcome(
+                4,
+                "metrics",
+                "skipped",
+                "entity store is empty; metrics need entities to anchor on",
+                "run `schemabrain entities suggest --apply` first, then re-run `schemabrain init`",
+            ),
+            tmp_path,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        assert "Metrics anchor on entities" in captured.err
+        # Both commands surfaced in order.
+        assert "schemabrain entities suggest --apply" in captured.err
+        assert "schemabrain metrics suggest --apply" in captured.err
+
+    def test_pending_block_for_generic_failure(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Any other skipped/failed status lands in the generic branch.
+        from schemabrain.cli import _render_wizard_result
+
+        result = self._result_with_metrics_outcome(
+            self._make_outcome(
+                4,
+                "metrics",
+                "failed",
+                "LLM returned 4 candidates but none could be applied (cost $0.0050)",
+                "re-run `schemabrain metrics suggest --dry-run` to inspect",
+            ),
+            tmp_path,
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        assert "Stage 4 did not curate metrics" in captured.err
+        assert "schemabrain metrics suggest --apply" in captured.err
+
+    def test_pending_block_omitted_when_no_metrics_outcome(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Defensive: an exotic stage list missing the metrics stage
+        # entirely. The renderer must not crash and must not emit
+        # metrics-pending copy.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        outcomes = (
+            self._make_outcome(1, "source_check", "done", "ok"),
+            self._make_outcome(5, "wire_host", "done", "wired"),
+        )
+        result = WizardResult(
+            outcomes=outcomes,  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._written_host_result(tmp_path),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        assert "To curate metrics" not in captured.err
+        assert "Curate metrics when ready" not in captured.err
+        assert "Metrics anchor on entities" not in captured.err
+        assert "Stage 4 did not curate metrics" not in captured.err
         # Closing-block invariants still hold.
         assert "Restart Claude Desktop" in captured.err
 

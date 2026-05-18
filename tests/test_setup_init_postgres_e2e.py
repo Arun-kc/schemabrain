@@ -355,14 +355,14 @@ class TestWizardAgainstPostgres16:
         )
         assert exit_code == 0
         captured = capsys.readouterr()
-        # All five stages render.
-        for header in ("[1/5]", "[2/5]", "[3/5]", "[4/5]", "[5/5]"):
+        # All six stages render.
+        for header in ("[1/6]", "[2/6]", "[3/6]", "[4/6]", "[5/6]", "[6/6]"):
             assert header in captured.err
         # Stage 2 indexed real tables.
         assert "tables" in captured.err.lower()
         # Stage 3 soft-skipped on missing API key.
         assert "ANTHROPIC_API_KEY" in captured.err
-        # Stage 4 emitted the manual-mode snippet to stdout.
+        # Stage 5 (wire_host) emitted the manual-mode snippet to stdout.
         snippet = json.loads(captured.out)
         assert "schemabrain" in snippet["mcpServers"]
         # Confirm the indexer actually wrote tables to the store —
