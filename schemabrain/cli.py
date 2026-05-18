@@ -284,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "entities":
         if args.entity_action == "apply":
             return _cmd_entities_apply(
-                yaml_path=args.yaml_path,
+                yaml_paths=args.yaml_path,
                 positional_url=args.source,
                 url_env=args.url_env,
                 store_path=args.store_path,
@@ -340,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.joins_action == "apply":
             return _cmd_joins_apply(
-                yaml_path=args.yaml_path,
+                yaml_paths=args.yaml_path,
                 positional_url=args.source,
                 url_env=args.url_env,
                 store_path=args.store_path,
@@ -419,7 +419,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "metrics":
         if args.metrics_action == "apply":
             return _cmd_metrics_apply(
-                yaml_path=args.yaml_path,
+                yaml_paths=args.yaml_path,
                 positional_url=args.source,
                 url_env=args.url_env,
                 store_path=args.store_path,
@@ -805,13 +805,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_apply = entity_sub.add_parser(
         "apply",
-        help="Load an entity YAML file into the local store",
+        help="Load entity YAML file(s) or directory(ies) into the local store.",
     )
     p_apply.add_argument(
         "yaml_path",
-        help="Path to an entity YAML file (see docs/setup.md for the "
-        "grammar; minimum required fields: version, name, binding, "
-        "identity).",
+        nargs="+",
+        help="One or more entity YAML files OR directories of YAML files "
+        "(each file ending in `.yaml`/`.yml`). Shell globs work — "
+        "`entities apply dir/*.yaml` and `entities apply dir/` both apply "
+        "every YAML in the directory. Multi-file apply lands each file "
+        "independently; an error in one file skips that file and reports "
+        "it in the summary.",
     )
     p_apply.add_argument(
         "--source",
@@ -1057,14 +1061,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_joins_apply = joins_sub.add_parser(
         "apply",
-        help="Load a canonical-join YAML file (or directory) into the local store.",
+        help="Load canonical-join YAML file(s) or directory(ies) into the local store.",
     )
     p_joins_apply.add_argument(
         "yaml_path",
-        help="Path to a canonical-join YAML file, OR a directory of "
-        "YAML files (each file ending in `.yaml`/`.yml`). Multi-file "
-        "apply lands each file independently; an error in one file "
-        "skips that file and reports it in the summary.",
+        nargs="+",
+        help="One or more canonical-join YAML files OR directories of "
+        "YAML files (each file ending in `.yaml`/`.yml`). Shell globs "
+        "work — `joins apply dir/*.yaml` and `joins apply dir/` both "
+        "apply every YAML in the directory. Multi-file apply lands each "
+        "file independently; an error in one file skips that file and "
+        "reports it in the summary.",
     )
     p_joins_apply.add_argument(
         "--source",
@@ -1123,14 +1130,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_metrics_apply = metrics_sub.add_parser(
         "apply",
-        help="Load a metric YAML file (or directory) into the local store.",
+        help="Load metric YAML file(s) or directory(ies) into the local store.",
     )
     p_metrics_apply.add_argument(
         "yaml_path",
-        help="Path to a metric YAML file, OR a directory of YAML files "
-        "(each file ending in `.yaml`/`.yml`). Multi-file apply lands "
-        "each file independently; an error in one file skips that file "
-        "and reports it in the summary.",
+        nargs="+",
+        help="One or more metric YAML files OR directories of YAML files "
+        "(each file ending in `.yaml`/`.yml`). Shell globs work — "
+        "`metrics apply dir/*.yaml` and `metrics apply dir/` both apply "
+        "every YAML in the directory. Multi-file apply lands each file "
+        "independently; an error in one file skips that file and reports "
+        "it in the summary.",
     )
     p_metrics_apply.add_argument(
         "--source",
@@ -2261,26 +2271,81 @@ def _cmd_mine_queries(
     return 0
 
 
+def _expand_yaml_paths(yaml_paths: list[str]) -> tuple[list[Path], list[tuple[str, str]]]:
+    """Resolve a list of file-or-directory paths into a flat sorted list of YAML files.
+
+    Each input path may be a file (used as-is when its suffix is
+    `.yaml`/`.yml`, otherwise reported as a non-yaml error) OR a
+    directory (every `.yaml`/`.yml` in the immediate children is
+    included; subdirectories are NOT walked recursively to keep the
+    expansion predictable — operators stage YAML in one folder per
+    kind). Missing paths surface as failures, not exceptions.
+
+    Returns `(yaml_files, failures)`. `failures` is a list of
+    `(path, message)` tuples for the apply loop to surface alongside
+    its own per-file failures; the caller decides whether to exit
+    early or continue with the successfully-resolved files.
+    """
+    yaml_files: list[Path] = []
+    failures: list[tuple[str, str]] = []
+    seen: set[Path] = set()
+    for raw in yaml_paths:
+        path = Path(raw)
+        if path.is_dir():
+            dir_files = sorted(
+                p
+                for p in path.iterdir()
+                if p.is_file() and p.suffix.lower() in (".yaml", ".yml")
+            )
+            if not dir_files:
+                failures.append((raw, f"no `.yaml`/`.yml` files found in directory {raw!r}"))
+                continue
+            for f in dir_files:
+                resolved = f.resolve()
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                yaml_files.append(f)
+        elif path.is_file():
+            if path.suffix.lower() not in (".yaml", ".yml"):
+                failures.append((raw, f"{raw!r} is not a `.yaml`/`.yml` file"))
+                continue
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            yaml_files.append(path)
+        else:
+            failures.append((raw, f"{raw!r} is not a file or directory"))
+    return yaml_files, failures
+
+
 def _cmd_entities_apply(
     *,
-    yaml_path: str,
+    yaml_paths: list[str],
     positional_url: str | None,
     url_env: str | None,
     store_path: str,
 ) -> int:
-    """Load one entity YAML file and write it to the local store.
+    """Load entity YAML file(s) or directory(ies) into the local store.
 
     Non-interactive by design — this is the deterministic file-to-
     store operation. `entities suggest --apply` is the LLM-suggest
     write path; both share the same `Store.write_entity` call.
 
-    Error surface:
-      - exit 1 on parse error, missing file, FK violation
-        (unindexed bound table), or dbt-guard refusal
-      - exit 2 on URL-source mismatch / unwritable store path
-        (mirrors the existing pattern in `serve` / `mine-queries`)
-      - exit 0 on successful write (prints `applied entity: <name>`
-        to stdout)
+    `yaml_paths` is a list of one or more paths; each item may be a
+    single YAML file OR a directory containing YAMLs (only the
+    immediate children are scanned). Shell globs that expand to
+    multiple paths land here as multiple list elements. Per-file
+    failures (parse / FK / dbt-guard) don't block the rest — the
+    function aggregates failures and reports them in a summary.
+
+    Exit codes:
+      - 0: every file applied cleanly
+      - 1: at least one file failed (parse / FK / dbt-guard /
+        bad path / non-yaml extension)
+      - 2: structural (URL missing, unwritable store, store-level
+        DatabaseError other than IntegrityError)
     """
     source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
     if source_url is None:
@@ -2289,62 +2354,79 @@ def _cmd_entities_apply(
         return 2
     source_id = _make_source_id(source_url)
 
-    path = Path(yaml_path)
-    try:
-        entity = parse_entity_yaml_file(path)
-    except FileNotFoundError:
-        _entity_error(f"entity YAML file not found: {yaml_path}")
-        return 1
-    except IsADirectoryError:
-        _entity_error(f"{yaml_path!r} is a directory, not a file")
-        return 1
-    except EntityParseError as exc:
-        _entity_error(f"parsing {yaml_path}: {exc}")
-        return 1
+    yaml_files, path_failures = _expand_yaml_paths(yaml_paths)
+    if not yaml_files and not path_failures:
+        # Defensive: nargs="+" guarantees ≥ 1 path, _expand_yaml_paths
+        # routes invalid paths to failures, so reaching here means a
+        # caller bypassed argparse. Treat as a structural error.
+        print("error: no entity YAML paths provided", file=sys.stderr)
+        return 2
+
+    applied: list[str] = []
+    failures: list[tuple[str, str]] = list(path_failures)
 
     try:
         with SQLiteStore(store_path) as store:
-            try:
-                store.write_entity(entity, source_connection_id=source_id)
-            except DbtOwnedEntityError as exc:
-                _entity_error(str(exc))
-                return 1
-            except sqlite3.IntegrityError:
-                # The bound-table FK is the only IntegrityError this
-                # call path can raise — surface as a guided message
-                # pointing the user at `schemabrain index`.
-                _entity_error(
-                    f"entity {entity.name!r} binds to table "
-                    f"{entity.qualified_table!r} which isn't indexed "
-                    f"for this source. Run `schemabrain index` first to make "
-                    f"the table available, then re-run `entities apply`."
-                )
-                return 1
-            except sqlite3.DatabaseError as exc:
-                # Catch-all for non-Integrity DB-level errors: disk full,
-                # WAL checkpoint failure, CHECK constraint trips on a
-                # corrupted store, etc. Returns exit 2 (structural, not
-                # user input) and routes through `_render_guided` so
-                # the user gets the same shape of message that other
-                # CLI commands produce for store-level failures.
-                _render_guided(
-                    GuidedError(
-                        kind="entities_apply_store_error",
-                        message=f"store-level error during write: {exc}",
-                        why="the SQLite store reported an error other than a foreign-key violation",
-                        fix="check the store file integrity, available disk "
-                        "space, and that no other Schema Brain process is "
-                        "writing to the same store",
-                        next_step=f"inspect {store_path} with `sqlite3 .schema`",
+            for yaml_file in yaml_files:
+                try:
+                    entity = parse_entity_yaml_file(yaml_file)
+                except (
+                    FileNotFoundError,
+                    IsADirectoryError,
+                ) as exc:  # pragma: no cover — _expand_yaml_paths already filters non-files; race-only path
+                    failures.append((str(yaml_file), str(exc)))
+                    continue
+                except EntityParseError as exc:
+                    failures.append((str(yaml_file), str(exc)))
+                    continue
+
+                try:
+                    store.write_entity(entity, source_connection_id=source_id)
+                    applied.append(entity.name)
+                except DbtOwnedEntityError as exc:
+                    failures.append((str(yaml_file), str(exc)))
+                except sqlite3.IntegrityError:
+                    # The bound-table FK is the only IntegrityError
+                    # this call path can raise — keep the guided
+                    # message pointing the user at `schemabrain index`.
+                    failures.append(
+                        (
+                            str(yaml_file),
+                            f"entity {entity.name!r} binds to table "
+                            f"{entity.qualified_table!r} which isn't indexed "
+                            f"for this source. Run `schemabrain index` first "
+                            f"to make the table available, then re-run "
+                            f"`entities apply`.",
+                        )
                     )
-                )
-                return 2
+                except sqlite3.DatabaseError as exc:
+                    # Non-Integrity DB-level errors (disk full, WAL
+                    # checkpoint failure, CHECK on a corrupted store)
+                    # are structural — return exit 2 immediately
+                    # rather than continuing the loop with a broken
+                    # store. Preserves the prior single-file behaviour.
+                    _render_guided(
+                        GuidedError(
+                            kind="entities_apply_store_error",
+                            message=f"store-level error during write: {exc}",
+                            why="the SQLite store reported an error other than a foreign-key violation",
+                            fix="check the store file integrity, available disk "
+                            "space, and that no other Schema Brain process is "
+                            "writing to the same store",
+                            next_step=f"inspect {store_path} with `sqlite3 .schema`",
+                        )
+                    )
+                    return 2
     except OSError as e:
         _render_guided(store_path_unwritable(store_path, e))
         return 2
 
-    print(f"applied entity: {entity.name}")
-    return 0
+    for name in applied:
+        print(f"applied entity: {name}")
+    for file_str, message in failures:
+        print(f"error in {file_str}: {message}", file=sys.stderr)
+
+    return 1 if failures else 0
 
 
 def _cmd_entities_list(
@@ -3288,22 +3370,22 @@ def _cmd_joins_suggest(
 
 def _cmd_joins_apply(
     *,
-    yaml_path: str,
+    yaml_paths: list[str],
     positional_url: str | None,
     url_env: str | None,
     store_path: str,
 ) -> int:
-    """Load canonical-join YAML files into the local store.
+    """Load canonical-join YAML file(s) or directory(ies) into the local store.
 
-    `yaml_path` may be a single file OR a directory. Directory mode
-    loads every `*.yaml`/`*.yml` in the immediate children, applies
-    each, and surfaces a summary. A parse/FK error in one file does
-    NOT block the rest — failures aggregate into the summary; exit
-    code is 1 if any file failed.
+    `yaml_paths` accepts one or more files OR directories; directories
+    are expanded to their immediate `.yaml`/`.yml` children. Shell
+    globs that expand to multiple paths land here as multiple list
+    elements. Per-file failures aggregate into a summary; an error in
+    one file does NOT block the rest.
 
     Exit codes:
       0: every file applied cleanly
-      1: at least one file failed (parse / FK violation / etc.)
+      1: at least one file failed (parse / FK violation / bad path)
       2: structural (URL missing, unwritable store)
     """
     source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
@@ -3313,28 +3395,15 @@ def _cmd_joins_apply(
         return 2
     source_id = _make_source_id(source_url)
 
-    path = Path(yaml_path)
-    if path.is_dir():
-        yaml_files = sorted(
-            p for p in path.iterdir() if p.is_file() and p.suffix.lower() in (".yaml", ".yml")
-        )
-        if not yaml_files:
-            print(
-                f"error: no `.yaml`/`.yml` files found in directory {yaml_path!r}",
-                file=sys.stderr,
-            )
-            return 1
-    elif path.is_file():
-        yaml_files = [path]
-    else:
-        print(
-            f"error: {yaml_path!r} is not a file or directory",
-            file=sys.stderr,
-        )
-        return 1
+    yaml_files, path_failures = _expand_yaml_paths(yaml_paths)
+    if not yaml_files and not path_failures:
+        # Defensive: nargs="+" guarantees ≥ 1 path; reaching here means
+        # a caller bypassed argparse.
+        print("error: no canonical-join YAML paths provided", file=sys.stderr)
+        return 2
 
     applied: list[str] = []
-    failures: list[tuple[str, str]] = []
+    failures: list[tuple[str, str]] = list(path_failures)
 
     try:
         with SQLiteStore(store_path) as store:
@@ -3447,22 +3516,23 @@ def _cmd_joins_list(
 
 def _cmd_metrics_apply(
     *,
-    yaml_path: str,
+    yaml_paths: list[str],
     positional_url: str | None,
     url_env: str | None,
     store_path: str,
 ) -> int:
-    """Load metric YAML files into the local store.
+    """Load metric YAML file(s) or directory(ies) into the local store.
 
-    `yaml_path` may be a single file OR a directory. Directory mode
-    loads every `*.yaml`/`*.yml` in the immediate children, applies
-    each, and surfaces a summary. A parse/FK/dbt-guard error in one
-    file does NOT block the rest — failures aggregate into the
-    summary; exit code is 1 if any file failed.
+    `yaml_paths` accepts one or more files OR directories; directories
+    are expanded to their immediate `.yaml`/`.yml` children. Shell
+    globs that expand to multiple paths land here as multiple list
+    elements. Per-file failures aggregate into a summary; an error in
+    one file does NOT block the rest.
 
     Exit codes:
       0: every file applied cleanly
-      1: at least one file failed (parse / FK violation / dbt-owned)
+      1: at least one file failed (parse / FK violation / dbt-owned /
+        bad path)
       2: structural (URL missing, unwritable store)
     """
     source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
@@ -3472,28 +3542,15 @@ def _cmd_metrics_apply(
         return 2
     source_id = _make_source_id(source_url)
 
-    path = Path(yaml_path)
-    if path.is_dir():
-        yaml_files = sorted(
-            p for p in path.iterdir() if p.is_file() and p.suffix.lower() in (".yaml", ".yml")
-        )
-        if not yaml_files:
-            print(
-                f"error: no `.yaml`/`.yml` files found in directory {yaml_path!r}",
-                file=sys.stderr,
-            )
-            return 1
-    elif path.is_file():
-        yaml_files = [path]
-    else:
-        print(
-            f"error: {yaml_path!r} is not a file or directory",
-            file=sys.stderr,
-        )
-        return 1
+    yaml_files, path_failures = _expand_yaml_paths(yaml_paths)
+    if not yaml_files and not path_failures:
+        # Defensive: nargs="+" guarantees ≥ 1 path; reaching here means
+        # a caller bypassed argparse.
+        print("error: no metric YAML paths provided", file=sys.stderr)
+        return 2
 
     applied: list[str] = []
-    failures: list[tuple[str, str]] = []
+    failures: list[tuple[str, str]] = list(path_failures)
 
     try:
         with SQLiteStore(store_path) as store:
