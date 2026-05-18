@@ -327,9 +327,10 @@ def _parse_origin(raw: Any) -> JoinOrigin:
     if raw == "dbt_import":
         raise CanonicalJoinParseError(
             "origin 'dbt_import' is reserved for the dbt-relationships "
-            "importer (lands at v1 wk-15); use 'manual' or omit the "
-            "field to default. To import joins from dbt today, edit "
-            "your dbt project and run `schemabrain import dbt` (wk-15)."
+            "importer, which has not shipped yet. Use 'manual' or omit "
+            "the field to default. To import entities from dbt today, "
+            "see `schemabrain import dbt`; the joins counterpart is on "
+            "the roadmap."
         )
     # The Literal narrowing happens via the runtime check above; mypy
     # sees a `str`, but the value is provably one of the three.

@@ -106,8 +106,8 @@ __all__ = [
 #         FK CASCADE on `entities` for BOTH source_entity + target_entity
 #         so deleting an entity sweeps every canonical join that
 #         referenced it. SQL-layer CHECK on `origin` includes
-#         `dbt_import` from day one (reserved at the — producer lands
-#         wk-15) for schema symmetry with `entities.origin`. `on_columns`
+#         `dbt_import` from day one (reserved at the producer-pending
+#         release) for schema symmetry with `entities.origin`. `on_columns`
 #         stored as JSON-serialised list of `[src_col, tgt_col]` pairs
 #         (same shape pattern as dbt-import's upstream-sources storage).
 #         Index `idx_canonical_joins_by_pair` keyed
@@ -411,7 +411,7 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     # explicit (the billing/shipping case). Both entity references FK
     # back to `entities`; CASCADE on entity deletion sweeps every join
     # that touched the dropped entity. CHECK on `origin` covers all three
-    # values including `dbt_import` reserved for wk-15.
+    # values including `dbt_import` reserved for a future release.
     #
     # `on_columns_json` carries the equi-join column pairs as JSON to
     # support composite-key joins without a side table — same pattern
@@ -1783,10 +1783,10 @@ class SQLiteStore:
 
         Note: unlike `write_entity`, this method does NOT yet enforce
         a dbt-import ownership guard. No `dbt_import` join producer
-        exists at this release — the dbt-relationships importer lands at
-        v1 wk-15. When that producer lands, add a `DbtOwnedJoinError`
-        guard symmetric with `DbtOwnedEntityError` so manual/suggested
-        writes can't overwrite dbt-imported joins.
+        exists at this release — the dbt-relationships importer lands
+        in a future release. When that producer lands, add a
+        `DbtOwnedJoinError` guard symmetric with `DbtOwnedEntityError`
+        so manual/suggested writes can't overwrite dbt-imported joins.
         """
         on_columns_json = json.dumps([[pair.source_column, pair.target_column] for pair in join.on])
         conn = self._require_conn()

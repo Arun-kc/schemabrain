@@ -7,10 +7,10 @@ Locks the canonical-join-graph design decisions in code:
     (billing/shipping address case).
   - Equi-join-only at v1; `on` is a non-empty tuple of
     `JoinColumnPair`.
-  - Self-joins (`source_entity == target_entity`) are rejected at v1 —
-    deferred to wk-15 alongside grain-aware metrics.
+  - Self-joins (`source_entity == target_entity`) are rejected —
+    not supported (workaround: split into two entities).
   - `JoinOrigin = Literal["manual", "suggested", "dbt_import"]` —
-    `dbt_import` is RESERVED at the (no producer until wk-15) but
+    `dbt_import` is RESERVED (no joins producer yet) but
     valid at the dataclass + store layer for schema symmetry with
     `Entity.origin`.
 
@@ -192,9 +192,10 @@ class TestCanonicalJoinValidation:
             _make_join(target_entity=bad)
 
     def test_rejects_self_join(self) -> None:
-        # Self-joins (manager_of_user, etc.) are deferred to wk-15
-        # alongside grain-aware metrics. Refusing at the dataclass
-        # layer makes the deferral concrete.
+        # Self-joins (manager_of_user, etc.) are not supported by the
+        # CanonicalJoin dataclass invariant. Workaround for users:
+        # split into two entities (e.g., `manager` and `direct_report`)
+        # and join on the FK column.
         with pytest.raises(ValueError, match="self-joins"):
             _make_join(source_entity="user", target_entity="user")
 
@@ -219,10 +220,10 @@ class TestCanonicalJoinValidation:
             _make_join(origin=bad_origin)
 
     def test_accepts_all_three_valid_origins(self) -> None:
-        # `dbt_import` is RESERVED at the — the dataclass accepts it,
-        # but suggest/apply pipelines refuse to produce it because the
-        # dbt-relationships importer doesn't ship until wk-15. Lock the
-        # symmetry with `Entity.origin` here so the schema stays
+        # `dbt_import` is RESERVED — the dataclass accepts it, but the
+        # suggest/apply pipelines refuse to produce it because the
+        # dbt-relationships joins importer hasn't shipped yet. Lock
+        # the symmetry with `Entity.origin` here so the schema stays
         # consistent across the semantic-layer surface.
         for origin in ("manual", "suggested", "dbt_import"):
             _make_join(origin=origin)

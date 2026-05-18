@@ -397,8 +397,8 @@ class Store(Protocol):
             composite-key joins (length >= 2) must survive store
             re-reads byte-identical.
           - Accept all three `JoinOrigin` values (`manual`, `suggested`,
-            `dbt_import`). `dbt_import` is reserved for v1 wk-15; the
-            store layer doesn't refuse it — refusal lives in the
+            `dbt_import`). `dbt_import` is reserved for a future release;
+            the store layer doesn't refuse it — refusal lives in the
             upstream suggest/apply pipelines that don't yet know how
             to produce dbt-derived joins.
         """

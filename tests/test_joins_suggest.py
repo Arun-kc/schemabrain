@@ -10,7 +10,7 @@ Pins the canonical-join suggester contracts:
   - FK without query-log → confidence `"high"`, frequency 0
   - Query-log without FK → confidence `"medium"`/`"low"` per
     `_MEDIUM_CONFIDENCE_FREQUENCY`
-  - FK seed self-references dropped (deferred to wk-15)
+  - FK seed self-references dropped (self-joins not supported)
   - Candidates whose physical tables don't both back an entity
     dropped silently
   - Output sorted by confidence DESC, then frequency DESC, then
