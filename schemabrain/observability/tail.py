@@ -32,6 +32,17 @@ from rich.markup import escape as _markup_escape
 
 _DEFAULT_POLL_INTERVAL_S = 0.1
 
+# Fixed column widths used for the leading time + tool fields on every
+# tool_call line. The time column fits "HH:MM:SS.mmm" exactly (12 chars);
+# the tool column is sized for the longest current MCP tool name with two
+# cells of slack so adding a slightly-longer tool name in future does not
+# force per-row truncation. Args + outcome run inline after these
+# fixed-width prefixes — long arg strings stay contiguous in the output
+# buffer (important for `tail | grep` and capsys-based tests) and the
+# terminal does its own soft-wrap when the rendered line overflows.
+_TAIL_TIME_WIDTH = 12
+_TAIL_TOOL_WIDTH = 22
+
 _DURATION_RE = re.compile(r"^(\d+)([smhd])$")
 
 
@@ -92,7 +103,17 @@ class TailOptions:
 
 
 def render_event_pretty(event: dict, console: Console) -> None:
-    """Render one event as a colored two-line record to the console.
+    """Render one event as a coloured single-line record to the console.
+
+    Tool calls render as one line: ``time · tool · args · → outcome``.
+    Time (12 chars) and tool name (22 chars) are fixed-width via
+    ``ljust`` so the eye reads each column straight down a column of
+    events. Args and the outcome arrow run inline after the fixed
+    prefix — long arg strings stay contiguous in the output buffer
+    rather than being column-folded by Rich, which would split
+    substrings across visual rows and break ``tail | grep`` matching.
+
+    Server events stay as a one-line dim-italic marker.
 
     User-controlled values (args, result summaries, error kind, server
     message) are escaped against Rich markup so a tool argument like
@@ -118,31 +139,29 @@ def render_event_pretty(event: dict, console: Console) -> None:
     result = event.get("result_summary") or {}
     error_kind = event.get("error_kind")
     args_str = _markup_escape(_format_args_inline(args))
-    console.print(
-        f"[dim]{short_ts}[/]  [bold cyan]{tool}[/]  {args_str}",
-        highlight=False,
-    )
     if status in {"error", "refused"}:
         arrow_color = "red" if status == "error" else "yellow"
         ek = f" {_markup_escape(error_kind)}" if error_kind else ""
-        console.print(
-            f"              [{arrow_color}]→ {status.upper()}{ek}[/]",
-            highlight=False,
-        )
-    elif status == "degraded":
-        result_str = _markup_escape(_format_args_inline(result))
-        duration_str = f" in {duration_ms:.0f}ms" if duration_ms is not None else ""
-        console.print(
-            f"              [yellow]→ degraded[/] {result_str}{duration_str}",
-            highlight=False,
-        )
+        outcome_str = f"[{arrow_color}]→ {status.upper()}{ek}[/]"
     else:
         result_str = _markup_escape(_format_args_inline(result))
         duration_str = f" in {duration_ms:.0f}ms" if duration_ms is not None else ""
-        console.print(
-            f"              [green]→[/] {result_str}{duration_str}",
-            highlight=False,
-        )
+        arrow_color = "yellow" if status == "degraded" else "green"
+        prefix = "→ degraded" if status == "degraded" else "→"
+        outcome_str = f"[{arrow_color}]{prefix}[/] {result_str}{duration_str}"
+    # Pre-truncate the tool name to keep the fixed-width column tidy
+    # when a future MCP tool name exceeds the cap. The visible width
+    # is `_TAIL_TOOL_WIDTH` cells; the trailing "…" sits inside that
+    # budget so columns still align downstream.
+    if len(tool) > _TAIL_TOOL_WIDTH:
+        tool_display = tool[: _TAIL_TOOL_WIDTH - 1] + "…"
+    else:
+        tool_display = tool.ljust(_TAIL_TOOL_WIDTH)
+    short_ts_padded = short_ts.ljust(_TAIL_TIME_WIDTH)
+    console.print(
+        f"[dim]{short_ts_padded}[/]  [bold cyan]{tool_display}[/]  {args_str}  {outcome_str}",
+        highlight=False,
+    )
 
 
 def _short_timestamp(iso: str) -> str:
