@@ -4759,6 +4759,17 @@ _STAGE_GLYPHS: dict[str, str] = {
     "failed": "[red]✗[/]",
 }
 
+# Border colour for each stage's outcome panel. Maps onto the same
+# done/skipped/failed status set as `_STAGE_GLYPHS` so the panel
+# border and the glyph carry the same outcome semantics — green for
+# success, yellow for skipped, red for failed. Unknown statuses fall
+# through to a neutral dim border via `_STAGE_PANEL_BORDER.get(...)`.
+_STAGE_PANEL_BORDER: dict[str, str] = {
+    "done": "green",
+    "skipped": "yellow",
+    "failed": "red",
+}
+
 # Total stage count for the wizard pipeline. Used as the abort
 # denominator ("stage N of 7") so an early abort still labels the
 # pipeline shape correctly. Must stay in sync with `DEFAULT_STAGES`.
@@ -4972,27 +4983,47 @@ def _render_wizard_after(result: object, *, host_display: str | None, console: o
     # The wizard always has 7 stages even on early abort — using
     # `len(result.outcomes)` for the denominator would render "of 2"
     # on a stage-2 abort, misleading the user about the pipeline shape.
+    from rich.panel import Panel
+
     total = _WIZARD_TOTAL_STAGES
     for outcome in result.outcomes:
-        # Indent stage header consistently with the existing init
-        # rendering (2 spaces) so the eye reads top-to-bottom. A
-        # measured duration (>0.0s) renders dim next to the stage
-        # name; 0.0s means peek-and-bypass (skipped) where rendering
-        # "0.0s" would mislead.
-        header = f"  [{outcome.stage}/{total}] {_stage_display_name(outcome.name)}"
-        # 50ms threshold: anything faster is below human-perception of
-        # "took time" AND would round to "0.0s" anyway. The orchestrator
-        # measures every stage including peek-and-bypass skips, so the
-        # naive `> 0` guard would render "(0.0s)" next to skipped lines.
+        # Stage title combines the ordinal, display name, and (when
+        # the stage took perceptible time) a measured duration. The
+        # 50ms threshold suppresses "0.0s" labels on peek-and-bypass
+        # skip stages where the orchestrator still measures
+        # `perf_counter` but no real work happened.
+        title = f"[{outcome.stage}/{total}] {_stage_display_name(outcome.name)}"
         if outcome.duration_s >= 0.05:
-            header += f" [dim]({_format_duration(outcome.duration_s)})[/]"
-        console.print(header)  # type: ignore[attr-defined]
+            title += f" [dim]({_format_duration(outcome.duration_s)})[/]"
         glyph = _STAGE_GLYPHS.get(outcome.status, outcome.status)
-        console.print(f"        {glyph} {outcome.message}")  # type: ignore[attr-defined]
+        body_lines: list[str] = [f"{glyph} {outcome.message}"]
         if outcome.next_step:
-            console.print(f"        [dim]{outcome.next_step}[/]")  # type: ignore[attr-defined]
+            body_lines.append(f"[dim]{outcome.next_step}[/]")
+        body = "\n".join(body_lines)
+        border = _STAGE_PANEL_BORDER.get(outcome.status, "dim")
+        # `expand=False` keeps each stage panel as wide as its content
+        # rather than stretching to the terminal width — a series of
+        # narrow, status-coloured panels reads as a checklist instead
+        # of a column of full-width banners. `title_align="left"`
+        # matches the eye-position of the previous indented
+        # "[N/7] Stage" header so existing operators don't get a layout
+        # jolt on upgrade.
+        console.print(  # type: ignore[attr-defined]
+            Panel(
+                body,
+                title=title,
+                title_align="left",
+                border_style=border,
+                expand=False,
+                padding=(0, 1),
+            )
+        )
         # Stage-4 follow-up details (config path, backup, manual
-        # snippet) render after the stage's own line.
+        # snippet) render after the panel. These deliberately live
+        # outside the panel: `printed_only` writes the JSON snippet
+        # to stdout (machine-readable) and a Panel around mixed
+        # stderr/stdout output would either break the JSON or hide
+        # it inside ANSI box-drawing.
         if outcome.name == "wire_host" and outcome.status == "done":
             _render_wire_host_detail(result.host_install_result, console)
     console.print()  # type: ignore[attr-defined]
