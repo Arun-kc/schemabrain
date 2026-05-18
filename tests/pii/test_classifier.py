@@ -47,9 +47,6 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("customer_name", frozenset({"contact"})),
     ("display_name", frozenset({"contact"})),
     ("legal_name", frozenset({"contact"})),
-    ("dob", frozenset({"contact"})),
-    ("date_of_birth", frozenset({"contact"})),
-    ("birth_date", frozenset({"contact"})),
     # financial
     ("salary", frozenset({"financial"})),
     ("wage", frozenset({"financial"})),
@@ -87,6 +84,10 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("symptom", frozenset({"health"})),
     ("bmi", frozenset({"health"})),
     ("vital_sign", frozenset({"health"})),
+    ("patient_id", frozenset({"health"})),
+    ("patient_name", frozenset({"health", "contact"})),
+    ("insurance_id", frozenset({"health"})),
+    ("health_record_id", frozenset({"health"})),
     # genetic
     ("genome", frozenset({"genetic"})),
     ("genotype", frozenset({"genetic"})),
@@ -96,6 +97,9 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("fingerprint", frozenset({"biometric"})),
     ("face_id", frozenset({"biometric"})),
     ("face_hash", frozenset({"biometric"})),
+    ("face_embedding", frozenset({"biometric"})),
+    ("face_print", frozenset({"biometric"})),
+    ("face_vector", frozenset({"biometric"})),
     ("voiceprint", frozenset({"biometric"})),
     ("iris", frozenset({"biometric"})),
     ("biometric_token_hash", frozenset({"biometric"})),
@@ -135,6 +139,9 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("nino", frozenset({"government_id"})),
     ("passport", frozenset({"government_id"})),
     ("driver_license", frozenset({"government_id"})),
+    ("drivers_license", frozenset({"government_id"})),
+    ("driver_licence", frozenset({"government_id"})),
+    ("drivers_license_number", frozenset({"government_id"})),
     ("dl_number", frozenset({"government_id"})),
     ("tax_id", frozenset({"government_id"})),
     ("national_id", frozenset({"government_id"})),
@@ -153,6 +160,14 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("coords", frozenset({"location"})),
     ("coord", frozenset({"location"})),
     # demographic_protected
+    # DOB and birthdate variants live here (post-S3) — HIPAA Safe
+    # Harbor identifier + GDPR Article 9 demographic attribute.
+    ("dob", frozenset({"demographic_protected"})),
+    ("date_of_birth", frozenset({"demographic_protected"})),
+    ("birth_date", frozenset({"demographic_protected"})),
+    ("birthdate", frozenset({"demographic_protected"})),
+    # `age` is a HIPAA Safe Harbor demographic attribute.
+    ("age", frozenset({"demographic_protected"})),
     ("race", frozenset({"demographic_protected"})),
     ("ethnicity", frozenset({"demographic_protected"})),
     ("religion", frozenset({"demographic_protected"})),
@@ -269,7 +284,18 @@ class TestRuleTableInvariants:
         # If you add or remove a rule, update RULE_COUNT in the
         # classifier and bump this assertion alongside. Pinning the
         # count makes accidental rule churn visible at PR review time.
-        assert RULE_COUNT == 40
+        #
+        # Post-S1-S4 (2026-05-18) accounting:
+        #   - DOB rule moved from contact to demographic_protected.
+        #     It was always a standalone tuple, so the migration is
+        #     net 0.
+        #   - New `patient`/`insurance_id`/`health_record` health rule
+        #     added: net +1.
+        #   - Other extensions (face_embedding, drivers_license
+        #     plurals, age) widened existing rules rather than adding
+        #     new ones: net 0.
+        # Total: 40 + 1 = 41.
+        assert RULE_COUNT == 41
 
     def test_every_category_has_at_least_one_rule(self) -> None:
         # Every category in PII_CATEGORIES must be producible by at
@@ -296,5 +322,293 @@ class TestEmptyAndUnusualInputs:
         # 200-char name with `email` embedded. Should still match.
         name = "a" * 100 + "_email_" + "b" * 100
         sensitivity, cats = classify_column(name)
+        assert sensitivity == "pii"
+        assert "contact" in cats
+
+
+class TestS1NonPiiNameDenylist:
+    """Suppression of the `_name`/`name` rule for non-PII `<noun>_name`
+    shapes — the bug surfaced in the 2026-05-18 production-DB smoke
+    when `product_name` in catalog tables tagged as `pii (contact)`."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "product_name",
+            "brand_name",
+            "category_name",
+            "language_name",
+            "currency_name",
+            "device_name",
+            "file_name",
+            "service_name",
+            "tag_name",
+            "event_name",
+        ],
+    )
+    def test_denylist_name_shapes_classify_as_public(self, name: str) -> None:
+        sensitivity, cats = classify_column(name)
+        assert sensitivity == "public", f"{name!r} should not classify"
+        assert cats == frozenset()
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            # These shapes can be a person's attribute in HR/CRM
+            # contexts (employer, team affiliation, geographic region).
+            # The denylist deliberately excludes them — they keep their
+            # `contact` tag rather than risk under-reporting.
+            "company_name",
+            "organization_name",
+            "team_name",
+            "department_name",
+            "region_name",
+            "zone_name",
+        ],
+    )
+    def test_ambiguous_name_shapes_keep_contact_tag(self, name: str) -> None:
+        sensitivity, cats = classify_column(name)
+        assert sensitivity == "pii"
+        assert "contact" in cats
+
+    @pytest.mark.parametrize(
+        ("name", "expected_cat"),
+        [
+            # People-noun `_name` shapes — still classify.
+            ("customer_name", "contact"),
+            ("user_name", "contact"),
+            ("display_name", "contact"),
+            ("legal_name", "contact"),
+            ("contact_name", "contact"),
+            ("first_name", "contact"),
+            ("last_name", "contact"),
+            ("full_name", "contact"),
+        ],
+    )
+    def test_pii_named_shapes_still_classify(self, name: str, expected_cat: PIICategory) -> None:
+        sensitivity, cats = classify_column(name)
+        assert sensitivity == "pii"
+        assert expected_cat in cats
+
+    def test_denylist_case_insensitive(self) -> None:
+        # Postgres canonicalises identifiers to lowercase but mixed-
+        # case names appear in MS SQL / camelCase migrations.
+        assert classify_column("Product_Name") == ("public", frozenset())
+        assert classify_column("PRODUCT_NAME") == ("public", frozenset())
+
+    def test_known_limitation_bare_name_still_classifies(self) -> None:
+        # `category.name` / `language.name` (bare `name` in a lookup
+        # table) cannot be disambiguated from `customers.name` without
+        # table-level context. The bare-name case remains an
+        # intentional over-tag at v1; this test documents the gap so
+        # a future fix (operator-asserted classification, value
+        # sampling) has a natural failing-test home.
+        sensitivity, cats = classify_column("name")
+        assert sensitivity == "pii"
+        assert "contact" in cats
+
+    def test_other_rules_still_fire_on_denylist_shapes(self) -> None:
+        # The denylist only suppresses the `_name` rule. A column like
+        # `country_name` still matches the `country` rule (contact)
+        # via the independent city/state/country rule. Documenting the
+        # narrow scope of the S1 fix.
+        sensitivity, cats = classify_column("country_name")
+        assert sensitivity == "pii"
+        assert "contact" in cats
+
+
+class TestS2IntegerFkGuard:
+    """`<token>_id` integer FKs only carry FK-safe categories — the
+    bug surfaced when `address_id BIGINT` tagged as `pii (contact)`
+    via the `address` keyword match."""
+
+    @pytest.mark.parametrize(
+        "ctype",
+        ["INTEGER", "BIGINT", "SMALLINT", "BIGSERIAL", "int4", "int8", "int"],
+    )
+    def test_address_id_integer_suppressed(self, ctype: str) -> None:
+        # `address_id` matches `address` (contact) without the guard.
+        # With integer type + FK shape, contact is stripped.
+        sensitivity, cats = classify_column("address_id", column_type=ctype)
+        assert sensitivity == "public"
+        assert cats == frozenset()
+
+    def test_address_id_text_not_suppressed(self) -> None:
+        # The guard ONLY fires for integer types. A TEXT column named
+        # `address_id` could legitimately store address-shaped data
+        # (rare but possible) and stays tagged.
+        sensitivity, cats = classify_column("address_id", column_type="TEXT")
+        assert sensitivity == "pii"
+        assert "contact" in cats
+
+    def test_default_column_type_does_not_suppress(self) -> None:
+        # Backwards-compat: callers that pass no `column_type` get the
+        # v0.3.0 behaviour (no guard).
+        sensitivity, cats = classify_column("address_id")
+        assert sensitivity == "pii"
+        assert "contact" in cats
+
+    @pytest.mark.parametrize(
+        ("name", "expected_cat"),
+        [
+            # FK-safe categories survive the guard.
+            ("patient_id", "health"),
+            ("session_id", "credential"),
+            ("session_id", "online_identifier"),
+            ("cookie_id", "online_identifier"),
+            ("device_id", "online_identifier"),
+            ("national_id", "government_id"),
+        ],
+    )
+    def test_fk_safe_categories_survive_integer_guard(
+        self, name: str, expected_cat: PIICategory
+    ) -> None:
+        sensitivity, cats = classify_column(name, column_type="BIGINT")
+        assert sensitivity == "pii"
+        assert expected_cat in cats
+
+    def test_parameterised_integer_type_recognised(self) -> None:
+        # MySQL emits `BIGINT(20)` / `INT(11)`. The guard strips the
+        # parameter suffix before the integer-type lookup.
+        sensitivity, _ = classify_column("address_id", column_type="BIGINT(20)")
+        assert sensitivity == "public"
+        sensitivity, _ = classify_column("address_id", column_type="INT(11)")
+        assert sensitivity == "public"
+
+    def test_integer_array_type_recognised(self) -> None:
+        # `int4[]` (Postgres integer array) — guard still applies.
+        sensitivity, _ = classify_column("address_id", column_type="int4[]")
+        assert sensitivity == "public"
+
+    @pytest.mark.parametrize(
+        "ctype",
+        [
+            "INT UNSIGNED",
+            "BIGINT UNSIGNED",
+            "INTEGER UNSIGNED",
+            "TINYINT UNSIGNED ZEROFILL",
+            "BIGINT(20) UNSIGNED",
+        ],
+    )
+    def test_mysql_unsigned_modifier_recognised(self, ctype: str) -> None:
+        # MySQL emits `INT UNSIGNED` / `BIGINT UNSIGNED` / etc. The
+        # guard must split on whitespace and take the first token
+        # so the modifier doesn't bypass it.
+        sensitivity, _ = classify_column("address_id", column_type=ctype)
+        assert sensitivity == "public", f"{ctype!r} should fire the guard"
+
+    def test_numeric_type_does_not_trigger_guard(self) -> None:
+        # `NUMERIC(10,2)` (Postgres) / `NUMBER(5,2)` (Oracle) are
+        # decimal types whose FK semantics are too distinct from
+        # integer FKs. Skip the guard so `address_id NUMERIC(10,2)`
+        # falls back to over-tagging consistent with the breadth-
+        # over-precision posture.
+        sensitivity, _ = classify_column("address_id", column_type="NUMERIC(10,2)")
+        assert sensitivity == "pii"
+
+    def test_primary_key_skips_guard(self) -> None:
+        # `health_record_id BIGINT PRIMARY KEY` on the `health_records`
+        # table itself is the canonical row identifier, not an FK.
+        # The PK exemption preserves the `health` category that would
+        # otherwise be the only PII tag on the row.
+        sensitivity, cats = classify_column(
+            "health_record_id",
+            column_type="BIGINT",
+            is_primary_key=True,
+        )
+        assert sensitivity == "pii"
+        assert "health" in cats
+
+    def test_non_primary_key_default_still_guards(self) -> None:
+        # Default `is_primary_key=False` keeps the guard firing for
+        # FK shapes. Document the safe-direction default.
+        sensitivity, _ = classify_column("address_id", column_type="BIGINT")
+        assert sensitivity == "public"
+
+    @pytest.mark.parametrize(
+        ("name", "expected_cat"),
+        [
+            # `behavioral` and `location` are now FK-safe so the
+            # FK's primary tag survives the guard.
+            ("clickstream_id", "behavioral"),
+            ("event_log_id", "behavioral"),
+            ("location_id", "location"),
+            ("geolocation_id", "location"),
+        ],
+    )
+    def test_behavioral_and_location_survive_guard(
+        self, name: str, expected_cat: PIICategory
+    ) -> None:
+        sensitivity, cats = classify_column(name, column_type="BIGINT")
+        assert sensitivity == "pii"
+        assert expected_cat in cats
+
+    def test_bare_id_not_subject_to_guard(self) -> None:
+        # `id` alone is not the FK shape — `^[a-z][a-z0-9]*(?:_[a-z0-9]+)*_id$`
+        # requires a prefix segment. `id` doesn't match any PII rule
+        # in the first place, but verify it's not silently changing.
+        assert classify_column("id", column_type="BIGINT") == ("public", frozenset())
+
+    def test_fk_shape_with_no_pii_match_stays_public(self) -> None:
+        # `customer_id BIGINT` — `customer` is not a PII keyword;
+        # `customer_name` is. The guard is a no-op when there's
+        # nothing to suppress.
+        assert classify_column("customer_id", column_type="BIGINT") == (
+            "public",
+            frozenset(),
+        )
+
+
+class TestS3DobInDemographicProtected:
+    """DOB and birthdate variants tag as `demographic_protected`, NOT
+    `contact` — HIPAA Safe Harbor + GDPR Article 9."""
+
+    @pytest.mark.parametrize("name", ["dob", "date_of_birth", "birth_date", "birthdate"])
+    def test_dob_variant_classifies_to_demographic_protected(self, name: str) -> None:
+        sensitivity, cats = classify_column(name)
+        assert sensitivity == "pii"
+        assert "demographic_protected" in cats
+        # And critically, NOT contact — this is what the smoke flagged.
+        assert "contact" not in cats
+
+
+class TestS4AddedRules:
+    """Rules added in response to the 2026-05-18 smoke false-negatives."""
+
+    @pytest.mark.parametrize(
+        ("name", "expected_cat"),
+        [
+            ("drivers_license", "government_id"),
+            ("drivers_license_number", "government_id"),
+            ("driver_licence", "government_id"),  # British spelling
+            ("face_embedding", "biometric"),
+            ("face_print", "biometric"),
+            ("face_vector", "biometric"),
+            ("patient_id", "health"),
+            ("insurance_id", "health"),
+            ("health_record_number", "health"),
+            ("age", "demographic_protected"),
+        ],
+    )
+    def test_added_rule_classifies_column(self, name: str, expected_cat: PIICategory) -> None:
+        sensitivity, cats = classify_column(name)
+        assert sensitivity == "pii"
+        assert expected_cat in cats
+
+
+class TestColumnTypeBackwardsCompat:
+    def test_omitting_column_type_matches_v0_3_0_behaviour(self) -> None:
+        # Anyone still calling classify_column with just the name —
+        # the signature is backwards-compat. New parameter is keyword
+        # with default None.
+        a = classify_column("email")
+        b = classify_column("email", column_type=None)
+        c = classify_column("email", column_type="TEXT")
+        assert a == b == c
+
+    def test_unknown_column_type_does_not_trigger_guard(self) -> None:
+        # `column_type="UNKNOWN"` shouldn't crash and shouldn't
+        # trigger the integer-FK guard.
+        sensitivity, cats = classify_column("address_id", column_type="WIDGET")
         assert sensitivity == "pii"
         assert "contact" in cats
