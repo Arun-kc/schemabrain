@@ -457,6 +457,93 @@ and `pii_categories` lists the categories that triggered the refusal.
 
 ---
 
+## Detect drift (alpha)
+
+`schemabrain check` walks every persisted entity, metric, and
+canonical join and confirms each one still matches the live source
+schema. Drops or renames at the source surface as a structured drift
+report before they show up as bad agent answers.
+
+```bash
+schemabrain check --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+```
+Schema Brain check — postgresql+psycopg://localhost:5432/postgres
+8 entities (7 healthy) · 12 metrics (11 healthy) · 5 joins (5 healthy)
+
+  ✗ entity   customer
+        identity_column_missing  public.customers.legacy_email
+        → update entity 'customer'`s `identity:` field and re-run
+          `schemabrain entities apply`
+
+  ✗ metric   total_revenue
+        measure_column_missing  public.orders.total_cents
+        → update metric 'total_revenue'`s `measure.column` and re-run
+          `schemabrain metrics apply`
+
+2 drifts detected.
+```
+
+Exit codes: `0` when every definition lines up with the source, `1`
+when at least one drift is detected, `2` for operational refusals
+(missing store, unreachable source, bad flags). Drift cascading is
+suppressed — when an entity's bound table is missing entirely, the
+downstream metric and join drifts on that table are suppressed so the
+output stays focused on the root cause.
+
+Pipe-friendly JSON for CI / monitoring:
+
+```bash
+schemabrain check --url-env DATABASE_URL --json | jq '.exit_code'
+```
+
+---
+
+## Run via Docker (alpha)
+
+The repo ships a `docker-compose.yml` that brings up a Postgres
+container with the bundled e-commerce fixture, indexes it, and leaves
+you with a populated store on a named volume — one command, no host
+Postgres install required.
+
+```bash
+docker compose up
+```
+
+When the stack reaches `Done`, point an MCP host at the indexed store
+via `docker run`:
+
+```jsonc
+// ~/Library/Application Support/Claude/claude_desktop_config.json
+{
+  "mcpServers": {
+    "schemabrain": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "--network", "schemabrain_default",
+        "-v", "schemabrain_sb-data:/data",
+        "-e", "DATABASE_URL=postgresql+psycopg://postgres:local@postgres:5432/postgres",
+        "schemabrain:local",
+        "serve",
+        "--url-env", "DATABASE_URL",
+        "--store-path", "/data/store.db"
+      ]
+    }
+  }
+}
+```
+
+For production use point Schema Brain at your real `DATABASE_URL` via
+`schemabrain init --url-env DATABASE_URL` and skip the demo stack
+entirely. Multi-platform images (`linux/amd64` + `linux/arm64`) are
+published on every release to `ghcr.io/arun-kc/schemabrain` — swap the
+local build for the published tag in `docker-compose.yml` to skip the
+build step.
+
+---
+
 ## Roadmap
 
 **v0.5 — finish schema intelligence (shipped):**
