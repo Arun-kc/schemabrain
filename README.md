@@ -50,6 +50,17 @@ Real Claude Desktop session against the bundled e-commerce fixture (7 tables, 30
 > - **Assumptions:** No status filter applied — `status` is free TEXT with default `'pending'`. `categories.parent_id` exists (nested categories) but I'm grouping by leaf — say if you want a recursive CTE for roll-up.
 > - **Caveat:** A product in N categories has its spend counted N times (per category). Per-customer cross-category sums will exceed actual spend if products are multi-category in your data.
 
+Meanwhile in the operator's terminal, `schemabrain tail` streamed every tool call Claude made:
+
+```
+14:32:08.221  describe_table  public.users              → columns=12  tokens=380  in 11ms
+14:32:08.224  describe_table  public.products           → columns=7   tokens=180  in  9ms
+14:32:08.227  describe_table  public.order_items        → columns=5   tokens=140  in 10ms
+14:32:08.231  describe_table  public.product_categories → columns=3   tokens=  90 in  8ms
+```
+
+Every call is auditable, replayable, and PII-aware. See [Observe the agent](#observe-the-agent) for the full surface.
+
 The caveats are the differentiator. None of them — M:N double-counting, recursive-CTE awareness, free-text-status flag — is hardcoded; they fall out of letting Claude reason over the indexed descriptions. Most LLM-over-database tools confidently invent a `payments` table or shoehorn the answer into `orders.total_cents`. Schema Brain doesn't.
 
 **Cost.** ~$0.0003/column with Claude Haiku 4.5. The bundled 7-table fixture indexes for **~$0.01 in ~40s**. The Pagila DVD-rental sample (87 columns after partition deduplication) indexes for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
@@ -169,6 +180,55 @@ schemabrain doctor --url-env DATABASE_URL --store-path ./schemabrain.db
 
 If Claude calls `list_entities` and reports `customer`, `order`, etc., you're done. If it says "I don't have access to any tool called Schema Brain," see the next section.
 
+### 6. See what got indexed
+
+The agent is now talking to Schema Brain. Before moving on, see what it knows — same view the agent has, no LLM call, no source connection:
+
+```bash
+schemabrain inspect --store-path ./schemabrain.db
+```
+
+```
+Schema Brain inspect
+7 tables · 30 columns · 2 entities · 1 metric · 1 join
+
+Entities:
+  customer
+  order
+
+Metrics:
+  total_revenue
+
+Joins:
+  customer_orders
+```
+
+Drill into one entity for the full detail view — columns, PII tags, and the joins that reach it:
+
+```bash
+schemabrain inspect customer --store-path ./schemabrain.db
+```
+
+```
+Entity: customer
+Description:  A registered user who can place orders.
+Binding:      public.users
+Identity:     id
+Origin:       manual
+
+Columns:
+  id          bigint       not null  pk identity  public
+  email       text         not null              pii (contact)
+  full_name   text         not null              pii (contact)
+  created_at  timestamptz  not null              public
+
+Related entities:
+  order  outgoing  one_to_many  via `customer_orders`
+      customer.id = order.customer_id
+```
+
+This is the operator's counterpart to the agent-facing MCP tools — anything `describe_entity` returns to Claude, `inspect` shows you locally. Use it whenever you want to verify what's curated before pointing an agent at it.
+
 ### Inspect the MCP surface (optional)
 
 To see exactly what shape the tools expose to an agent — every argument, every JSON schema, every response envelope — without booting Claude Desktop, use the [official MCP Inspector](https://github.com/modelcontextprotocol/inspector):
@@ -204,7 +264,7 @@ For the headless Anthropic-SDK path, see [`examples/anthropic_demo.py`](examples
 
 1. **[Build your semantic layer](#build-your-semantic-layer)** — curate entities, metrics, and canonical joins so the agent talks in domain terms (`get_metric("revenue", by="month")`) instead of inventing SQL.
 2. **[Observe the agent](#observe-the-agent)** — `tail` for live tool-call streaming, an append-only audit log, and PII-aware refusal at the SQL boundary.
-3. **[Operate over time](#operate-over-time)** — `inspect` to see what Schema Brain knows, `check` to detect drift, Docker for a zero-host-install setup.
+3. **[Operate over time](#operate-over-time)** — `check` to detect drift before it shows up as bad agent answers, Docker for a zero-host-install setup, plus the `inspect` browser you've already met.
 
 The rest of this README is reference material — skim the section that matches what you want to do next.
 
@@ -354,6 +414,18 @@ schemabrain audit list --since 1h --status error
 
 The audit row records what tool ran, when, against which source, with what envelope status, and a structural fingerprint. Disable for a run with `--no-audit`. See [ADR 0001](docs/adr/0001-audit-row-and-pii-taxonomy.md) for the 14-field shape and the privacy guarantee the fingerprint preserves.
 
+### OpenTelemetry export
+
+Ship spans to Langfuse, Phoenix, Honeycomb, Grafana Tempo, or any OTLP-compatible backend by installing the optional extra and setting the standard OTel endpoint variable:
+
+```bash
+pip install 'schemabrain[otel]'
+export OTEL_EXPORTER_OTLP_ENDPOINT='https://your-collector.example.com/v1/traces'
+schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+Spans are named `execute_tool` with `gen_ai.*` semantic-convention attributes (`gen_ai.system`, `gen_ai.tool.name`) plus Schema Brain facets (`schemabrain.session.id`, `schemabrain.status`, `schemabrain.error_kind`). Charter `error` and `refused` statuses map to OTel `ERROR` with the `error_kind` carried as the status description for clean dashboard grouping. When the extra is missing or the endpoint is unset, OTel is silently skipped — tool calls never fail because telemetry failed. See [ADR 0004](docs/adr/0004-observability-event-bus.md) for the design.
+
 ### PII classification
 
 `schemabrain index` tags every column with the regulator-derived PII categories from [ADR 0001](docs/adr/0001-audit-row-and-pii-taxonomy.md) — twelve categories spanning GDPR, CCPA/CPRA, HIPAA, PCI DSS, and ISO 27018. Tags propagate across every column a `get_metric` call touches (MAX-sensitivity + UNION-categories) and write into the audit row.
@@ -375,50 +447,7 @@ The operator-side commands — see what Schema Brain knows, catch drift before i
 
 ### Inspect what's indexed
 
-`schemabrain inspect` is the operator browser for everything in the local store — same view the agent sees, no LLM call, no source connection:
-
-```bash
-schemabrain inspect --store-path ./schemabrain.db
-```
-
-```
-Schema Brain inspect
-7 tables · 30 columns · 2 entities · 1 metric · 1 join
-
-Entities:
-  customer
-  order
-
-Metrics:
-  total_revenue
-
-Joins:
-  customer_orders
-```
-
-Drill into one entity for the full detail view:
-
-```bash
-schemabrain inspect customer --store-path ./schemabrain.db
-```
-
-```
-Entity: customer
-Description:  A registered user who can place orders.
-Binding:      public.users
-Identity:     id
-Origin:       manual
-
-Columns:
-  id          bigint       not null  pk identity  public
-  email       text         not null              pii (contact)
-  full_name   text         not null              pii (contact)
-  created_at  timestamptz  not null              public
-
-Related entities:
-  order  outgoing  one_to_many  via `customer_orders`
-      customer.id = order.customer_id
-```
+Covered in [Quickstart §6](#6-see-what-got-indexed) — `schemabrain inspect` is the operator browser for everything in the local store. Summary form lists entities, metrics, and joins; pass an entity name as a positional argument to drill into columns, PII tags, and reachable joins.
 
 Exit codes: `0` rendered, `1` drilled name not found, `2` operational refusal.
 
@@ -444,6 +473,22 @@ schemabrain check --url-env DATABASE_URL --store-path ./schemabrain.db
 Exit `0` when everything lines up, `1` when at least one drift is detected, `2` for operational refusals. Drift cascading is suppressed — when an entity's bound table is missing, downstream metric and join drifts on that table are suppressed so the output stays focused on root cause.
 
 Pipe-friendly: `schemabrain check --url-env DATABASE_URL --json | jq '.exit_code'`.
+
+### Preview the cost of catching up
+
+Schedule re-indexes confidently. `schemabrain index --dry-run --since <duration>` previews what a real run would cost — no DB writes, no LLM calls, no `ANTHROPIC_API_KEY` required — and adds a freshness audit showing how much of the local store is stale relative to the chosen cutoff:
+
+```bash
+schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db \
+    --dry-run --since 14d
+```
+
+```
+Would index 87 table(s): 4 changed, 83 unchanged, 0 removed. Columns: +12/~6/-0. Estimated LLM: 18 descriptions ($0.0054). Estimated embeddings: 18. No changes made to the store.
+Stale since 14d: 42 columns across 9 tables (estimated refresh $0.0126)
+```
+
+The "changed/unchanged" line accounts only for the source diff since the last `index` run; the "Stale since" line flags columns whose owning table was last enriched before the cutoff — useful for catching tables that haven't been re-indexed even though they haven't structurally drifted. Accepts compact durations (`30s`, `5m`, `2h`, `14d`) or ISO 8601 timestamps with timezone.
 
 ### Run via Docker
 
@@ -552,7 +597,7 @@ So the engineering order is **schema intelligence → semantic substrate → saf
 ## Documentation
 
 - [`docs/setup.md`](docs/setup.md) — Claude Desktop wiring + Anthropic SDK demo, with troubleshooting
-- [`docs/mcp-tools.md`](docs/mcp-tools.md) — full reference for the 5 physical-schema MCP tools (semantic-layer tool reference is in flight)
+- [`docs/mcp-tools.md`](docs/mcp-tools.md) — full reference for all 10 MCP tools (5 physical-schema + 5 semantic-layer)
 - [`docs/architecture.md`](docs/architecture.md) — pipeline, retrieval contract, cache logic, cost model, eval
 - [`docs/observability.md`](docs/observability.md) — event shape, redactor rules, OTel integration
 - [`docs/adr/`](docs/adr/) — architecture decision records (audit/PII taxonomy, store protocol, versioning policy, observability bus)

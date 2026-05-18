@@ -1,9 +1,23 @@
 # MCP tool reference
 
-All five tools return Pydantic-typed structured output. Every response
-includes a `token_estimate` so agents can budget context.
+Schema Brain exposes ten Pydantic-typed MCP tools split across two layers:
 
-## `find_relevant_tables(query: str, limit: int = 10) -> list[TableHit]`
+- **Physical-schema tools** (5) read directly from the indexed schema. Always
+  available after `schemabrain index`.
+- **Semantic-layer tools** (5) read curated entities, canonical joins, and
+  metrics. Available once the operator has confirmed at least one entity
+  (`schemabrain entities suggest --apply` or `schemabrain init`).
+
+Every response includes a `token_estimate` so agents can budget context.
+Every envelope follows the Charter status taxonomy (`success`, `empty`,
+`partial`, `degraded`, `error`, `refused`) with `follow_up_hints` to chain
+the next call.
+
+---
+
+## Physical-schema tools
+
+### `find_relevant_tables(query: str, limit: int = 10) -> list[TableHit]`
 
 Embedding-cosine retrieval over indexed column descriptions. Returns the
 most relevant tables for a natural-language question, ranked by score.
@@ -25,7 +39,7 @@ whether the score is strong enough to trust. See
 [architecture.md → How retrieval works](architecture.md#how-retrieval-works)
 for why this design.
 
-## `describe_table(qualified_name: str) -> TableDescription`
+### `describe_table(qualified_name: str) -> TableDescription`
 
 Full structural and semantic dump of one table. Includes every column
 (data type, nullability, default, primary-key flag, LLM description), plus
@@ -35,7 +49,7 @@ Pass `qualified_name` as `schema.name` — e.g. `"public.orders"`. A bare
 `"orders"` raises a clear error pointing you at `find_relevant_tables` to
 find the schema.
 
-## `describe_column(qualified_name: str) -> ColumnDetail`
+### `describe_column(qualified_name: str) -> ColumnDetail`
 
 Drill into one column. Returns its structural metadata + LLM description +
 the join graph it participates in:
@@ -49,7 +63,7 @@ incoming FKs describe the entire join surface in one tool call.
 Pass `qualified_name` as `schema.table.column` — e.g.
 `"public.orders.user_id"`.
 
-## `suggest_joins(tables: list[str], max_hops: int = 6) -> SuggestJoinsResult`
+### `suggest_joins(tables: list[str], max_hops: int = 6) -> SuggestJoinsResult`
 
 Shortest FK-graph join paths between every pair of input tables. Each
 `JoinEdge` is path-oriented (`left`/`right` columns positionally aligned
@@ -87,7 +101,7 @@ within `max_hops` land in `unreachable_pairs`.
 `confidence` is `1.0` for declared FKs at v0; query-log-inferred edges
 (planned for v1) will land below 1.0.
 
-## `get_example_queries(qualified_name: str) -> ExampleQueriesResult`
+### `get_example_queries(qualified_name: str) -> ExampleQueriesResult`
 
 Returns SQL statements that have actually been observed running against a
 table, sourced from `pg_stat_statements`. Each example carries an
@@ -120,3 +134,149 @@ recovery hint.
 Pass `qualified_name` as `schema.name` — same shape as `describe_table`.
 Tables with no observed queries (or before `mine-queries` has run) return
 an empty result with a follow-up hint.
+
+---
+
+## Semantic-layer tools
+
+These tools read curated artefacts — entities, canonical joins, metrics —
+written by the operator via the wizard, `schemabrain entities suggest`,
+`schemabrain joins suggest`, `schemabrain metrics suggest`, or hand-edited
+YAML under `apply`. When the semantic layer is empty, the tools return
+`status="empty"` envelopes that route the agent back to the physical-schema
+tools so it can still answer.
+
+### `find_relevant_entities(query: str, limit: int = 10) -> list[EntityHit]`
+
+Embedding-cosine retrieval restricted to entities. Reuses the column-level
+embedding index (no second model) but ranks per *entity* by taking the MAX
+cosine across the columns of each entity's bound table. Returns
+domain-named hits so the agent stays in business terms.
+
+```json
+{
+  "name": "customer",
+  "score": 0.84,
+  "qualified_table": "public.users",
+  "best_column": "email",
+  "best_column_description": "Primary contact email used for order confirmations and password reset",
+  "token_estimate": 58
+}
+```
+
+Empty envelope routes the agent differently depending on whether the
+semantic layer is bare or just unmatched:
+
+- **No entities curated yet** → `follow_up_hints: ["find_relevant_tables"]`
+  (skip `list_entities`, it would also be empty).
+- **Entities exist but none match** → `follow_up_hints: ["list_entities", "find_relevant_tables"]`.
+
+Use `find_relevant_tables` instead when no entities are curated.
+
+### `list_entities() -> list[EntitySummary]`
+
+Returns every confirmed entity with its bound table, identity column, and
+provenance (`manual`, `dbt`, `wizard`, etc.). Lean by design — no columns,
+no token-heavy detail. The agent calls `describe_entity(name)` to drill in.
+
+```json
+{
+  "name": "customer",
+  "description": "A registered user who can place orders.",
+  "qualified_table": "public.users",
+  "identity": "id",
+  "origin": "manual"
+}
+```
+
+Returns `status="empty"` with `follow_up_hints: ["find_relevant_tables"]`
+when no entities are defined yet — actionable next step is physical
+discovery.
+
+### `describe_entity(name: str) -> EntityDetail`
+
+The entity's bound table, identity column, description, and full column
+list with PII sensitivity tags. One round-trip gives the agent everything
+it needs to compose SQL against the entity.
+
+```json
+{
+  "name": "customer",
+  "description": "A registered user who can place orders.",
+  "qualified_table": "public.users",
+  "identity": "id",
+  "origin": "manual",
+  "columns": [
+    {"name": "id", "data_type": "bigint", "nullable": false, "description": "...", "pii_sensitivity": "public"},
+    {"name": "email", "data_type": "text", "nullable": false, "description": "...", "pii_sensitivity": "pii"}
+  ],
+  "token_estimate": 184
+}
+```
+
+Pass `name` as a bare identifier — `customer`, not `public.customer`. The
+schema qualifier belongs on the bound table, not the entity name. Errors
+surface as `unknown_name` with a `list_entities` recovery hint.
+
+### `resolve_join(entity_a: str, entity_b: str, name: str | None = None) -> CanonicalJoinInfo`
+
+Returns the canonical SQL join between two entities — a ready-to-paste
+`JOIN <target> AS <alias> ON ...` clause. The lookup is
+direction-insensitive; the response orients per how the operator originally
+confirmed the join so `sql_skeleton` renders predictably.
+
+```json
+{
+  "name": "customer_orders",
+  "description": "Each order belongs to the customer who placed it.",
+  "source_entity": "customer",
+  "target_entity": "order",
+  "on": [{"source_column": "id", "target_column": "customer_id"}],
+  "sql_skeleton": "JOIN public.orders AS order ON customer.id = order.customer_id",
+  "token_estimate": 96
+}
+```
+
+When 2+ canonical joins exist between the pair (billing vs shipping
+address, primary vs secondary user), the response is `status="error"` with
+`error.kind="ambiguous_join"`, listing candidate names. Pass the right one
+back via the `name` arg. Use `suggest_joins` instead when you only have
+physical table names.
+
+### `get_metric(name: str, group_by: tuple[str, ...] = (), filters: tuple[MetricFilterArg, ...] = (), time_grain: str | None = None, limit: int = 1000) -> MetricResult`
+
+Computes a pre-declared metric against the live database. Returns the
+materialised rows, the parameterised SQL the compiler emitted, and a
+`fingerprint` linking back to the immutable audit row. The agent never
+writes SQL itself for declared metrics — Schema Brain compiles and
+parameter-binds.
+
+```json
+{
+  "rows": [
+    {"period": "2026-01", "category_name": "Electronics", "total_revenue": 1832145.50}
+  ],
+  "row_count": 12,
+  "sql_skeleton": "SELECT date_trunc('month', o.created_at) AS period, c.name AS category_name, SUM(oi.quantity * oi.unit_price_cents) / 100.0 AS total_revenue FROM ... WHERE ... GROUP BY 1, 2 LIMIT :p_limit",
+  "sql_params": {"p_limit": 1000},
+  "fingerprint": "f3a1c89e...",
+  "required_joins": ["customer_orders", "order_items_to_orders"],
+  "fan_out_join_names": [],
+  "pii_categories": [],
+  "token_estimate": 312
+}
+```
+
+- `group_by` and `filters` use `entity.column` form (e.g. `customer.id`,
+  `order.created_at`) — never physical `schema.table.column`.
+- `filters` is `(column, op, value)` with closed-set ops: `eq`, `ne`, `lt`,
+  `lte`, `gt`, `gte`, `in`, `not_in`, `is_null`, `not_null`.
+- Values bind as parameters — never inlined into SQL.
+- `fan_out_join_names` flags joins where the cardinality could inflate
+  rows; the agent should warn the user when the list is non-empty.
+- `pii_categories` propagates the MAX-sensitivity + UNION-categories of
+  every column touched, and is what `--pii-block` filters against.
+
+Use `list_entities` instead when you don't yet know what's defined.
+`get_metric` only computes pre-declared metrics — it will never run
+arbitrary SQL.
