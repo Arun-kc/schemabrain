@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **CLI rendering polish (Rich-only, no new deps).** Three operator
+  surfaces upgraded from hand-rolled string formatting to Rich
+  primitives. No CLI flag, JSON schema, or public API change.
+  - **`schemabrain inspect` (no-arg)** now renders the Entities /
+    Metrics / Joins listing as a guided Rich `Tree` under a
+    "Definitions" root with per-category counts; empty categories are
+    omitted from the tree entirely so a metrics-less store does not
+    render an empty section heading.
+  - **`schemabrain inspect <name>`** renders columns, related
+    entities, and anchored metrics as `box.SIMPLE_HEAD` Tables
+    (underlined headers, no row borders). The columns Table fits
+    Name / Type / Null / Flags / PII; related entities collapse
+    direction + cardinality into one "Edge" column and put the via-join
+    annotation on a second row of the "On" cell.
+  - **`schemabrain init`** renders each wizard stage as its own
+    outcome-coloured Rich `Panel` — green border for done, yellow for
+    skipped, red for failed. Title carries the existing
+    `[N/7] Stage (duration)` header verbatim; `expand=False` keeps each
+    panel as wide as its content so the sequence reads as a status
+    checklist rather than a column of full-width banners. The
+    wire_host follow-up detail (config path, backup, redacted shell-out
+    argv, manual snippet) continues to render outside the panel
+    because the `printed_only` branch writes the JSON snippet to
+    stdout and would be hidden inside ANSI box-drawing otherwise.
+  - **`schemabrain tail`** collapses the two-line per-event render
+    (line 1: time + tool + args; line 2: indented arrow + result) to
+    one column-aligned line. Time (12) and tool (22) widths are
+    fixed-width via `ljust` so the eye reads each column straight
+    down the stream; long arg strings stay contiguous in the output
+    buffer rather than being column-folded (which would split
+    substrings across visual rows and break `tail | grep` matching).
+    Tool names longer than the column cap truncate with a single "…".
+
 ### Fixed
 - **Documentation sync with the wizard semantic-layer arc (PRs #60–#63).**
   README, `docs/setup.md`, and `docs/assets/demo.tape` still described
