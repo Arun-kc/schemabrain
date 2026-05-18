@@ -38,11 +38,6 @@ class _FakeError:
 
 
 @dataclass
-class _FakeMatches:
-    matches: list[Any]
-
-
-@dataclass
 class _FakeResponse:
     status: str
     data: Any = None
@@ -69,7 +64,7 @@ class TestDecoratorEmits:
         def fake_tool(query: str, limit: int = 5) -> _FakeResponse:
             return _FakeResponse(
                 status="success",
-                data=_FakeMatches(matches=[1, 2, 3]),
+                data=[1, 2, 3],
             )
 
         result = fake_tool(query="customer churn", limit=3)
@@ -145,7 +140,7 @@ class TestDecoratorEmits:
         )
         def slow_tool() -> _FakeResponse:
             time.sleep(0.01)
-            return _FakeResponse(status="success", data=_FakeMatches(matches=[]))
+            return _FakeResponse(status="success", data=[])
 
         slow_tool()
         # 0.01s ≈ 10ms minimum; allow generous upper bound on slow CI.

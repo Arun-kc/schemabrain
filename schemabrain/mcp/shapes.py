@@ -234,6 +234,54 @@ class TableHit(BaseModel):
     best_column_description: str
     token_estimate: int
 
+    @model_validator(mode="after")
+    def _validate_score(self) -> TableHit:
+        # Cosine similarity is mathematically in [-1, 1] but `Store.
+        # search_embeddings_topk` filters zero-norm vectors and the
+        # per-tool impl drops zero-score rows, so anything that reaches
+        # the wire shape must lie in [0, 1]. Pinning the range as a
+        # Pydantic invariant means a future ranker that emits a
+        # negative or >1 score is caught at envelope construction time
+        # rather than silently flowing to the agent.
+        if not (0.0 <= self.score <= 1.0):
+            raise ValueError(f"score must be in [0, 1], got {self.score}")
+        return self
+
+
+class EntityHit(BaseModel):
+    """One ranked hit returned by `find_relevant_entities`.
+
+    Mirrors `TableHit` but anchored on a semantic entity rather than a
+    physical table. `score` is the MAX cosine similarity across columns
+    of the entity's bound table — same per-table MAX aggregation as
+    `find_relevant_tables`, restricted to tables that have a confirmed
+    entity binding. `best_column` / `best_column_description` surface
+    WHY the entity was matched so the agent can decide whether to dig
+    deeper via `describe_entity`.
+
+    `qualified_table` is the bound physical table (e.g. `public.users`)
+    so an agent that wants the physical view in addition to the entity
+    surface doesn't need a second round-trip through `describe_entity`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    score: float
+    qualified_table: str
+    best_column: str
+    best_column_description: str
+    token_estimate: int
+
+    @model_validator(mode="after")
+    def _validate_score(self) -> EntityHit:
+        # Cosine similarity invariant — same rationale as `TableHit`.
+        # A future ranker that emits a malformed score gets caught at
+        # envelope construction, not after the agent consumes it.
+        if not (0.0 <= self.score <= 1.0):
+            raise ValueError(f"score must be in [0, 1], got {self.score}")
+        return self
+
 
 class ExampleQueryItem(BaseModel):
     """One observed example SQL pattern surfaced through

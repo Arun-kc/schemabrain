@@ -59,6 +59,7 @@ _DISAMBIGUATION_MARKERS = ("instead when", "don't use when")
 _SIBLING_TOOLS = frozenset(
     {
         "find_relevant_tables",
+        "find_relevant_entities",
         "describe_table",
         "describe_column",
         "suggest_joins",
@@ -184,6 +185,10 @@ def lint_descriptions(tools: Iterable[ToolSummary]) -> list[Violation]:
 # `ToolResponse` validates cleanly either way.
 _HAPPY_PATH_ARGS: dict[str, dict[str, object]] = {
     "find_relevant_tables": {"query": "anything", "limit": 5},
+    # No entities seeded in the lint store → `find_relevant_entities`
+    # returns the `empty` envelope (the impl short-circuits before
+    # calling the embedder). Round-trips through `ToolResponse` cleanly.
+    "find_relevant_entities": {"query": "anything", "limit": 5},
     "describe_table": {"qualified_name": "public.users"},
     "describe_column": {"qualified_name": "public.users.email"},
     "suggest_joins": {"tables": ["public.users", "public.users"]},
