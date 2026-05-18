@@ -1,0 +1,6 @@
+version: 1
+name: order
+description: One placed order, tied to a customer and a status
+binding:
+  single_table: public.orders
+identity: id

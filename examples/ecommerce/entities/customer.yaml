@@ -1,0 +1,6 @@
+version: 1
+name: customer
+description: A registered shopper account
+binding:
+  single_table: public.users
+identity: id
