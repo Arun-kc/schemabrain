@@ -8,7 +8,7 @@ Pins the canonical-join YAML grammar:
   - Top-level optional keys: `description`, `origin`
   - Strict-keys rejection of typos
   - `on` is a non-empty list of `{source, target}` mappings
-  - Self-joins refused (deferred to wk-15)
+  - Self-joins refused (not supported)
   - All three origin Literal values valid (`dbt_import` reserved)
   - `CanonicalJoinParseError` is the uniform CLI-facing error
 """
@@ -100,7 +100,7 @@ origin: {origin}
 
 class TestDbtImportReservation:
     def test_dbt_import_origin_refused_at_parse_time(self) -> None:
-        # The dbt-relationships importer lands at v1 wk-15. Until then,
+        # The dbt-relationships joins importer hasn't shipped. Until then,
         # `origin: dbt_import` in a hand-authored YAML is a user error
         # — silently re-labelling to `manual` (the prior behaviour) hid
         # the deferral. Refuse at parse with a guided message.
@@ -486,7 +486,7 @@ cardinality: {cardinality}
         assert join.cardinality == cardinality
 
     def test_cardinality_absent_yields_none(self) -> None:
-        # Hand-authored YAML pre-dating wk-15 lacks the field; we keep
+        # Hand-authored YAML pre-dating cardinality lacks the field; we keep
         # the round-trip valid by treating absence as `None`.
         text = """
 version: 1

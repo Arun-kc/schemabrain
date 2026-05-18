@@ -308,3 +308,96 @@ class TestSharedDataSource:
         # Sanity: Table introspected has the columns we expect, and the
         # profiler returned stats for each.
         assert {c.name for c in table.columns} == set(stats.keys())
+
+
+class TestNoEqualityColumnTypes:
+    """Regression: pre-v0.3.1 the profiler emitted `COUNT(DISTINCT col)`
+    for every column, so any schema with `xml`, `tsvector`, geometric, or
+    other no-equality types crashed init with
+    `psycopg.errors.UndefinedFunction: could not identify an equality
+    operator for type xml`. Surfaced 2026-05-18 against AdventureWorks-
+    for-Postgres (humanresources.jobcandidate.resume + 6 others).
+    """
+
+    def test_xml_column_does_not_crash_profile(self, profiling_pg_url: str) -> None:
+        # `xml` has no equality operator — the pre-fix profiler crashed
+        # mid-`profile_table`. Post-fix: profiles cleanly, distinct count
+        # falls back to non_null (max-cardinality assumption).
+        #
+        # The Table is built via the real `PostgresDataSource.get_table()`
+        # path rather than handcrafted, because SQLAlchemy doesn't have a
+        # Python-side equivalent for `xml` — it falls back to NullType,
+        # which `str()`s to "NULL". A handcrafted `_make_table(..., "XML")`
+        # bypasses that stringification and miss the real bug — `"null"`
+        # must be in `_NO_EQUALITY_TYPES` for the reflected path to dodge
+        # the DISTINCT emission.
+        with PostgresDataSource(profiling_pg_url) as ds:
+            table = ds.get_table("no_equality_types", "profiling")
+        with PostgresProfiler(profiling_pg_url) as profiler:
+            stats = profiler.profile_table(table)
+        # All three columns must come back.
+        assert set(stats.keys()) == {"id", "doc", "loc"}
+        # Equality-supporting BIGINT id: real distinct count.
+        assert stats["id"].total_rows == 3
+        assert stats["id"].null_count == 0
+        assert stats["id"].distinct_count == 3
+        # xml column: 2 non-null rows, NULL::bigint emitted instead of
+        # DISTINCT → distinct_count == non_null (max-cardinality hedge).
+        assert stats["doc"].total_rows == 3
+        assert stats["doc"].null_count == 1
+        assert stats["doc"].distinct_count == 2  # == non_null fallback
+        # point column: same path as xml.
+        assert stats["loc"].total_rows == 3
+        assert stats["loc"].null_count == 1
+        assert stats["loc"].distinct_count == 2
+
+    def test_reflected_xml_column_resolves_as_null_type(self, profiling_pg_url: str) -> None:
+        # Pins the assumption above: SQLAlchemy's `xml`-to-NullType
+        # fallback renders as `data_type="NULL"`. If a future SQLAlchemy
+        # release adds native xml support, this test will start failing
+        # — at which point we should narrow `_NO_EQUALITY_TYPES` (drop
+        # `"null"`, keep `"xml"`) so we don't suppress DISTINCT on
+        # legitimately-equality-supporting NullType-fallback columns
+        # for OTHER types that gain native support later.
+        with PostgresDataSource(profiling_pg_url) as ds:
+            table = ds.get_table("no_equality_types", "profiling")
+        types = {c.name: c.data_type for c in table.columns}
+        assert types["doc"] == "NULL", (
+            f"SQLAlchemy now reflects 'xml' as {types['doc']!r}; "
+            f"update _NO_EQUALITY_TYPES accordingly."
+        )
+
+    def test_supports_distinct_returns_true_for_equality_types(self) -> None:
+        # Sanity that the equality-type allow-list logic doesn't flip the
+        # answer for ordinary types.
+        from schemabrain.profiler.postgres import _supports_distinct
+
+        for data_type in ("BIGINT", "TEXT", "VARCHAR(255)", "NUMERIC(5, 2)", "TIMESTAMP"):
+            assert _supports_distinct(data_type), f"{data_type} should support DISTINCT"
+
+    def test_supports_distinct_returns_false_for_no_equality_types(self) -> None:
+        from schemabrain.profiler.postgres import _supports_distinct
+
+        for data_type in (
+            "xml",
+            "XML",
+            "tsvector",
+            "point",
+            "line",
+            "polygon",
+            "NULL",  # SQLAlchemy's NullType fallback for unrecognized types
+            "null",
+        ):
+            assert not _supports_distinct(data_type), f"{data_type} should not support DISTINCT"
+
+    def test_supports_distinct_strips_parameterised_suffix(self) -> None:
+        # Some Postgres types carry a precision/length suffix —
+        # `character varying(255)` strips to `character varying`, etc.
+        # Confirm the fix is robust to it.
+        from schemabrain.profiler.postgres import _supports_distinct
+
+        assert _supports_distinct("character varying(255)")
+        assert _supports_distinct("numeric(10, 2)")
+        # No-equality types don't carry parameterised suffixes in practice,
+        # but the function should handle them defensively.
+        assert not _supports_distinct("xml(unused)")

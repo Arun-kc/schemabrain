@@ -20,10 +20,11 @@ Design decisions baked into this module:
 
   - **Origin is the same closed Literal as `Entity.origin`.** All three
     values (`manual` / `suggested` / `dbt_import`) are valid from day
-    one. `dbt_import` is RESERVED at this release — no producer ships until
-    wk-15, so the suggest + apply layers refuse it explicitly. Reserving
-    keeps the schema symmetric and avoids a SQLite CHECK migration when
-    the dbt-relationships importer lands.
+    one. `dbt_import` is RESERVED — no producer ships at the current
+    release, so the suggest + apply layers refuse it explicitly.
+    Reserving keeps the schema symmetric and avoids a SQLite CHECK
+    migration when the dbt-relationships importer lands in a future
+    release.
 
   - **Composite-key joins are first-class.** `on` is a tuple, not a
     single pair. Composite-PK FK joins (most common in junction tables)
@@ -96,8 +97,10 @@ class CanonicalJoin:
 
     `on` is non-empty: a join with no predicate is a cross join, and
     cross joins are not canonical. Self-joins (`source_entity ==
-    target_entity`) are rejected at v1 — they're uncommon enough that
-    deferring to wk-15's grain-aware metric work is fine.
+    target_entity`) are rejected — they're uncommon enough that
+    deferring native support to a future release is fine; the
+    workaround is to model each side as a separate entity (e.g.,
+    `manager` and `direct_report` for an employee reports-to graph).
     """
 
     name: str
@@ -117,9 +120,12 @@ class CanonicalJoin:
             raise ValueError(f"target_entity must be an identifier (got {self.target_entity!r})")
         if self.source_entity == self.target_entity:
             raise ValueError(
-                f"self-joins are not supported at v1 (got "
-                f"source_entity == target_entity == {self.source_entity!r}); "
-                f"deferred to v1 wk-15 alongside grain-aware metrics"
+                f"self-joins are not supported (got "
+                f"source_entity == target_entity == {self.source_entity!r}). "
+                f"Workaround: model each side as a separate entity "
+                f"(e.g. `manager` and `direct_report` for an employee "
+                f"reports-to graph), then define the canonical join on "
+                f"the FK column from one side."
             )
         if not self.on:
             raise ValueError(

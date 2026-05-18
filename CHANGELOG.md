@@ -102,6 +102,32 @@ The one-command Docker demo stack lands alongside.
   passing a hostile long metric name would have flooded the error
   message into the response envelope.
 
+### Fixed
+- `schemabrain index` no longer crashes on Postgres column types
+  without a built-in equality operator (`xml`, `tsvector`, `point`,
+  `line`, `lseg`, `box`, `path`, `polygon`, `circle`, plus any type
+  SQLAlchemy reflects to `NullType`). The batched profile query
+  previously emitted `COUNT(DISTINCT col)` for every column and
+  raised `psycopg.errors.UndefinedFunction` on first encounter with
+  any such type. AdventureWorks-for-Postgres has 7 xml columns in
+  base tables; the pre-tag smoke against it surfaced the bug. For
+  affected columns the profiler now substitutes `NULL::bigint` for
+  the DISTINCT slot and falls back to `distinct_count = non_null` (a
+  max-cardinality hedge that's more useful to the downstream LLM
+  cardinality prompt than a misleading zero). The connector's
+  `inspector.get_columns()` call also gains a narrow SAWarning
+  filter so the "Did not recognize type X" warning doesn't crash
+  the test suite under `filterwarnings = error`.
+- Self-join refusal in `CanonicalJoin.__post_init__` now surfaces an
+  actionable workaround in the error message — "model each side as a
+  separate entity (e.g. `manager` and `direct_report`) and define
+  the canonical join on the FK column from one side" — replacing
+  the stale "deferred to v1 wk-15" roadmap reference. 10 internal
+  `wk-15` comment references cleaned up across `schemabrain/core/
+  join.py`, `schemabrain/core/store.py`, `schemabrain/core/store_
+  protocol.py`, `schemabrain/joins/suggest.py`, `schemabrain/joins/
+  yaml_grammar.py`, and three test files.
+
 ### Documentation
 - `docs/observability.md` expanded with OTel integration section:
   span shape, attribute map, status mapping, per-backend recipes
@@ -115,6 +141,11 @@ The one-command Docker demo stack lands alongside.
   - `0004-observability-event-bus.md` — the JSONL event bus as
     three-consumer substrate (tail / audit / OTel), with the OTel
     emission decisions locked.
+- `docs/internal/manual_smoke_2026_05_18.md` captures the pre-tag
+  manual production-DB smoke that surfaced the two `### Fixed` items
+  above. Walks the v0.3.0 wheel against Pagila + Northwind +
+  AdventureWorks + synthetic PII mockup + reserved-keyword synthetic
+  through the full new-user journey. Reference for future smoke runs.
 
 ## [0.2.0a1] - 2026-05-15
 

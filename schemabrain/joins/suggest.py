@@ -257,13 +257,16 @@ def _build_fk_seeds(
             )
             continue
         if source_entity == target_entity:
-            # Self-referential FK — defer to wk-15 per CanonicalJoin
-            # dataclass invariant. Suggester drops these silently;
-            # the operator can still hand-write a manual entity join
-            # at wk-15 when self-joins land.
+            # Self-referential FK — refused by the CanonicalJoin
+            # dataclass invariant. Suggester drops these silently
+            # so the operator's `--out-dir` listing isn't polluted
+            # with candidates that would never apply. The workaround
+            # documented in CanonicalJoin's docstring (split the
+            # entity into two — e.g. `manager` and `direct_report`)
+            # is the path forward for users who hit this.
             _logger.debug(
                 "self-FK on entity %r dropped from join candidates "
-                "(self-joins deferred to v1 wk-15)",
+                "(self-joins are not supported; split into two entities)",
                 source_entity,
             )
             continue
@@ -338,7 +341,8 @@ def _build_query_log_evidence(
         if entity_a == entity_b:  # pragma: no cover
             # Same-entity join in query log — typically aliased
             # self-references that resolved to the same underlying
-            # table. Drop for the same wk-15 reason as FK self-joins.
+            # table. Drop for the same reason as FK self-joins:
+            # CanonicalJoin refuses self-references by invariant.
             continue
         # The mining normalisation puts the schema-alphabetically-
         # lesser table first; we preserve that ordering as
