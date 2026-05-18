@@ -63,11 +63,14 @@ class TestRenderSummary:
             join_names=(),
         )
         out = _capture(render_summary, summary)
-        assert "Entities:" in out
+        # The summary tree adds a branch per non-empty category. With
+        # only entities present, the "Entities" branch is the sole
+        # subtree of "Definitions"; the empty Metrics/Joins branches
+        # are omitted entirely (not rendered as empty headings).
+        assert "Entities" in out
         assert "customer" in out
-        # No metric/join sections rendered.
-        assert "Metrics:" not in out
-        assert "Joins:" not in out
+        assert "Metrics" not in out
+        assert "Joins" not in out
 
     def test_summary_with_only_metrics_skips_entity_join_sections(self) -> None:
         summary = StoreSummary(
@@ -81,10 +84,10 @@ class TestRenderSummary:
             join_names=(),
         )
         out = _capture(render_summary, summary)
-        assert "Metrics:" in out
+        assert "Metrics" in out
         assert "retention_rate" in out
-        assert "Entities:" not in out
-        assert "Joins:" not in out
+        assert "Entities" not in out
+        assert "Joins" not in out
 
     def test_summary_with_column_count_none_renders_em_dash(self) -> None:
         # Cross-source sentinel — render shows "—" instead of "0
