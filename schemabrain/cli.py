@@ -390,6 +390,13 @@ def main(argv: list[str] | None = None) -> int:
                 json_mode=args.json_mode,
             )
         parser.error(f"unknown audit action: {args.audit_action}")  # pragma: no cover
+    if args.command == "check":
+        return _cmd_check(
+            positional_url=args.source,
+            url_env=args.url_env,
+            store_path=args.store_path,
+            json_mode=args.json_mode,
+        )
     if args.command == "metrics":
         if args.metrics_action == "apply":
             return _cmd_metrics_apply(
@@ -1362,6 +1369,38 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="json_mode",
         action="store_true",
         help="Emit JSON lines instead of the rich-rendered table. Pipe-friendly for jq / awk.",
+    )
+
+    p_check = sub.add_parser(
+        "check",
+        help="Detect drift between persisted definitions and the live source schema",
+    )
+    p_check.add_argument(
+        "--source",
+        default=None,
+        help="Source URL (e.g. postgresql+psycopg://...). DEPRECATED when the URL "
+        "contains a password; prefer --url-env. One of --source / --url-env is required.",
+    )
+    p_check.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL "
+        "(e.g. --url-env DATABASE_URL). Preferred over --source so credentials "
+        "never appear in argv. Mutually exclusive with --source.",
+    )
+    p_check.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_check.add_argument(
+        "--json",
+        dest="json_mode",
+        action="store_true",
+        help="Emit JSON to stdout instead of the rich-rendered report to stderr. "
+        "Pipe-friendly for CI / monitoring scripts.",
     )
 
     return parser
@@ -4430,6 +4469,87 @@ def _render_wire_host_detail(host_result: object, console: object) -> None:
             "          Windsurf:                 ~/.codeium/windsurf/mcp_config.json",
         ):
             console.print(line, soft_wrap=True, highlight=False)  # type: ignore[attr-defined]
+
+
+def _cmd_check(
+    *,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+    json_mode: bool,
+) -> int:
+    """Run `schemabrain check` and render the drift report.
+
+    Reads entities, metrics, and canonical joins from the local store,
+    confirms each against the live source schema, and emits a report.
+
+    Exit codes:
+      - 0: no drift detected
+      - 1: at least one drift surfaced
+      - 2: operational refusal before the check could run (e.g.
+        --source + --url-env conflict, --url-env names an unset
+        variable, the source URL cannot be reached, the store file
+        does not exist or carries a schema-version mismatch)
+
+    JSON mode writes a parseable report to stdout and suppresses the
+    rich-rendered output. Useful for CI pipelines that gate on
+    drift-free state via `jq '.exit_code'`.
+    """
+    from schemabrain.check.engine import check_drift
+    from schemabrain.check.render import render_json, render_report
+    from schemabrain.core.store import SchemaVersionMismatchError
+
+    url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if url is None:
+        # _resolve_url_source already rendered a guided error.
+        return 2
+    canonical = _canonical_url(url)
+    source_id = _make_source_id(url)
+    store_p = Path(store_path)
+    if not store_p.exists():
+        _render_guided(
+            GuidedError(
+                kind="check_store_missing",
+                message=f"store not found at {store_path}",
+                why="`schemabrain check` reads persisted definitions from the local "
+                "SQLite store; without a store there is nothing to compare against the source",
+                fix=f"run `schemabrain index --url-env DBURL --store-path {store_path}` first",
+                next_step="re-run `schemabrain check` after `index` completes",
+            )
+        )
+        return 2
+
+    try:
+        with (
+            PostgresDataSource(url) as source,
+            SQLiteStore(store_p) as store,
+        ):
+            report = check_drift(
+                store=store,
+                source=source,
+                source_connection_id=source_id,
+            )
+    except SchemaVersionMismatchError as exc:
+        _render_guided(
+            GuidedError(
+                kind="check_schema_version_mismatch",
+                message=str(exc),
+                why="the local store was written by a different schemabrain version",
+                fix="delete the store file and re-run `schemabrain index`, "
+                "or downgrade to a matching schemabrain version",
+                next_step=f"rm {store_path} && schemabrain index ...",
+            )
+        )
+        return 2
+    except OperationalError as e:
+        _render_guided(postgres_operational_error(e, url_hint=canonical))
+        return 2
+
+    if json_mode:
+        sys.stdout.write(render_json(report))
+    else:
+        render_report(report, console=_stderr_console(), source_label=canonical)
+    return report.exit_code
 
 
 def _cmd_fixture_path(name: str) -> int:

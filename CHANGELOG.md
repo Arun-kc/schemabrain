@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `schemabrain check` subcommand — walks every persisted entity,
+  metric, and canonical join and reports drift against the live source
+  schema. Detects five drift kinds: `table_missing`,
+  `identity_column_missing`, `measure_column_missing`,
+  `time_dimension_column_missing`, and `join_column_missing`. Drift
+  cascading is suppressed — when an entity's bound table is missing,
+  downstream metric and join drifts on that table are NOT
+  double-reported so the output stays focused on the root cause.
+  Live-source introspection is cached per run so a 50-metric run
+  against 10 tables hits the source 10 times, not 50. Exit codes:
+  `0` (clean), `1` (drift), `2` (operational refusal). `--json`
+  emits a parseable contract `{drifts, summary, exit_code}` to
+  stdout for CI / monitoring scripts.
+- `docker-compose.yml` at the repo root: one-command demo stack
+  (Postgres 16 + bundled fixture loader + Schema Brain indexer). The
+  stack reaches `Done` with a populated store on a named volume
+  (`sb-data`) that survives `docker compose down`. README's "Run via
+  Docker" section documents the `docker run`-based MCP host wiring
+  on top of the demo volume.
+
 ## [0.2.0a1] - 2026-05-15
 
 ### Added
