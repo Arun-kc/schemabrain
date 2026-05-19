@@ -80,7 +80,7 @@ import yaml
 from sqlalchemy.exc import OperationalError
 
 from schemabrain import __version__
-from schemabrain._env import resolve_positive_float_env
+from schemabrain._env import resolve_positive_float_env, resolve_positive_int_env
 from schemabrain.connectors._url import safe_engine_url
 from schemabrain.connectors.base import DataSource
 from schemabrain.connectors.postgres import PostgresDataSource
@@ -195,15 +195,23 @@ _NO_COST_CAP_SENTINEL = 1e12
 _DEFAULT_EVAL_LIMIT = 10
 
 # Per-tier concurrency for the async enrichment pipeline.
-# Module-level constants rather than locals so test
-# fixtures can monkeypatch them to `1` for deterministic cap
-# enforcement — under default concurrency, the per-task cap check
-# races and a cap-trip test would need >= 9 columns to land
-# deterministically. A future `--concurrency` CLI flag can plumb
-# user-facing tuning through these constants without further
-# CLI-wiring churn.
+# Module-level constants rather than locals so test fixtures can
+# monkeypatch them to `1` for deterministic cap enforcement — under
+# default concurrency, the per-task cap check races and a cap-trip
+# test would need >= 9 columns to land deterministically.
+#
+# Operators can override at runtime via
+# `SCHEMABRAIN_PIPELINE_DEFAULT_CONCURRENCY` /
+# `SCHEMABRAIN_PIPELINE_CRYPTIC_CONCURRENCY`. The env-var resolution
+# happens at `_cmd_index` call time (not module import) via
+# `resolve_positive_int_env`, falling back to these constants as
+# defaults. The two-layer resolution keeps both the test
+# monkeypatching pattern and the operator-override pattern working
+# at the same time.
 _PIPELINE_DEFAULT_CONCURRENCY = 8
 _PIPELINE_CRYPTIC_CONCURRENCY = 4
+_PIPELINE_DEFAULT_CONCURRENCY_ENV = "SCHEMABRAIN_PIPELINE_DEFAULT_CONCURRENCY"
+_PIPELINE_CRYPTIC_CONCURRENCY_ENV = "SCHEMABRAIN_PIPELINE_CRYPTIC_CONCURRENCY"
 
 # 16 hex chars = 64 bits of SHA-256. For a single user's plausible set of
 # databases (<1000), birthday-collision probability is ~10^-14. If we ever
@@ -1764,8 +1772,20 @@ def _cmd_index(
                         client=anthropic_haiku_45_client(api_key=api_key),
                         cryptic_client=cryptic_client,
                         max_cost_usd=max_cost_usd,
-                        default_concurrency=_PIPELINE_DEFAULT_CONCURRENCY,
-                        cryptic_concurrency=_PIPELINE_CRYPTIC_CONCURRENCY,
+                        # Env-var resolution at call time: operator override
+                        # > module-level constant default. `resolve_positive_int_env`
+                        # rejects underscore/leading-zero/scientific/negative
+                        # footguns; bad env values raise with a clear message
+                        # rather than silently mis-tuning concurrency (which
+                        # would trigger cascading 429s under tier-1 rate limits).
+                        default_concurrency=resolve_positive_int_env(
+                            _PIPELINE_DEFAULT_CONCURRENCY_ENV,
+                            _PIPELINE_DEFAULT_CONCURRENCY,
+                        ),
+                        cryptic_concurrency=resolve_positive_int_env(
+                            _PIPELINE_CRYPTIC_CONCURRENCY_ENV,
+                            _PIPELINE_CRYPTIC_CONCURRENCY,
+                        ),
                         store=store,
                         source_connection_id=source_id,
                     )

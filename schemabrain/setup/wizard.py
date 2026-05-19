@@ -761,10 +761,21 @@ def _run_indexer(*, cfg: WizardConfig, source_id: str, api_key: str | None) -> I
     ):
         pipeline: EnrichmentPipeline | None = None
         if cfg.enrich and api_key is not None:
+            # Resolve the wizard's index-stage enrichment cap at call
+            # time: SCHEMABRAIN_WIZARD_INDEX_ENRICH_CAP_USD > $10
+            # default. `on_invalid="raise"` is intentional — an
+            # operator who exports a typo'd cap and then sees the
+            # wizard silently aborting at a stale $10 wouldn't know
+            # why their override isn't working. Raise lets the wizard
+            # surface "set this env var, fix the typo".
+            enrich_cap = resolve_positive_float_env(
+                _WIZARD_INDEX_ENRICH_CAP_USD_ENV,
+                _WIZARD_INDEX_ENRICH_CAP_USD,
+            )
             pipeline = EnrichmentPipeline(
                 client=anthropic_haiku_45_client(api_key=api_key),
                 cryptic_client=None,
-                max_cost_usd=_WIZARD_INDEX_ENRICH_CAP_USD,
+                max_cost_usd=enrich_cap,
                 default_concurrency=_WIZARD_INDEX_CONCURRENCY,
                 cryptic_concurrency=_WIZARD_INDEX_CRYPTIC_CONCURRENCY,
                 store=store,
@@ -814,7 +825,17 @@ def _index_done_message(result: IndexResult, *, enrich: bool) -> str:
 # the WizardConfig level, because they're internal to the wizard's
 # bundled enrichment policy (a power-user run via `schemabrain index`
 # directly carries its own knobs).
+#
+# `_WIZARD_INDEX_ENRICH_CAP_USD` can be overridden at runtime via
+# `SCHEMABRAIN_WIZARD_INDEX_ENRICH_CAP_USD`. Resolved at call time in
+# `_run_indexer` (not module import) so test monkeypatching works.
+# The concurrency knobs stay hardcoded — they're guardrails to keep
+# the bundled wizard flow tier-1 rate-limit-safe, not user-tunable
+# goals (a power-user who wants higher concurrency runs `schemabrain
+# index` directly, which has its own `SCHEMABRAIN_PIPELINE_*`
+# overrides).
 _WIZARD_INDEX_ENRICH_CAP_USD: float = 10.0
+_WIZARD_INDEX_ENRICH_CAP_USD_ENV = "SCHEMABRAIN_WIZARD_INDEX_ENRICH_CAP_USD"
 _WIZARD_INDEX_CONCURRENCY: int = 4
 _WIZARD_INDEX_CRYPTIC_CONCURRENCY: int = 2
 
