@@ -124,12 +124,36 @@ def drift_glyph(def_kind: str) -> tuple[str, str]:
 # surface is migrated — bundling the migration with the visible
 # glyph flip (e.g. wizard's ``↷`` → ``⊘`` for skipped) is the
 # follow-up PR's job, not this primitive's.
+#
+# **Migration footgun — read this before threading a legacy dict
+# through ``status_glyph``.** The local dicts use different tier
+# vocabulary than ``_STATUS_TIER`` keys:
+#
+#   wizard ``_STAGE_GLYPHS``:     ``done`` / ``skipped`` / ``failed``
+#   doctor ``_GLYPHS``:           ``pass`` / ``warn``    / ``fail``
+#   _STATUS_TIER (this dict):     ``ok``   / ``warn``    / ``err``  / ``active`` / ``pending`` / ``skipped``
+#
+# Only ``warn`` and ``skipped`` overlap by name. A naïve replacement
+# of ``_STAGE_GLYPHS.get(outcome.status, outcome.status)`` with
+# ``status_glyph(outcome.status)`` would silently route ``done`` and
+# ``failed`` through the unknown-tier fallback ``(✗, red)`` — a
+# hard-error visual on a successful wizard run. Migration MUST
+# translate at the call site: ``done → ok``, ``failed → err``,
+# ``pass → ok``, ``fail → err``. The translation belongs in the
+# surface re-render commit so it's auditable in the diff, not
+# hidden as an alias in this dict.
 
 _STATUS_TIER: Final[dict[str, tuple[str, str]]] = {
     "ok": (GLYPH_OK, "green"),
     "warn": (GLYPH_WARN, "yellow"),
     "err": (GLYPH_ERR, "red"),
-    "active": (GLYPH_ACTIVE, "green"),
+    # `active` uses cyan rather than the lime the design specifies —
+    # Rich's named-colour palette doesn't have lime, and `green`
+    # collides with `ok` so an in-progress row reads identical to a
+    # completed one (only the glyph `▸` vs `✓` differentiates).
+    # Cyan keeps the in-progress / done distinction visible until
+    # the truecolor migration provides lime (`#c1ff72` per design).
+    "active": (GLYPH_ACTIVE, "cyan"),
     "pending": (GLYPH_PENDING, "bright_black"),
     "skipped": (GLYPH_SKIPPED, "yellow"),
 }

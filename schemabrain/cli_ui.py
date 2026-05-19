@@ -34,7 +34,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from schemabrain._ui import make_console
+from schemabrain._ui import GLYPH_BULLET, make_console
 from schemabrain.indexer import IndexResult
 
 
@@ -68,9 +68,9 @@ class RichReporter:
             TextColumn("[bold cyan]{task.fields[table]}"),
             BarColumn(bar_width=None),
             MofNCompleteColumn(),
-            TextColumn("•"),
+            TextColumn(GLYPH_BULLET),
             TimeRemainingColumn(),
-            TextColumn("•"),
+            TextColumn(GLYPH_BULLET),
             TextColumn("[green]${task.fields[cost]:.4f}"),
             console=self._console,
             transient=False,

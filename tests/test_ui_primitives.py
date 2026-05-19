@@ -103,7 +103,11 @@ class TestStatusGlyph:
             ("ok", "✓", "green"),
             ("warn", "⚠", "yellow"),
             ("err", "✗", "red"),
-            ("active", "▸", "green"),
+            # `active` uses cyan rather than green so an in-progress
+            # row stays visually distinct from a completed one — the
+            # design specifies lime, Rich's named-palette floor is
+            # cyan until truecolor.
+            ("active", "▸", "cyan"),
             ("pending", "◇", "bright_black"),
             ("skipped", "⊘", "yellow"),
         ],
@@ -134,7 +138,7 @@ class TestGlyphConstants:
     list.
     """
 
-    def test_severity_glyph_constants(self) -> None:
+    def test_drift_glyph_constants(self) -> None:
         assert GLYPH_OK == "✓"
         assert GLYPH_WARN == "⚠"
         assert GLYPH_ERR == "✗"
