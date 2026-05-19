@@ -8,6 +8,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Two error surfaces re-rendered onto the design's panel
+  vocabulary** — third operator-visible win from the design-
+  system migration arc (PR #5; PRs #71/#72/#73 + #4 prior). The
+  third design shape (LLM 529 advisory) is deferred to a follow-
+  up PR — it requires new exception-catching plumbing inside the
+  wizard / `entities suggest` flow beyond a visual upgrade.
+
+  - **Shape A — bad input** (handoff bundle
+    `cli/errors.jsx:ErrBadInput`): the `--since wednesday`-style
+    parse-error path now renders a caret-pointer surface
+    reproducing the user's command line with a `^^^` underline
+    under the failing token and a `└─ <reason>` leader. A
+    "did you mean" sub-block lists two corrected commands. The
+    caret leader reflects the actual `parse_since` failure mode
+    — duration-vs-date confusion renders `not a duration · not
+    a date`; an ISO 8601 timestamp without a timezone renders
+    `ISO 8601 needs a timezone (e.g. trailing Z)`. Previously
+    rendered as a plain `error: --since: ...` print to stderr.
+
+  - **Shape B — missing secret** (handoff bundle
+    `cli/errors.jsx:ErrMissingSecret`): the `--url-env` unset
+    AND empty paths now render the design's three-panel block
+    (lookup failure named at the panel title — `env var X is
+    not exported` / `env var X is set but empty` rather than
+    the misleading "missing connection string" the old surface
+    used — recommended `--url-env` form with security rationale,
+    shell-level diagnostics, and a trailing `→ next:` breadcrumb
+    pointing at `docs/setup.md`). The two states render distinct
+    titles + panel headers so operators can tell at a glance
+    which case fired. Previously rendered as the plain `error /
+    why / fix / next` `GuidedError` block.
+
+  New module `schemabrain/errors_render.py` (313 LOC) hosts both
+  shapes; `schemabrain/errors.py` is unchanged (DTO + translators
+  stay). Tests in `tests/test_errors_render.py` (32 tests, 100%
+  line + branch coverage on the new module) pin the layout
+  contract. Two existing assertions in `tests/test_cli.py`
+  flipped from the old `"fix:"` substring to the new design
+  vocabulary; no other test churn.
+
 - **`schemabrain doctor` re-rendered onto the design's numbered
   checklist surface** — second operator-visible win from the
   design-system migration arc (PR #4 of #71/#72/#73/#4/...).
