@@ -88,7 +88,7 @@ from schemabrain.connectors.postgres import PostgresDataSource
 from schemabrain.core.entity import Entity
 from schemabrain.core.metric import DbtOwnedMetricError
 from schemabrain.core.models import Table
-from schemabrain.core.store import DbtOwnedEntityError, SQLiteStore
+from schemabrain.core.store import DbtOwnedEntityError, SchemaVersionMismatchError, SQLiteStore
 from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.anthropic_client import (
     anthropic_haiku_45_client,
@@ -2551,6 +2551,28 @@ def _cmd_serve(
                 pii_block=pii_block,
                 tracer=tracer,
             )
+    except SchemaVersionMismatchError as exc:
+        # Smoke 2026-05-19 surfaced this: a Claude Desktop launch
+        # against a store written by an older schemabrain version
+        # crashed with a raw Python traceback to MCP stderr. Claude
+        # Desktop's UI then just showed "Server disconnected" with
+        # no actionable hint. Match the inspect/check/doctor pattern
+        # and emit a guided block instead — the operator-facing
+        # remediation is identical across all four subcommands so
+        # operators only have to learn the message once.
+        _render_guided(
+            GuidedError(
+                kind="serve_schema_version_mismatch",
+                message=str(exc),
+                why="the local store was written by a different schemabrain version "
+                "and `schemabrain serve` cannot start against it",
+                fix="delete the store file and re-run `schemabrain init` "
+                "(or `schemabrain index` if you only need the table-level "
+                "structure, not the curated entities/metrics/joins)",
+                next_step=f"rm {store_path} && schemabrain init ...",
+            )
+        )
+        return 2
     except OSError as e:
         # Unwritable directory, missing parent, etc. Surface as a
         # guided block instead of a traceback — Claude Desktop config
