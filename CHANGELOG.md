@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Shared CLI shell vocabulary `schemabrain/_ui.py`** — foundation
+  for the design-system migration anchored on the ``schemabrain-v1``
+  handoff bundle. Defines the glyph constants
+  (``GLYPH_OK``/``GLYPH_WARN``/``GLYPH_ERR``), the
+  ``severity_glyph(def_kind) -> (glyph, rich_style)`` router
+  (entity → ``✗ red``, metric / canonical_join → ``⚠ yellow``,
+  unknown → hard-break fallback by design), the
+  ``pii_marker(sensitivity)`` label vocabulary (verbatim
+  pass-through for unknown tiers so indexer-introduced tiers
+  surface rather than disappear), and the ``make_console(...)``
+  factory — the single Console hook for future ``--no-color`` /
+  ``--json`` / palette work (``NO_COLOR=1`` honoured via Rich's
+  built-in env contract). Threaded through ``cli_ui.RichReporter``,
+  ``check/render.py``, and ``inspect/render.py`` with zero
+  behaviour change. Follow-up PRs migrate one operator surface at
+  a time on top of this seam.
+
 - **Four new `SCHEMABRAIN_*` env-var overrides for tier-1 config
   knobs surfaced by the 2026-05-19 config-flexibility audit.**
   Following the env-var-with-strict-parser convention PR #67 locked

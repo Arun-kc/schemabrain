@@ -34,6 +34,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+from schemabrain._ui import make_console
 from schemabrain.indexer import IndexResult
 
 
@@ -48,7 +49,7 @@ class RichReporter:
     """
 
     def __init__(self, *, console: Console | None = None) -> None:
-        self._console = console if console is not None else Console(stderr=True)
+        self._console = console if console is not None else make_console(stderr=True)
         self._progress: Progress | None = None
         self._task_id: TaskID | None = None
         self._cost_usd: float = 0.0
