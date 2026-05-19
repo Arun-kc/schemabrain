@@ -1647,6 +1647,45 @@ class SQLiteStore:
             ).fetchall()
         return [(row["schema_name"], row["name"]) for row in rows]
 
+    def list_distinct_source_connection_ids(self) -> list[str]:
+        """Union of `source_connection_id` values across the four data
+        tables (`tables`, `entities`, `metrics`, `canonical_joins`).
+
+        Single SQL round-trip with a UNION → DISTINCT → ORDER BY. The
+        union shape is exhaustive on purpose: a store written by an
+        older Schema Brain version that only populated `entities`
+        (no metrics, no joins) still surfaces here, so the inspect
+        renderer can warn about orphan data instead of silently
+        merging it with new rows from a different source.
+
+        Defensive `WHERE source_connection_id IS NOT NULL` on every
+        leg: the four tables declare the column `NOT NULL`, so a NULL
+        only enters the store via hand-corruption. Filtering at the
+        query level keeps the declared return type (`list[str]`)
+        honest even in that case — without the guard, a corrupted
+        row would surface as a `None` in the list and inflate the
+        renderer's "multi-source" count.
+
+        Named column access (`row["source_connection_id"]`) matches
+        the rest of this file's convention; positional `row[0]`
+        would silently shift the wrong value if a future diagnostic
+        column gets added to the subquery.
+        """
+        conn = self._require_conn()
+        rows = conn.execute(
+            "SELECT source_connection_id FROM ("
+            "  SELECT source_connection_id FROM tables"
+            "  WHERE source_connection_id IS NOT NULL"
+            "  UNION SELECT source_connection_id FROM entities"
+            "  WHERE source_connection_id IS NOT NULL"
+            "  UNION SELECT source_connection_id FROM metrics"
+            "  WHERE source_connection_id IS NOT NULL"
+            "  UNION SELECT source_connection_id FROM canonical_joins"
+            "  WHERE source_connection_id IS NOT NULL"
+            ") ORDER BY source_connection_id"
+        ).fetchall()
+        return [row["source_connection_id"] for row in rows]
+
     # ----- Entities ------------------------------------------------
     #
     # Semantic-layer foundation. The read side is the substrate for

@@ -383,6 +383,9 @@ class TestStoreProtocolSeamUsable:
             ) -> list[tuple[str, str]]:
                 return []
 
+            def list_distinct_source_connection_ids(self) -> list[str]:
+                return []
+
             def get_table_fingerprints(
                 self, schema_name: str, name: str, *, source_connection_id: str
             ) -> dict[str, tuple[str, str]]:

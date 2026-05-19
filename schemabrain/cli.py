@@ -88,7 +88,7 @@ from schemabrain.connectors.postgres import PostgresDataSource
 from schemabrain.core.entity import Entity
 from schemabrain.core.metric import DbtOwnedMetricError
 from schemabrain.core.models import Table
-from schemabrain.core.store import DbtOwnedEntityError, SQLiteStore
+from schemabrain.core.store import DbtOwnedEntityError, SchemaVersionMismatchError, SQLiteStore
 from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.anthropic_client import (
     anthropic_haiku_45_client,
@@ -415,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
             follow=args.follow,
             json_mode=args.json_mode,
             events_path=args.events_path,
+            store_path=args.store_path,
         )
     if args.command == "audit":
         if args.audit_action == "verify":
@@ -1603,6 +1604,27 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Path to the JSONL events file written by `schemabrain serve`. "
         f"Default: $SCHEMABRAIN_EVENTS_PATH or {_DEFAULT_EVENTS_PATH}.",
     )
+    # Smoke 2026-05-19: operators reflexively pass `--store-path` to
+    # `tail` (every other subcommand accepts it). Accept it here so the
+    # CLI doesn't surface a hostile `unrecognized arguments` error.
+    # The events JSONL is decoupled from the SQLite store by default
+    # (events go to `~/.schemabrain/events.jsonl`, store goes wherever
+    # the operator chose), so `--store-path` is only used as a
+    # convenience hint: if the operator wrote events alongside the
+    # store via `--events-path`, this flag lets `tail` discover them
+    # without re-typing the path. See `_resolve_tail_events_path`
+    # for the resolution order.
+    p_tail.add_argument(
+        "--store-path",
+        dest="store_path",
+        default=None,
+        help="Path to the SQLite store. Accepted for surface parity with "
+        "every other subcommand. `tail` reads from the events JSONL, "
+        "not the store, so this is only used as a convenience: when "
+        "`--events-path` is omitted AND a file named `events.jsonl` "
+        "exists in the store's directory, that file is preferred over "
+        "the default. Pass `--events-path PATH` to override directly.",
+    )
 
     p_audit = sub.add_parser(
         "audit",
@@ -2551,6 +2573,51 @@ def _cmd_serve(
                 pii_block=pii_block,
                 tracer=tracer,
             )
+    except SchemaVersionMismatchError as exc:
+        # Smoke 2026-05-19 surfaced this: a Claude Desktop launch
+        # against a store written by an older schemabrain version
+        # crashed with a raw Python traceback to MCP stderr. Claude
+        # Desktop's UI then just showed "Server disconnected" with
+        # no actionable hint. Match the inspect/check/doctor pattern
+        # and emit a guided block instead — the operator-facing
+        # remediation is identical across all four subcommands so
+        # operators only have to learn the message once.
+        _render_guided(
+            GuidedError(
+                kind="serve_schema_version_mismatch",
+                message=str(exc),
+                why="the local store was written by a different schemabrain version "
+                "and `schemabrain serve` cannot start against it",
+                fix="delete the store file and re-run `schemabrain init` "
+                "(or `schemabrain index` if you only need the table-level "
+                "structure, not the curated entities/metrics/joins)",
+                next_step=f"rm {store_path} && schemabrain init ...",
+            )
+        )
+        return 2
+    except sqlite3.DatabaseError as exc:
+        # Convergent reviewer finding (Round-2 fold): the audit-writer
+        # init at line ~2541 already names `sqlite3.DatabaseError` as
+        # a "want the same response" case, but the store-open path
+        # one level up missed it. A corrupted store file (hard
+        # shutdown mid-write, OS-level filesystem damage, truncated
+        # WAL) surfaces as DatabaseError, not OSError, and would
+        # bubble up as the same kind of raw traceback the
+        # SchemaVersionMismatchError fix above was written to prevent.
+        # Emit the same shape of guided block so the operator's
+        # recovery path is consistent.
+        _render_guided(
+            GuidedError(
+                kind="serve_store_corrupted",
+                message=f"sqlite3.DatabaseError: {exc}",
+                why="the local store file is corrupted or unreadable as SQLite "
+                "(common causes: hard shutdown mid-write, truncated WAL, "
+                "filesystem damage, hand-edited binary)",
+                fix="delete the store file and re-run `schemabrain init` to rebuild from scratch",
+                next_step=f"rm {store_path} && schemabrain init ...",
+            )
+        )
+        return 2
     except OSError as e:
         # Unwritable directory, missing parent, etc. Surface as a
         # guided block instead of a traceback — Claude Desktop config
@@ -4871,12 +4938,48 @@ def _cmd_init(
     return 0
 
 
+def _resolve_tail_events_path(*, events_path: str | None, store_path: str | None) -> str:
+    """Resolve `tail`'s events-JSONL path with the documented priority.
+
+    Priority order:
+
+    1. Explicit `--events-path` always wins.
+    2. `$SCHEMABRAIN_EVENTS_PATH` env var.
+    3. `<store_dir>/events.jsonl` IF `--store-path` was supplied AND
+       the file exists. Documented as a convenience for operators who
+       wrote events alongside the store; the default `serve`
+       configuration writes to `~/.schemabrain/events.jsonl` instead,
+       so the existence check keeps us from inventing a path that
+       isn't there.
+    4. Module-level `_DEFAULT_EVENTS_PATH`.
+
+    Pure function so the priority order is testable without spinning
+    a real reader. Round-2 fold: use `is not None` rather than truthy
+    checks so an explicit empty-string from a future caller doesn't
+    silently fall through to env-var resolution.
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
+    if events_path is not None:
+        return events_path
+    env_path = _os.environ.get("SCHEMABRAIN_EVENTS_PATH")
+    if env_path is not None:
+        return env_path
+    if store_path:
+        candidate = _Path(store_path).expanduser().parent / "events.jsonl"
+        if candidate.exists():
+            return str(candidate)
+    return _DEFAULT_EVENTS_PATH
+
+
 def _cmd_tail(
     *,
     since: str,
     follow: bool,
     json_mode: bool,
     events_path: str | None,
+    store_path: str | None,
 ) -> int:
     """Run `schemabrain tail`: stream events from the JSONL bus file."""
     import json as _json
@@ -4893,10 +4996,28 @@ def _cmd_tail(
         render_event_pretty,
     )
 
-    resolved_path = (
-        events_path or _os.environ.get("SCHEMABRAIN_EVENTS_PATH") or _DEFAULT_EVENTS_PATH
-    )
+    resolved_path = _resolve_tail_events_path(events_path=events_path, store_path=store_path)
     path = _Path(resolved_path).expanduser()
+    # Round-2 fold: if the operator passed `--store-path` expecting
+    # tail to find events alongside the store, but neither
+    # `--events-path` / `$SCHEMABRAIN_EVENTS_PATH` were set AND no
+    # sibling `events.jsonl` exists, the resolver silently falls back
+    # to `~/.schemabrain/events.jsonl`. That fallback is rarely what
+    # the operator intended; surface a one-line note so they know
+    # which file we ended up reading. Suppressed when an explicit
+    # flag/env was used (the operator already picked the path).
+    if (
+        store_path is not None
+        and events_path is None
+        and _os.environ.get("SCHEMABRAIN_EVENTS_PATH") is None
+        and resolved_path == _DEFAULT_EVENTS_PATH
+    ):
+        print(
+            f"note: no `events.jsonl` found alongside {store_path}; "
+            f"tailing the default {_DEFAULT_EVENTS_PATH}. "
+            f"Pass --events-path PATH to override.",
+            file=_sys.stderr,
+        )
     try:
         since_dt = parse_since(since)
     except ValueError as exc:
@@ -5471,10 +5592,12 @@ def _format_path_for_terminal(path: Path, *, max_width: int = 60) -> str:
 
 
 # Stages whose handlers commonly take long enough to need a visible
-# "I'm working" cue. Stages 1, 4, 5 are fast enough that a spinner
-# would flash and clear before the eye registers it; stages 2 and 3
-# routinely take 5-30s on real schemas.
-_SPINNER_STAGES: frozenset[str] = frozenset({"index", "entities"})
+# "I'm working" cue. Stages 1, 5 are fast enough that a spinner
+# would flash and clear before the eye registers it; stages 2, 3, 4
+# routinely take 5-60s on real schemas. Smoke 2026-05-19 surfaced
+# stage 4 looking frozen for ~56s without the spinner — adding
+# `metrics` here restores symmetry with stage 3.
+_SPINNER_STAGES: frozenset[str] = frozenset({"index", "entities", "metrics"})
 
 
 @contextlib.contextmanager
@@ -5498,6 +5621,8 @@ def _wizard_stage_context(stage: object) -> Iterator[None]:
     guarantee, and a wizard crash with the header already on screen
     would be more confusing than no spinner.
     """
+    from schemabrain._ui import register_active_spinner
+
     name: str = getattr(stage, "name", "") or ""
     if name not in _SPINNER_STAGES:
         yield
@@ -5511,7 +5636,25 @@ def _wizard_stage_context(stage: object) -> Iterator[None]:
         yield
         return
     label = _stage_display_name(name)
-    with console.status(f"[cyan]{label}…[/]", spinner="dots"):
+    # `console.status(...)` returns a `Status` object that supports
+    # both the context-manager protocol (start on `__enter__`, stop on
+    # `__exit__`) and direct `.start()` / `.stop()` calls. The wizard's
+    # interactive prompt code pauses the spinner via the latter — see
+    # `_ui.pause_active_spinner` and `setup.wizard._prompt_llm_confirmation`.
+    # Smoke 2026-05-19 surfaced a UX bug where the spinner kept
+    # rendering during `input()` and read as "stage is already running";
+    # registering the active spinner here gives the prompt a handle to
+    # pause it during the wait.
+    #
+    # Cleanup ordering note: in `with A, B:`, Python exits B first,
+    # then A. Here that means `register_active_spinner.__exit__` runs
+    # FIRST (clears the registry), then `status.__exit__` runs (stops
+    # the spinner). The registry is cleared while the status is still
+    # live, which is what we want: it prevents another thread (or a
+    # re-entrant call) from `pause_active_spinner()`-ing a status
+    # that's about to be cleaned up.
+    status = console.status(f"[cyan]{label}…[/]", spinner="dots")
+    with status, register_active_spinner(status):
         yield
 
 

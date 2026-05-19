@@ -76,6 +76,21 @@ class Store(Protocol):
 
     def list_tables(self, *, source_connection_id: str | None = None) -> list[tuple[str, str]]: ...
 
+    def list_distinct_source_connection_ids(self) -> list[str]:
+        """Return every `source_connection_id` that has data in the
+        store, deduped and sorted ascending.
+
+        The union spans `tables`, `entities`, `metrics`, and
+        `canonical_joins` — any row in any of those tables counts as
+        "the store has data for this source". Used by `inspect`'s
+        summary view to detect orphan data from a previous schemabrain
+        version (smoke 2026-05-19 surfaced an operator with two
+        source-id partitions in the same store and no way to tell
+        from the rendered output). Returns an empty list for a fresh
+        store with no rows yet.
+        """
+        ...
+
     # ----- Fingerprints --------------------------------------------
 
     def get_table_fingerprints(

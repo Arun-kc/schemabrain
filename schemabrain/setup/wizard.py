@@ -402,27 +402,39 @@ def _prompt_llm_confirmation(*, stage_label: str, cost_cap_usd: float) -> bool:
     the maximum cost the cost-ceiling guard will accept. We do NOT
     show an estimated cost — token-count estimates are heuristic
     and can mislead; the cap is the load-bearing number.
+
+    The CLI's ``_wizard_stage_context`` registers the active Rich
+    spinner before the stage handler runs; ``pause_active_spinner``
+    stops it for the duration of the ``input()`` call. Smoke
+    2026-05-19 surfaced the bug this fixes — the spinner kept
+    rendering during the prompt and the user read it as "stage is
+    already running" rather than "waiting on Enter". When there's no
+    active spinner (non-spinner stages, test fixtures, ``--quiet``)
+    the helper is a no-op.
     """
     if not sys.stdin.isatty():
         return True
-    print(
-        f"  This stage calls Anthropic to suggest {stage_label} (cap: ${cost_cap_usd:.2f}).",
-        file=sys.stderr,
-    )
-    print(
-        "  Press Enter to continue, or Ctrl-C to skip this stage. ",
-        end="",
-        file=sys.stderr,
-        flush=True,
-    )
-    try:
-        input()
-    except (EOFError, KeyboardInterrupt):
-        # `^C` doesn't emit its own newline when caught here, so a
-        # follow-up renderer line would land mid-cursor. Print one
-        # explicitly so the stage-skipped line renders on a clean row.
-        print("", file=sys.stderr)
-        return False
+    from schemabrain._ui import pause_active_spinner
+
+    with pause_active_spinner():
+        print(
+            f"  This stage calls Anthropic to suggest {stage_label} (cap: ${cost_cap_usd:.2f}).",
+            file=sys.stderr,
+        )
+        print(
+            "  Press Enter to continue, or Ctrl-C to skip this stage. ",
+            end="",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            input()
+        except (EOFError, KeyboardInterrupt):
+            # `^C` doesn't emit its own newline when caught here, so a
+            # follow-up renderer line would land mid-cursor. Print one
+            # explicitly so the stage-skipped line renders on a clean row.
+            print("", file=sys.stderr)
+            return False
     return True
 
 

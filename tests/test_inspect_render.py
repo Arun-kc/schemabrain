@@ -109,6 +109,70 @@ class TestRenderSummary:
         # Plain "0 columns" must NOT appear in the cross-source case.
         assert "0 columns" not in out
 
+    def test_summary_with_multiple_source_ids_renders_warning_banner(self) -> None:
+        # Smoke 2026-05-19 Bug 4: when the store carries data from
+        # more than one source-id (typically: orphan rows from an
+        # older schemabrain version), the renderer surfaces a banner
+        # so the operator can diagnose the duplication. Without the
+        # banner, the deduped tree LOOKS identical to a single-source
+        # store of the same shape — silent data integrity hazard.
+        summary = StoreSummary(
+            table_count=7,
+            column_count=None,
+            entity_count=6,
+            metric_count=10,
+            join_count=5,
+            entity_names=("address", "category", "order", "order_item", "product", "user"),
+            metric_names=("total_revenue",),
+            join_names=("customer_orders",),
+            source_connection_ids=("src_new_abc", "src_old_xyz"),
+        )
+        out = _capture(render_summary, summary)
+        # Yellow warning glyph + count + remediation hint must surface.
+        assert "⚠" in out
+        assert "2 source connections" in out
+        assert "--source" in out
+        # The banner explicitly mentions the orphan-data recovery path
+        # so an operator hitting this for the first time isn't left
+        # guessing.
+        assert "rm" in out or "delete" in out.lower()
+
+    def test_summary_with_single_source_id_skips_banner(self) -> None:
+        # A scoped build (filter is a real source-id) sets a single
+        # source-id in the tuple → the banner must NOT render.
+        summary = StoreSummary(
+            table_count=2,
+            column_count=8,
+            entity_count=2,
+            metric_count=1,
+            join_count=1,
+            entity_names=("customer", "order"),
+            metric_names=("total_revenue",),
+            join_names=("customer_orders",),
+            source_connection_ids=("src_only_one",),
+        )
+        out = _capture(render_summary, summary)
+        # The banner's distinctive substring must be absent.
+        assert "source connections" not in out
+
+    def test_summary_with_empty_source_id_tuple_skips_banner(self) -> None:
+        # Empty store: source-id tuple is `()`. Banner must stay
+        # off — there's nothing to warn about. Defends the default
+        # field value (`()`) against accidental >1-length futures.
+        summary = StoreSummary(
+            table_count=0,
+            column_count=None,
+            entity_count=0,
+            metric_count=0,
+            join_count=0,
+            entity_names=(),
+            metric_names=(),
+            join_names=(),
+            source_connection_ids=(),
+        )
+        out = _capture(render_summary, summary)
+        assert "source connections" not in out
+
 
 class TestRenderEntityDetailEdgeCases:
     def test_empty_columns_renders_not_indexed_hint(self) -> None:

@@ -194,7 +194,7 @@ Up to 11 checks across host config, local store, and source connectivity (the fu
 
    > list the entities Schema Brain knows about
 
-If Claude calls `list_entities` and reports `customer`, `order`, etc., you're done. If it says "I don't have access to any tool called Schema Brain," see the next section.
+If Claude calls `list_entities` and reports `user`, `order`, etc., you're done. If it says "I don't have access to any tool called Schema Brain," see the next section.
 
 ### 6. See what got indexed
 
@@ -205,32 +205,41 @@ schemabrain inspect --store-path ./schemabrain.db
 ```
 
 ```
-Schema Brain inspect
-7 tables · 30 columns · 2 entities · 1 metric · 1 join
+◆ store · ./schemabrain.db
+7 tables · 30 columns · 6 entities · 10 metrics · 5 joins
 
-Entities:
-  customer
-  order
+Definitions
+├── Entities (6)
+│   ├── address
+│   ├── category
+│   ├── order
+│   ├── order_item
+│   ├── product
+│   └── user
+├── Metrics (10)
+│   ├── total_revenue
+│   ├── order_count
+│   └── … (8 more)
+└── Joins (5)
+    ├── orders_user_id
+    ├── order_items_order_id
+    └── … (3 more)
 
-Metrics:
-  total_revenue
-
-Joins:
-  customer_orders
+Drill into one: `schemabrain inspect <name>`
 ```
+
+> **Your entity names will vary.** Sonnet names entities from your schema — for the bundled fixture you'll typically see `user` (bound to `public.users`), not `customer`. Operate on the names `inspect` shows you, not the names in this sample.
 
 Drill into one entity for the full detail view — columns, PII tags, and the joins that reach it:
 
 ```bash
-schemabrain inspect customer --store-path ./schemabrain.db
+schemabrain inspect user --store-path ./schemabrain.db
 ```
 
 ```
-Entity: customer
+◆ public.users · entity:user · binding id
+
 Description:  A registered user who can place orders.
-Binding:      public.users
-Identity:     id
-Origin:       manual
 
 Columns:
   id          bigint       not null  pk identity  public
@@ -239,8 +248,8 @@ Columns:
   created_at  timestamptz  not null              public
 
 Related entities:
-  order  outgoing  one_to_many  via `customer_orders`
-      customer.id = order.customer_id
+  order  outgoing  one_to_many  via `orders_user_id`
+      user.id = order.user_id
 ```
 
 This is the operator's counterpart to the agent-facing MCP tools — anything `describe_entity` returns to Claude, `inspect` shows you locally. Use it whenever you want to verify what's curated before pointing an agent at it.

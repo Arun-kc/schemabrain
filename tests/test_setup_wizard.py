@@ -4583,6 +4583,39 @@ class TestPromptLlmConfirmation:
         captured = capsys.readouterr()
         assert "custom-stage" in captured.err
 
+    def test_pauses_registered_spinner_around_input(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Smoke 2026-05-19 surfaced the bug this fixes: Rich's status
+        # spinner kept refreshing during ``input()``, reading as
+        # "stage is already running". The helper must pause the
+        # registered spinner before blocking and restart it after.
+        from schemabrain._ui import register_active_spinner
+
+        events: list[str] = []
+
+        class _RecordingStatus:
+            def start(self) -> None:
+                events.append("start")
+
+            def stop(self) -> None:
+                events.append("stop")
+
+        def _input_records() -> str:
+            events.append("input")
+            return ""
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", _input_records)
+
+        status = _RecordingStatus()
+        with register_active_spinner(status):
+            wizard._prompt_llm_confirmation(stage_label="entities", cost_cap_usd=1.0)
+
+        # The order is load-bearing: stop must precede input so the
+        # spinner is silent while the user reads the prompt, and
+        # start must follow so the spinner resumes when the LLM call
+        # actually begins.
+        assert events == ["stop", "input", "start"]
+
 
 class TestWizardContextDbtManifestPath:
     """PR C: WizardContext.dbt_manifest_path defaults to None + is mutable."""
