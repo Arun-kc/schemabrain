@@ -1582,8 +1582,11 @@ class TestIndexDryRun:
         assert exit_code == 0
         captured = capsys.readouterr()
         # Dry-run summary format must mark the run as preview-only.
-        assert "Would index" in captured.err
-        assert "Estimated LLM" in captured.err
+        # Asserts on the grid renderer (v0.3.x+): the `Dry-run:` rule
+        # at the top, the `Est. cost:` row that only appears when LLM
+        # work is estimated, and the trailing safety affirmation.
+        assert "Dry-run:" in captured.err
+        assert "Est. cost:" in captured.err
         assert "No changes made to the store." in captured.err
 
     def test_dry_run_creates_no_store_file(
@@ -1652,7 +1655,11 @@ class TestIndexDryRun:
 
         import re
 
-        m = re.search(r"Would index (\d+) table\(s\): (\d+) changed", dry_err)
+        # New grid format (v0.3.x+): `Tables:       N (M changed, ...)`.
+        # The `IndexResult.summary()` prose was dropped from the
+        # rendered output per the UX visual-hierarchy fold; the same
+        # counts are now read from the grid's `Tables:` row.
+        m = re.search(r"Tables:\s+(\d+) \((\d+) changed", dry_err)
         assert m is not None, f"dry-run summary did not match expected pattern: {dry_err!r}"
         dry_seen, dry_changed = int(m.group(1)), int(m.group(2))
 
@@ -1694,11 +1701,102 @@ class TestIndexDryRun:
         )
         assert exit_code == 0
         err = capsys.readouterr().err
-        # `--no-enrich` means no LLM would fire, so the Estimated LLM
-        # line is absent (summary() suppresses the LLM clause when
-        # both descriptions_generated == 0 and llm_cost_usd == 0).
-        assert "Estimated LLM" not in err
+        # `--no-enrich` means no LLM would fire, so the `Est. cost:`
+        # row is absent (grid renderer suppresses it when
+        # descriptions_generated == 0).
+        assert "Est. cost:" not in err
+        assert "Dry-run:" in err
+
+    def test_dry_run_quiet_emits_legacy_pipe_format(
+        self,
+        seeded_pg_url: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`--dry-run --quiet` preserves the pre-v0.3.x pipe-delimited
+        machine output for CI scripts that grep the summary line.
+        Without this test the `quiet` branch in `_render_dry_run_report`
+        is uncovered — the non-quiet grid format is the only path the
+        other tests exercise.
+
+        Substring contract for the `--quiet` legacy format:
+          - leading `Would index N table(s):` from `IndexResult.summary()`
+          - trailing `| source=... store=... in Ns` machine suffix
+        Both must remain stable until a deliberate breaking-change PR
+        retires the legacy format.
+        """
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+                "--no-enrich",
+                "--quiet",
+            ]
+        )
+        assert exit_code == 0
+        err = capsys.readouterr().err
+        # Legacy format anchors — substring tests deliberately tight
+        # so a future refactor that drops the pipe-delimited contract
+        # surfaces here.
         assert "Would index" in err
+        assert "| source=" in err
+        assert "store=" in err
+        # The Rich-rendered grid markers MUST NOT appear under
+        # --quiet — that's the whole point of the legacy path.
+        assert "Dry-run:" not in err
+        assert "Tables:" not in err
+
+    def test_dry_run_quiet_with_since_emits_legacy_freshness_line(
+        self,
+        seeded_pg_url: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`--dry-run --quiet --since X` renders the legacy pipe-line
+        followed by a plain `Stale since X: N columns across M tables
+        (estimated refresh $Z)` line — same prose form as the Rich
+        path, but emitted via `print` rather than `console.print` so
+        CI grep parsers see a contiguous line.
+        """
+        store_path = tmp_path / "schemabrain.db"
+        # Index once so there's something to be stale against.
+        main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--no-enrich",
+                "--quiet",
+            ]
+        )
+        capsys.readouterr()  # discard the first run's output
+
+        # Use a future timestamp so EVERY indexed table is "stale"
+        # relative to it — guarantees the freshness audit fires.
+        future = "2099-01-01T00:00:00Z"
+        exit_code = main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+                "--no-enrich",
+                "--quiet",
+                "--since",
+                future,
+            ]
+        )
+        assert exit_code == 0
+        err = capsys.readouterr().err
+        assert "Would index" in err
+        assert "Stale since" in err
+        assert "estimated refresh $" in err
 
     def test_dry_run_since_renders_freshness_audit(
         self,
@@ -1941,7 +2039,15 @@ class TestIndexDryRun:
         )
         assert exit_code == 0
         err = capsys.readouterr().err
-        assert "Would index 0 table(s)" in err
+        # Grid renderer: the `Tables:` row shows the 0-table count
+        # explicitly so the warning that follows isn't surprising.
+        # Regex pins the count to the `Tables:` row specifically — a
+        # naked `" 0 " in err` substring would spuriously match `0
+        # changed`, `0 unchanged`, `0 removed`, `0.0s` elapsed, or any
+        # future zero anywhere in the grid.
+        import re
+
+        assert re.search(r"Tables:\s+0\s+\(", err), f"grid Tables: 0 row missing: {err!r}"
         assert "no user-visible tables" in err
         assert "dry-run produced an empty diff" in err
 

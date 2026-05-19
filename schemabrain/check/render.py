@@ -9,19 +9,30 @@ Output shape:
     Schema Brain check — prod_warehouse
     8 entities (8 healthy) · 12 metrics (11 healthy) · 5 joins (5 healthy)
 
+      ✓ 8 entities healthy
+      ⚠ 1 metric drifted
+      ✓ 5 joins healthy
+
       ✗ entity   customer
-            column_missing  public.customers.legacy_email
-            → update entity 'customer'`s `identity:` field and re-run ...
+            identity_column_missing  public.customers.legacy_email
+            → update entity `customer`'s `identity:` field and re-run ...
 
       ⚠ metric   total_revenue
             measure_column_missing  public.orders.total_cents
-            → update metric 'total_revenue'`s `measure.column` and ...
+            → update metric `total_revenue`'s `measure.column` and ...
 
     1 drift detected.
 
-Drift glyph is `✗` (red) — a drift is always a hard problem the
-operator has to act on. There is no warning shape; `check` is binary
-("nothing has drifted" vs "this list has").
+Severity discipline:
+
+  - Entity drift is a hard break — the agent cannot use the entity at
+    all when its table or identity column is missing. Renders red ✗.
+  - Metric and join drift degrade one definition without taking the
+    rest of the semantic layer offline. Renders yellow ⚠.
+
+This matches the v1 demo's tiered governance signal: ✗ blocks; ⚠
+needs attention but doesn't stop the agent from answering against
+the healthy definitions around it.
 """
 
 from __future__ import annotations
@@ -36,6 +47,18 @@ _DEF_KIND_LABEL: dict[str, str] = {
     "entity": "entity",
     "metric": "metric",
     "canonical_join": "join",
+}
+
+# Map drift severity to glyph + Rich style. Entity drift is a hard
+# break (the agent loses access to the whole entity); metric / join
+# drift degrades one definition without taking the rest of the
+# semantic layer offline. The renderer reads this table so a future
+# DriftKind addition routes to the right tier by extending the def_kind
+# mapping rather than copy-pasting glyph logic across the file.
+_DRIFT_GLYPH: dict[str, tuple[str, str]] = {
+    "entity": ("✗", "red"),
+    "metric": ("⚠", "yellow"),
+    "canonical_join": ("⚠", "yellow"),
 }
 
 
@@ -78,6 +101,15 @@ def render_report(
             console.print("[green]All definitions match the live source.[/]")
         return
 
+    # Per-type healthy / drifted summary lines so the operator sees at
+    # a glance which surface is broken before scanning the per-drift
+    # blocks. Entity-vs-metric-vs-join drift count is derived from the
+    # report's drift list rather than carried as a separate field —
+    # CheckReport.entities_healthy already reflects suppression
+    # (cascaded metrics aren't double-counted as broken).
+    _render_per_type_summary(report, console=console)
+    console.print()
+
     for drift in report.drifts:
         _render_drift(drift, console=console)
 
@@ -85,12 +117,79 @@ def render_report(
     console.print(f"[red]{drift_count} drift{'' if drift_count == 1 else 's'} detected.[/]")
 
 
+def _render_per_type_summary(report: CheckReport, *, console: Console) -> None:
+    """Emit one summary line per definition type.
+
+    Order mirrors the count line in the header (entities → metrics →
+    joins) so the operator's eye moves down the same axis. When a
+    type has zero definitions the line is suppressed — saying
+    "0 joins healthy" on a project that hasn't curated joins is
+    noise.
+
+    Glyph + style come from `_DRIFT_GLYPH` rather than being hard-
+    coded at each call site — keeping a single source of truth so a
+    future `DriftKind`/`DefKind` addition routes to the right tier
+    by extending the mapping rather than copy-pasting glyph logic.
+    """
+    for kind_singular, kind_plural, def_kind, total, healthy in (
+        ("entity", "entities", "entity", report.total_entities, report.entities_healthy),
+        ("metric", "metrics", "metric", report.total_metrics, report.metrics_healthy),
+        ("join", "joins", "canonical_join", report.total_joins, report.joins_healthy),
+    ):
+        _summary_line(
+            kind_singular=kind_singular,
+            kind_plural=kind_plural,
+            def_kind=def_kind,
+            total=total,
+            healthy=healthy,
+            console=console,
+        )
+
+
+def _summary_line(
+    *,
+    kind_singular: str,
+    kind_plural: str,
+    def_kind: str,
+    total: int,
+    healthy: int,
+    console: Console,
+) -> None:
+    """Emit one per-type healthy / drifted line.
+
+    Suppresses the line entirely when `total == 0` so a project that
+    hasn't curated this definition kind isn't told it has "0 joins
+    healthy" — that's noise on a fresh store.
+
+    Drift glyph + colour resolve from `_DRIFT_GLYPH` keyed on
+    `def_kind`. Healthy lines always render green ✓ regardless of
+    kind — success is a single tier, only drift has severity.
+    """
+    if total == 0:
+        return
+    drifted = total - healthy
+    if drifted == 0:
+        word = kind_singular if total == 1 else kind_plural
+        console.print(f"  [green]✓[/] {total} {word} healthy")
+    else:
+        glyph, style = _DRIFT_GLYPH.get(def_kind, ("✗", "red"))
+        word = kind_singular if drifted == 1 else kind_plural
+        console.print(
+            f"  [{style}]{glyph}[/] {drifted} {word} drifted [dim]({healthy} of {total} healthy)[/]"
+        )
+
+
 def _render_drift(drift: Drift, *, console: Console) -> None:
     """One drift block: glyph + def_kind + def_name on line 1, indented
     detail + fix hint below.
+
+    Glyph + colour come from `_DRIFT_GLYPH` so entity drift renders as
+    a hard red ✗ while metric / join drift renders as a yellow ⚠
+    (degraded but not blocking the rest of the semantic layer).
     """
     label = _DEF_KIND_LABEL.get(drift.def_kind, drift.def_kind)
-    console.print(f"  [red]✗[/] [bold]{label}[/]  {drift.def_name}")
+    glyph, style = _DRIFT_GLYPH.get(drift.def_kind, ("✗", "red"))
+    console.print(f"  [{style}]{glyph}[/] [bold]{label}[/]  {drift.def_name}")
     console.print(f"        [yellow]{drift.drift_kind}[/]  [dim]{drift.detail}[/]")
     console.print(f"        [dim]→[/] {drift.fix_hint}")
 

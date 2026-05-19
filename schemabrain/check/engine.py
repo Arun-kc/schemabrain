@@ -241,7 +241,7 @@ def check_drift(
                     drift_kind="identity_column_missing",
                     detail=f"{entity.qualified_table}.{entity.identity}",
                     fix_hint=(
-                        f"update entity {entity.name!r}'s `identity:` field "
+                        f"update entity `{entity.name}`'s `identity:` field "
                         f"and re-run `schemabrain entities apply`"
                     ),
                 )
@@ -282,7 +282,7 @@ def check_drift(
                     drift_kind="measure_column_missing",
                     detail=f"{anchor.qualified_table}.{metric.measure.column}",
                     fix_hint=(
-                        f"update metric {metric.name!r}'s `measure.column` "
+                        f"update metric `{metric.name}`'s `measure.column` "
                         f"and re-run `schemabrain metrics apply`"
                     ),
                 )
@@ -313,7 +313,7 @@ def check_drift(
                         drift_kind="time_dimension_column_missing",
                         detail=f"{anchor.qualified_table}.{td_col}",
                         fix_hint=(
-                            f"update metric {metric.name!r}'s "
+                            f"update metric `{metric.name}`'s "
                             f"`time_dimension` and re-run "
                             f"`schemabrain metrics apply`"
                         ),
@@ -366,7 +366,7 @@ def check_drift(
                         drift_kind="join_column_missing",
                         detail=f"{src_ent.qualified_table}.{pair.source_column}",
                         fix_hint=(
-                            f"update join {join.name!r}'s `on:` columns "
+                            f"update join `{join.name}`'s `on:` columns "
                             f"or restore the source column"
                         ),
                     )
@@ -381,7 +381,7 @@ def check_drift(
                         drift_kind="join_column_missing",
                         detail=f"{tgt_ent.qualified_table}.{pair.target_column}",
                         fix_hint=(
-                            f"update join {join.name!r}'s `on:` columns "
+                            f"update join `{join.name}`'s `on:` columns "
                             f"or restore the target column"
                         ),
                     )

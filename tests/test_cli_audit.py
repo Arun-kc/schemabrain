@@ -62,6 +62,69 @@ class TestAuditVerifyClean:
         exit_code = cli_main(["audit", "verify", "--store-path", str(store_path)])
         assert exit_code == 0
 
+    def test_multi_fingerprint_version_renders_informational_line(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A store that crossed a fingerprint-version bump renders
+        a yellow `i N fingerprint versions present` line instead
+        of the green `✓ fingerprint version consistent` claim. This
+        is not a chain-integrity failure — `walk_chain` still
+        returns zero mismatches because each row hashes correctly
+        against its own canonical bytes — but the audit-verify
+        renderer must surface the version diversity so the operator
+        knows the deployment has crossed a bump.
+
+        Seeds the store with rows from two distinct
+        FINGERPRINT_VERSION values by monkeypatching the writer's
+        binding between writes. Verifies exit code 0 (chain intact)
+        AND the informational line appears.
+        """
+        store_path = tmp_path / "store.db"
+        SQLiteStore(store_path).close()
+
+        # First half: default "fp-v1" rows from the real writer.
+        writer = AuditWriter(store_path)
+        try:
+            for _ in range(2):
+                draft = build_audit_row(
+                    tool_name="describe_table",
+                    source_connection_id="src1",
+                    response=_FakeResponse(),
+                )
+                writer.write(draft)
+        finally:
+            writer.close()
+
+        # Second half: simulate a deployment crossing a bump by
+        # repointing the writer's `FINGERPRINT_VERSION` binding
+        # before opening a new writer. Re-opens the same store so
+        # the chain continues from row 2; the new rows hash with
+        # the new version stamped into the canonical input.
+        monkeypatch.setattr("schemabrain.audit.writer.FINGERPRINT_VERSION", "fp-v2-test")
+        writer = AuditWriter(store_path)
+        try:
+            for _ in range(2):
+                draft = build_audit_row(
+                    tool_name="describe_table",
+                    source_connection_id="src1",
+                    response=_FakeResponse(),
+                )
+                writer.write(draft)
+        finally:
+            writer.close()
+
+        exit_code = cli_main(["audit", "verify", "--store-path", str(store_path)])
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        # Primary claim line still renders — chain is intact.
+        assert "intact" in out
+        # Informational line for the multi-version case — the
+        # `_render_audit_chain_intact` `else` branch.
+        assert "2 fingerprint versions present" in out
+
     def test_schema_drift_warns_but_still_verifies(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
