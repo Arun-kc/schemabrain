@@ -512,9 +512,13 @@ class TestMaxOutputTokensConfiguration:
         # benefits from a stderr breadcrumb. Once per process per var,
         # not once per factory call — the wizard calls the factory per
         # stage and we don't want to spam.
-        import schemabrain.enrichment.anthropic_client as mod
+        #
+        # The warned-empty set lives in `schemabrain._env` after the
+        # 2026-05-19 parser-promotion refactor; we reset via the
+        # public-for-tests seam to keep the cache scoped per-test.
+        from schemabrain._env import _reset_warned_empty_cache_for_tests
 
-        monkeypatch.setattr(mod, "_WARNED_EMPTY_ENV_VARS", set())
+        _reset_warned_empty_cache_for_tests()
         monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, "")
 
         anthropic_sonnet_46_client(api_key="sk-ant-fake")

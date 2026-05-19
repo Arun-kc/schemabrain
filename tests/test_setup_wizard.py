@@ -1893,7 +1893,10 @@ class TestResolveEntitiesCostCap:
         wizard._resolve_entities_cost_cap(None)
         captured = capsys.readouterr()
         assert "SCHEMABRAIN_MAX_LLM_COST_USD" in captured.err
-        assert "not a valid number" in captured.err
+        # The shared `_env` parser surfaces "is not a positive decimal
+        # number"; both pre- and post-refactor messages contain
+        # "positive" so the assertion stays stable across parser swaps.
+        assert "positive" in captured.err
 
     def test_zero_env_falls_back_to_default_with_warning(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -1902,7 +1905,10 @@ class TestResolveEntitiesCostCap:
         result = wizard._resolve_entities_cost_cap(None)
         assert result == wizard._WIZARD_ENTITIES_DEFAULT_COST_CAP_USD
         captured = capsys.readouterr()
-        assert "must be positive" in captured.err
+        # Post-refactor: regex accepts "0" syntactically, then the
+        # `parsed > 0` value-layer check rejects it with "must be a
+        # positive number".
+        assert "positive" in captured.err
 
     def test_negative_env_falls_back_to_default_with_warning(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -1911,7 +1917,10 @@ class TestResolveEntitiesCostCap:
         result = wizard._resolve_entities_cost_cap(None)
         assert result == wizard._WIZARD_ENTITIES_DEFAULT_COST_CAP_USD
         captured = capsys.readouterr()
-        assert "must be positive" in captured.err
+        # Post-refactor: regex rejects negatives at the syntactic
+        # layer (the `-` sign isn't allowed); message lists the
+        # disallowed forms explicitly.
+        assert "positive" in captured.err
 
 
 class TestPeekEntityCount:
@@ -3052,7 +3061,11 @@ class TestResolveMetricsCostCap:
         result = wizard._resolve_metrics_cost_cap(None)
         captured = capsys.readouterr()
         assert result == wizard._WIZARD_METRICS_DEFAULT_COST_CAP_USD
-        assert "not a valid number" in captured.err
+        # The shared `_env` parser rejects any non-decimal-number with
+        # "is not a positive decimal number"; the durable substring
+        # to assert is "positive" (present in both the regex-rejection
+        # and value-layer messages, stable across parser swaps).
+        assert "positive" in captured.err
 
     def test_non_positive_env_var_warns_and_uses_default(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -3061,7 +3074,7 @@ class TestResolveMetricsCostCap:
         result = wizard._resolve_metrics_cost_cap(None)
         captured = capsys.readouterr()
         assert result == wizard._WIZARD_METRICS_DEFAULT_COST_CAP_USD
-        assert "must be positive" in captured.err
+        assert "positive" in captured.err
 
 
 # ----- _peek_metric_count --------------------------------------------------

@@ -80,6 +80,7 @@ import yaml
 from sqlalchemy.exc import OperationalError
 
 from schemabrain import __version__
+from schemabrain._env import resolve_positive_float_env
 from schemabrain.connectors._url import safe_engine_url
 from schemabrain.connectors.base import DataSource
 from schemabrain.connectors.postgres import PostgresDataSource
@@ -2562,26 +2563,32 @@ def _cmd_entities_suggest(
         return 2
     source_id = _make_source_id(source_url)
 
-    # Resolve the cost ceiling: CLI flag > env var > default.
+    # Resolve the cost ceiling: CLI flag > env var > default. Delegates
+    # to the shared `_env` parser with `on_invalid="raise"` so a typo'd
+    # env var (e.g. "1_000" — Python's `float()` would silently coerce
+    # to 1000) gets caught at the boundary and translated into the
+    # standard CLI guided-error block (vs the wizard path, which uses
+    # `on_invalid="warn_and_default"` because an interactive run
+    # shouldn't abort on a leftover env var).
     if max_cost_usd is None:
-        env_value = os.environ.get(_SUGGEST_COST_ENV_VAR)
-        if env_value is not None:
-            try:
-                max_cost_usd = float(env_value)
-            except ValueError:
-                _render_guided(
-                    GuidedError(
-                        kind="suggest_cost_env_malformed",
-                        message=f"{_SUGGEST_COST_ENV_VAR}={env_value!r} is not a valid number",
-                        why="cost ceiling must be a positive float (USD)",
-                        fix=f"unset {_SUGGEST_COST_ENV_VAR} or set it to a number "
-                        f"(e.g. {_SUGGEST_COST_ENV_VAR}=0.50)",
-                        next_step="see `schemabrain entities suggest --help`",
-                    )
+        try:
+            max_cost_usd = resolve_positive_float_env(
+                _SUGGEST_COST_ENV_VAR,
+                _DEFAULT_SUGGEST_MAX_COST_USD,
+            )
+        except ValueError as exc:
+            _render_guided(
+                GuidedError(
+                    kind="suggest_cost_env_malformed",
+                    message=str(exc),
+                    why="cost ceiling must be a positive float (USD)",
+                    fix=f"unset {_SUGGEST_COST_ENV_VAR} or set it to a positive "
+                    f"number without underscores or scientific notation "
+                    f"(e.g. {_SUGGEST_COST_ENV_VAR}=0.50)",
+                    next_step="see `schemabrain entities suggest --help`",
                 )
-                return 2
-        else:
-            max_cost_usd = _DEFAULT_SUGGEST_MAX_COST_USD
+            )
+            return 2
 
     # Build the LLM client. Stub reads canned YAML from env (so the
     # multi-line response stays out of argv). Anthropic reads
@@ -3747,26 +3754,28 @@ def _cmd_metrics_suggest(
     source_id = _make_source_id(source_url)
 
     # Resolve the cost ceiling: CLI flag > env var > default. Same
-    # precedence as `entities suggest`.
+    # precedence as `entities suggest`; delegates to the shared `_env`
+    # parser with `on_invalid="raise"` and translates the ValueError
+    # into the standard guided-error block.
     if max_cost_usd is None:
-        env_value = os.environ.get(_SUGGEST_COST_ENV_VAR)
-        if env_value is not None:
-            try:
-                max_cost_usd = float(env_value)
-            except ValueError:
-                _render_guided(
-                    GuidedError(
-                        kind="suggest_cost_env_malformed",
-                        message=f"{_SUGGEST_COST_ENV_VAR}={env_value!r} is not a valid number",
-                        why="cost ceiling must be a positive float (USD)",
-                        fix=f"unset {_SUGGEST_COST_ENV_VAR} or set it to a number "
-                        f"(e.g. {_SUGGEST_COST_ENV_VAR}=0.50)",
-                        next_step="see `schemabrain metrics suggest --help`",
-                    )
+        try:
+            max_cost_usd = resolve_positive_float_env(
+                _SUGGEST_COST_ENV_VAR,
+                _DEFAULT_SUGGEST_MAX_COST_USD,
+            )
+        except ValueError as exc:
+            _render_guided(
+                GuidedError(
+                    kind="suggest_cost_env_malformed",
+                    message=str(exc),
+                    why="cost ceiling must be a positive float (USD)",
+                    fix=f"unset {_SUGGEST_COST_ENV_VAR} or set it to a positive "
+                    f"number without underscores or scientific notation "
+                    f"(e.g. {_SUGGEST_COST_ENV_VAR}=0.50)",
+                    next_step="see `schemabrain metrics suggest --help`",
                 )
-                return 2
-        else:
-            max_cost_usd = _DEFAULT_SUGGEST_MAX_COST_USD
+            )
+            return 2
 
     # Build the LLM client. Stub reads canned YAML from env (so the
     # multi-line response stays out of argv). Anthropic reads

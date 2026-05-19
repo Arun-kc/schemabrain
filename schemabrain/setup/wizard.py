@@ -60,6 +60,7 @@ from typing import TYPE_CHECKING, Literal, get_args
 
 from sqlalchemy.exc import OperationalError
 
+from schemabrain._env import resolve_positive_float_env
 from schemabrain.errors import GuidedError
 from schemabrain.setup.hosts import HostName, is_postgres_url
 from schemabrain.setup.init_flow import (
@@ -1206,34 +1207,20 @@ def _resolve_entities_cost_cap(flag_value: float | None) -> float:
     Priority: explicit `--entities-max-cost-usd` > env var > package
     default. The env var name matches what `entities suggest` reads
     so the user's chosen ceiling carries across both surfaces.
+
+    Uses `warn_and_default` on invalid env values — the wizard is an
+    interactive flow and shouldn't abort because of a leftover env
+    var; a stderr warning + fallback to the package default is the
+    right UX. Same posture applies to `_resolve_metrics_cost_cap`.
     """
     if flag_value is not None:
         return flag_value
-    env_value = os.environ.get("SCHEMABRAIN_MAX_LLM_COST_USD")
-    if env_value is not None:
-        try:
-            parsed = float(env_value)
-        except ValueError:
-            # Surface the misconfiguration on stderr — silent fallback
-            # to a higher default is a cost surprise to the operator
-            # who set the env var deliberately.
-            print(
-                f"warning: SCHEMABRAIN_MAX_LLM_COST_USD={env_value!r} "
-                f"is not a valid number; using default "
-                f"${_WIZARD_ENTITIES_DEFAULT_COST_CAP_USD:.2f} cap.",
-                file=sys.stderr,
-            )
-            return _WIZARD_ENTITIES_DEFAULT_COST_CAP_USD
-        if parsed <= 0:
-            print(
-                f"warning: SCHEMABRAIN_MAX_LLM_COST_USD={env_value!r} "
-                f"must be positive; using default "
-                f"${_WIZARD_ENTITIES_DEFAULT_COST_CAP_USD:.2f} cap.",
-                file=sys.stderr,
-            )
-            return _WIZARD_ENTITIES_DEFAULT_COST_CAP_USD
-        return parsed
-    return _WIZARD_ENTITIES_DEFAULT_COST_CAP_USD
+    return resolve_positive_float_env(
+        "SCHEMABRAIN_MAX_LLM_COST_USD",
+        _WIZARD_ENTITIES_DEFAULT_COST_CAP_USD,
+        on_invalid="warn_and_default",
+        default_display=f"${_WIZARD_ENTITIES_DEFAULT_COST_CAP_USD:.2f} cap",
+    )
 
 
 def _run_entity_suggestion(
@@ -1793,28 +1780,12 @@ def _resolve_metrics_cost_cap(flag_value: float | None) -> float:
     """
     if flag_value is not None:
         return flag_value
-    env_value = os.environ.get("SCHEMABRAIN_MAX_LLM_COST_USD")
-    if env_value is not None:
-        try:
-            parsed = float(env_value)
-        except ValueError:
-            print(
-                f"warning: SCHEMABRAIN_MAX_LLM_COST_USD={env_value!r} "
-                f"is not a valid number; using default "
-                f"${_WIZARD_METRICS_DEFAULT_COST_CAP_USD:.2f} cap.",
-                file=sys.stderr,
-            )
-            return _WIZARD_METRICS_DEFAULT_COST_CAP_USD
-        if parsed <= 0:
-            print(
-                f"warning: SCHEMABRAIN_MAX_LLM_COST_USD={env_value!r} "
-                f"must be positive; using default "
-                f"${_WIZARD_METRICS_DEFAULT_COST_CAP_USD:.2f} cap.",
-                file=sys.stderr,
-            )
-            return _WIZARD_METRICS_DEFAULT_COST_CAP_USD
-        return parsed
-    return _WIZARD_METRICS_DEFAULT_COST_CAP_USD
+    return resolve_positive_float_env(
+        "SCHEMABRAIN_MAX_LLM_COST_USD",
+        _WIZARD_METRICS_DEFAULT_COST_CAP_USD,
+        on_invalid="warn_and_default",
+        default_display=f"${_WIZARD_METRICS_DEFAULT_COST_CAP_USD:.2f} cap",
+    )
 
 
 def _run_metric_suggestion(
