@@ -336,6 +336,35 @@ def top_rule(
     return text
 
 
+# ---------------------------------------------------------------------------
+# Shared width helper — soft-cap console width at the design reference.
+# ---------------------------------------------------------------------------
+#
+# Every design surface (wizard hero, doctor checklist,
+# ``init --help`` grouped formatter, future renderers) needs the
+# same "use the detected terminal width but cap at the design's
+# 120-col reference" calculation. The defensive ``getattr``
+# fallback handles a Console stub without ``.width`` so a test
+# fixture that hands in a mock object doesn't crash the
+# renderer — Rich's real ``Console`` always has the attribute,
+# so production paths never trigger the fallback.
+
+_DEFAULT_DESIGN_WIDTH: Final[int] = 120
+
+
+def console_render_width(console: Console, *, cap: int = _DEFAULT_DESIGN_WIDTH) -> int:
+    """Return ``min(console.width, cap)`` with a defensive fallback.
+
+    The ``cap`` defaults to ``120`` (the design's reference
+    width). Callers wanting a tighter or wider soft-cap pass
+    ``cap=`` explicitly. The fallback to ``cap`` when
+    ``.width`` is missing keeps test stubs honest without
+    crashing the renderer.
+    """
+    detected = getattr(console, "width", cap)
+    return min(detected, cap)
+
+
 __all__ = [
     "GLYPH_ACTIVE",
     "GLYPH_ARROW",
@@ -348,6 +377,7 @@ __all__ = [
     "GLYPH_SEP",
     "GLYPH_SKIPPED",
     "GLYPH_WARN",
+    "console_render_width",
     "drift_glyph",
     "make_console",
     "pii_marker",

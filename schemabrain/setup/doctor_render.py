@@ -46,6 +46,7 @@ from schemabrain._ui import (
     GLYPH_ARROW,
     GLYPH_BRAND,
     GLYPH_SEP,
+    console_render_width,
     status_glyph,
     top_rule,
 )
@@ -84,7 +85,6 @@ _DOCTOR_STATUS_TO_TIER: Final[dict[str, str]] = {
 # fits without ellipsis truncation — the alignment hook value is
 # the column's fixed width, not the exact 18 from the design mock.
 _NAME_WIDTH: Final[int] = 25
-_TARGET_WIDTH: Final[int] = 120
 
 
 def render_doctor(
@@ -183,7 +183,7 @@ def _compose_progress_rule(*, total: int, elapsed_ms: int | None, console: Conso
     """
     label = f"{total} {'check' if total == 1 else 'checks'}"
     right = f"{elapsed_ms} ms" if elapsed_ms is not None else None
-    width = _grid_width(console)
+    width = console_render_width(console)
     return top_rule(label, right, width=width)
 
 
@@ -272,18 +272,6 @@ def _short_os_label() -> str:
     parts = release.split(".")
     short_release = ".".join(parts[:2]) if len(parts) >= 2 else release
     return f"{system} {short_release}" if short_release else system
-
-
-def _grid_width(console: Console) -> int:
-    """Soft-cap the renderer's grid at ``_TARGET_WIDTH`` (120 cols).
-
-    Reads ``console.width`` defensively — a Console implementation
-    without ``.width`` (test stubs) falls back to the design's
-    reference width. Wider terminals see the design's target shape;
-    narrow terminals (80) see a compact rule that fits.
-    """
-    detected = getattr(console, "width", _TARGET_WIDTH)
-    return min(detected, _TARGET_WIDTH)
 
 
 __all__ = [

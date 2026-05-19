@@ -8,6 +8,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **`schemabrain init --help` re-rendered onto the design's
+  grouped help surface** — fourth operator-visible win from the
+  design-system migration arc (PR #6; PRs #71/#72/#73 + #4 + #5
+  prior). Replaces argparse's plain-text 84-line dump with the
+  design's structured shape (handoff bundle
+  `cli/operator.jsx:InitHelp`):
+
+  - A cyan brand line `◆ schemabrain init — N-stage activation wizard`
+    where `N` is derived from `setup.wizard.DEFAULT_STAGES`.
+  - A three-line preamble (`usage` / `stages` / `runtime`). The
+    stage chain reads live from `DEFAULT_STAGES` so a wizard
+    reshape auto-propagates into the help screen.
+  - Five argument-group blocks (`SOURCE` / `STAGES` / `HOST` /
+    `COST` / `BEHAVIOR`), each with a dim label + one-line
+    purpose and a dashed rule separating it from the flag
+    table. Flag rows render via `Table.grid` so long help
+    text soft-wraps under the help column with the right
+    indent.
+  - An `examples` block listing three representative
+    invocations.
+  - A `→ see also: schemabrain --help · schemabrain doctor`
+    breadcrumb at the bottom.
+
+  Implementation reorganises the 14 `init` flags into
+  `argparse.add_argument_group` calls keyed on the design's
+  grouping; argparse's `Namespace` shape is unchanged
+  (argument groups are display-only). A new
+  `_GroupedInitHelpAction` (subclass of `argparse.Action` with
+  `**kwargs` forwarding for stdlib forward-compat) replaces
+  argparse's default `-h/--help` action and routes both flags
+  through the design renderer. Flag-help strings tightened per
+  UX feedback so each fits a single terminal line at the
+  design's 88-col flag-description budget.
+
+  New module `schemabrain/init_help_render.py` (107 LOC, 100%
+  line + branch coverage) hosts the renderer. A new shared
+  `_ui.console_render_width` helper consolidates the
+  detected-width-with-soft-cap logic both this module and
+  `setup/doctor_render.py` use (`_grid_width` removed from
+  doctor_render in favour of the shared helper). The renderer
+  emits a `UserWarning` at render time when `cli.py` registers
+  a titled argument group without a `description=` kwarg, so a
+  contract violation that would silently hide flags from the
+  help surface surfaces in development.
+
+  Tests in `tests/test_init_help_render.py` (47 tests) pin
+  every flag's group membership, the brand-line/preamble/group
+  block layout contract, the help-action wire-up (`-h` and
+  `--help` both invoke the new renderer), and the dropped-
+  group warning. The `parametrize` on
+  `test_flag_lives_in_expected_group` ensures any future flag
+  group churn fails loudly rather than appearing on the help
+  screen wrong.
+
 - **Two error surfaces re-rendered onto the design's panel
   vocabulary** — third operator-visible win from the design-
   system migration arc (PR #5; PRs #71/#72/#73 + #4 prior). The
