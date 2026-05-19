@@ -27,13 +27,15 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, Annotated
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError as FastMCPToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from schemabrain.audit.writer import AuditWriter
+from schemabrain.audit.writer import AuditWriter, build_audit_row
 from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
 from schemabrain.mcp._helpers import _MAX_IDENT_LEN
@@ -75,10 +77,12 @@ from schemabrain.mcp.shapes import (
 )
 from schemabrain.mcp.suggest_joins import suggest_joins_impl
 from schemabrain.observability import (
+    Event,
     EventBus,
     EventRedactor,
     NullEventBus,
     instrument,
+    now_iso_utc,
 )
 from schemabrain.pii import PIICategory
 from schemabrain.semantic.compiler import (
@@ -164,6 +168,74 @@ def _safe_table_part(qualified_name: str) -> str | None:
     return None
 
 
+def _build_rejection_response(err_msg: str) -> ToolResponse[None]:
+    """Construct a synthetic `ToolResponse` for an extra-kwargs
+    rejection. Status `error` + `kind: invalid_argument` lets the
+    audit-row builder and event extractor treat the rejection
+    identically to any other in-band tool error.
+    """
+    return ToolResponse[None](
+        status="error",
+        data=None,
+        error=ToolError(
+            kind="invalid_argument",
+            message=err_msg,
+            recovery=Recovery(),
+        ),
+    )
+
+
+class _StrictArgsFastMCP(FastMCP):
+    """FastMCP subclass that rejects unknown kwargs at the dispatch
+    seam, and forwards each rejection to a caller-supplied hook so it
+    can land in the audit table + event bus alongside successful calls.
+
+    Why: FastMCP's auto-generated Pydantic arg models default to
+    `extra="ignore"`, so a typo'd kwarg (e.g. `grain` for `time_grain`
+    on `get_metric`) silently passes through and the tool runs with
+    the typo dropped — producing a structurally valid response that
+    answers the wrong question. The Charter's "loud, not silent"
+    principle requires rejecting these.
+
+    The override runs BEFORE FastMCP's own validation so the rejection
+    event carries the exact arg dict the agent sent, not what survived
+    validation. Raises `FastMCPToolError` after the hook fires; FastMCP
+    surfaces this to the client as `isError: true` with the message
+    naming the offending keys, so the agent sees a real "fix your
+    args" signal instead of getting a silently-wrong answer.
+
+    The `on_rejected` hook is wired in `build_server` to call the
+    same audit-writer and event-bus shared by `instrument()`.
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        on_rejected: Callable[[str, dict[str, Any], str], None] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._on_rejected = on_rejected
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> Any:
+        tool = self._tool_manager.get_tool(name)
+        # If the tool isn't registered we let the parent raise its
+        # standard "Unknown tool" — no extra-kwarg check applies.
+        if tool is not None and isinstance(arguments, dict):
+            declared = set(tool.fn_metadata.arg_model.model_fields.keys())
+            extras = sorted(set(arguments.keys()) - declared)
+            if extras:
+                err_msg = f"unknown arguments for {name}: {extras}. declared: {sorted(declared)}"
+                if self._on_rejected is not None:
+                    self._on_rejected(name, arguments, err_msg)
+                raise FastMCPToolError(err_msg)
+        return await super().call_tool(name, arguments)
+
+
 def build_server(
     *,
     store: Store,
@@ -212,10 +284,66 @@ def build_server(
     in `_cmd_serve`; defaults to None so test contexts and the
     `schemabrain[otel]`-not-installed case pay zero overhead.
     """
-    app = FastMCP(_SERVER_NAME, instructions=_SERVER_INSTRUCTIONS)
     _bus = event_bus if event_bus is not None else NullEventBus()
     _session_id = server_session_id or str(uuid.uuid4())
     _redactor = EventRedactor()
+
+    def _on_rejected_call(name: str, arguments: dict[str, Any], err_msg: str) -> None:
+        """Record an unknown-kwargs rejection in BOTH the audit table
+        and the event bus, mirroring the shape `instrument()` writes
+        for successful calls. Without this, the `audit list` view and
+        events.jsonl would silently omit rejected calls — exactly the
+        visibility gap S4 calls out.
+
+        Failures here NEVER propagate: a broken audit/bus must not
+        amplify the original validation error. Errors are logged once
+        per (sink, tool) per process so a repeated misconfiguration
+        doesn't flood logs.
+        """
+        synthetic = _build_rejection_response(err_msg)
+        if audit_writer is not None:
+            try:
+                draft = build_audit_row(
+                    tool_name=name,
+                    source_connection_id=source_connection_id,
+                    response=synthetic,
+                )
+                audit_writer.write(draft)
+            except Exception as exc:
+                _logger.warning(
+                    "audit write for rejected call to %s failed: %s: %s",
+                    name,
+                    type(exc).__name__,
+                    exc,
+                )
+        try:
+            args_summary = _redactor.redact(arguments)
+            _bus.emit(
+                Event(
+                    timestamp=now_iso_utc(),
+                    server_session_id=_session_id,
+                    kind="tool_call",
+                    tool_name=name,
+                    args_summary=args_summary,
+                    status="error",
+                    error_kind="invalid_argument",
+                    duration_ms=0.0,
+                    result_summary={"rejected_keys": sorted(set(arguments.keys()))},
+                )
+            )
+        except Exception as exc:
+            _logger.warning(
+                "bus emit for rejected call to %s failed: %s: %s",
+                name,
+                type(exc).__name__,
+                exc,
+            )
+
+    app = _StrictArgsFastMCP(
+        _SERVER_NAME,
+        instructions=_SERVER_INSTRUCTIONS,
+        on_rejected=_on_rejected_call,
+    )
 
     def _trace(name: str):
         return instrument(
@@ -279,12 +407,22 @@ def build_server(
         if not hits:
             # Tool ran cleanly; no matches in the indexed store. Per
             # Charter Principle 1, this is `empty`, not `success` with
-            # an empty list.
+            # an empty list. Hand back `describe_table` as the agent's
+            # fallback — it's the only related tool that doesn't
+            # depend on semantic embeddings. If the agent knows a name
+            # (from `list_entities` or earlier context) it can drill
+            # directly; if not, surfacing a non-null hint still beats
+            # a silent dead-end and signals that more discovery is
+            # possible. The most common cause of empty here is that
+            # `index` was run without `--enrich`, so there are no
+            # embedded descriptions to search — but distinguishing
+            # that case requires a second store probe that isn't worth
+            # the extra round-trip for this minor UX gain.
             return ToolResponse[list[TableHit]](
                 status="empty",
                 data=[],
                 confidence=None,
-                follow_up_hints=None,
+                follow_up_hints=("describe_table",),
             )
         top_score = hits[0].score
         return ToolResponse[list[TableHit]](

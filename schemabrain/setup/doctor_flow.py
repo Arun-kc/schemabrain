@@ -281,8 +281,14 @@ def check_host_config_store_path_matches(path: Path, *, expected: Path) -> Check
         return Check(
             name="host_config_store_path",
             outcome="warn",
-            message=f"snippet store-path ({snippet_store}) differs from {expected_str}",
-            suggested_next="re-run `schemabrain init --store-path` to align, or update --store-path in this command",
+            message=(
+                f"snippet store-path ({snippet_store}) differs from {expected_str} "
+                "— your MCP host reads from the snippet's store, NOT this workspace's store"
+            ),
+            suggested_next=(
+                "re-run `schemabrain init --store-path` from the workspace whose store the "
+                "host should read, or update --store-path in the host config to match"
+            ),
         )
     return Check(
         name="host_config_store_path",

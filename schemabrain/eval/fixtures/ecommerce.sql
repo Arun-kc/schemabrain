@@ -94,3 +94,33 @@ INSERT INTO public.addresses (id, line1, city, country) VALUES
     (1, '101 First Street', 'Brooklyn', 'US'),
     (2, '42 Second Avenue', 'Brooklyn', 'US')
 ON CONFLICT DO NOTHING;
+
+-- Junction rows so the M:N path between products and categories isn't
+-- silently empty. SKU-001 (Running Shoes) → Shoes (cat 2);
+-- SKU-002 (Wireless Headphones) → Electronics (cat 3).
+INSERT INTO public.product_categories (product_id, category_id) VALUES
+    (1, 2),
+    (2, 3)
+ON CONFLICT DO NOTHING;
+
+-- Transactional rows so the marquee metrics (`total_revenue`,
+-- `order_count`, `distinct_ordering_customers`, `average_order_value`,
+-- `total_units_sold`) return non-null numbers a user can sanity-check
+-- against `examples/ecommerce/`'s walkthrough Step 6. Three orders,
+-- four line items, all three users represented. Sums:
+--   order 1: 2 × 8999 + 1 × 14999 = 32997
+--   order 2: 1 × 8999                = 8999
+--   order 3: 3 × 14999               = 44997
+-- total_revenue across all orders = 86993 cents = $869.93
+INSERT INTO public.orders (id, user_id, billing_address_id, shipping_address_id, status, total_cents, placed_at) VALUES
+    (1, 1, 1, 1, 'fulfilled', 32997, '2026-04-15 10:30:00+00'),
+    (2, 2, 2, 2, 'fulfilled', 8999,  '2026-04-22 14:05:00+00'),
+    (3, 3, 1, 1, 'pending',   44997, '2026-05-03 09:12:00+00')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO public.order_items (id, order_id, product_id, quantity, unit_price_cents) VALUES
+    (1, 1, 1, 2, 8999),
+    (2, 1, 2, 1, 14999),
+    (3, 2, 1, 1, 8999),
+    (4, 3, 2, 3, 14999)
+ON CONFLICT DO NOTHING;
