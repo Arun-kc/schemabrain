@@ -120,12 +120,14 @@ def drift_glyph(def_kind: str) -> tuple[str, str]:
 #
 # Six tiers — three severity + three lifecycle — the wizard's per-
 # stage outcomes, ``doctor``'s per-check outcomes, and ``tail``'s
-# per-event severity all map onto this vocabulary. Renderers that
-# previously kept local glyph dicts (``setup/doctor_flow._GLYPHS``,
-# ``cli._STAGE_GLYPHS``) collapse onto ``status_glyph`` once their
-# surface is migrated — bundling the migration with the visible
-# glyph flip (e.g. wizard's ``↷`` → ``⊘`` for skipped) is the
-# follow-up PR's job, not this primitive's.
+# per-event severity all map onto this vocabulary. The wizard
+# already migrated onto this helper in PR #3 (collapsing the local
+# ``cli._STAGE_GLYPHS`` dict and flipping the previous skipped
+# glyph ``↷`` to the design-spec ``⊘``). Renderers still keeping
+# local glyph dicts (``setup/doctor_flow._GLYPHS``) collapse onto
+# ``status_glyph`` when their surface is migrated — the visible
+# glyph flip lands with the surface re-render, not in this
+# primitive's commit.
 #
 # **Migration footgun — read this before threading a legacy dict
 # through ``status_glyph``.** The local dicts use different tier
@@ -319,16 +321,15 @@ def top_rule(
     stays visible but no longer fills the width. Operators on
     narrow terminals see a short rule rather than a wrapped one.
     """
-    pre_label_gap = " " * _TOP_RULE_GAP
-    post_label_gap = " " * _TOP_RULE_GAP
-    right_with_gap = ("  " + right) if right else ""
+    gap = " " * _TOP_RULE_GAP
+    right_with_gap = (gap + right) if right else ""
 
-    label_segment_len = len(pre_label_gap) + len(label) + len(post_label_gap)
+    label_segment_len = _TOP_RULE_GAP + len(label) + _TOP_RULE_GAP
     right_segment_len = len(right_with_gap)
     dash_count = max(_TOP_RULE_MIN_DASHES, width - label_segment_len - right_segment_len)
 
     text = Text(style=style)
-    text.append(pre_label_gap + label + post_label_gap)
+    text.append(gap + label + gap)
     text.append(GLYPH_RULE * dash_count)
     if right:
         text.append(right_with_gap)

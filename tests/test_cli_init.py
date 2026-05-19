@@ -685,8 +685,9 @@ class TestInitCliSkipIndexRender:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         # Empty store + --skip-index → wizard skips stage 2 with a
-        # `↷ --skip-index set; not running indexer` outcome whose
-        # `next_step` points at `schemabrain index`.
+        # `⊘ --skip-index set; not running indexer` outcome whose
+        # `next_step` points at `schemabrain index`. (Skipped glyph
+        # flipped from `↷` to `⊘` in PR #3 per the design spec.)
         store_path = tmp_path / "store.db"
         SQLiteStore(path=store_path).close()
         claude_dir = tmp_path / "Claude"
@@ -1070,13 +1071,15 @@ class TestWizardRenderer:
         )
         _render_wizard_result(result)
         captured = capsys.readouterr()
-        # No line in either the per-stage Panel OR the abort Panel
-        # may exceed the soft cap (with a few cells of padding slack).
-        # _STAGE_PANEL_MAX_WIDTH = 100; any line wider than ~104
-        # cells means the cap was ignored.
+        # No line in the stage Table.grid OR the abort Panel may
+        # exceed the soft cap (with a few cells of padding slack).
+        # `_STAGE_PANEL_MAX_WIDTH = 100` is now passed as the
+        # `width=` argument to the stage `Table.grid` and the
+        # `_wizard_panel_width` of the abort Panel. Any line wider
+        # than ~104 cells means the cap was ignored.
         max_line = max(len(ln) for ln in captured.err.splitlines() if ln)
         assert max_line <= 104, (
-            f"Expected all panel lines ≤ 104 cells (soft cap = 100); longest line was {max_line}"
+            f"Expected all rendered lines ≤ 104 cells (soft cap = 100); longest line was {max_line}"
         )
         # And the long message must still appear in full — wrapping
         # within the panel is fine, truncation is not. Asserting on
@@ -1595,6 +1598,136 @@ class TestWizardRenderer:
             "skipped": "skipped",
             "failed": "err",
         }
+        # Defensive fallback: an unknown status — a future addition
+        # to `StageOutcome.status` that forgot to update the map —
+        # routes through `_WIZARD_STATUS_TO_TIER.get(s, "err")` so
+        # the renderer surfaces the routing gap visibly (✗ red) via
+        # `status_glyph("err")` rather than silently rendering as
+        # the raw status string.
+        assert _WIZARD_STATUS_TO_TIER.get("unknown_future_status", "err") == "err"
+
+    def test_progress_rule_shows_elapsed_on_clean_run(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Clean run (no aborts, no skips) → rule's right metadata is
+        # the elapsed time only. Pins the simplest branch of
+        # `_compose_progress_rule` so the format stays stable.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import StageOutcome, WizardResult
+
+        result = WizardResult(
+            outcomes=(
+                StageOutcome(
+                    stage=1, name="source_check", status="done", message="ok", duration_s=1.2
+                ),
+            ),
+            aborted=False,
+        )
+        _render_wizard_result(result)
+        captured = capsys.readouterr()
+        assert "7 stages" in captured.err
+        assert "1.2s" in captured.err
+        # Clean-run rule must NOT carry advisory or stopped metadata.
+        assert "advisory" not in captured.err
+        assert "stopped at stage" not in captured.err
+
+    def test_progress_rule_singular_advisory_when_one_stage_skipped(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # `advisory_count == 1` fork → "1 advisory" (singular, no count
+        # prefix). Branch coverage for the singular/plural split in
+        # `_compose_progress_rule`.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import StageOutcome, WizardResult
+
+        result = WizardResult(
+            outcomes=(
+                StageOutcome(
+                    stage=1, name="source_check", status="done", message="ok", duration_s=0.5
+                ),
+                StageOutcome(
+                    stage=2, name="index", status="skipped", message="--skip-index", duration_s=0.0
+                ),
+            ),
+            aborted=False,
+        )
+        _render_wizard_result(result)
+        captured = capsys.readouterr()
+        assert "1 advisory" in captured.err
+        # Plural form must not leak into the singular case.
+        assert "2 advisory" not in captured.err
+
+    def test_progress_rule_plural_advisory_when_multiple_stages_skipped(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # `advisory_count > 1` fork → "{N} advisory". Pins the plural
+        # branch so a future i18n / pluralisation refactor doesn't
+        # silently drop the count prefix.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import StageOutcome, WizardResult
+
+        result = WizardResult(
+            outcomes=(
+                StageOutcome(
+                    stage=1, name="source_check", status="done", message="ok", duration_s=0.5
+                ),
+                StageOutcome(
+                    stage=2, name="index", status="skipped", message="--skip-index", duration_s=0.0
+                ),
+                StageOutcome(
+                    stage=3,
+                    name="entities",
+                    status="skipped",
+                    message="--no-entities",
+                    duration_s=0.0,
+                ),
+                StageOutcome(
+                    stage=4,
+                    name="metrics",
+                    status="skipped",
+                    message="--no-metrics",
+                    duration_s=0.0,
+                ),
+            ),
+            aborted=False,
+        )
+        _render_wizard_result(result)
+        captured = capsys.readouterr()
+        assert "3 advisory" in captured.err
+        # Singular form must not leak into the plural case.
+        assert "1 advisory" not in captured.err
+
+    def test_progress_rule_shows_stopped_at_stage_on_abort(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Aborted run → rule's right metadata names the failing
+        # stage ordinal. Pins the abort branch separately from
+        # `test_aborted_run_renders_failure_panel`, which asserts on
+        # the bordered abort panel, not on the progress rule.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import StageOutcome, WizardResult
+
+        result = WizardResult(
+            outcomes=(
+                StageOutcome(
+                    stage=1, name="source_check", status="done", message="ok", duration_s=0.4
+                ),
+                StageOutcome(
+                    stage=2,
+                    name="index",
+                    status="failed",
+                    message="source unreachable",
+                    next_step="verify the URL and retry",
+                    duration_s=0.8,
+                ),
+            ),
+            aborted=True,
+        )
+        _render_wizard_result(result)
+        captured = capsys.readouterr()
+        assert "stopped at stage 2" in captured.err
+        # Advisory metadata must not appear on an aborted run.
+        assert "advisory" not in captured.err
 
     def test_stage_display_name_unknown_returns_input(self) -> None:
         from schemabrain.cli import _stage_display_name

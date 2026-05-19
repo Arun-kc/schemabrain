@@ -73,6 +73,7 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Final
 from urllib.parse import urlparse
 
 import sqlalchemy
@@ -81,7 +82,6 @@ from sqlalchemy.exc import OperationalError
 
 from schemabrain import __version__
 from schemabrain._env import resolve_positive_float_env, resolve_positive_int_env
-from schemabrain._ui import GLYPH_BRAND, status_glyph, top_rule
 from schemabrain.connectors._url import safe_engine_url
 from schemabrain.connectors.base import DataSource
 from schemabrain.connectors.postgres import PostgresDataSource
@@ -160,6 +160,16 @@ from schemabrain.metrics.yaml_grammar import (
 )
 from schemabrain.mining.pipeline import mine_queries
 from schemabrain.profiler.postgres import PostgresProfiler
+
+if TYPE_CHECKING:
+    # Forward-only imports for type annotations on private helpers
+    # whose runtime bodies still use lazy imports — keeps Rich and
+    # the wizard module out of `cli.py`'s import graph for
+    # subcommands that never enter the wizard renderer.
+    from rich.text import Text
+
+    from schemabrain.setup.wizard import WizardResult
+
 
 _DEFAULT_STORE_PATH = "./schemabrain.db"
 _DEFAULT_EVENTS_PATH = "~/.schemabrain/events.jsonl"
@@ -5129,7 +5139,7 @@ def _redact_env_args(cmd: tuple[str, ...]) -> list[str]:
 # An unknown ``status`` (defensive — wizard outcomes are always one of
 # the three known values) routes through ``status_glyph(\"err\")`` →
 # ``(✗, red)`` to surface the routing gap visibly rather than silently.
-_WIZARD_STATUS_TO_TIER: dict[str, str] = {
+_WIZARD_STATUS_TO_TIER: Final[dict[str, str]] = {
     "done": "ok",
     "skipped": "skipped",
     "failed": "err",
@@ -5310,6 +5320,11 @@ def _render_wizard_header(*, host_display: str | None, console: object) -> None:
     Panel chrome competes with the stage-list rule below and the
     operator's eye should land on the stages, not the framing.
     """
+    # Lazy-import `_ui` here (rather than at module top) to keep
+    # `cli.py` import-time light for subcommands that never enter
+    # the wizard renderer (audit, mcp serve, fixture-path).
+    from schemabrain._ui import GLYPH_BRAND
+
     activating = (
         f"— activating for [bold]{host_display}[/]. ~30s."
         if host_display
@@ -5363,11 +5378,16 @@ def _render_wizard_result(result: object, *, host_display: str | None = None) ->
     _render_wizard_after(result, host_display=host_display, console=console)
 
 
-def _compose_progress_rule(result: object, *, total: int, console: object) -> object:
+def _compose_progress_rule(
+    result: WizardResult,
+    *,
+    total: int,
+    console: object,
+) -> Text:
     """Build the design's progress rule shown above the stage list.
 
-    Returns a renderable ``Text`` instance (from ``_ui.top_rule``)
-    summarising the wizard's run shape:
+    Returns a ``rich.text.Text`` (via ``_ui.top_rule``) summarising
+    the wizard's run shape:
 
       ─── 7 stages ───────────────────── 21.0s · 1 advisory failure ───
 
@@ -5385,11 +5405,13 @@ def _compose_progress_rule(result: object, *, total: int, console: object) -> ob
     * Clean run → ``{elapsed}s``
     * Run with N skipped stages → ``{elapsed}s · {N} advisory``
     * Aborted run → ``{elapsed}s · stopped at stage {N}``
-    """
-    from schemabrain.setup.wizard import WizardResult
 
-    if not isinstance(result, WizardResult):  # pragma: no cover — defensive
-        return top_rule(f"{total} stages")
+    Caller (``_render_wizard_after``) already narrows the input to
+    ``WizardResult``; this helper trusts that contract rather than
+    re-checking with a dead defensive guard.
+    """
+    # Lazy-import — see `_render_wizard_header` for the rationale.
+    from schemabrain._ui import top_rule
 
     elapsed = sum(o.duration_s for o in result.outcomes)
     pieces: list[str] = [f"{_format_duration(elapsed)}"]
@@ -5409,7 +5431,7 @@ def _compose_progress_rule(result: object, *, total: int, console: object) -> ob
     right = " · ".join(pieces)
 
     width = getattr(console, "width", 120)
-    return top_rule(f"{total} stages", right, width=min(width, 100))
+    return top_rule(f"{total} stages", right, width=min(width, _STAGE_PANEL_MAX_WIDTH))
 
 
 def _render_wizard_after(result: object, *, host_display: str | None, console: object) -> None:
@@ -5443,8 +5465,10 @@ def _render_wizard_after(result: object, *, host_display: str | None, console: o
     snippet to stdout (machine-readable) and a Table around mixed
     stderr/stdout output would break the JSON consumer's parse.
     """
+    # Lazy-import — see `_render_wizard_header` for the rationale.
     from rich.table import Table
 
+    from schemabrain._ui import status_glyph
     from schemabrain.setup.wizard import WizardResult
 
     if not isinstance(result, WizardResult):
@@ -5457,29 +5481,39 @@ def _render_wizard_after(result: object, *, host_display: str | None, console: o
     console.print(_compose_progress_rule(result, total=total, console=console))  # type: ignore[attr-defined]
     console.print()  # type: ignore[attr-defined]
 
+    # Invariant cell styles (ordinal, name, duration) live on the
+    # column rather than embedded in each cell's Rich markup — that
+    # keeps data and presentation separate and means a future
+    # palette change flips one place. The glyph and message
+    # columns vary per-row so their styles stay inline.
+    #
+    # `table.width` is set post-construction to the
+    # `_wizard_panel_width(console)` soft cap (100 cols min). The
+    # previous per-stage Panel rendering enforced this; without it,
+    # very wide terminals fold long messages much later than
+    # before, breaking the visual column the abort panel and
+    # closing block still use. `Table.grid()` doesn't accept
+    # `width` directly so the assignment lives one line below.
     table = Table.grid(padding=(0, 2), expand=False)
-    table.add_column(width=2, no_wrap=True)  # ordinal "01"
-    table.add_column(width=1, no_wrap=True)  # glyph
-    table.add_column(min_width=13, no_wrap=True)  # display name
+    table.width = _wizard_panel_width(console)
+    table.add_column(no_wrap=True, style="bright_black")  # ordinal "01"
+    table.add_column(no_wrap=True)  # glyph (per-cell style — varies by status)
+    table.add_column(no_wrap=True, style="bold")  # display name
     table.add_column(no_wrap=False, overflow="fold")  # message + optional next-step
-    table.add_column(justify="right", no_wrap=True)  # duration
+    table.add_column(justify="right", no_wrap=True, style="bright_black")  # duration
 
     pending_wire_host_detail = None
     for outcome in result.outcomes:
         tier = _WIZARD_STATUS_TO_TIER.get(outcome.status, "err")
         glyph, style = status_glyph(tier)
-        ordinal = f"[bright_black]{outcome.stage:02d}[/]"
+        ordinal = f"{outcome.stage:02d}"
         glyph_cell = f"[{style}]{glyph}[/]"
-        name_cell = f"[bold]{_stage_display_name(outcome.name)}[/]"
+        name_cell = _stage_display_name(outcome.name)
         msg_cell = outcome.message
         # Sub-50ms durations represent peek-and-bypass stages where
         # the orchestrator measured `perf_counter` but no real work
         # happened — rendering "0.0s" next to them would mislead.
-        duration_cell = (
-            f"[bright_black]{_format_duration(outcome.duration_s)}[/]"
-            if outcome.duration_s >= 0.05
-            else ""
-        )
+        duration_cell = _format_duration(outcome.duration_s) if outcome.duration_s >= 0.05 else ""
         table.add_row(ordinal, glyph_cell, name_cell, msg_cell, duration_cell)
         if outcome.next_step:
             # Follow-up hint indented under the message column —
