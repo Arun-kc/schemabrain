@@ -41,6 +41,7 @@ from schemabrain._ui import (
     GLYPH_ERR,
     GLYPH_OK,
     GLYPH_PENDING,
+    GLYPH_RULE,
     GLYPH_SEP,
     GLYPH_SKIPPED,
     GLYPH_WARN,
@@ -48,6 +49,7 @@ from schemabrain._ui import (
     make_console,
     pii_marker,
     status_glyph,
+    top_rule,
 )
 
 
@@ -152,12 +154,89 @@ class TestGlyphConstants:
 
     def test_anchor_glyph_constants(self) -> None:
         # Surface-anchoring glyphs the design uses across the
-        # brand line (◆), arrow hints (→), bullet lists (•), and
-        # the dot separator on metadata strips (·).
+        # brand line (◆), arrow hints (→), bullet lists (•),
+        # the dot separator on metadata strips (·), and the
+        # horizontal rule character used by ``top_rule`` (─).
         assert GLYPH_BRAND == "◆"
         assert GLYPH_ARROW == "→"
         assert GLYPH_BULLET == "•"
         assert GLYPH_SEP == "·"
+        assert GLYPH_RULE == "─"
+
+
+class TestTopRule:
+    """Pins ``top_rule(...)`` — the design's section-header builder.
+
+    The wizard's progress rule and (in follow-ups) the doctor's
+    check-list rule both render through this primitive, so the
+    contract has to fence:
+
+    * The label is followed by spacing and a dashed run that fills
+      the remaining width.
+    * An optional right-aligned metadata string lands at the end of
+      the line.
+    * When ``label`` + ``right`` exceed the requested ``width``, the
+      dashed run collapses to a 4-dash floor rather than wrapping —
+      a narrow-terminal rule should stay on one line.
+    """
+
+    def test_label_plus_right_with_dashed_fill(self) -> None:
+        rendered = top_rule("progress", "2 / 7 done", width=60).plain
+        # Label appears with the leading 2-cell gap.
+        assert rendered.startswith("  progress")
+        # Right metadata appears at the end.
+        assert rendered.endswith("2 / 7 done")
+        # Dashed run sits between them — characters are the design's
+        # box-drawing ``─`` (U+2500), not the ASCII ``-``.
+        assert GLYPH_RULE in rendered
+        assert "-" * 10 not in rendered
+
+    def test_label_only_renders_dashed_tail(self) -> None:
+        rendered = top_rule("7 stages", width=40).plain
+        assert rendered.startswith("  7 stages")
+        # Without a `right` argument, the dashed run runs to the
+        # end of the requested width.
+        assert rendered.rstrip().endswith(GLYPH_RULE)
+
+    def test_total_width_matches_requested_when_content_fits(self) -> None:
+        # The label + dashes + right meta should consume exactly
+        # `width` cells when there's space to honour it. This pins
+        # the rule's width contract so wizard / doctor surfaces
+        # render their progress lines flush with the stage list
+        # below.
+        text = top_rule("progress", "done", width=80)
+        assert len(text.plain) == 80
+
+    def test_narrow_width_collapses_to_dash_floor_not_wrap(self) -> None:
+        # 8-cell width can't fit "progress" + 2 gaps + dashes +
+        # "extremely long metadata string here". The implementation
+        # must collapse to the 4-dash floor rather than wrap or
+        # return a negative-length string.
+        rendered = top_rule(
+            "progress",
+            "extremely long metadata string here",
+            width=8,
+        ).plain
+        assert "─" * 4 in rendered
+        # And the line stays on one row.
+        assert "\n" not in rendered
+
+    def test_default_style_is_dim(self) -> None:
+        # The whole rule reads as muted chrome so it sinks below the
+        # stage list. ``bright_black`` is Rich's name for the muted
+        # tone the design uses for section dividers.
+        text = top_rule("progress", "done", width=60)
+        # The Text constructor stores the style on the instance for
+        # all subsequent appends — fence the contract so a future
+        # signature change doesn't quietly flip the default.
+        assert str(text.style) == "bright_black"
+
+    def test_custom_style_overrides_default(self) -> None:
+        # Caller-provided ``style`` must propagate to the whole
+        # rendered band. A wizard re-render that wants a bolder
+        # rule (e.g. green on success) reaches for this argument.
+        text = top_rule("ok", "done", width=40, style="green")
+        assert str(text.style) == "green"
 
 
 class TestPIIMarker:

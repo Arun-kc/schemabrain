@@ -1377,8 +1377,14 @@ class TestWizardRenderer:
     ) -> None:
         # A 0.0s duration means the stage didn't actually do work (a
         # skipped peek-and-bypass). Rendering "0.0s" next to a skipped
-        # stage would be misleading — the time spent on that line is
-        # effectively unmeasurable.
+        # stage row would be misleading — the time spent on that line
+        # is effectively unmeasurable.
+        #
+        # The fixture mixes a 0.0s stage with a 0.5s stage so the
+        # progress rule's aggregate elapsed time has a non-zero
+        # value (preventing a spurious "0.0s" hit from the rule
+        # itself). The assertion fences the per-row contract: the
+        # skipped row carries no duration cell, the worked row does.
         from schemabrain.cli import _render_wizard_result
         from schemabrain.setup.wizard import StageOutcome, WizardResult
 
@@ -1391,12 +1397,22 @@ class TestWizardRenderer:
                     message="ok",
                     duration_s=0.0,
                 ),
+                StageOutcome(
+                    stage=2,
+                    name="index",
+                    status="done",
+                    message="ok",
+                    duration_s=0.5,
+                ),
             ),
             aborted=False,
         )
         _render_wizard_result(result)
         captured = capsys.readouterr()
         assert "0.0s" not in captured.err
+        # And the non-zero-duration stage's row still carries its
+        # duration — the suppression is per-row, not global.
+        assert "0.5s" in captured.err
 
     def _written_host_result(self, tmp_path: Path) -> object:
         from schemabrain.setup.hosts import SchemabrainSnippet
@@ -1561,18 +1577,24 @@ class TestWizardRenderer:
         # the recovery hint.
         assert "The agent reads. It doesn't write." not in captured.err
 
-    def test_unknown_status_falls_through_glyph_lookup(
+    def test_wizard_status_to_tier_routes_known_statuses(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # Defensive: an unknown status string (a future addition that
-        # forgot to update `_STAGE_GLYPHS`) renders the raw status
-        # rather than crashing.
-        from schemabrain.cli import _STAGE_GLYPHS
+        # PR #3 replaced the local `_STAGE_GLYPHS` dict with a
+        # translation map onto `schemabrain._ui.status_glyph`. Pin
+        # the translation contract so an unknown status (a future
+        # addition that forgot to update the map) collapses to the
+        # shared hard-break tier via the renderer's `.get(..., "err")`
+        # fallback rather than crashing.
+        from schemabrain.cli import _WIZARD_STATUS_TO_TIER
 
-        # Just verify the lookup table contains the three known
-        # statuses + that the renderer's `.get(...)` fallback path
-        # is exercised by passing an unmapped status.
-        assert set(_STAGE_GLYPHS.keys()) == {"done", "skipped", "failed"}
+        # The wizard outcome vocabulary is the three known statuses;
+        # the renderer maps them onto the shared tier names.
+        assert _WIZARD_STATUS_TO_TIER == {
+            "done": "ok",
+            "skipped": "skipped",
+            "failed": "err",
+        }
 
     def test_stage_display_name_unknown_returns_input(self) -> None:
         from schemabrain.cli import _stage_display_name

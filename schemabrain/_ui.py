@@ -45,6 +45,7 @@ from __future__ import annotations
 from typing import IO, Final
 
 from rich.console import Console
+from rich.text import Text
 
 # ---------------------------------------------------------------------------
 # Glyph vocabulary — design bundle ``schemabrain-v1/project/cli/shell.jsx``.
@@ -74,6 +75,7 @@ GLYPH_BRAND: Final[str] = "◆"
 GLYPH_ARROW: Final[str] = "→"
 GLYPH_BULLET: Final[str] = "•"
 GLYPH_SEP: Final[str] = "·"
+GLYPH_RULE: Final[str] = "─"
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +258,83 @@ def make_console(
     )
 
 
+# ---------------------------------------------------------------------------
+# Top-rule text builder — design's section separator.
+# ---------------------------------------------------------------------------
+#
+# The design's ``TopRule`` (handoff bundle ``cli/shell.jsx`` line 76)
+# is a left-aligned label followed by a dashed run and an optional
+# right-aligned metadata string. Used above the wizard's stage list
+# and (in follow-up PRs) above the doctor's check list.
+#
+# Shape (120 cols, label="progress", right="2 / 7 done · ~38s remaining"):
+#
+#   ┌─ 2 cells gap
+#   │       ┌─ label (dim)
+#   │       │              ┌─ dashed run (dim)
+#   │       │              │                                       ┌─ right meta (dim)
+#   ▾       ▾              ▾                                       ▾
+#     progress  ──────────────────────────────  2 / 7 done · ~38s remaining
+#
+# ``width`` is the total cell width the line should occupy.
+# ``label`` and ``right`` are rendered in the same dim style; the
+# dashed run uses the same style so the whole line reads as one
+# muted band. A renderer wanting bolder hierarchy should compose
+# the rule out of a plain ``Text`` rather than calling this helper.
+
+_TOP_RULE_GAP: Final[int] = 2
+_TOP_RULE_MIN_DASHES: Final[int] = 4
+
+
+def top_rule(
+    label: str,
+    right: str | None = None,
+    *,
+    width: int = 120,
+    style: str = "bright_black",
+) -> Text:
+    """Build a Rich ``Text`` for the design's top-rule shape.
+
+    Returns a renderable ``Text`` instance — call sites print it via
+    ``console.print(top_rule(...))``. Returning ``Text`` (not a
+    pre-rendered string) lets the caller compose it with other Rich
+    primitives if needed; printing it directly is the common path.
+
+    Args mirror the design's section-header conventions:
+
+    * ``label`` — the left-aligned tag (``"progress"``,
+      ``"7 stages"``, etc.). Rendered in ``style``.
+    * ``right`` — optional right-aligned metadata
+      (``"2 / 7 done · ~38s remaining"``, ``"21.0s · $0.075"``).
+      ``None`` renders just the label + dashes.
+    * ``width`` — total cell width. Defaults to 120 (matches the
+      design's reference width). Callers reading
+      ``console.width`` should pass it explicitly.
+    * ``style`` — Rich style applied to every component. The design
+      uses a single muted tone for the whole line so the rule sinks
+      into chrome rather than competing with the stage list below.
+
+    When ``label`` + ``right`` are too wide to fit, the dashed run
+    collapses to ``_TOP_RULE_MIN_DASHES`` (4 dashes) — the rule
+    stays visible but no longer fills the width. Operators on
+    narrow terminals see a short rule rather than a wrapped one.
+    """
+    pre_label_gap = " " * _TOP_RULE_GAP
+    post_label_gap = " " * _TOP_RULE_GAP
+    right_with_gap = ("  " + right) if right else ""
+
+    label_segment_len = len(pre_label_gap) + len(label) + len(post_label_gap)
+    right_segment_len = len(right_with_gap)
+    dash_count = max(_TOP_RULE_MIN_DASHES, width - label_segment_len - right_segment_len)
+
+    text = Text(style=style)
+    text.append(pre_label_gap + label + post_label_gap)
+    text.append(GLYPH_RULE * dash_count)
+    if right:
+        text.append(right_with_gap)
+    return text
+
+
 __all__ = [
     "GLYPH_ACTIVE",
     "GLYPH_ARROW",
@@ -264,6 +343,7 @@ __all__ = [
     "GLYPH_ERR",
     "GLYPH_OK",
     "GLYPH_PENDING",
+    "GLYPH_RULE",
     "GLYPH_SEP",
     "GLYPH_SKIPPED",
     "GLYPH_WARN",
@@ -271,4 +351,5 @@ __all__ = [
     "make_console",
     "pii_marker",
     "status_glyph",
+    "top_rule",
 ]

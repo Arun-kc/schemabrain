@@ -355,9 +355,14 @@ class TestWizardAgainstPostgres16:
         )
         assert exit_code == 0
         captured = capsys.readouterr()
-        # All seven stages render.
-        for header in ("[1/7]", "[2/7]", "[3/7]", "[4/7]", "[5/7]", "[6/7]", "[7/7]"):
-            assert header in captured.err
+        # All seven stages render. PR #3 swapped the per-stage Panel
+        # title `[N/7]` for the design's compact ordinal column —
+        # each stage row leads with a zero-padded `01`..`07` cell.
+        for ordinal in ("01", "02", "03", "04", "05", "06", "07"):
+            assert ordinal in captured.err
+        # And the progress rule above the stage list carries the
+        # total stage count for the pipeline.
+        assert "7 stages" in captured.err
         # Stage 2 indexed real tables.
         assert "tables" in captured.err.lower()
         # Stage 3 soft-skipped on missing API key.

@@ -81,6 +81,7 @@ from sqlalchemy.exc import OperationalError
 
 from schemabrain import __version__
 from schemabrain._env import resolve_positive_float_env, resolve_positive_int_env
+from schemabrain._ui import GLYPH_BRAND, status_glyph, top_rule
 from schemabrain.connectors._url import safe_engine_url
 from schemabrain.connectors.base import DataSource
 from schemabrain.connectors.postgres import PostgresDataSource
@@ -5113,21 +5114,25 @@ def _redact_env_args(cmd: tuple[str, ...]) -> list[str]:
     return out
 
 
-_STAGE_GLYPHS: dict[str, str] = {
-    "done": "[green]✓[/]",
-    "skipped": "[yellow]↷[/]",
-    "failed": "[red]✗[/]",
-}
-
-# Border colour for each stage's outcome panel. Maps onto the same
-# done/skipped/failed status set as `_STAGE_GLYPHS` so the panel
-# border and the glyph carry the same outcome semantics — green for
-# success, yellow for skipped, red for failed. Unknown statuses fall
-# through to a neutral dim border via `_STAGE_PANEL_BORDER.get(...)`.
-_STAGE_PANEL_BORDER: dict[str, str] = {
-    "done": "green",
-    "skipped": "yellow",
-    "failed": "red",
+# Wizard stage `status` → shared `_ui.status_glyph` tier name.
+# The wizard's outcome vocabulary (``done`` / ``skipped`` / ``failed``)
+# pre-dates the shared severity vocabulary that PR #72 established in
+# ``schemabrain._ui`` (``ok`` / ``skipped`` / ``err`` / ``warn`` /
+# ``active`` / ``pending``); this map is the translation seam.
+#
+# Visible glyph flip in PR #3: the previous ``skipped`` glyph ``↷``
+# (Unicode RIGHTWARDS WAVE ARROW) becomes ``⊘`` (CIRCLED DIVISION
+# SLASH) — the design's spec for a skipped stage. The flip lands here
+# rather than as a constant change in ``_ui.py`` so the migration is
+# auditable in the wizard re-render diff per the PR #72 fold comment.
+#
+# An unknown ``status`` (defensive — wizard outcomes are always one of
+# the three known values) routes through ``status_glyph(\"err\")`` →
+# ``(✗, red)`` to surface the routing gap visibly rather than silently.
+_WIZARD_STATUS_TO_TIER: dict[str, str] = {
+    "done": "ok",
+    "skipped": "skipped",
+    "failed": "err",
 }
 
 # Soft cap for wizard stage/abort panel width. Without this cap, the
@@ -5291,35 +5296,28 @@ def _host_display_name(host: str) -> str:
 
 
 def _render_wizard_header(*, host_display: str | None, console: object) -> None:
-    """Print the bordered orientation banner.
+    """Print the wizard's brand line.
 
-    Split out of `_render_wizard_result` so the CLI can print this
-    line BEFORE the wizard starts running — without it the user
-    stares at a blank terminal during slow stages (index, entities)
-    before seeing anything at all.
+    Split out of ``_render_wizard_result`` so the CLI can print this
+    BEFORE the wizard starts running — without it the user stares at
+    a blank terminal during slow stages (index, entities) before
+    seeing anything at all.
 
-    Rendered as a bordered Panel so the entry into the wizard reads
-    as a deliberate framed event rather than two loose stderr lines.
-    Width matches the stage-card width below so the visual column
-    stays straight as the wizard progresses.
+    Rendered as a single flat line per the design's brand-line
+    convention (handoff bundle ``cli/init.jsx`` line 20): a cyan
+    ``◆`` brand glyph, the bold command name, and a dim
+    activation-context tail. Replaces the previous bordered Panel —
+    Panel chrome competes with the stage-list rule below and the
+    operator's eye should land on the stages, not the framing.
     """
-    from rich.panel import Panel
-
-    if host_display:
-        body = f"Activating Schema Brain for [bold]{host_display}[/]. ~30s."
-    else:
-        body = "Activating Schema Brain. ~30s."
+    activating = (
+        f"— activating for [bold]{host_display}[/]. ~30s."
+        if host_display
+        else "— activating. ~30s."
+    )
     console.print()  # type: ignore[attr-defined]
     console.print(  # type: ignore[attr-defined]
-        Panel(
-            body,
-            title="[bold cyan]Schema Brain init[/]",
-            title_align="left",
-            border_style="cyan",
-            expand=False,
-            padding=(0, 1),
-            width=_wizard_panel_width(console),
-        )
+        f"[cyan]{GLYPH_BRAND}[/] [bold]Schema Brain init[/] [dim]{activating}[/]"
     )
     console.print()  # type: ignore[attr-defined]
 
@@ -5365,15 +5363,88 @@ def _render_wizard_result(result: object, *, host_display: str | None = None) ->
     _render_wizard_after(result, host_display=host_display, console=console)
 
 
-def _render_wizard_after(result: object, *, host_display: str | None, console: object) -> None:
-    """Render everything that follows the wizard's header — stage list,
-    host install detail, closing block (clean run) or failure panel (abort).
+def _compose_progress_rule(result: object, *, total: int, console: object) -> object:
+    """Build the design's progress rule shown above the stage list.
 
-    Split from `_render_wizard_result` so the CLI can call this after
-    the wizard finishes — the header runs first (immediate feedback)
-    and the spinner-driven stage-context callback fills the gap until
-    the wizard returns.
+    Returns a renderable ``Text`` instance (from ``_ui.top_rule``)
+    summarising the wizard's run shape:
+
+      ─── 7 stages ───────────────────── 21.0s · 1 advisory failure ───
+
+    The rule fences the stage list inside a visual band so the
+    operator's eye lands on "what shape was this run?" before
+    scanning the individual rows. Cost is intentionally NOT
+    surfaced here in PR #3 — wizard cost lives on stage-level
+    results, not on ``WizardResult`` itself; threading a
+    total-cost field through the data model is deferred until a
+    follow-up PR (the live cost ticker the design specifies during
+    execution, not the post-run summary).
+
+    The right-side metadata adapts to the run shape:
+
+    * Clean run → ``{elapsed}s``
+    * Run with N skipped stages → ``{elapsed}s · {N} advisory``
+    * Aborted run → ``{elapsed}s · stopped at stage {N}``
     """
+    from schemabrain.setup.wizard import WizardResult
+
+    if not isinstance(result, WizardResult):  # pragma: no cover — defensive
+        return top_rule(f"{total} stages")
+
+    elapsed = sum(o.duration_s for o in result.outcomes)
+    pieces: list[str] = [f"{_format_duration(elapsed)}"]
+    if result.aborted and result.aborted_at is not None:
+        pieces.append(f"stopped at stage {result.aborted_at.stage}")
+    else:
+        # Count advisory (skipped) outcomes — wizard stages 3 + 4 use
+        # ``skipped`` for "the run continued without curating this
+        # surface" (LLM cost cap, ``--no-entities``, advisory failure).
+        # Surfacing the count tells the operator at a glance whether
+        # the run was fully curated or partial without scanning rows.
+        advisory_count = sum(1 for o in result.outcomes if o.status == "skipped")
+        if advisory_count == 1:
+            pieces.append("1 advisory")
+        elif advisory_count > 1:
+            pieces.append(f"{advisory_count} advisory")
+    right = " · ".join(pieces)
+
+    width = getattr(console, "width", 120)
+    return top_rule(f"{total} stages", right, width=min(width, 100))
+
+
+def _render_wizard_after(result: object, *, host_display: str | None, console: object) -> None:
+    """Render everything that follows the wizard's header — progress
+    rule, stage list, host install detail, closing block (clean run)
+    or failure panel (abort).
+
+    Split from ``_render_wizard_result`` so the CLI can call this
+    after the wizard finishes — the header runs first (immediate
+    feedback) and the spinner-driven stage-context callback fills
+    the gap until the wizard returns.
+
+    Layout per the design's State B hero (handoff bundle
+    ``cli/init.jsx``):
+
+      ─── 7 stages ────────────────────── 21.0s · 0 advisory ──
+
+        01  ✓  source_check  ok                              0.4s
+            ↳ next-step hint, if present (dim, indented)
+        02  ✓  index         ok                              6.1s
+        ...
+
+    Stages render as a compact column rather than per-stage Panels:
+    one row per outcome, glyph + ordinal + display name + message +
+    duration. A dim follow-up row carries the ``next_step`` hint
+    when one is set, indented under the message column so the
+    operator's eye stays in the same vertical track.
+
+    Wire-host install detail (config path, backup, manual snippet)
+    renders after the stage table — ``printed_only`` writes the JSON
+    snippet to stdout (machine-readable) and a Table around mixed
+    stderr/stdout output would break the JSON consumer's parse.
+    """
+    from rich.table import Table
+
     from schemabrain.setup.wizard import WizardResult
 
     if not isinstance(result, WizardResult):
@@ -5381,50 +5452,50 @@ def _render_wizard_after(result: object, *, host_display: str | None, console: o
     # The wizard always has 7 stages even on early abort — using
     # `len(result.outcomes)` for the denominator would render "of 2"
     # on a stage-2 abort, misleading the user about the pipeline shape.
-    from rich.panel import Panel
-
     total = _WIZARD_TOTAL_STAGES
+
+    console.print(_compose_progress_rule(result, total=total, console=console))  # type: ignore[attr-defined]
+    console.print()  # type: ignore[attr-defined]
+
+    table = Table.grid(padding=(0, 2), expand=False)
+    table.add_column(width=2, no_wrap=True)  # ordinal "01"
+    table.add_column(width=1, no_wrap=True)  # glyph
+    table.add_column(min_width=13, no_wrap=True)  # display name
+    table.add_column(no_wrap=False, overflow="fold")  # message + optional next-step
+    table.add_column(justify="right", no_wrap=True)  # duration
+
+    pending_wire_host_detail = None
     for outcome in result.outcomes:
-        # Stage title combines the ordinal, display name, and (when
-        # the stage took perceptible time) a measured duration. The
-        # 50ms threshold suppresses "0.0s" labels on peek-and-bypass
-        # skip stages where the orchestrator still measures
-        # `perf_counter` but no real work happened.
-        title = f"[{outcome.stage}/{total}] {_stage_display_name(outcome.name)}"
-        if outcome.duration_s >= 0.05:
-            title += f" [dim]({_format_duration(outcome.duration_s)})[/]"
-        glyph = _STAGE_GLYPHS.get(outcome.status, outcome.status)
-        body_lines: list[str] = [f"{glyph} {outcome.message}"]
-        if outcome.next_step:
-            body_lines.append(f"[dim]{outcome.next_step}[/]")
-        body = "\n".join(body_lines)
-        border = _STAGE_PANEL_BORDER.get(outcome.status, "dim")
-        # `expand=False` keeps each stage panel as wide as its content
-        # rather than stretching to the terminal width — a series of
-        # narrow, status-coloured panels reads as a checklist instead
-        # of a column of full-width banners. `title_align="left"`
-        # matches the eye-position of the previous indented
-        # "[N/7] Stage" header so existing operators don't get a layout
-        # jolt on upgrade.
-        console.print(  # type: ignore[attr-defined]
-            Panel(
-                body,
-                title=title,
-                title_align="left",
-                border_style=border,
-                expand=False,
-                padding=(0, 1),
-                width=_wizard_panel_width(console),
-            )
+        tier = _WIZARD_STATUS_TO_TIER.get(outcome.status, "err")
+        glyph, style = status_glyph(tier)
+        ordinal = f"[bright_black]{outcome.stage:02d}[/]"
+        glyph_cell = f"[{style}]{glyph}[/]"
+        name_cell = f"[bold]{_stage_display_name(outcome.name)}[/]"
+        msg_cell = outcome.message
+        # Sub-50ms durations represent peek-and-bypass stages where
+        # the orchestrator measured `perf_counter` but no real work
+        # happened — rendering "0.0s" next to them would mislead.
+        duration_cell = (
+            f"[bright_black]{_format_duration(outcome.duration_s)}[/]"
+            if outcome.duration_s >= 0.05
+            else ""
         )
-        # Stage-4 follow-up details (config path, backup, manual
-        # snippet) render after the panel. These deliberately live
-        # outside the panel: `printed_only` writes the JSON snippet
-        # to stdout (machine-readable) and a Panel around mixed
-        # stderr/stdout output would either break the JSON or hide
-        # it inside ANSI box-drawing.
+        table.add_row(ordinal, glyph_cell, name_cell, msg_cell, duration_cell)
+        if outcome.next_step:
+            # Follow-up hint indented under the message column —
+            # operator's eye stays in the same vertical track as the
+            # primary outcome rather than jumping back to the gutter.
+            table.add_row("", "", "", f"[dim]{outcome.next_step}[/]", "")
+        # Stage-6 host install detail (config path / backup / manual
+        # JSON snippet) renders AFTER the stage table — see method
+        # docstring for the mixed-stream rationale.
         if outcome.name == "wire_host" and outcome.status == "done":
-            _render_wire_host_detail(result.host_install_result, console)
+            pending_wire_host_detail = result.host_install_result
+
+    console.print(table)  # type: ignore[attr-defined]
+    if pending_wire_host_detail is not None:
+        console.print()  # type: ignore[attr-defined]
+        _render_wire_host_detail(pending_wire_host_detail, console)
     console.print()  # type: ignore[attr-defined]
 
     if result.aborted:
