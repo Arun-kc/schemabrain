@@ -1921,6 +1921,7 @@ def _cmd_index_dry_run(
     whose owning table was last indexed before the cutoff and
     estimates the cost to refresh them.
     """
+    from schemabrain.errors_render import render_bad_argument_error
     from schemabrain.observability import parse_since
 
     since_ts: int | None = None
@@ -1928,7 +1929,37 @@ def _cmd_index_dry_run(
         try:
             since_ts = int(parse_since(since).timestamp())
         except ValueError as exc:
-            print(f"error: --since: {exc}", file=sys.stderr)
+            # Caret-underline + alternatives surface (design shape A,
+            # handoff bundle ``cli/errors.jsx:ErrBadInput``).
+            # ``parse_since`` distinguishes two failure modes:
+            # (a) the value is neither a duration nor parseable as
+            # ISO 8601 at all; (b) the value IS valid ISO 8601 but
+            # has no timezone. The caret leader must reflect WHICH
+            # one fired — collapsing both into one "not a duration
+            # · not a date" leader actively misleads users who
+            # passed a timezone-less ISO timestamp.
+            if "must include a timezone" in str(exc):
+                reason = "ISO 8601 needs a timezone (e.g. trailing Z)"
+            else:
+                reason = "not a duration · not a date"
+            render_bad_argument_error(
+                arg_name="--since",
+                raw_value=since,
+                reason=reason,
+                expected_summary=(
+                    "a duration like 14d or an ISO 8601 timestamp "
+                    "with timezone like 2026-05-01T00:00:00Z"
+                ),
+                suggestions=[
+                    ("schemabrain index --dry-run --since 7d", "last 7 days"),
+                    (
+                        "schemabrain index --dry-run --since 2026-05-13T00:00:00Z",
+                        "since that ISO timestamp",
+                    ),
+                ],
+                command_prefix="schemabrain index --dry-run",
+                console=_stderr_console(),
+            )
             return 2
 
     source_id = _make_source_id(url)
@@ -6299,28 +6330,21 @@ def _resolve_url_source(
         )
         return None
     if url_env is not None:
+        # Design shape B (handoff bundle ``cli/errors.jsx:ErrMissingSecret``):
+        # the unset and empty paths share the same three-panel
+        # surface — only the title wording flips between
+        # ``<VAR> not set`` and ``<VAR> is empty``. The renderer
+        # owns that flip via the ``state`` discriminator so this
+        # callsite stays the obvious place to read the error
+        # condition without re-rendering chrome by hand.
+        from schemabrain.errors_render import render_missing_secret_error
+
         value = os.environ.get(url_env)
         if value is None:
-            _render_guided(
-                GuidedError(
-                    kind="url_env_unset",
-                    message=f"environment variable {url_env!r} is not set",
-                    why="--url-env names an env var that must hold the connection URL",
-                    fix=f"export {url_env}=postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME",
-                    next_step="see docs/setup.md for the canonical URL format",
-                )
-            )
+            render_missing_secret_error(env_var=url_env, state="unset", console=_stderr_console())
             return None
         if value == "":
-            _render_guided(
-                GuidedError(
-                    kind="url_env_empty",
-                    message=f"environment variable {url_env!r} is set but empty",
-                    why="--url-env names an env var that must hold the connection URL",
-                    fix=f"export {url_env}=postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME",
-                    next_step="see docs/setup.md for the canonical URL format",
-                )
-            )
+            render_missing_secret_error(env_var=url_env, state="empty", console=_stderr_console())
             return None
         return value
     # Positional path. We accept it for backwards compatibility, but if

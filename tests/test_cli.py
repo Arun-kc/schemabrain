@@ -2557,9 +2557,14 @@ class TestResolveUrlSource:
         assert _resolve_url_source(positional=None, url_env="ABSENT_DB_URL") is None
         err = capsys.readouterr().err
         assert "ABSENT_DB_URL" in err
-        # Guided-error block — same shape as the rest of the CLI.
-        assert "error:" in err
-        assert "fix:" in err
+        # Design shape B (handoff bundle ``cli/errors.jsx:ErrMissingSecret``)
+        # — the ``--url-env`` unset path renders the three-panel surface:
+        # brand line + "missing connection string" + recommended fix
+        # showing the ``--url-env`` form + shell-level diagnostics.
+        assert "◆ error" in err
+        assert "not set" in err
+        assert "is not exported" in err
+        assert "--url-env" in err
 
     def test_returns_none_and_renders_error_when_env_var_empty(
         self,
@@ -2747,7 +2752,11 @@ class TestIndexUrlEnv:
         assert exit_code == 2
         err = capsys.readouterr().err
         assert "UNSET_DB_URL" in err
-        assert "fix:" in err
+        # Design shape B — the new three-panel surface; the recommended
+        # fix block names ``--url-env`` and the brand line carries the
+        # ``◆ error`` header.
+        assert "◆ error" in err
+        assert "is not exported" in err
 
     def test_index_with_neither_positional_nor_url_env_returns_exit_2(
         self,
