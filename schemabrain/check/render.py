@@ -41,7 +41,7 @@ import json
 
 from rich.console import Console
 
-from schemabrain._ui import GLYPH_OK, severity_glyph
+from schemabrain._ui import GLYPH_OK, drift_glyph
 from schemabrain.check.engine import CheckReport, Drift
 
 _DEF_KIND_LABEL: dict[str, str] = {
@@ -51,7 +51,7 @@ _DEF_KIND_LABEL: dict[str, str] = {
 }
 
 # Drift severity (glyph + Rich style) routes through `schemabrain._ui`'s
-# `severity_glyph(def_kind)` so the entity/metric/join → ✗/⚠/⚠ tiering
+# `drift_glyph(def_kind)` so the entity/metric/join → ✗/⚠/⚠ tiering
 # lives in one place across the CLI. Adding a new `DriftKind` only
 # requires extending the `_DRIFT_TIER` mapping in `_ui.py` — this
 # renderer keeps reading the tier through one helper.
@@ -121,7 +121,7 @@ def _render_per_type_summary(report: CheckReport, *, console: Console) -> None:
     "0 joins healthy" on a project that hasn't curated joins is
     noise.
 
-    Glyph + style resolve through `schemabrain._ui.severity_glyph` so
+    Glyph + style resolve through `schemabrain._ui.drift_glyph` so
     a future `DriftKind` / `DefKind` addition routes to the right
     tier by extending `_DRIFT_TIER` in `_ui.py` rather than copy-
     pasting glyph logic at each call site.
@@ -156,7 +156,7 @@ def _summary_line(
     hasn't curated this definition kind isn't told it has "0 joins
     healthy" — that's noise on a fresh store.
 
-    Drift glyph + colour resolve through `severity_glyph(def_kind)`.
+    Drift glyph + colour resolve through `drift_glyph(def_kind)`.
     Healthy lines always render green ✓ (`GLYPH_OK`) regardless of
     kind — success is a single tier, only drift has severity.
     """
@@ -167,7 +167,7 @@ def _summary_line(
         word = kind_singular if total == 1 else kind_plural
         console.print(f"  [green]{GLYPH_OK}[/] {total} {word} healthy")
     else:
-        glyph, style = severity_glyph(def_kind)
+        glyph, style = drift_glyph(def_kind)
         word = kind_singular if drifted == 1 else kind_plural
         console.print(
             f"  [{style}]{glyph}[/] {drifted} {word} drifted [dim]({healthy} of {total} healthy)[/]"
@@ -178,13 +178,13 @@ def _render_drift(drift: Drift, *, console: Console) -> None:
     """One drift block: glyph + def_kind + def_name on line 1, indented
     detail + fix hint below.
 
-    Glyph + colour resolve through `schemabrain._ui.severity_glyph` so
+    Glyph + colour resolve through `schemabrain._ui.drift_glyph` so
     entity drift renders as a hard red ✗ while metric / join drift
     renders as a yellow ⚠ (degraded but not blocking the rest of the
     semantic layer).
     """
     label = _DEF_KIND_LABEL.get(drift.def_kind, drift.def_kind)
-    glyph, style = severity_glyph(drift.def_kind)
+    glyph, style = drift_glyph(drift.def_kind)
     console.print(f"  [{style}]{glyph}[/] [bold]{label}[/]  {drift.def_name}")
     console.print(f"        [yellow]{drift.drift_kind}[/]  [dim]{drift.detail}[/]")
     console.print(f"        [dim]→[/] {drift.fix_hint}")
