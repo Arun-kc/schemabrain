@@ -16,7 +16,10 @@ prefix grows (e.g. sibling context, examples).
 The class is model-agnostic: pass any Anthropic model name and the
 matching `max_output_tokens`. For ergonomics, prefer the factory
 functions `anthropic_haiku_45_client()` and `anthropic_sonnet_46_client()`,
-which set sensible defaults for each tier.
+which set sensible defaults for each tier. Both factories honor per-tier
+env-var overrides (`SCHEMABRAIN_HAIKU_MAX_OUTPUT_TOKENS`,
+`SCHEMABRAIN_SONNET_MAX_OUTPUT_TOKENS`) for operators who need a
+different token budget without a code change.
 
 The adapter accepts a pre-constructed SDK client via the `client=`
 parameter, which lets tests inject a fake without instantiating the
@@ -30,6 +33,9 @@ cap and can produce uncapped LLM spend.
 
 from __future__ import annotations
 
+import os
+import re
+import sys
 from typing import Any
 
 from schemabrain.enrichment.llm import (
@@ -57,14 +63,74 @@ _SONNET_46_MODEL = "claude-sonnet-4-6"
 # patience for an indexing pass that already takes minutes.
 _SDK_MAX_RETRIES = 8
 
-# Haiku is asked for one short sentence (≤30 words). 200 is comfortably
-# above that; hitting it indicates the model went off-prompt.
+# Haiku is asked for one short sentence (≤30 words) per column. 200 is
+# comfortably above that; hitting it indicates the model went off-prompt
+# or the column-description schema convention is unusually verbose
+# (long localized names, multi-language hints). Operators on verbose
+# schemas can raise it via SCHEMABRAIN_HAIKU_MAX_OUTPUT_TOKENS without
+# a code change.
 _HAIKU_DEFAULT_MAX_OUTPUT_TOKENS = 200
+_HAIKU_MAX_OUTPUT_TOKENS_ENV = "SCHEMABRAIN_HAIKU_MAX_OUTPUT_TOKENS"
 
-# Sonnet handles cryptic columns that may need a slightly longer
-# explanation to convey what an abbreviated name actually represents.
-# Still bounded so a runaway response surfaces as a max_tokens error.
-_SONNET_DEFAULT_MAX_OUTPUT_TOKENS = 300
+# Sonnet handles two distinct workloads through this client today:
+# (a) cryptic-column descriptions (one paragraph each), and
+# (b) entity / metric suggestion (multi-candidate YAML, typically 10+
+#     entries with rationale and PII hints).
+# The previous default (300) was sized for (a) only and silently
+# truncated (b) on schemas with more than ~5 entities — discovered via
+# the 2026-05-19 ecommerce-fixture smoke. 4096 comfortably fits 10+
+# candidates with room to spare while still bounding a runaway response.
+# Sonnet 4.6 supports much higher (8192+); callers who need it can set
+# SCHEMABRAIN_SONNET_MAX_OUTPUT_TOKENS or construct AnthropicClient
+# directly with `max_output_tokens=`.
+_SONNET_DEFAULT_MAX_OUTPUT_TOKENS = 4096
+_SONNET_MAX_OUTPUT_TOKENS_ENV = "SCHEMABRAIN_SONNET_MAX_OUTPUT_TOKENS"
+
+# ASCII decimal positive integer with optional leading `+`. Rejects:
+# leading zeros (`"00100"`), underscore separators (`"1_000"`),
+# fullwidth unicode digits (U+FF10..FF19 fold to ASCII via int()),
+# hex/octal prefixes, decimals, and signed negatives. Python's `int()`
+# silently accepts most of those; this pattern makes the operator-facing
+# contract explicit so a typo never silently becomes a smaller-than-
+# default cap.
+_POSITIVE_INT_RE = re.compile(r"^\+?[1-9][0-9]*$")
+
+# Module-scoped set of env-var names we've already warned about for
+# "set but empty". Keeps the warn to once per process per var rather
+# than once per factory call (the wizard calls factories per stage).
+_WARNED_EMPTY_ENV_VARS: set[str] = set()
+
+
+def _resolve_max_output_tokens(env_var: str, default: int) -> int:
+    """Return per-tier max output tokens, honoring env-var override.
+
+    Returns `default` when `env_var` is unset entirely. When `env_var`
+    is set to an empty or whitespace-only string, emits a one-shot
+    stderr warning (operator probably expected the override to take
+    effect — silent fall-through would leave them chasing it) and
+    falls back to `default`. When set to a value, parses as a positive
+    ASCII decimal integer and fails fast on anything else rather than
+    sending a nonsensical `max_tokens` to the API and chasing an
+    opaque 400.
+    """
+    raw_value = os.environ.get(env_var)
+    if raw_value is None:
+        return default
+    raw = raw_value.strip()
+    if not raw:
+        if env_var not in _WARNED_EMPTY_ENV_VARS:
+            _WARNED_EMPTY_ENV_VARS.add(env_var)
+            print(
+                f"[schemabrain] warning: {env_var} is set but empty; using default {default}",
+                file=sys.stderr,
+            )
+        return default
+    if not _POSITIVE_INT_RE.match(raw):
+        raise ValueError(
+            f"{env_var}={raw!r} is not a positive decimal integer "
+            f"(no underscores, no leading zeros, no decimal point)"
+        )
+    return int(raw)
 
 
 class AnthropicClient:
@@ -135,12 +201,19 @@ def anthropic_haiku_45_client(
     api_key: str | None = None,
     client: Any | None = None,
 ) -> AnthropicClient:
-    """Construct an `AnthropicClient` configured for Claude Haiku 4.5."""
+    """Construct an `AnthropicClient` configured for Claude Haiku 4.5.
+
+    `max_output_tokens` resolves from `SCHEMABRAIN_HAIKU_MAX_OUTPUT_TOKENS`
+    when set, falling back to the package default (see
+    `_HAIKU_DEFAULT_MAX_OUTPUT_TOKENS`).
+    """
     return AnthropicClient(
         model=_HAIKU_45_MODEL,
         api_key=api_key,
         client=client,
-        max_output_tokens=_HAIKU_DEFAULT_MAX_OUTPUT_TOKENS,
+        max_output_tokens=_resolve_max_output_tokens(
+            _HAIKU_MAX_OUTPUT_TOKENS_ENV, _HAIKU_DEFAULT_MAX_OUTPUT_TOKENS
+        ),
     )
 
 
@@ -152,14 +225,20 @@ def anthropic_sonnet_46_client(
     """Construct an `AnthropicClient` configured for Claude Sonnet 4.6.
 
     Used by the enrichment pipeline for columns that the routing
-    heuristic flags as cryptic (e.g. `acct_dim_v3`, `pmt_fct_h`) where
-    Sonnet's deeper reasoning is worth the ~5x cost over Haiku.
+    heuristic flags as cryptic (e.g. `acct_dim_v3`, `pmt_fct_h`), and
+    by the wizard's stage-3/4 entity- and metric-suggestion code
+    paths (which depend on Sonnet's multi-candidate YAML responses).
+    `max_output_tokens` resolves from `SCHEMABRAIN_SONNET_MAX_OUTPUT_TOKENS`
+    when set, falling back to the package default (see
+    `_SONNET_DEFAULT_MAX_OUTPUT_TOKENS`).
     """
     return AnthropicClient(
         model=_SONNET_46_MODEL,
         api_key=api_key,
         client=client,
-        max_output_tokens=_SONNET_DEFAULT_MAX_OUTPUT_TOKENS,
+        max_output_tokens=_resolve_max_output_tokens(
+            _SONNET_MAX_OUTPUT_TOKENS_ENV, _SONNET_DEFAULT_MAX_OUTPUT_TOKENS
+        ),
     )
 
 

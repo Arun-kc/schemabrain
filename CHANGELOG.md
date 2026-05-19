@@ -7,7 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Per-tier env-var override for Anthropic max-output-tokens.** Two
+  new env vars expose the per-tier output cap as configuration
+  without requiring a code change:
+  - `SCHEMABRAIN_SONNET_MAX_OUTPUT_TOKENS` (default `4096`)
+  - `SCHEMABRAIN_HAIKU_MAX_OUTPUT_TOKENS` (default `200`)
+  Both follow the existing `SCHEMABRAIN_*` env-var convention. Parser
+  is strict: positive ASCII decimal integers only (with optional
+  leading `+`); rejects `"1_000"` (Python's underscore-separator silent
+  coercion), `"04096"` (leading zero), fullwidth unicode digits,
+  hex/octal prefixes, decimals, and negatives — any of which would
+  otherwise become a silently-smaller cap. Set-but-empty values emit a
+  one-shot stderr warning ("set but empty; using default N") rather
+  than silently falling through.
+
 ### Fixed
+- **Wizard stage-3 entity suggestion consistently truncated on the
+  bundled ecommerce fixture.** PR #66 caught the *crash* path —
+  stages 3 + 4 now surface a clean failed `StageOutcome` instead of an
+  unhandled traceback when Anthropic returns `stop_reason="max_tokens"`
+  — but the *underlying* issue was that
+  `_SONNET_DEFAULT_MAX_OUTPUT_TOKENS = 300` was sized for one-paragraph
+  column descriptions, not for the multi-candidate YAML that
+  `entities.suggest` and `metrics.suggest` produce. The default now
+  bumps to `4096` (still bounded against runaway responses, but
+  comfortably fits 10+ candidates with rationale + PII hints).
+  Discovered via the 2026-05-19 ecommerce-fixture smoke: a real
+  `ANTHROPIC_API_KEY` against the 7-table fixture hit `max_tokens` on
+  the very first stage-3 call on every new user's first
+  `schemabrain init` run. `_HAIKU_DEFAULT_MAX_OUTPUT_TOKENS = 200`
+  stays unchanged (sized correctly for per-column descriptions).
+  Regression-pinned via exact-equality assertions in
+  `tests/test_enrichment_anthropic.py::TestMaxOutputTokensConfiguration`.
 - **Three CLI smoke findings from the post-PR-#65 manual pass.** No
   CLI flag, JSON schema, or public API change.
   - **Wizard stage + abort `Panel` width** stretched unbounded with

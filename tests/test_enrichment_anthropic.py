@@ -13,6 +13,10 @@ from typing import Any
 import pytest
 
 from schemabrain.enrichment.anthropic_client import (
+    _HAIKU_DEFAULT_MAX_OUTPUT_TOKENS,
+    _HAIKU_MAX_OUTPUT_TOKENS_ENV,
+    _SONNET_DEFAULT_MAX_OUTPUT_TOKENS,
+    _SONNET_MAX_OUTPUT_TOKENS_ENV,
     AnthropicClient,
     anthropic_haiku_45_client,
     anthropic_sonnet_46_client,
@@ -282,14 +286,15 @@ class TestModelSelection:
         assert fake.messages.calls[0]["model"] == "claude-sonnet-4-6"
 
     def test_sonnet_factory_uses_higher_max_output_tokens(self) -> None:
-        # Sonnet handles cryptic columns and may need slightly longer
-        # responses; the factory bumps max_tokens accordingly. If this
-        # ever flips, Sonnet truncations would surface as mysterious
-        # max_tokens errors despite Haiku passing the same prompt.
+        # Sonnet handles cryptic columns AND multi-candidate
+        # entity/metric suggestion YAML, both of which need more room
+        # than Haiku's per-column-sentence budget. If this ever flips,
+        # Sonnet truncations would surface as mysterious max_tokens
+        # errors despite Haiku passing the same prompt. Per-tier caps
+        # are user-tunable via env vars (see
+        # `TestMaxOutputTokensConfiguration`).
         haiku = anthropic_haiku_45_client(api_key="sk-ant-fake")
         sonnet = anthropic_sonnet_46_client(api_key="sk-ant-fake")
-        # Access the protected attr — the public property only exposes
-        # the model. The token cap isn't user-tunable today, so a pin.
         assert sonnet._max_output_tokens > haiku._max_output_tokens
 
     def test_class_requires_explicit_model(self) -> None:
@@ -346,3 +351,178 @@ class TestErrorHandling:
         )
         with pytest.raises(RuntimeError, match="text"):
             client.complete(system="sys", user="user")
+
+
+class TestMaxOutputTokensConfiguration:
+    """Per-tier max-output-tokens defaults + env-var override surface.
+
+    The Sonnet default (4096) is the floor required by the 2026-05-19
+    ecommerce-fixture smoke: entity-suggestion YAML for a 7-table schema
+    needs more than 300 tokens to return a non-truncated response. The
+    Haiku default (200) is sized for the single-sentence column-
+    description workload. Both are user-tunable via env var without a
+    code change.
+    """
+
+    def test_sonnet_default_pins_at_4096(self) -> None:
+        # Regression pin (exact equality, not floor): if a future
+        # change drops below 4096, stage-3 entity-suggestion will
+        # silently truncate again — observed via the 2026-05-19
+        # ecommerce-fixture smoke. If a future change RAISES the cap
+        # (e.g. because the ecommerce fixture grows), update both the
+        # constant AND this pin in the same commit so the bump is
+        # intentional and reviewed, not a drift.
+        assert _SONNET_DEFAULT_MAX_OUTPUT_TOKENS == 4096
+
+    def test_haiku_default_pins_at_200(self) -> None:
+        # Regression pin (exact equality): per-column descriptions
+        # are budgeted at ≤30 words. 200 tokens fits comfortably;
+        # operators on verbose-naming schemas raise via the env var
+        # rather than changing this default.
+        assert _HAIKU_DEFAULT_MAX_OUTPUT_TOKENS == 200
+
+    def test_sonnet_env_var_overrides_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, "8192")
+        client = anthropic_sonnet_46_client(api_key="sk-ant-fake")
+        assert client._max_output_tokens == 8192
+
+    def test_haiku_env_var_overrides_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(_HAIKU_MAX_OUTPUT_TOKENS_ENV, "512")
+        client = anthropic_haiku_45_client(api_key="sk-ant-fake")
+        assert client._max_output_tokens == 512
+
+    def test_unset_env_var_uses_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, raising=False)
+        monkeypatch.delenv(_HAIKU_MAX_OUTPUT_TOKENS_ENV, raising=False)
+        sonnet = anthropic_sonnet_46_client(api_key="sk-ant-fake")
+        haiku = anthropic_haiku_45_client(api_key="sk-ant-fake")
+        assert sonnet._max_output_tokens == _SONNET_DEFAULT_MAX_OUTPUT_TOKENS
+        assert haiku._max_output_tokens == _HAIKU_DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_empty_env_var_uses_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # `export SCHEMABRAIN_SONNET_MAX_OUTPUT_TOKENS=` (set to empty
+        # string) should fall back to the default rather than raise.
+        monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, "")
+        client = anthropic_sonnet_46_client(api_key="sk-ant-fake")
+        assert client._max_output_tokens == _SONNET_DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_whitespace_only_env_var_uses_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, "   ")
+        client = anthropic_sonnet_46_client(api_key="sk-ant-fake")
+        assert client._max_output_tokens == _SONNET_DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_non_integer_env_var_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Fail fast at construction rather than send a string max_tokens
+        # to the API and chase an opaque 400.
+        monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, "lots")
+        with pytest.raises(ValueError, match=_SONNET_MAX_OUTPUT_TOKENS_ENV):
+            anthropic_sonnet_46_client(api_key="sk-ant-fake")
+
+    def test_zero_env_var_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, "0")
+        with pytest.raises(ValueError, match="positive"):
+            anthropic_sonnet_46_client(api_key="sk-ant-fake")
+
+    def test_negative_env_var_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, "-100")
+        with pytest.raises(ValueError, match="positive"):
+            anthropic_sonnet_46_client(api_key="sk-ant-fake")
+
+    def test_sonnet_env_var_does_not_affect_haiku(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The two tiers are independent — setting the Sonnet env var
+        # must not leak into the Haiku factory and vice versa.
+        monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, "8192")
+        monkeypatch.delenv(_HAIKU_MAX_OUTPUT_TOKENS_ENV, raising=False)
+        haiku = anthropic_haiku_45_client(api_key="sk-ant-fake")
+        assert haiku._max_output_tokens == _HAIKU_DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_haiku_env_var_does_not_affect_sonnet(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(_HAIKU_MAX_OUTPUT_TOKENS_ENV, "999")
+        monkeypatch.delenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, raising=False)
+        sonnet = anthropic_sonnet_46_client(api_key="sk-ant-fake")
+        assert sonnet._max_output_tokens == _SONNET_DEFAULT_MAX_OUTPUT_TOKENS
+
+    # --- Strict parser: reject silent-coercion footguns ---
+    # Python's `int()` accepts surprising shapes (`"1_000"`, `"+4096"`,
+    # unicode digits, leading zeros). For a token cap, silent coercion
+    # of `"1_000"` to 1000 RE-INTRODUCES truncation while the operator
+    # thinks they raised the cap. The parser uses a strict regex to
+    # turn these into loud ValueError at construction.
+
+    def test_underscore_separator_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # `int("1_000") == 1000` in Python. An operator who typed
+        # 1_000 expecting it to be rejected as garbage would get a
+        # 1000-token cap silently — BELOW the 4096 default — and
+        # see fresh truncation. Reject with a clear message.
+        monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, "1_000")
+        with pytest.raises(ValueError, match="positive decimal integer"):
+            anthropic_sonnet_46_client(api_key="sk-ant-fake")
+
+    def test_leading_plus_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Some operators (and many shell-export conventions) write
+        # `+4096`. Accept the leading `+` since it's unambiguous and
+        # the semantics match `4096` exactly.
+        monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, "+4096")
+        client = anthropic_sonnet_46_client(api_key="sk-ant-fake")
+        assert client._max_output_tokens == 4096
+
+    def test_leading_zero_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Reject `"04096"` — operator probably typed it by mistake
+        # (Python rejects it as an int literal even though `int()`
+        # accepts it from a string). Force the canonical form.
+        monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, "04096")
+        with pytest.raises(ValueError, match="positive decimal integer"):
+            anthropic_sonnet_46_client(api_key="sk-ant-fake")
+
+    def test_unicode_digit_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Fullwidth digits (U+FF10..FF19) fold to ASCII via int():
+        # int("\\uff14\\uff10\\uff19\\uff16") == 4096. Reject so a stray
+        # paste from a CJK-rendered terminal doesn't silently set a
+        # different cap than what the operator visually sees.
+        # The test string IS literal fullwidth — that's what we're
+        # rejecting. noqa is intentional: the whole point is that
+        # this string looks like ASCII but isn't.
+        fullwidth_4096 = "４０９６"  # noqa: RUF001 — fullwidth IS the test input
+        monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, fullwidth_4096)
+        with pytest.raises(ValueError, match="positive decimal integer"):
+            anthropic_sonnet_46_client(api_key="sk-ant-fake")
+
+    def test_decimal_point_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # `int("4096.0")` already raises in Python, but exercise the
+        # path through the regex to pin the operator-facing message.
+        monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, "4096.0")
+        with pytest.raises(ValueError, match="positive decimal integer"):
+            anthropic_sonnet_46_client(api_key="sk-ant-fake")
+
+    def test_hex_form_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # `int("0x1000")` raises in Python (without base=16). Pin that
+        # the regex also rejects it with the same operator-facing
+        # message rather than the cryptic "invalid literal" surface.
+        monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, "0x1000")
+        with pytest.raises(ValueError, match="positive decimal integer"):
+            anthropic_sonnet_46_client(api_key="sk-ant-fake")
+
+    def test_empty_env_var_warns_once_per_process(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # An operator who exports `SCHEMABRAIN_SONNET_MAX_OUTPUT_TOKENS=`
+        # (empty) and then debugs "why isn't my override taking effect?"
+        # benefits from a stderr breadcrumb. Once per process per var,
+        # not once per factory call — the wizard calls the factory per
+        # stage and we don't want to spam.
+        import schemabrain.enrichment.anthropic_client as mod
+
+        monkeypatch.setattr(mod, "_WARNED_EMPTY_ENV_VARS", set())
+        monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, "")
+
+        anthropic_sonnet_46_client(api_key="sk-ant-fake")
+        first = capsys.readouterr()
+        assert "SCHEMABRAIN_SONNET_MAX_OUTPUT_TOKENS" in first.err
+        assert "set but empty" in first.err
+
+        # Second factory call: no fresh warn (set tracks the var name).
+        anthropic_sonnet_46_client(api_key="sk-ant-fake")
+        second = capsys.readouterr()
+        assert second.err == ""
