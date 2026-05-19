@@ -6341,14 +6341,10 @@ def _resolve_url_source(
 
         value = os.environ.get(url_env)
         if value is None:
-            render_missing_secret_error(
-                env_var=url_env, state="unset", console=_stderr_console()
-            )
+            render_missing_secret_error(env_var=url_env, state="unset", console=_stderr_console())
             return None
         if value == "":
-            render_missing_secret_error(
-                env_var=url_env, state="empty", console=_stderr_console()
-            )
+            render_missing_secret_error(env_var=url_env, state="empty", console=_stderr_console())
             return None
         return value
     # Positional path. We accept it for backwards compatibility, but if
