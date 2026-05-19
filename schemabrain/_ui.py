@@ -352,6 +352,44 @@ def top_rule(
 _DEFAULT_DESIGN_WIDTH: Final[int] = 120
 
 
+def short_path(path: str | None) -> str:
+    """Collapse ``$HOME`` to ``~/`` in a filesystem path for display.
+
+    Returns the input unchanged when:
+
+    * ``path`` is ``None`` → returns the empty string (caller can
+      still concatenate without a guard);
+    * ``path`` is outside the user's home directory → renders
+      verbatim (a ``/tmp/...`` smoke path stays readable);
+    * ``path`` IS the home directory → renders as ``~``;
+    * ``Path.home()`` raises (rare — sandboxed env without a
+      resolvable home) → falls through to the raw path.
+
+    Used across the design's surfaces (doctor brand line, inspect
+    store brand line, dry-run cost-estimate panel ``store`` row)
+    so terminal recordings + CI logs + support screenshots never
+    surface the operator's OS username on the visible path —
+    consistent with what every other path-display surface in the
+    codebase already does.
+    """
+    if path is None:
+        return ""
+    from pathlib import Path
+
+    try:
+        home = Path.home()
+    except (OSError, RuntimeError):
+        return path
+    p = Path(path)
+    try:
+        relative = p.relative_to(home)
+    except ValueError:
+        return path
+    if str(relative) == ".":
+        return "~"
+    return f"~/{relative}"
+
+
 def console_render_width(console: Console, *, cap: int = _DEFAULT_DESIGN_WIDTH) -> int:
     """Return ``min(console.width, cap)`` with a defensive fallback.
 
@@ -381,6 +419,7 @@ __all__ = [
     "drift_glyph",
     "make_console",
     "pii_marker",
+    "short_path",
     "status_glyph",
     "top_rule",
 ]

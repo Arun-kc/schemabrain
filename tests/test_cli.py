@@ -1581,12 +1581,13 @@ class TestIndexDryRun:
         )
         assert exit_code == 0
         captured = capsys.readouterr()
-        # Dry-run summary format must mark the run as preview-only.
-        # Asserts on the grid renderer (v0.3.x+): the `Dry-run:` rule
-        # at the top, the `Est. cost:` row that only appears when LLM
-        # work is estimated, and the trailing safety affirmation.
-        assert "Dry-run:" in captured.err
-        assert "Est. cost:" in captured.err
+        # Design-system dry-run surface (PR #7+): the ``◆ plan``
+        # brand line replaces the old ``Dry-run:`` rule, the cost-
+        # estimate Panel carries an ``est. cost`` row when LLM work
+        # is estimated, and the trailing safety affirmation remains.
+        assert "◆ plan" in captured.err
+        assert "est. cost" in captured.err
+        assert "cost estimate" in captured.err
         assert "No changes made to the store." in captured.err
 
     def test_dry_run_creates_no_store_file(
@@ -1655,11 +1656,12 @@ class TestIndexDryRun:
 
         import re
 
-        # New grid format (v0.3.x+): `Tables:       N (M changed, ...)`.
-        # The `IndexResult.summary()` prose was dropped from the
-        # rendered output per the UX visual-hierarchy fold; the same
-        # counts are now read from the grid's `Tables:` row.
-        m = re.search(r"Tables:\s+(\d+) \((\d+) changed", dry_err)
+        # Design-system grid (PR #7+): the cost-estimate Panel's
+        # ``tables`` row carries the counts in the shape
+        # ``tables          N seen (M changed, ...)``. Rich may
+        # insert panel-border whitespace before the counts so we
+        # allow flexible inter-token whitespace.
+        m = re.search(r"tables\s+(\d+)\s+seen\s+\((\d+)\s+changed", dry_err)
         assert m is not None, f"dry-run summary did not match expected pattern: {dry_err!r}"
         dry_seen, dry_changed = int(m.group(1)), int(m.group(2))
 
@@ -1701,11 +1703,15 @@ class TestIndexDryRun:
         )
         assert exit_code == 0
         err = capsys.readouterr().err
-        # `--no-enrich` means no LLM would fire, so the `Est. cost:`
-        # row is absent (grid renderer suppresses it when
-        # descriptions_generated == 0).
-        assert "Est. cost:" not in err
-        assert "Dry-run:" in err
+        # `--no-enrich` means no LLM would fire, so the ``est. cost``
+        # row is absent (panel renderer suppresses it when
+        # descriptions_generated == 0) AND the Panel title flips to
+        # ``plan summary`` (not ``cost estimate``) — design HIGH
+        # fold from PR #7's UX review.
+        assert "est. cost" not in err
+        assert "◆ plan" in err
+        assert "plan summary" in err
+        assert "cost estimate" not in err
 
     def test_dry_run_quiet_emits_legacy_pipe_format(
         self,
@@ -1745,10 +1751,10 @@ class TestIndexDryRun:
         assert "Would index" in err
         assert "| source=" in err
         assert "store=" in err
-        # The Rich-rendered grid markers MUST NOT appear under
+        # The Rich-rendered design surface MUST NOT appear under
         # --quiet — that's the whole point of the legacy path.
-        assert "Dry-run:" not in err
-        assert "Tables:" not in err
+        assert "◆ plan" not in err
+        assert "cost estimate" not in err
 
     def test_dry_run_quiet_with_since_emits_legacy_freshness_line(
         self,
@@ -1838,7 +1844,10 @@ class TestIndexDryRun:
         )
         assert exit_code == 0
         err = capsys.readouterr().err
-        assert "Stale since" in err
+        # Design-system freshness audit line (PR #7+): the new
+        # ``→ freshness audit: stale since X · ...`` shape.
+        assert "freshness audit" in err
+        assert "stale since" in err
         assert "estimated refresh $" in err
 
     def test_dry_run_since_zero_stale_still_prints_line(
@@ -1875,7 +1884,10 @@ class TestIndexDryRun:
             ]
         )
         err = capsys.readouterr().err
-        assert "Stale since" in err
+        # Design-system freshness audit line — even zero-stale runs
+        # render the line so the operator can confirm the audit
+        # actually executed (not silently skipped).
+        assert "freshness audit" in err
         assert "0 columns" in err
 
     def test_dry_run_since_malformed_returns_two(
@@ -2039,15 +2051,16 @@ class TestIndexDryRun:
         )
         assert exit_code == 0
         err = capsys.readouterr().err
-        # Grid renderer: the `Tables:` row shows the 0-table count
-        # explicitly so the warning that follows isn't surprising.
-        # Regex pins the count to the `Tables:` row specifically — a
-        # naked `" 0 " in err` substring would spuriously match `0
-        # changed`, `0 unchanged`, `0 removed`, `0.0s` elapsed, or any
-        # future zero anywhere in the grid.
+        # Panel renderer (PR #7+): the ``tables`` row shows the
+        # 0-table count explicitly so the warning that follows
+        # isn't surprising. Regex pins the count to the ``tables``
+        # row specifically — a naked `" 0 " in err` substring
+        # would spuriously match `0 changed`, `0 unchanged`,
+        # `0 removed`, `0.0s` elapsed, or any future zero anywhere
+        # in the panel body.
         import re
 
-        assert re.search(r"Tables:\s+0\s+\(", err), f"grid Tables: 0 row missing: {err!r}"
+        assert re.search(r"tables\s+0\s+seen\s+\(", err), f"panel tables: 0 row missing: {err!r}"
         assert "no user-visible tables" in err
         assert "dry-run produced an empty diff" in err
 

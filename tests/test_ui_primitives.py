@@ -334,3 +334,45 @@ class TestMakeConsole:
         monkeypatch.delenv("NO_COLOR", raising=False)
         console = make_console()
         assert console.no_color is False
+
+
+class TestShortPath:
+    """Pins the ``$HOME → ~/`` collapse contract used across design surfaces."""
+
+    def test_collapses_home_prefix(self, tmp_path: pytest.TempPathFactory) -> None:
+        from pathlib import Path
+
+        from schemabrain._ui import short_path
+
+        home = str(Path.home())
+        result = short_path(f"{home}/.schemabrain/store.db")
+        assert result == "~/.schemabrain/store.db"
+
+    def test_returns_raw_when_outside_home(self) -> None:
+        from schemabrain._ui import short_path
+
+        # ``/tmp/...`` is outside ``$HOME`` — render verbatim.
+        result = short_path("/tmp/sb_smoke.db")
+        assert result == "/tmp/sb_smoke.db"
+
+    def test_returns_empty_string_when_none(self) -> None:
+        from schemabrain._ui import short_path
+
+        # ``None`` collapses to empty so callers can concatenate
+        # without a guard.
+        assert short_path(None) == ""
+
+    def test_collapses_exact_home_to_tilde(self) -> None:
+        from pathlib import Path
+
+        from schemabrain._ui import short_path
+
+        result = short_path(str(Path.home()))
+        assert result == "~"
+
+    def test_relative_path_renders_verbatim(self) -> None:
+        from schemabrain._ui import short_path
+
+        # ``./schemabrain.db`` is relative — not inside ``$HOME``
+        # via ``relative_to`` (raises ValueError) — render as-is.
+        assert short_path("./schemabrain.db") == "./schemabrain.db"
