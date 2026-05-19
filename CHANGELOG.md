@@ -21,8 +21,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   otherwise become a silently-smaller cap. Set-but-empty values emit a
   one-shot stderr warning ("set but empty; using default N") rather
   than silently falling through.
+- **`schemabrain index --source URL` flag.** Surface parity with
+  `check` / `inspect` / `init` / `serve`, which already accepted
+  `--source URL`. The positional `url` form still works for backwards
+  compatibility; passing BOTH `--source` AND the positional form
+  errors out (the resolution would otherwise be ambiguous). Same
+  argv-leakage trade-off as the other commands — prefer `--url-env`
+  for production use.
+- **Strict MCP-tool argument validation.** A `_StrictArgsFastMCP`
+  subclass intercepts the FastMCP dispatch seam and rejects calls
+  whose `arguments` dict contains keys not declared on the tool's
+  Pydantic arg model (FastMCP's auto-generated arg models default to
+  `extra="ignore"`, so a typo'd kwarg like `grain` for `time_grain`
+  on `get_metric` previously got silently dropped — the tool ran with
+  the typo missing and returned a structurally-valid wrong answer).
+  Rejected calls now raise `FastMCPToolError` so the client sees
+  `isError: true` AND write one audit row + one bus event (status
+  `error`, error_kind `invalid_argument`) so the rejection appears in
+  `schemabrain audit list` and events.jsonl alongside successful
+  calls. The internal `invalid_argument` ErrorKind never appears in a
+  `ToolResponse` returned to the agent — only in audit rows and bus
+  events for ops visibility.
+- **`find_relevant_tables` empty result now carries
+  `follow_up_hints=("describe_table",)`** instead of `null`.
+  Previously, a new user who ran the cost-free wizard (no `--enrich`)
+  and asked Claude "what tables have customer orders?" saw the agent
+  get an empty response with no actionable next step — a silent
+  dead-end. The hint now surfaces `describe_table` as the
+  embedding-independent fallback so the agent has somewhere to chain.
+- **`find_relevant_entities` ranks entity descriptions alongside
+  column embeddings.** Per-entity score is now
+  `MAX(column_cosine, description_cosine)` rather than `column_cosine`
+  alone. The smoke surfaced this as: query "customer" surfacing
+  `order` above `user` because the user-id column description in
+  orders scored higher on "customer" than the email/full_name
+  columns in users. With description-embedding ranking, the
+  LLM-generated one-sentence description (`"customer accounts and
+  identity"`) embedded against the query promotes `user` correctly.
+  Description embeddings are cached per process in `_DESC_EMBED_CACHE`
+  so the first call pays O(entities) embedder calls and subsequent
+  calls amortize to zero. Empty descriptions skip the embedder
+  entirely — no `embedder.embed("")` call. When the description
+  wins, `EntityHit.best_column` is set to the sentinel
+  `(entity description)` and `best_column_description` carries the
+  description text, so the agent sees WHY the entity surfaced
+  rather than a confusing column-name attribution.
 
 ### Fixed
+- **`schemabrain inspect --source <VARNAME>` AND
+  `schemabrain check --source <VARNAME>` no longer crash with an
+  unhandled `ValueError` traceback.** Pre-fix, passing a bare
+  env-var name (a common new-user mistake given `--url-env <VARNAME>`
+  exists alongside `--source URL`) crashed `_canonical_url` because
+  the bare string has no scheme. Both commands now route through the
+  existing `_resolve_url` helper which intercepts the `ValueError`
+  and emits a guided `url_invalid` block with exit code 2.
+  Discovered via the 2026-05-19 ecommerce-fixture smoke. Regression
+  test in `tests/test_smoke_2026_05_19_fixes.py::TestB2_*`.
+- **Bundled `ecommerce.sql` fixture now seeds orders / order_items /
+  product_categories rows.** Pre-fix, the fixture seeded only users
+  / addresses / products / categories — `orders` and `order_items`
+  were both 0-row. The `examples/ecommerce/` README walkthrough
+  Step 6 ("ask Claude for total_revenue") returned `null` against a
+  fresh fixture, leaving new users to assume the product was broken.
+  Three orders + four line items + two product_categories junction
+  rows ($869.93 total revenue across three users) now make the
+  marquee metrics (`total_revenue`, `order_count`,
+  `distinct_ordering_customers`, `average_order_value`,
+  `total_units_sold`) all return non-null sanity-checkable numbers.
+- **Doctor's `host_config_store_path` warning now explains WHY the
+  mismatch matters.** Pre-fix the warning just said "snippet
+  store-path X differs from Y" — true but unactionable; new users
+  saw it, didn't understand the impact, and ignored it. The new copy
+  spells out that the MCP host reads from the SNIPPET's store, not
+  the cwd's, so a mismatch means the host is talking to a different
+  workspace than the one running doctor.
+- **`schemabrain check` / `inspect` "no URL provided" error now
+  hints at `--url-env DATABASE_URL` when `$DATABASE_URL` is set to
+  a URL-shaped value.** Pre-fix, a user with DATABASE_URL exported
+  (the common convention) still had to guess the flag form. The
+  hint only fires when the env var contains a real-looking URL
+  (with `://`), so a misnamed-but-populated env var doesn't trigger
+  a misleading suggestion.
 - **Wizard stage-3 entity suggestion consistently truncated on the
   bundled ecommerce fixture.** PR #66 caught the *crash* path —
   stages 3 + 4 now surface a clean failed `StageOutcome` instead of an

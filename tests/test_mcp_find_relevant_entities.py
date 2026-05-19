@@ -80,10 +80,24 @@ def _emb(vec: tuple[float, ...]) -> ColumnEmbedding:
     return ColumnEmbedding(vector=vec, model="test-emb", dimension=len(vec))
 
 
-def _entity(name: str, qualified_table: str, *, origin: Origin = "manual") -> Entity:
+def _entity(
+    name: str,
+    qualified_table: str,
+    *,
+    origin: Origin = "manual",
+    description: str = "",
+) -> Entity:
+    """Default `description=""` so the column-ranking tests below don't
+    accidentally exercise the entity-description embedding path (which
+    would call `embedder.embed(description)` on an `_AxisEmbedder` that
+    only scripts query strings, raising KeyError). Tests that DO want
+    to exercise the description-embedding path pass `description` and
+    script the embedder accordingly — see the description-ranking
+    tests added with S6.
+    """
     return Entity(
         name=name,
-        description=f"A {name} entity",
+        description=description,
         binding=SingleTableBinding(qualified_table=qualified_table),
         identity="id",
         origin=origin,
@@ -642,6 +656,281 @@ def _build_test_server(tmp_path: Path) -> tuple[object, SQLiteStore]:
         embedder=_StubEmbedder(),
     )
     return server, store
+
+
+class TestS6DescriptionEmbeddingRanking:
+    """S6 ranking tests — entity-description embeddings contribute to
+    cosine ranking, taking MAX with the column-embedding signal per
+    entity. Pre-fix, only column embeddings ranked entities, so short
+    semantic names (`user`) lost to column-rich neighbors (`order`)
+    on cosine alone — the smoke surfaced this as: query "customer"
+    surfaced `order` above `user`.
+
+    The fix embeds each entity's `description` field at query time
+    (cached in `_DESC_EMBED_CACHE` for the serve process lifetime)
+    and promotes the entity above the column-max if the description
+    score is higher. When the description wins, `best_column` is set
+    to a sentinel value (`(entity description)`) and
+    `best_column_description` carries the entity's description text
+    so the agent sees WHY the entity surfaced.
+    """
+
+    def test_description_promotes_entity_above_column_max(
+        self,
+        populated_store: SQLiteStore,
+    ) -> None:
+        # Setup: users has column `email` (axis 0). The query
+        # `customer-question` is scripted to land on axis 1, so
+        # `users.email` (axis 0) scores 0 against the query. But the
+        # `user` entity carries a description that's scripted to
+        # axis 1 — so the description scores 1.0 against the query.
+        # `order` entity has no description (so it falls back to
+        # column scoring on `orders.user_id` which IS axis 1 → 1.0).
+        # Tiebreak is alphabetical: `order` < `user`, so `order` ranks
+        # first. The KEY assertion is that BOTH appear with score=1.0
+        # (i.e. the description path successfully promoted `user`).
+        from schemabrain.mcp.find_relevant_entities import (
+            _clear_description_embedding_cache,
+            find_relevant_entities_impl,
+        )
+
+        _clear_description_embedding_cache()
+        sid = "src1"
+        user_desc = "The customer who placed orders"
+        populated_store.write_entity(
+            _entity("user", "public.users", description=user_desc),
+            source_connection_id=sid,
+        )
+        populated_store.write_entity(
+            _entity("order", "public.orders"),  # description=""
+            source_connection_id=sid,
+        )
+        embedder = _AxisEmbedder(
+            {
+                "customer-question": _unit(1),  # the query
+                user_desc: _unit(1),  # the user entity description
+            }
+        )
+        hits = find_relevant_entities_impl(
+            store=populated_store,
+            source_connection_id=sid,
+            embedder=embedder,
+            query="customer-question",
+            limit=10,
+        )
+        names = {h.name for h in hits}
+        # Both must surface — `order` via column score, `user` via
+        # description score. Pre-fix only `order` would surface.
+        assert {"user", "order"}.issubset(names), (
+            f"description path failed to promote 'user'; got {names}"
+        )
+        user_hit = next(h for h in hits if h.name == "user")
+        # The user hit's score came from the description embedding.
+        assert user_hit.score == pytest.approx(1.0)
+
+    def test_description_match_sets_sentinel_best_column(
+        self,
+        populated_store: SQLiteStore,
+    ) -> None:
+        """When the description wins, `best_column` must be the
+        sentinel `(entity description)` and `best_column_description`
+        must carry the entity's description text so the agent sees
+        why the entity surfaced."""
+        from schemabrain.mcp.find_relevant_entities import (
+            _clear_description_embedding_cache,
+            find_relevant_entities_impl,
+        )
+
+        _clear_description_embedding_cache()
+        sid = "src1"
+        user_desc = "Customer accounts"
+        populated_store.write_entity(
+            _entity("user", "public.users", description=user_desc),
+            source_connection_id=sid,
+        )
+        # Query lands on axis 1 (no column match for users — email is
+        # axis 0, id is axis 3). Description is scripted to axis 1.
+        embedder = _AxisEmbedder(
+            {
+                "q": _unit(1),
+                user_desc: _unit(1),
+            }
+        )
+        hits = find_relevant_entities_impl(
+            store=populated_store,
+            source_connection_id=sid,
+            embedder=embedder,
+            query="q",
+            limit=10,
+        )
+        assert len(hits) == 1
+        assert hits[0].name == "user"
+        assert hits[0].best_column == "(entity description)"
+        assert hits[0].best_column_description == user_desc
+
+    def test_entity_with_no_column_match_surfaces_via_description(
+        self,
+        populated_store: SQLiteStore,
+    ) -> None:
+        """Edge case: an entity whose bound table's columns all score
+        zero against the query should still surface IF its description
+        scores. Pre-fix, the entity would be silently dropped because
+        only column-based scoring existed."""
+        from schemabrain.mcp.find_relevant_entities import (
+            _clear_description_embedding_cache,
+            find_relevant_entities_impl,
+        )
+
+        _clear_description_embedding_cache()
+        sid = "src1"
+        user_desc = "About users"
+        populated_store.write_entity(
+            _entity("user", "public.users", description=user_desc),
+            source_connection_id=sid,
+        )
+        # Query axis: 1. users.email axis: 0. users.id axis: 3. So
+        # all column cosines are 0 → no column-side contribution. The
+        # description (axis 1) is the ONLY route to surfacing `user`.
+        embedder = _AxisEmbedder(
+            {
+                "q": _unit(1),
+                user_desc: _unit(1),
+            }
+        )
+        hits = find_relevant_entities_impl(
+            store=populated_store,
+            source_connection_id=sid,
+            embedder=embedder,
+            query="q",
+            limit=10,
+        )
+        assert len(hits) == 1
+        assert hits[0].name == "user"
+
+    def test_description_embedding_is_cached(
+        self,
+        populated_store: SQLiteStore,
+    ) -> None:
+        """A serve process calls `find_relevant_entities` many times.
+        The description text doesn't change between calls, so the
+        embedding should be computed once and re-used. Tests the
+        process-local cache contract."""
+        from schemabrain.mcp.find_relevant_entities import (
+            _clear_description_embedding_cache,
+            find_relevant_entities_impl,
+        )
+
+        _clear_description_embedding_cache()
+        sid = "src1"
+        user_desc = "Account holders"
+        populated_store.write_entity(
+            _entity("user", "public.users", description=user_desc),
+            source_connection_id=sid,
+        )
+        embedder = _AxisEmbedder(
+            {
+                "q1": _unit(0),
+                "q2": _unit(1),
+                user_desc: _unit(2),
+            }
+        )
+        # First call: should embed the description.
+        find_relevant_entities_impl(
+            store=populated_store,
+            source_connection_id=sid,
+            embedder=embedder,
+            query="q1",
+            limit=10,
+        )
+        first_desc_calls = embedder.calls.count(user_desc)
+        # Second call with a different query: description should
+        # come from cache, NOT re-embedded.
+        find_relevant_entities_impl(
+            store=populated_store,
+            source_connection_id=sid,
+            embedder=embedder,
+            query="q2",
+            limit=10,
+        )
+        second_desc_calls = embedder.calls.count(user_desc)
+        assert first_desc_calls == 1, (
+            f"description should be embedded exactly once on first call; got {first_desc_calls}"
+        )
+        assert second_desc_calls == 1, (
+            "second call must read description from cache, not re-embed; "
+            f"got {second_desc_calls} total calls for {user_desc!r}"
+        )
+
+    def test_empty_description_skips_embedder_call(
+        self,
+        populated_store: SQLiteStore,
+    ) -> None:
+        """An entity with `description=""` (the unset default) must
+        NOT trigger an `embedder.embed("")` call — that's wasted work
+        and would pollute the cache with an empty-string entry."""
+        from schemabrain.mcp.find_relevant_entities import (
+            _clear_description_embedding_cache,
+            find_relevant_entities_impl,
+        )
+
+        _clear_description_embedding_cache()
+        sid = "src1"
+        populated_store.write_entity(
+            _entity("user", "public.users"),  # default description=""
+            source_connection_id=sid,
+        )
+        embedder = _AxisEmbedder({"q": _unit(0)})  # ONLY query scripted
+        # Should run without KeyError — if the impl tried to embed the
+        # empty description it would fail with "unscripted query: ''".
+        find_relevant_entities_impl(
+            store=populated_store,
+            source_connection_id=sid,
+            embedder=embedder,
+            query="q",
+            limit=10,
+        )
+        # Confirm: only the query was embedded.
+        assert embedder.calls == ["q"]
+
+    def test_zero_score_description_does_not_displace_column_match(
+        self,
+        populated_store: SQLiteStore,
+    ) -> None:
+        """If the description embedding is orthogonal to the query
+        (cosine = 0), it must NOT overwrite a positive column score.
+        Guards the `desc_score <= 0.0` short-circuit."""
+        from schemabrain.mcp.find_relevant_entities import (
+            _clear_description_embedding_cache,
+            find_relevant_entities_impl,
+        )
+
+        _clear_description_embedding_cache()
+        sid = "src1"
+        # Description on axis 2; query on axis 0; users.email on axis 0.
+        # Column score = 1.0; description score = 0.0. Column wins.
+        user_desc = "Orthogonal description"
+        populated_store.write_entity(
+            _entity("user", "public.users", description=user_desc),
+            source_connection_id=sid,
+        )
+        embedder = _AxisEmbedder(
+            {
+                "q": _unit(0),
+                user_desc: _unit(2),
+            }
+        )
+        hits = find_relevant_entities_impl(
+            store=populated_store,
+            source_connection_id=sid,
+            embedder=embedder,
+            query="q",
+            limit=10,
+        )
+        assert len(hits) == 1
+        # Column match should win — best_column is `email`, NOT the
+        # entity-description sentinel.
+        assert hits[0].best_column == "email"
+        assert hits[0].score == pytest.approx(1.0)
 
 
 class TestEnvelopeEmpty:

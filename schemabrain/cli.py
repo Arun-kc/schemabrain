@@ -241,8 +241,17 @@ def main(argv: list[str] | None = None) -> int:
     # `SCHEMABRAIN_LOG_LEVEL` env var when no flag is passed.
     configure_logging(verbosity=args.verbose)
     if args.command == "index":
+        # `--source URL` and the positional `URL` form are surface-equivalent
+        # (both leak credentials into argv; both are deprecated in favor of
+        # --url-env). If both are supplied, error rather than guess.
+        if args.url is not None and args.source is not None:
+            print(
+                "error: pass the URL via --source OR positionally, not both",
+                file=sys.stderr,
+            )
+            return 2
         return _cmd_index(
-            positional_url=args.url,
+            positional_url=args.source or args.url,
             url_env=args.url_env,
             store_path=args.store_path,
             no_enrich=args.no_enrich,
@@ -515,6 +524,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "Embeds credentials in argv (visible to `ps`, shell history, journald) — "
         "use --url-env instead. The positional form still works for backwards "
         "compatibility but will emit a warning when the URL contains a password.",
+    )
+    p_index.add_argument(
+        "--source",
+        dest="source",
+        default=None,
+        help="DEPRECATED: source database URL passed as a named flag. Same "
+        "argv-leakage trade-off as the positional form; prefer --url-env. "
+        "Added for surface parity with `check` / `inspect` / `init` / `serve` "
+        "which already accept --source.",
     )
     p_index.add_argument(
         "--url-env",
@@ -5525,7 +5543,14 @@ def _cmd_check(
     if url is None:
         # _resolve_url_source already rendered a guided error.
         return 2
-    canonical = _canonical_url(url)
+    canonical = _resolve_url(url)
+    if canonical is None:
+        # Malformed URL — `_resolve_url` rendered a `url_invalid` /
+        # `url_wrong_driver` guided error. Without this branch, a
+        # bare-string mistake (e.g. `--source DATABASE_URL` instead of
+        # `--url-env DATABASE_URL`) crashes with an unhandled
+        # `ValueError` from `_canonical_url`.
+        return 2
     source_id = _make_source_id(url)
     store_p = Path(store_path)
     if not store_p.exists():
@@ -5614,6 +5639,13 @@ def _cmd_inspect(
     if positional_url is not None or url_env is not None:
         source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
         if source_url is None:
+            return 2
+        # Validate URL before handing to `_make_source_id` (which calls
+        # `_canonical_url` internally and would raise ValueError on a
+        # malformed URL — e.g. `--source DATABASE_URL` instead of
+        # `--url-env DATABASE_URL`). `_resolve_url` renders the
+        # canonical `url_invalid` guided error and returns None.
+        if _resolve_url(source_url) is None:
             return 2
         source_id = _make_source_id(source_url)
 
@@ -5842,13 +5874,33 @@ def _resolve_url_source(
         )
         return None
     if positional is None and url_env is None:
+        # If the user already has a URL in $DATABASE_URL (the most common
+        # convention), surface the exact recipe they probably wanted —
+        # `--url-env DATABASE_URL`. Without this hint, a first-time user
+        # who has DATABASE_URL set still has to guess which flag form to
+        # use. Note: we only mention the env var if it appears to be a
+        # real-looking URL (has a scheme + colon), not just non-empty,
+        # so a misnamed but populated env var doesn't trigger a
+        # misleading suggestion.
+        env_db = os.environ.get("DATABASE_URL", "")
+        has_likely_url_in_env = bool(env_db) and "://" in env_db
+        if has_likely_url_in_env:
+            fix = (
+                "your $DATABASE_URL looks like a URL — try `--url-env DATABASE_URL`. "
+                "Otherwise: re-run with --url-env VARNAME (where VARNAME holds the URL), "
+                "OR pass the URL positionally (less safe — leaks creds to argv)"
+            )
+        else:
+            fix = (
+                "re-run with --url-env VARNAME (where VARNAME holds the URL), "
+                "OR pass the URL positionally (less safe — leaks creds to argv)"
+            )
         _render_guided(
             GuidedError(
                 kind="url_source_missing",
                 message="no connection URL provided",
                 why="schemabrain needs a Postgres URL to reach your source database",
-                fix="re-run with --url-env VARNAME (where VARNAME holds the URL), "
-                "OR pass the URL positionally (less safe — leaks creds to argv)",
+                fix=fix,
                 next_step="see docs/setup.md for the canonical URL format",
             )
         )

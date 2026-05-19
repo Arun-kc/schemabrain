@@ -94,6 +94,13 @@ ErrorKind = Literal[
     "unreachable_entity",
     "invalid_time_grain",
     "grain_mismatch",
+    # MCP dispatch surface — used INTERNALLY by the strict-args
+    # rejection path to record unknown-kwargs calls in the audit
+    # table and event bus. The client sees a `FastMCPToolError`
+    # (isError: true) at the protocol layer; this kind never appears
+    # in a `ToolResponse` returned to the agent, only in audit rows
+    # and bus events for ops visibility.
+    "invalid_argument",
 ]
 
 # The subset of ErrorKinds that semantically support v1.1 Recovery
