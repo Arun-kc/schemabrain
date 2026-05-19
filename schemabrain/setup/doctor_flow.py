@@ -34,7 +34,6 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
-from rich.console import Console
 from sqlalchemy import create_engine, text
 
 from schemabrain.setup.checks import Check, CheckResult, render_json, run_checks
@@ -43,6 +42,7 @@ from schemabrain.setup.config_io import (
     read_mcp_config,
     schemabrain_entry_in,
 )
+from schemabrain.setup.doctor_render import render_doctor
 from schemabrain.setup.hosts import HostName, claude_desktop_config_path, is_postgres_url
 
 _STALE_AFTER_DAYS = 30
@@ -571,38 +571,12 @@ def _check_host_config_claude_code_unverifiable() -> Check:
 
 
 # ----- renderers -------------------------------------------------------------
-
-
-_GLYPHS: dict[str, str] = {
-    "pass": "[green]✓[/]",
-    "warn": "[yellow]⚠[/]",
-    "fail": "[red]✗[/]",
-}
-
-
-def render_doctor(result: CheckResult, *, console: Console) -> None:
-    """Render the result as a colored summary + per-check lines.
-
-    Output shape:
-
-        Schema Brain doctor — 3 pass, 2 warn, 0 fail
-
-          ✓ uvx_invocable          uvx is on PATH
-          ⚠ store_entity_count     no entities indexed yet
-                                   → run `schemabrain entities apply` or ...
-
-    Plain-text consoles get the same layout without color markup.
-    """
-    s = result.summary
-    console.print(
-        f"[bold]Schema Brain doctor[/] — {s.passed} pass, {s.warned} warn, {s.failed} fail"
-    )
-    console.print()
-    for c in result.checks:
-        glyph = _GLYPHS.get(c.outcome, c.outcome)
-        console.print(f"  {glyph} [bold]{c.name}[/]  {c.message}")
-        if c.suggested_next:
-            console.print(f"      [dim]→[/] {c.suggested_next}")
+#
+# The terminal renderer (``render_doctor``) lives in ``doctor_render``
+# so this module stays focused on check logic. It is re-exported here
+# so existing call sites (cli.py + downstream importers) can keep
+# ``from schemabrain.setup.doctor_flow import render_doctor`` without
+# churn.
 
 
 def render_doctor_json(result: CheckResult) -> str:

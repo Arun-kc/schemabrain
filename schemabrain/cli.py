@@ -4484,6 +4484,8 @@ def _cmd_doctor(
       - 2: operational refusal before doctor could run (e.g. --source
         + --url-env conflict, --url-env names an unset variable)
     """
+    import time as _time
+
     from schemabrain.setup.doctor_flow import doctor, render_doctor, render_doctor_json
 
     source_url: str | None = None
@@ -4492,18 +4494,24 @@ def _cmd_doctor(
         if source_url is None:
             # Guided error already rendered to stderr.
             return 2
+    started = _time.perf_counter()
     result = doctor(
         source_url=source_url,
         store_path=Path(store_path),
         host=host,  # type: ignore[arg-type]
     )
+    elapsed_ms = int((_time.perf_counter() - started) * 1000)
     if json_output:
-        # JSON to stdout — clean pipe target.
+        # JSON to stdout — clean pipe target. ``elapsed_ms`` is
+        # deliberately not folded into the JSON contract — the doctor
+        # JSON shape is frozen at ``{checks, summary, exit_code}`` so
+        # CI pipelines grepping against it don't break on the addition
+        # of a presentation-only field.
         sys.stdout.write(render_doctor_json(result))
     else:
         # Human-readable to stderr so users can pipe stdout cleanly
         # in mixed-output scripts.
-        render_doctor(result, console=_stderr_console())
+        render_doctor(result, console=_stderr_console(), elapsed_ms=elapsed_ms)
     return result.exit_code
 
 
