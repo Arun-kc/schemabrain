@@ -27,15 +27,15 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Annotated, Any
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Annotated, Any, TypeAlias
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError as FastMCPToolError
-from mcp.types import ToolAnnotations
+from mcp.types import ContentBlock, ToolAnnotations
 from pydantic import Field
 
-from schemabrain.audit.writer import AuditWriter, build_audit_row
+from schemabrain.audit.writer import AuditWriter
 from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
 from schemabrain.mcp._helpers import _MAX_IDENT_LEN
@@ -77,12 +77,25 @@ from schemabrain.mcp.shapes import (
 )
 from schemabrain.mcp.suggest_joins import suggest_joins_impl
 from schemabrain.observability import (
-    Event,
     EventBus,
     EventRedactor,
     NullEventBus,
     instrument,
-    now_iso_utc,
+)
+
+# Re-use the same private OSError-vs-Exception-split helpers that
+# `instrument()` uses for successful tool calls. We import the
+# underscored helpers (rather than re-implementing) so the rejection
+# path gets the same dedup-once-for-OSError + log-every-time-for-
+# programming-bug split — without forcing those helpers into the
+# public observability surface area. If their signatures change, the
+# rejection path follows. Reviewed in the 2026-05-19 fold pass as the
+# convergent HIGH (python-reviewer + silent-failure-hunter both
+# flagged the original hand-rolled try/except for losing the OSError
+# distinction).
+from schemabrain.observability.instrument import (
+    _safe_audit_write,
+    _safe_emit,
 )
 from schemabrain.pii import PIICategory
 from schemabrain.semantic.compiler import (
@@ -185,6 +198,13 @@ def _build_rejection_response(err_msg: str) -> ToolResponse[None]:
     )
 
 
+# Hook fired on every unknown-kwargs rejection. Tuple is
+# `(tool_name, arguments_sent, error_message)` — named via TypeAlias
+# (vs inline `Callable[...]`) so callers see the parameter intent
+# without re-reading the subclass docstring.
+RejectionHook: TypeAlias = Callable[[str, dict[str, Any], str], None]
+
+
 class _StrictArgsFastMCP(FastMCP):
     """FastMCP subclass that rejects unknown kwargs at the dispatch
     seam, and forwards each rejection to a caller-supplied hook so it
@@ -211,7 +231,7 @@ class _StrictArgsFastMCP(FastMCP):
     def __init__(
         self,
         *args: Any,
-        on_rejected: Callable[[str, dict[str, Any], str], None] | None = None,
+        on_rejected: RejectionHook | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -221,10 +241,13 @@ class _StrictArgsFastMCP(FastMCP):
         self,
         name: str,
         arguments: dict[str, Any],
-    ) -> Any:
+    ) -> Sequence[ContentBlock] | dict[str, Any]:
         tool = self._tool_manager.get_tool(name)
         # If the tool isn't registered we let the parent raise its
         # standard "Unknown tool" — no extra-kwarg check applies.
+        # `tool.fn_metadata` is non-optional in the upstream FastMCP
+        # type (`FuncMetadata`, always populated by `Tool.from_function`)
+        # so we read `arg_model.model_fields` directly without a guard.
         if tool is not None and isinstance(arguments, dict):
             declared = set(tool.fn_metadata.arg_model.model_fields.keys())
             extras = sorted(set(arguments.keys()) - declared)
@@ -295,49 +318,36 @@ def build_server(
         events.jsonl would silently omit rejected calls — exactly the
         visibility gap S4 calls out.
 
-        Failures here NEVER propagate: a broken audit/bus must not
-        amplify the original validation error. Errors are logged once
-        per (sink, tool) per process so a repeated misconfiguration
-        doesn't flood logs.
+        Delegates to `_safe_audit_write` and `_safe_emit` so the
+        rejection path gets the same OSError-vs-Exception split as
+        instrumented successful calls (OSError dedup'd once per
+        (sink, tool); programming bugs printed to stderr every time
+        so a fresh contributor sees the regression immediately).
+
+        `args=()` + `kwargs=arguments` matches FastMCP's normal
+        kwargs-only dispatch shape, so the redactor sees the same
+        envelope it sees on successful calls. `duration_ms=0.0`
+        because the rejection short-circuits BEFORE the tool body
+        runs — there's no meaningful timing to record.
         """
         synthetic = _build_rejection_response(err_msg)
         if audit_writer is not None:
-            try:
-                draft = build_audit_row(
-                    tool_name=name,
-                    source_connection_id=source_connection_id,
-                    response=synthetic,
-                )
-                audit_writer.write(draft)
-            except Exception as exc:
-                _logger.warning(
-                    "audit write for rejected call to %s failed: %s: %s",
-                    name,
-                    type(exc).__name__,
-                    exc,
-                )
-        try:
-            args_summary = _redactor.redact(arguments)
-            _bus.emit(
-                Event(
-                    timestamp=now_iso_utc(),
-                    server_session_id=_session_id,
-                    kind="tool_call",
-                    tool_name=name,
-                    args_summary=args_summary,
-                    status="error",
-                    error_kind="invalid_argument",
-                    duration_ms=0.0,
-                    result_summary={"rejected_keys": sorted(set(arguments.keys()))},
-                )
+            _safe_audit_write(
+                writer=audit_writer,
+                tool_name=name,
+                source_connection_id=source_connection_id,
+                response=synthetic,
             )
-        except Exception as exc:
-            _logger.warning(
-                "bus emit for rejected call to %s failed: %s: %s",
-                name,
-                type(exc).__name__,
-                exc,
-            )
+        _safe_emit(
+            bus=_bus,
+            redactor=_redactor,
+            tool_name=name,
+            server_session_id=_session_id,
+            args=(),
+            kwargs=arguments,
+            response=synthetic,
+            duration_ms=0.0,
+        )
 
     app = _StrictArgsFastMCP(
         _SERVER_NAME,

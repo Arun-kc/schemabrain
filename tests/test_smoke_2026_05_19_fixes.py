@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from collections.abc import Generator
 from pathlib import Path
 
@@ -369,8 +370,6 @@ class TestS3S4_StrictArgsRejectionPath:
             )
         # The audit writer persisted one row for the rejected call;
         # status=error and tool=describe_table mark it for ops.
-        import sqlite3
-
         conn = sqlite3.connect(audit_db)
         rows = list(
             conn.execute("SELECT tool_name, status FROM mcp_audit WHERE tool_name='describe_table'")

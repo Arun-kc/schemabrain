@@ -57,18 +57,25 @@ _BULK_FETCH_COLUMN_K = 10_000
 # Postgres identifiers per `_IDENT_RE` in `core/entity.py`).
 _ENTITY_DESCRIPTION_MATCH_LABEL = "(entity description)"
 
-# Process-local cache of `description text -> embedding vector`.
-# Embeddings are deterministic for the same `(embedder, text)` pair
-# (modulo ONNX nondeterminism the embedder itself warns about); the
-# cache key is text alone because a serve process has exactly one
-# `Embedder` instance shared by every tool call. Without the cache,
-# every `find_relevant_entities` invocation would re-embed every
-# entity description, costing ~O(entities * embedder_latency) per
-# call. Cache size is bounded in practice (~100 entities * ~400-dim
-# float32 = ~150KB per source) — small enough to skip an LRU eviction
-# policy at v1 scale. Cleared between tests via
-# `_clear_description_embedding_cache()`.
-_DESC_EMBED_CACHE: dict[str, np.ndarray] = {}
+# Process-local cache of `(embedder model name, description text) ->
+# embedding vector`. Embeddings are deterministic for the same
+# `(embedder, text)` pair (modulo ONNX nondeterminism the embedder
+# itself warns about); keying on `(model_name, text)` rather than
+# `text` alone keeps the cache correct when multiple `Embedder`
+# instances coexist in the same process (tests injecting two stub
+# embedders with overlapping description text, or a hypothetical
+# future multi-model deployment). A production serve process has
+# exactly one `Embedder` instance shared by every tool call, so
+# adding `model_name` is a no-cost correctness widening — same
+# cache hits in prod, no cross-instance bleed in tests.
+#
+# Without the cache, every `find_relevant_entities` invocation would
+# re-embed every entity description, costing ~O(entities *
+# embedder_latency) per call. Cache size is bounded in practice
+# (~100 entities * ~400-dim float32 = ~150KB per source) — small
+# enough to skip an LRU eviction policy at v1 scale. Cleared between
+# tests via `_clear_description_embedding_cache()`.
+_DESC_EMBED_CACHE: dict[tuple[str, str], np.ndarray] = {}
 
 
 def _clear_description_embedding_cache() -> None:
@@ -80,15 +87,16 @@ def _clear_description_embedding_cache() -> None:
 
 
 def _get_description_embedding(embedder: Embedder, text: str) -> np.ndarray:
-    """Embed `text` once per process and cache the result.
+    """Embed `text` once per (model_name, text) and cache the result.
 
     Returns a float32 numpy array of length `embedder.dimension`.
     """
-    cached = _DESC_EMBED_CACHE.get(text)
+    key = (embedder.model_name, text)
+    cached = _DESC_EMBED_CACHE.get(key)
     if cached is not None:
         return cached
     vec = np.asarray(embedder.embed(text), dtype=np.float32)
-    _DESC_EMBED_CACHE[text] = vec
+    _DESC_EMBED_CACHE[key] = vec
     return vec
 
 
@@ -172,8 +180,11 @@ def find_relevant_entities_impl(
     # Zero-norm query → no direction → no signal. Mirror the
     # `find_relevant_tables` translation so an embedder that emits a
     # degenerate vector returns an empty result instead of crashing
-    # the MCP call.
-    if float(np.linalg.norm(np.asarray(query_vec, dtype=np.float32))) == 0.0:
+    # the MCP call. Cache the float32 conversion in `query_np` —
+    # the description-scoring loop below needs the same array for
+    # cosine, and a second `np.asarray` allocation would be wasted.
+    query_np = np.asarray(query_vec, dtype=np.float32)
+    if float(np.linalg.norm(query_np)) == 0.0:
         return []
 
     col_rows = store.search_embeddings_topk(
@@ -214,7 +225,6 @@ def find_relevant_entities_impl(
     # cosine-against-columns alone; the description signal restores
     # the natural "customer" → user mapping that the LLM-generated
     # one-sentence description carries explicitly.
-    query_np = np.asarray(query_vec, dtype=np.float32)
     for (schema, table), entity in table_to_entity.items():
         if not entity.description:
             continue
