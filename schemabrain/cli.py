@@ -5471,10 +5471,12 @@ def _format_path_for_terminal(path: Path, *, max_width: int = 60) -> str:
 
 
 # Stages whose handlers commonly take long enough to need a visible
-# "I'm working" cue. Stages 1, 4, 5 are fast enough that a spinner
-# would flash and clear before the eye registers it; stages 2 and 3
-# routinely take 5-30s on real schemas.
-_SPINNER_STAGES: frozenset[str] = frozenset({"index", "entities"})
+# "I'm working" cue. Stages 1, 5 are fast enough that a spinner
+# would flash and clear before the eye registers it; stages 2, 3, 4
+# routinely take 5-60s on real schemas. Smoke 2026-05-19 surfaced
+# stage 4 looking frozen for ~56s without the spinner — adding
+# `metrics` here restores symmetry with stage 3.
+_SPINNER_STAGES: frozenset[str] = frozenset({"index", "entities", "metrics"})
 
 
 @contextlib.contextmanager

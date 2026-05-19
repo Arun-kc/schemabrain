@@ -985,40 +985,59 @@ class TestWizardRenderer:
     def test_stage_context_invokes_status_on_tty_for_slow_stages(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # On a TTY, slow stages (index, entities) get the spinner via
-        # console.status with the dots spinner.
+        # On a TTY, slow stages (index, entities, metrics) get the
+        # spinner via console.status with the dots spinner. `metrics`
+        # was added after smoke 2026-05-19 surfaced stage 4 looking
+        # frozen for ~56s; the test pins all three so a future
+        # regression here is loud.
         from schemabrain.cli import _wizard_stage_context
 
-        captured: dict[str, object] = {}
-
         class _RecordingStatus:
+            def __init__(self, sink: dict[str, object]) -> None:
+                self._sink = sink
+
             def __enter__(self) -> _RecordingStatus:
-                captured["entered"] = True
+                self._sink["entered"] = True
                 return self
 
             def __exit__(self, *exc: object) -> None:
-                captured["exited"] = True
+                self._sink["exited"] = True
 
         class _TtyConsole:
             is_terminal = True
 
+            def __init__(self, sink: dict[str, object]) -> None:
+                self._sink = sink
+
             def status(self, text: str, *, spinner: str) -> _RecordingStatus:
-                captured["text"] = text
-                captured["spinner"] = spinner
-                return _RecordingStatus()
+                self._sink["text"] = text
+                self._sink["spinner"] = spinner
+                return _RecordingStatus(self._sink)
 
-        monkeypatch.setattr("schemabrain.cli._stderr_console", lambda: _TtyConsole())
+        expected_labels = {
+            "index": "Index schema",
+            "entities": "Curate entities",
+            "metrics": "Curate metrics",
+        }
 
-        class _FakeStage:
-            name = "index"
+        for stage_name, expected_label in expected_labels.items():
+            captured: dict[str, object] = {}
+            monkeypatch.setattr(
+                "schemabrain.cli._stderr_console", lambda sink=captured: _TtyConsole(sink)
+            )
 
-        with _wizard_stage_context(_FakeStage()):
-            pass
+            class _FakeStage:
+                name = stage_name
 
-        assert captured["entered"] is True
-        assert captured["exited"] is True
-        assert captured["spinner"] == "dots"
-        assert "Index schema" in str(captured["text"])
+            with _wizard_stage_context(_FakeStage()):
+                pass
+
+            assert captured["entered"] is True, f"stage {stage_name!r} did not enter spinner"
+            assert captured["exited"] is True, f"stage {stage_name!r} did not exit spinner"
+            assert captured["spinner"] == "dots"
+            assert expected_label in str(
+                captured["text"]
+            ), f"stage {stage_name!r} label mismatch"
 
     def test_stage_context_unknown_stage_name_skips_spinner(
         self, monkeypatch: pytest.MonkeyPatch
