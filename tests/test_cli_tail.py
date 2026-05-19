@@ -204,6 +204,148 @@ class TestTailFlagResolution:
         assert names == ["from_flag"]
 
 
+class TestTailStorePathResolution:
+    """Smoke 2026-05-19: `tail --store-path` was rejected with an
+    unhelpful argparse "unrecognized arguments" error. Operators
+    reflexively pass `--store-path` (every other subcommand accepts
+    it). Accept it as a documented surface-parity flag and use it
+    as a convenience hint when `<store_dir>/events.jsonl` exists.
+    """
+
+    def test_store_path_accepted_without_explicit_events_path(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Sibling events.jsonl: tail should pick it up.
+        store_path = tmp_path / "schemabrain.db"
+        events_path = tmp_path / "events.jsonl"
+        store_path.touch()
+        _write_event(events_path, tool_name="from_store_sibling")
+        # No env var, no --events-path; --store-path alone must work.
+        monkeypatch.delenv("SCHEMABRAIN_EVENTS_PATH", raising=False)
+        exit_code = cli_main(
+            [
+                "tail",
+                "--no-follow",
+                "--json",
+                "--store-path",
+                str(store_path),
+                "--since",
+                "1h",
+            ]
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        names = [json.loads(ln)["tool_name"] for ln in captured.out.splitlines() if ln.strip()]
+        assert names == ["from_store_sibling"]
+
+    def test_store_path_ignored_when_no_sibling_events_file(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # No sibling events.jsonl → fall through to the default path.
+        # Tail against a non-existent default file is a no-op exit 0
+        # in --no-follow mode (see TestTailErrorHandling).
+        store_path = tmp_path / "schemabrain.db"
+        store_path.touch()
+        monkeypatch.delenv("SCHEMABRAIN_EVENTS_PATH", raising=False)
+        # Steer the default to a tmp location so we don't read the
+        # operator's real ~/.schemabrain/events.jsonl.
+        fake_default = tmp_path / "nonexistent_default.jsonl"
+        monkeypatch.setattr("schemabrain.cli._DEFAULT_EVENTS_PATH", str(fake_default))
+        exit_code = cli_main(
+            [
+                "tail",
+                "--no-follow",
+                "--json",
+                "--store-path",
+                str(store_path),
+                "--since",
+                "1h",
+            ]
+        )
+        assert exit_code == 0
+
+    def test_explicit_events_path_wins_over_store_path(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Both --store-path AND --events-path passed: explicit wins.
+        # Sibling events.jsonl exists but should be ignored.
+        store_path = tmp_path / "schemabrain.db"
+        sibling_events = tmp_path / "events.jsonl"
+        explicit_events = tmp_path / "explicit.jsonl"
+        store_path.touch()
+        _write_event(sibling_events, tool_name="from_sibling")
+        _write_event(explicit_events, tool_name="from_explicit")
+        monkeypatch.delenv("SCHEMABRAIN_EVENTS_PATH", raising=False)
+        cli_main(
+            [
+                "tail",
+                "--no-follow",
+                "--json",
+                "--store-path",
+                str(store_path),
+                "--events-path",
+                str(explicit_events),
+                "--since",
+                "1h",
+            ]
+        )
+        captured = capsys.readouterr()
+        names = [json.loads(ln)["tool_name"] for ln in captured.out.splitlines() if ln.strip()]
+        assert names == ["from_explicit"]
+
+    def test_resolve_helper_priority_order(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Pure-function test of `_resolve_tail_events_path` so the
+        # documented priority order is locked in without a real reader.
+        from schemabrain.cli import _DEFAULT_EVENTS_PATH, _resolve_tail_events_path
+
+        explicit = "/tmp/explicit.jsonl"  # nosec B108 — never opened
+        env_value = "/tmp/from_env.jsonl"  # nosec B108
+        store = tmp_path / "schemabrain.db"
+        sibling = tmp_path / "events.jsonl"
+        store.touch()
+        sibling.touch()
+
+        # 1. Explicit always wins.
+        monkeypatch.setenv("SCHEMABRAIN_EVENTS_PATH", env_value)
+        assert (
+            _resolve_tail_events_path(events_path=explicit, store_path=str(store))
+            == explicit
+        )
+
+        # 2. Env beats store-derived.
+        assert _resolve_tail_events_path(events_path=None, store_path=str(store)) == env_value
+
+        # 3. Store-derived when sibling exists.
+        monkeypatch.delenv("SCHEMABRAIN_EVENTS_PATH", raising=False)
+        assert _resolve_tail_events_path(events_path=None, store_path=str(store)) == str(
+            sibling
+        )
+
+        # 4. Falls back to default when nothing else applies.
+        store_no_sibling = tmp_path / "isolated" / "db.sqlite"
+        store_no_sibling.parent.mkdir()
+        store_no_sibling.touch()
+        assert (
+            _resolve_tail_events_path(events_path=None, store_path=str(store_no_sibling))
+            == _DEFAULT_EVENTS_PATH
+        )
+
+        # 5. No flags at all → default.
+        assert _resolve_tail_events_path(events_path=None, store_path=None) == _DEFAULT_EVENTS_PATH
+
+
 class TestTailErrorHandling:
     def test_bad_since_returns_exit_2(
         self,

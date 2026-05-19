@@ -415,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
             follow=args.follow,
             json_mode=args.json_mode,
             events_path=args.events_path,
+            store_path=args.store_path,
         )
     if args.command == "audit":
         if args.audit_action == "verify":
@@ -1602,6 +1603,27 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"Path to the JSONL events file written by `schemabrain serve`. "
         f"Default: $SCHEMABRAIN_EVENTS_PATH or {_DEFAULT_EVENTS_PATH}.",
+    )
+    # Smoke 2026-05-19: operators reflexively pass `--store-path` to
+    # `tail` (every other subcommand accepts it). Accept it here so the
+    # CLI doesn't surface a hostile `unrecognized arguments` error.
+    # The events JSONL is decoupled from the SQLite store by default
+    # (events go to `~/.schemabrain/events.jsonl`, store goes wherever
+    # the operator chose), so `--store-path` is only used as a
+    # convenience hint: if the operator wrote events alongside the
+    # store via `--events-path`, this flag lets `tail` discover them
+    # without re-typing the path. See `_resolve_tail_events_path`
+    # for the resolution order.
+    p_tail.add_argument(
+        "--store-path",
+        dest="store_path",
+        default=None,
+        help="Path to the SQLite store. Accepted for surface parity with "
+        "every other subcommand. `tail` reads from the events JSONL, "
+        "not the store, so this is only used as a convenience: when "
+        "`--events-path` is omitted AND a file named `events.jsonl` "
+        "exists in the store's directory, that file is preferred over "
+        "the default. Pass `--events-path PATH` to override directly.",
     )
 
     p_audit = sub.add_parser(
@@ -4893,16 +4915,51 @@ def _cmd_init(
     return 0
 
 
+def _resolve_tail_events_path(
+    *, events_path: str | None, store_path: str | None
+) -> str:
+    """Resolve `tail`'s events-JSONL path with the documented priority.
+
+    Priority order:
+
+    1. Explicit `--events-path` always wins.
+    2. `$SCHEMABRAIN_EVENTS_PATH` env var.
+    3. `<store_dir>/events.jsonl` IF `--store-path` was supplied AND
+       the file exists. Documented as a convenience for operators who
+       wrote events alongside the store; the default `serve`
+       configuration writes to `~/.schemabrain/events.jsonl` instead,
+       so the existence check keeps us from inventing a path that
+       isn't there.
+    4. Module-level `_DEFAULT_EVENTS_PATH`.
+
+    Pure function so the priority order is testable without spinning
+    a real reader.
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
+    if events_path:
+        return events_path
+    env_path = _os.environ.get("SCHEMABRAIN_EVENTS_PATH")
+    if env_path:
+        return env_path
+    if store_path:
+        candidate = _Path(store_path).expanduser().parent / "events.jsonl"
+        if candidate.exists():
+            return str(candidate)
+    return _DEFAULT_EVENTS_PATH
+
+
 def _cmd_tail(
     *,
     since: str,
     follow: bool,
     json_mode: bool,
     events_path: str | None,
+    store_path: str | None,
 ) -> int:
     """Run `schemabrain tail`: stream events from the JSONL bus file."""
     import json as _json
-    import os as _os
     import sys as _sys
     from pathlib import Path as _Path
 
@@ -4915,8 +4972,8 @@ def _cmd_tail(
         render_event_pretty,
     )
 
-    resolved_path = (
-        events_path or _os.environ.get("SCHEMABRAIN_EVENTS_PATH") or _DEFAULT_EVENTS_PATH
+    resolved_path = _resolve_tail_events_path(
+        events_path=events_path, store_path=store_path
     )
     path = _Path(resolved_path).expanduser()
     try:
