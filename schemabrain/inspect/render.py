@@ -6,24 +6,37 @@ render the same dataclasses differently.
 
 Two surfaces:
 
-  - `render_summary` — no-arg `inspect` view (counts + grouped tree)
-  - `render_entity_detail` — `inspect <name>` drill view
+  - `render_summary` — no-arg `inspect` view (brand line + tree
+    + 3 compact summary panels)
+  - `render_entity_detail` — `inspect <name>` drill view (brand
+    line + columns table + related/metrics)
 
 Both surfaces compose Rich's `Tree` (summary grouping) and `Table`
 (column / related-entity / anchored-metric grids). The Tables use
 `box.SIMPLE_HEAD` so column headers are underlined but row borders
 stay invisible — reads as a clean grid in a terminal without the
 boxed-in look of a default `Table()`.
+
+The brand lines (``◆ store · <path>`` for summary, ``◆ <qualified
+table>`` for drill) are the design-system anchor that ties this
+surface to the wizard hero, doctor checklist, error renderers,
+and `init --help` formatter shipped in prior PRs of the
+migration arc. Pure visual layer — no domain logic in the
+brand line composition.
 """
 
 from __future__ import annotations
 
 from rich import box
+from rich.columns import Columns
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 from rich.tree import Tree
 
-from schemabrain._ui import pii_marker
+from schemabrain._ui import GLYPH_BRAND, GLYPH_SEP, pii_marker, short_path
+from schemabrain.core.entity import Entity
 from schemabrain.inspect.engine import (
     AnchoredMetric,
     EntityColumnDetail,
@@ -36,13 +49,22 @@ from schemabrain.inspect.engine import (
 # the rendered label vocabulary lives in one place across the CLI
 # (today `inspect`; soon `doctor` and `audit` callers).
 
+# How many comma-separated names render in each summary panel before
+# we collapse to `name · name · … (N more)`. 12 strikes the balance
+# between giving the eye real signal (a handful of representative
+# names) and not hijacking the panel for a list that the operator
+# should drill into with `inspect <name>` anyway.
+_SUMMARY_PANEL_NAME_LIMIT: int = 12
 
-def render_summary(summary: StoreSummary, *, console: Console) -> None:
+
+def render_summary(
+    summary: StoreSummary, *, console: Console, store_path: str | None = None
+) -> None:
     """Render the no-arg `inspect` summary.
 
     Shape:
 
-        Schema Brain inspect
+        ◆ store · ~/.schemabrain/acme/store.db
         7 tables · 30 columns · 3 entities · 1 metric · 1 join
 
         Definitions
@@ -55,14 +77,26 @@ def render_summary(summary: StoreSummary, *, console: Console) -> None:
         └── Joins (1)
             └── customer_orders
 
+        ╭ entities · 3 ╮  ╭ metrics · 1 ╮  ╭ joins · 1 ╮
+        │ customer ·   │  │ total_       │  │ customer_  │
+        │ order ·      │  │ revenue      │  │ orders     │
+        │ product      │  │              │  │            │
+        ╰──────────────╯  ╰──────────────╯  ╰────────────╯
+
         Drill into one: schemabrain inspect <name>
 
     An empty store gets a one-line hint at the bottom directing the
     operator to `entities apply` or `entities suggest`. Empty branches
     are omitted from the tree so a store with entities but no metrics
     does not render an empty "Metrics" subtree.
+
+    ``store_path`` is the local SQLite store path; rendered in the
+    brand line so an operator running `inspect` against multiple
+    stores can tell them apart at a glance. ``None`` omits the path
+    suffix — useful in tests + future hosted-control-plane callers
+    that don't have a single canonical store-on-disk path.
     """
-    console.print("[bold]Schema Brain inspect[/]")
+    console.print(_compose_summary_brand_line(store_path))
     # `column_count is None` is the cross-source sentinel — render
     # as "—" rather than 0 so the operator can tell "unknown" from
     # "no columns indexed." Pluralisation logic only applies when
@@ -108,7 +142,79 @@ def render_summary(summary: StoreSummary, *, console: Console) -> None:
     console.print(tree)
     console.print()
 
+    console.print(Columns(_build_summary_panels(summary), equal=True, expand=True))
+    console.print()
+
     console.print("[dim]Drill into one: `schemabrain inspect <name>`[/]")
+
+
+def _compose_summary_brand_line(store_path: str | None) -> Text:
+    """``◆ store · <path>`` brand line.
+
+    Cyan brand glyph + bold ``store`` label + dim path. Matches the
+    design's surface header (handoff bundle
+    ``cli/operator.jsx:53``). The path renders through
+    ``_ui.short_path`` so a user-home prefix collapses to ``~/`` —
+    consistent with the doctor renderer's brand line and the
+    dry-run cost-estimate panel's ``store`` row. Without the
+    collapse, terminal recordings + CI logs + support
+    screenshots would leak the operator's OS username on the
+    visible path.
+    """
+    text = Text()
+    text.append(GLYPH_BRAND, style="cyan")
+    text.append(" ")
+    text.append("store", style="bold")
+    if store_path:
+        text.append(f" {GLYPH_SEP} ", style="bright_black")
+        text.append(short_path(store_path), style="dim")
+    return text
+
+
+def _build_summary_panels(summary: StoreSummary) -> list[Panel]:
+    """Build the 3 ``entities`` / ``metrics`` / ``joins`` summary panels.
+
+    Always renders three panels even when a category is empty —
+    matches the design's mock (handoff bundle
+    ``cli/operator.jsx:66-74``) which keeps the grid balanced so
+    an empty-state surface teaches the operator what they don't
+    have yet (``metrics · 0  (none yet)``). The hollow-panel
+    concern that drove the prior "skip empty" version is
+    addressed by rendering an explicit ``(none yet)`` body so
+    the panel reads as intentional empty-state, not a UI glitch.
+    """
+    return [
+        _summary_panel("entities", summary.entity_names),
+        _summary_panel("metrics", summary.metric_names),
+        _summary_panel("joins", summary.join_names),
+    ]
+
+
+def _summary_panel(label: str, names: tuple[str, ...]) -> Panel:
+    """One ``label · count`` panel summarising a definition family.
+
+    Renders ``(none yet)`` body for empty categories so the
+    three-panel grid stays balanced — see ``_build_summary_panels``
+    docstring for the design rationale.
+    """
+    if names:
+        visible = list(names[:_SUMMARY_PANEL_NAME_LIMIT])
+        extra = len(names) - len(visible)
+        body_parts = visible[:]
+        if extra > 0:
+            body_parts.append(f"… ({extra} more)")
+        body = " · ".join(body_parts)
+    else:
+        body = "[dim](none yet)[/]"
+    # Explicit ``Text`` construction (not f-string markup) so an
+    # accidental bracket character in ``label`` wouldn't be
+    # interpreted as a Rich style directive. Label values are
+    # hardcoded today (``entities``/``metrics``/``joins``) but
+    # the explicit form documents the safe pattern for callers.
+    title = Text()
+    title.append(label, style="dim")
+    title.append(f" · {len(names)}", style="bold")
+    return Panel(body, title=title, title_align="left", padding=(0, 1))
 
 
 def render_entity_detail(detail: EntityDetail, *, console: Console) -> None:
@@ -116,12 +222,9 @@ def render_entity_detail(detail: EntityDetail, *, console: Console) -> None:
 
     Shape:
 
-        Entity: customer
-        ────────────────────────────────────────────────────────────
+        ◆ public.customers · entity:customer · binding id
+
         Description:  A registered user who can place orders.
-        Binding:      public.customers
-        Identity:     id
-        Origin:       manual
 
         Columns:
           ┃ Name   ┃ Type    ┃ Null      ┃ Flags         ┃ PII
@@ -138,22 +241,55 @@ def render_entity_detail(detail: EntityDetail, *, console: Console) -> None:
 
         Anchored metrics:
           (none)
+
+    The brand line replaces the old ``Entity: <name>`` +
+    dashed-rule pair. Columns / related / metrics tables are
+    unchanged — the data shape they render is what operators have
+    been grepping CI logs for since v0.2.x and we don't reshape
+    it inside this PR.
     """
     entity = detail.entity
-    console.print(f"[bold]Entity:[/] {entity.name}")
-    console.print("─" * 60)
+    console.print(_compose_entity_brand_line(entity))
+    console.print()
     if entity.description:
         console.print(f"[dim]Description:[/]  {entity.description}")
-    console.print(f"[dim]Binding:[/]      {entity.qualified_table}")
-    console.print(f"[dim]Identity:[/]     {entity.identity}")
-    console.print(f"[dim]Origin:[/]       {entity.origin}")
-    console.print()
+        console.print()
 
     _render_columns(detail.columns, console=console)
     console.print()
     _render_related(detail.related_entities, console=console, this_entity=entity.name)
     console.print()
     _render_metrics(detail.anchored_metrics, console=console)
+
+
+def _compose_entity_brand_line(entity: Entity) -> Text:
+    """``◆ <qualified_table> · entity:<name> · binding <identity_col>`` brand line.
+
+    Pulls the entity's display essentials (qualified-table
+    binding, entity name as an ``entity:<name>`` tag mirroring the
+    summary tree, identity column) into one cyan-led line so the
+    drill view leads with identity rather than the old
+    ``Entity: <name>`` + chrome-rule pair. The qualified table
+    name carries schema + table so multi-schema stores stay
+    unambiguous.
+
+    Typed against the concrete ``Entity`` dataclass (not ``object``)
+    so a future attribute rename (eg ``qualified_table`` →
+    ``binding_table``) surfaces at mypy / pyright time rather than
+    silently rendering a hollow ``◆  · entity: · binding`` line.
+    """
+    text = Text()
+    text.append(GLYPH_BRAND, style="cyan")
+    text.append(" ")
+    text.append(entity.qualified_table, style="bold")
+    text.append(f" {GLYPH_SEP} ", style="bright_black")
+    text.append(f"entity:{entity.name}", style="green")
+    text.append(f" {GLYPH_SEP} ", style="bright_black")
+    text.append(f"binding {entity.identity}", style="dim")
+    if entity.origin != "manual":
+        text.append(f" {GLYPH_SEP} ", style="bright_black")
+        text.append(f"origin {entity.origin}", style="dim")
+    return text
 
 
 def _render_columns(

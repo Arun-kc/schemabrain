@@ -222,8 +222,8 @@ class TestRenderEntityDetailEdgeCases:
         )
         out = _capture(render_entity_detail, detail)
         assert "Description:" not in out
-        # Other fields still render.
-        assert "Binding:" in out and "public.users" in out
+        # Design brand line still names the bound table.
+        assert "public.users" in out
 
     def test_anchored_metric_without_time_dimension_renders_non_temporal(
         self,
@@ -256,3 +256,200 @@ class TestRenderEntityDetailEdgeCases:
         out = _capture(render_entity_detail, detail)
         assert "customer_count" in out
         assert "non-temporal" in out
+
+
+# ---------------------------------------------------------------------------
+# Design surface — brand line + summary panels (PR #7+)
+# ---------------------------------------------------------------------------
+
+
+class TestDesignBrandLineSummary:
+    """Pins the ``◆ store · <path>`` brand line + 3 compact panels."""
+
+    def _empty_but_populated_summary(self) -> StoreSummary:
+        return StoreSummary(
+            table_count=7,
+            column_count=30,
+            entity_count=2,
+            metric_count=1,
+            join_count=1,
+            entity_names=("customer", "order"),
+            metric_names=("revenue",),
+            join_names=("customer_orders",),
+        )
+
+    def test_brand_glyph_appears_in_summary(self) -> None:
+        out = _capture(render_summary, self._empty_but_populated_summary())
+        assert "◆" in out
+
+    def test_brand_line_includes_store_path(self) -> None:
+        out = _capture(
+            render_summary,
+            self._empty_but_populated_summary(),
+            store_path="/tmp/test/store.db",
+        )
+        assert "/tmp/test/store.db" in out
+
+    def test_brand_line_collapses_when_store_path_missing(self) -> None:
+        out = _capture(render_summary, self._empty_but_populated_summary())
+        # Brand line still emits the ◆ store header; just no path
+        # suffix when store_path is None.
+        assert "◆ store" in out
+
+    def test_old_header_no_longer_renders(self) -> None:
+        # Regression guard: the pre-PR-#7 ``Schema Brain inspect``
+        # plain-text header must not return on a future revert.
+        out = _capture(render_summary, self._empty_but_populated_summary())
+        assert "Schema Brain inspect" not in out
+
+    def test_summary_panel_entities_count_renders(self) -> None:
+        out = _capture(render_summary, self._empty_but_populated_summary())
+        # Each panel header shows ``label · N``. The 2-entity summary
+        # renders ``entities · 2`` in the panel chrome.
+        assert "entities" in out
+        assert "customer" in out
+        assert "order" in out
+
+    def test_summary_renders_all_three_panels_even_when_empty(self) -> None:
+        # Entities-only summary: ALL three panels still render —
+        # empty metrics/joins panels show ``(none yet)`` body so
+        # the 3-column grid stays balanced (matches the design's
+        # mock at ``cli/operator.jsx:66-74``). The "teach the
+        # operator what they don't have yet" affordance — folded
+        # in PR #7's round-2 review per UX feedback.
+        summary = StoreSummary(
+            table_count=1,
+            column_count=2,
+            entity_count=1,
+            metric_count=0,
+            join_count=0,
+            entity_names=("customer",),
+            metric_names=(),
+            join_names=(),
+        )
+        out = _capture(render_summary, summary)
+        # All three panel border-tops render.
+        assert out.count("╭") == 3
+        assert out.count("╰") == 3
+        # Empty categories show the ``(none yet)`` body.
+        assert "(none yet)" in out
+
+    def test_summary_panel_truncates_long_lists(self) -> None:
+        many_entities = tuple(f"e{i}" for i in range(20))
+        summary = StoreSummary(
+            table_count=1,
+            column_count=2,
+            entity_count=20,
+            metric_count=0,
+            join_count=0,
+            entity_names=many_entities,
+            metric_names=(),
+            join_names=(),
+        )
+        out = _capture(render_summary, summary)
+        # First 12 names visible; the rest collapse to "(N more)".
+        assert "e0" in out
+        assert "e11" in out
+        # The "more" trailer surfaces the omitted count.
+        assert "8 more" in out
+
+
+class TestDesignBrandLineDrill:
+    """Pins the ``◆ <qualified_table>`` drill brand line."""
+
+    def test_brand_glyph_appears(self) -> None:
+        detail = EntityDetail(
+            entity=_entity(),
+            columns=(),
+            related_entities=(),
+            anchored_metrics=(),
+        )
+        out = _capture(render_entity_detail, detail)
+        assert "◆" in out
+
+    def test_brand_line_names_qualified_table(self) -> None:
+        detail = EntityDetail(
+            entity=_entity(),
+            columns=(),
+            related_entities=(),
+            anchored_metrics=(),
+        )
+        out = _capture(render_entity_detail, detail)
+        assert "public.users" in out
+
+    def test_brand_line_carries_entity_tag(self) -> None:
+        detail = EntityDetail(
+            entity=_entity(),
+            columns=(),
+            related_entities=(),
+            anchored_metrics=(),
+        )
+        out = _capture(render_entity_detail, detail)
+        # ``entity:<name>`` tag is the design's per-row signature.
+        assert "entity:customer" in out
+
+    def test_brand_line_carries_binding_identity(self) -> None:
+        detail = EntityDetail(
+            entity=_entity(),
+            columns=(),
+            related_entities=(),
+            anchored_metrics=(),
+        )
+        out = _capture(render_entity_detail, detail)
+        assert "binding id" in out
+
+    def test_old_entity_header_no_longer_renders(self) -> None:
+        # Regression guard: the pre-PR-#7 ``Entity: <name>`` +
+        # dashed-rule header must not return.
+        detail = EntityDetail(
+            entity=_entity(),
+            columns=(),
+            related_entities=(),
+            anchored_metrics=(),
+        )
+        out = _capture(render_entity_detail, detail)
+        assert "Entity: customer" not in out
+
+
+class TestEmptyStoreHint:
+    def test_empty_store_renders_hint_after_brand_line(self) -> None:
+        # A fresh store with zero definitions of any kind shows
+        # the "Run entities suggest/apply" hint at the bottom of
+        # the brand-line + counts header.
+        summary = StoreSummary(
+            table_count=0,
+            column_count=0,
+            entity_count=0,
+            metric_count=0,
+            join_count=0,
+            entity_names=(),
+            metric_names=(),
+            join_names=(),
+        )
+        out = _capture(render_summary, summary)
+        assert "◆ store" in out
+        assert "No semantic-layer definitions in the store yet" in out
+        assert "entities suggest" in out
+
+
+class TestNonManualEntityOrigin:
+    def test_origin_suggested_renders_in_brand_line(self) -> None:
+        # When an entity was suggested by the LLM (origin="llm") or
+        # imported (origin="dbt"), the brand line surfaces that as
+        # a final ``· origin <kind>`` segment so the operator knows
+        # the provenance. Manual-origin entities omit the segment.
+        suggested = Entity(
+            name="customer",
+            description="Suggested entity.",
+            binding=SingleTableBinding(qualified_table="public.users"),
+            identity="id",
+            origin="suggested",
+        )
+        detail = EntityDetail(
+            entity=suggested,
+            columns=(),
+            related_entities=(),
+            anchored_metrics=(),
+        )
+        out = _capture(render_entity_detail, detail)
+        assert "origin suggested" in out

@@ -186,8 +186,8 @@ class TestInspectSummary:
         exit_code = main(["inspect", "--store-path", str(empty_store)])
         assert exit_code == 0
         captured = capsys.readouterr()
-        # Header + zero-counts line; stdout stays clean.
-        assert "Schema Brain inspect" in captured.err
+        # Design-system brand line + zero-counts row; stdout stays clean.
+        assert "◆ store" in captured.err
         assert "0 tables" in captured.err
         assert "0 entities" in captured.err
         assert captured.out == ""
@@ -270,9 +270,11 @@ class TestInspectDrill:
         )
         assert exit_code == 0
         err = capsys.readouterr().err
-        assert "Entity: customer" in err
-        assert "Binding:" in err and "public.users" in err
-        assert "Identity:" in err and " id" in err
+        # Design brand line: ``◆ public.users · entity:customer · binding id``.
+        assert "◆" in err
+        assert "public.users" in err
+        assert "entity:customer" in err
+        assert "binding id" in err
         # Columns + section headers render.
         assert "Columns:" in err
         assert "Related entities:" in err
@@ -298,7 +300,9 @@ class TestInspectDrill:
         )
         assert exit_code == 0
         err = capsys.readouterr().err
-        assert "Entity: order" in err
+        # Design brand line names the entity in the ``entity:<name>``
+        # cyan/green tag adjacent to the qualified-table binding.
+        assert "entity:order" in err
         # Anchored metric rendered.
         assert "total_revenue" in err
         # Related entity rendered with cardinality + via-join hint.
@@ -342,8 +346,9 @@ class TestInspectDrill:
         exit_code = main(["inspect", "customer", "--store-path", str(path)])
         assert exit_code == 0
         err = capsys.readouterr().err
-        # Both Entity blocks rendered.
-        assert err.count("Entity: customer") == 2
+        # Both Entity blocks rendered — the ``entity:customer`` tag in
+        # the brand line is the per-entity signature.
+        assert err.count("entity:customer") == 2
 
     def test_drill_without_source_unknown_name_exits_one(
         self,

@@ -166,6 +166,7 @@ if TYPE_CHECKING:
     # whose runtime bodies still use lazy imports — keeps Rich and
     # the wizard module out of `cli.py`'s import graph for
     # subcommands that never enter the wizard renderer.
+    from rich.table import Table
     from rich.text import Text
 
     from schemabrain.setup.wizard import WizardResult
@@ -2102,6 +2103,69 @@ def _cmd_index_dry_run(
     return 0
 
 
+def _compose_dry_run_panel_body(
+    *,
+    result: IndexResult,
+    store_path: str,
+    elapsed_s: float,
+) -> Table:
+    """Build the body of the dry-run's ``cost estimate`` Panel.
+
+    Returns a Rich ``Table.grid`` laying out the 5-row k/v shape
+    the design specifies (tables / columns / cost / embeddings /
+    elapsed). Rows for zero-valued LLM / embedding counts are
+    omitted so a cost-free dry-run doesn't render hollow rows.
+    The ``store`` row's path renders through ``_ui.short_path``
+    so a user-home prefix collapses to ``~/`` — consistent with
+    the doctor renderer's brand line and the inspect store
+    brand line.
+
+    Lives outside ``_render_dry_run_report`` so the body builder
+    is independently testable — the renderer just composes the
+    returned Table into the surrounding Panel chrome.
+    """
+    from rich.table import Table
+
+    from schemabrain._ui import short_path
+
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(width=14, style="dim")  # label column (k)
+    grid.add_column()  # value column (v)
+    grid.add_column(style="bright_black")  # trailer column (meta)
+
+    grid.add_row(
+        "tables",
+        (
+            f"{result.tables_seen} seen "
+            f"({result.tables_changed} changed, "
+            f"{result.tables_unchanged} unchanged, "
+            f"{result.tables_removed} removed)"
+        ),
+        "",
+    )
+    grid.add_row(
+        "columns",
+        f"+{result.columns_added} / ~{result.columns_changed} / -{result.columns_removed}",
+        "",
+    )
+    if result.descriptions_generated > 0:
+        grid.add_row(
+            "est. cost",
+            f"[bold]${result.llm_cost_usd:.4f}[/]",
+            f"{result.descriptions_generated} description"
+            f"{'' if result.descriptions_generated == 1 else 's'}",
+        )
+    if result.embeddings_generated > 0:
+        grid.add_row(
+            "embeddings",
+            f"{result.embeddings_generated} estimated",
+            "",
+        )
+    grid.add_row("store", short_path(store_path), "")
+    grid.add_row("elapsed", f"{elapsed_s:.1f}s", "")
+    return grid
+
+
 def _render_dry_run_report(
     *,
     result: IndexResult,
@@ -2145,50 +2209,86 @@ def _render_dry_run_report(
             )
         return
 
+    # Lazy imports: this Rich-rendered path is only entered when
+    # ``--quiet`` is OFF and the dry-run completes. Importing at
+    # module top would charge every non-dry-run subcommand for
+    # nothing, since the rest of cli.py reaches Rich through the
+    # other lazy import sites established across the arc.
     from rich.console import Console
+    from rich.panel import Panel
+    from rich.text import Text
+
+    from schemabrain._ui import GLYPH_ARROW, GLYPH_BRAND, GLYPH_OK, GLYPH_SEP
 
     console = Console(stderr=True)
-    console.rule(f"[bold cyan]Dry-run:[/] {canonical}", align="left", style="cyan")
-    # Grid is the headline. An earlier draft also rendered the
-    # `IndexResult.summary(dry_run=True)` prose line above the grid,
-    # but it duplicated ~80% of the same numbers — the eye landed on
-    # prose, then re-read the grid. UX review (2026-05-19) called
-    # the duplication a visual-hierarchy bug; the grid is the
-    # information shape the user actually scans, so it stands alone.
-    console.print(
-        f"  [dim]Tables:[/]       {result.tables_seen} "
-        f"({result.tables_changed} changed, "
-        f"{result.tables_unchanged} unchanged, "
-        f"{result.tables_removed} removed)"
+
+    # Brand line — replaces the old ``console.rule()`` cyan rule with
+    # the design's ``◆ plan · <since> · M of N tables`` shape (handoff
+    # bundle ``cli/operator.jsx:IndexDryRun``). Source URL is shown
+    # in the body because the canonical form already redacts
+    # credentials.
+    brand = Text()
+    brand.append(GLYPH_BRAND, style="cyan")
+    brand.append(" ")
+    brand.append("plan", style="bold")
+    brand.append(f" {GLYPH_SEP} ", style="bright_black")
+    if since is not None:
+        brand.append(f"--since {since}", style="dim")
+        brand.append(f" {GLYPH_SEP} ", style="bright_black")
+    brand.append(f"{result.tables_seen} table", style="dim")
+    brand.append(f"{'' if result.tables_seen == 1 else 's'}", style="dim")
+    console.print(brand)
+    console.print(Text(f"  source: {canonical}", style="dim"))
+    console.print()
+
+    # Cost-estimate Panel — the design's hero block. 5-row k/v grid
+    # capturing what the dry-run actually computed; rows only render
+    # when their values are non-zero / meaningful so a no-LLM
+    # dry-run shows just the schema-level rows.
+    #
+    # Title adapts to the run's mode: ``plan summary`` for cost-free
+    # dry-runs (the body has no $ rows so a ``cost estimate`` title
+    # would mislead), ``cost estimate · haiku`` for ``--enrich``
+    # runs where the LLM cost is the load-bearing signal. Matches
+    # the design's mock (handoff bundle ``cli/operator.jsx:211``).
+    panel_body = _compose_dry_run_panel_body(
+        result=result,
+        store_path=store_path,
+        elapsed_s=elapsed_s,
     )
-    console.print(
-        f"  [dim]Columns:[/]      "
-        f"+{result.columns_added} / ~{result.columns_changed} / -{result.columns_removed}"
-    )
+    panel_title = Text()
+    panel_title.append(f"{GLYPH_OK} ", style="green")
     if result.descriptions_generated > 0:
-        console.print(
-            f"  [dim]Est. cost:[/]    [bold]${result.llm_cost_usd:.4f}[/] "
-            f"([dim]{result.descriptions_generated} descriptions[/])"
+        panel_title.append("cost estimate", style="bold")
+        panel_title.append(f" {GLYPH_SEP} ", style="bright_black")
+        panel_title.append("haiku", style="dim")
+    else:
+        panel_title.append("plan summary", style="bold")
+    console.print(
+        Panel(
+            panel_body,
+            title=panel_title,
+            title_align="left",
+            border_style="bright_black",
+            padding=(0, 1),
         )
-    if result.embeddings_generated > 0:
-        console.print(f"  [dim]Embeddings:[/]   {result.embeddings_generated} estimated")
-    console.print(f"  [dim]Store:[/]        {store_path}")
-    console.print(f"  [dim]Elapsed:[/]      {elapsed_s:.1f}s")
+    )
     console.print()
     # Safety affirmation kept as its own line — the "no side-effects"
-    # promise is the load-bearing signal of dry-run mode and must
-    # survive the visual-hierarchy refactor that dropped the prose
-    # summary above the grid.
+    # promise is the load-bearing signal of dry-run mode.
     console.print("[dim]No changes made to the store.[/]")
     if freshness is not None:
         console.print()
-        # Plain `print` so the "estimated refresh $X.XXXX" substring
-        # stays contiguous under non-TTY rendering. The labelled
-        # leading `Stale since` token reads identically when Rich
-        # strips markup, so the visual cost of skipping Rich here is
-        # nil.
+        # The design's freshness-audit line uses the ``→`` arrow glyph
+        # so the eye reads it as the next-action breadcrumb the dry-
+        # run is suggesting (refresh stale columns) rather than as
+        # a continuation of the cost panel above. Plain `print` so
+        # the "estimated refresh $X.XXXX" substring stays contiguous
+        # under non-TTY rendering — CI / scripts grep for this
+        # exact suffix.
         print(
-            f"  Stale since {since}: {freshness['stale_columns']} columns "
+            f"  {GLYPH_ARROW} freshness audit: stale since {since} · "
+            f"{freshness['stale_columns']} columns "
             f"across {freshness['stale_tables']} tables "
             f"(estimated refresh ${freshness['cost_usd']:.4f})",
             file=sys.stderr,
@@ -6178,7 +6278,7 @@ def _cmd_inspect(
         with SQLiteStore(store_p) as store:
             if name is None:
                 summary = build_summary(store=store, source_connection_id=source_id)
-                render_summary(summary, console=console)
+                render_summary(summary, console=console, store_path=store_path)
                 return 0
 
             # Drill mode. If no `--source` filter was supplied we walk

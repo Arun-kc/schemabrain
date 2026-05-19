@@ -8,6 +8,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **`inspect` + `index --dry-run` polished onto the design's
+  brand-line + panel vocabulary** — final design-shape PR in the
+  CLI design-system migration arc (PR #7; PRs #71/#72/#73 +
+  #4/#5/#6 prior). Three surfaces upgraded in one bundle:
+
+  - **`schemabrain inspect`** summary replaces the `Schema Brain
+    inspect` plain header with `◆ store · <path>` brand line.
+    Below the existing Definitions Tree, a balanced
+    3-Panel grid (`entities · N` / `metrics · N` / `joins · N`)
+    always renders — empty categories show `(none yet)` body so
+    the grid teaches operators what they don't have yet rather
+    than collapsing to a confusing solo panel.
+  - **`schemabrain inspect <entity>`** drill replaces
+    `Entity: <name>` + dashed rule with brand line
+    `◆ <qualified_table> · entity:<name> · binding <identity>`,
+    surfacing the entity's identity essentials on one scan line.
+    Non-manual origins (`suggested`, `dbt_import`) render an
+    additional `· origin <kind>` segment so provenance stays
+    visible.
+  - **`schemabrain index --dry-run`** replaces
+    `console.rule("Dry-run: <url>")` with brand line
+    `◆ plan · [--since X ·] N tables`. The 6-line k/v grid wraps
+    into a Rich `Panel`. The panel title adapts to the run mode:
+    `✓ plan summary` for cost-free dry-runs (so the title doesn't
+    mislead readers into expecting $ rows), `✓ cost estimate ·
+    haiku` for `--enrich` runs where LLM cost is the load-
+    bearing signal. The freshness audit line now leads with the
+    `→` arrow glyph so it reads as a next-action breadcrumb.
+
+  New shared helper `schemabrain._ui.short_path(p)` collapses
+  `$HOME` prefixes to `~/` in display paths — consistent across
+  the doctor brand line (PR #4) and the new `inspect` store
+  brand line + dry-run `store` row, so terminal recordings + CI
+  logs + support screenshots no longer leak the operator's OS
+  username. New `_compose_dry_run_panel_body` helper extracts
+  the cost-estimate grid construction into an independently-
+  testable pure function (`schemabrain/cli.py`).
+
+  The `--quiet` legacy pipe-delimited format for `index
+  --dry-run` is **unchanged** — CI scripts grepping `"Would
+  index"` / `"Stale since"` / `"| source="` substrings stay
+  working. Only the Rich-rendered (non-quiet) path takes the
+  design shape.
+
+  Tests in `tests/test_inspect_render.py` (+199 LOC, 14 new
+  layout pins covering brand lines + 3-panel grid + empty-state
+  body + `(none yet)` body + non-manual origin), new
+  `tests/test_dry_run_panel.py` (9 tests on the
+  `_compose_dry_run_panel_body` helper covering row suppression
+  + singular/plural grammar), `tests/test_ui_primitives.py` (+5
+  tests pinning the `short_path` `$HOME` collapse). 11 existing
+  test assertions flipped from old shape to design vocabulary
+  (`Schema Brain inspect` / `Entity: customer` / `Dry-run:` /
+  `Est. cost:` / `Stale since` (Rich path only) → `◆ store` /
+  `◆ public.users · entity:customer` / `◆ plan` / `est. cost`
+  (lowercased) / `→ freshness audit` (Rich path only)).
+
 - **`schemabrain init --help` re-rendered onto the design's
   grouped help surface** — fourth operator-visible win from the
   design-system migration arc (PR #6; PRs #71/#72/#73 + #4 + #5
