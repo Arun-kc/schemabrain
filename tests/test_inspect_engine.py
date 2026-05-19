@@ -219,6 +219,132 @@ class TestStoreSummary:
             summary.table_count = 1  # type: ignore[misc]
 
 
+# ----- multi-source dedup (smoke 2026-05-19 Bug 4) -------------------------
+
+
+class TestStoreSummaryMultiSource:
+    """Smoke 2026-05-19: an operator's pre-existing store carried 6
+    entities under an older source-id scheme; a fresh `init` wrote 6
+    NEW entities under the current source-id. `inspect` rendered all
+    12 names with no signal the same logical entities appeared twice.
+
+    These tests pin the new behavior:
+      1. Cross-source build (filter is None) dedupes entity / metric /
+         join names by name so the tree renders each once.
+      2. Cross-source counts mirror the deduped name counts (NOT the
+         raw row counts).
+      3. `source_connection_ids` lists every source that has data so
+         the renderer can compose its multi-source banner.
+      4. Scoped build (filter is a real source-id) preserves the
+         original v0 semantics — raw row counts equal distinct-name
+         counts under the `(source_connection_id, name)` PK.
+    """
+
+    @pytest.fixture
+    def _two_source_store(self, store: SQLiteStore) -> SQLiteStore:
+        # Seed two sources with overlapping entity / metric / join
+        # names. Mirrors the smoke-bug shape: pre-existing rows from
+        # an older `_canonical_url` scheme + fresh rows under the
+        # current scheme.
+        for sid in ("src_old_scheme_abc123", "src_new_scheme_def456"):
+            # Tables differ per source (two distinct schemas), so
+            # table-name dedup is exercised when the qualified names
+            # collide AND when they don't.
+            store.write_table(
+                Table(
+                    schema_name="public",
+                    name="users",
+                    columns=(
+                        _make_column(
+                            "id",
+                            table_name="users",
+                            data_type="bigint",
+                            nullable=False,
+                            pk=True,
+                            pos=1,
+                        ),
+                    ),
+                ),
+                source_connection_id=sid,
+            )
+            store.write_entity(
+                Entity(
+                    name="user",
+                    description=f"User from {sid}",
+                    binding=SingleTableBinding(qualified_table="public.users"),
+                    identity="id",
+                    origin="manual",
+                ),
+                source_connection_id=sid,
+            )
+            store.write_entity(
+                Entity(
+                    name="order",
+                    description=f"Order from {sid}",
+                    binding=SingleTableBinding(qualified_table="public.users"),
+                    identity="id",
+                    origin="manual",
+                ),
+                source_connection_id=sid,
+            )
+            store.write_metric(
+                Metric(
+                    name="total_revenue",
+                    description="Sum of revenue",
+                    entity="order",
+                    measure=MetricMeasure(agg="sum", column="id"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=sid,
+            )
+        return store
+
+    def test_cross_source_dedupes_entity_names(self, _two_source_store: SQLiteStore) -> None:
+        summary = build_summary(store=_two_source_store, source_connection_id=None)
+        # Two entities per source, each with the same names —
+        # cross-source view collapses to the distinct name set.
+        assert summary.entity_names == ("order", "user")
+        assert summary.entity_count == 2
+
+    def test_cross_source_dedupes_metric_names(self, _two_source_store: SQLiteStore) -> None:
+        summary = build_summary(store=_two_source_store, source_connection_id=None)
+        assert summary.metric_names == ("total_revenue",)
+        assert summary.metric_count == 1
+
+    def test_cross_source_dedupes_table_count(self, _two_source_store: SQLiteStore) -> None:
+        summary = build_summary(store=_two_source_store, source_connection_id=None)
+        # Both sources have public.users → one qualified name.
+        assert summary.table_count == 1
+
+    def test_cross_source_lists_every_source_id(self, _two_source_store: SQLiteStore) -> None:
+        summary = build_summary(store=_two_source_store, source_connection_id=None)
+        # Sorted ascending — matches the SQL ORDER BY in
+        # `list_distinct_source_connection_ids`.
+        assert summary.source_connection_ids == (
+            "src_new_scheme_def456",
+            "src_old_scheme_abc123",
+        )
+
+    def test_scoped_build_lists_single_source_id(self, _two_source_store: SQLiteStore) -> None:
+        # Scoping to one source surfaces only that source-id in the
+        # tuple — the renderer's multi-source banner is gated on
+        # `len > 1`, so this branch suppresses the banner naturally.
+        summary = build_summary(
+            store=_two_source_store, source_connection_id="src_new_scheme_def456"
+        )
+        assert summary.source_connection_ids == ("src_new_scheme_def456",)
+        # Raw row counts under PK uniqueness.
+        assert summary.entity_count == 2
+        assert summary.entity_names == ("order", "user")
+
+    def test_empty_store_has_empty_source_id_tuple(self, store: SQLiteStore) -> None:
+        # No rows in any of the 4 union'd tables → empty source-id
+        # list. Renderer's `len > 1` branch is skipped.
+        summary = build_summary(store=store, source_connection_id=None)
+        assert summary.source_connection_ids == ()
+
+
 # ----- EntityDetail ---------------------------------------------------------
 
 

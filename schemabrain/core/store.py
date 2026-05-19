@@ -1647,6 +1647,28 @@ class SQLiteStore:
             ).fetchall()
         return [(row["schema_name"], row["name"]) for row in rows]
 
+    def list_distinct_source_connection_ids(self) -> list[str]:
+        """Union of `source_connection_id` values across the four data
+        tables (`tables`, `entities`, `metrics`, `canonical_joins`).
+
+        Single SQL round-trip with a UNION → DISTINCT → ORDER BY. The
+        union shape is exhaustive on purpose: a store written by an
+        older Schema Brain version that only populated `entities`
+        (no metrics, no joins) still surfaces here, so the inspect
+        renderer can warn about orphan data instead of silently
+        merging it with new rows from a different source.
+        """
+        conn = self._require_conn()
+        rows = conn.execute(
+            "SELECT source_connection_id FROM ("
+            "  SELECT source_connection_id FROM tables"
+            "  UNION SELECT source_connection_id FROM entities"
+            "  UNION SELECT source_connection_id FROM metrics"
+            "  UNION SELECT source_connection_id FROM canonical_joins"
+            ") ORDER BY source_connection_id"
+        ).fetchall()
+        return [row[0] for row in rows]
+
     # ----- Entities ------------------------------------------------
     #
     # Semantic-layer foundation. The read side is the substrate for

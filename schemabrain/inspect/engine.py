@@ -120,6 +120,25 @@ class StoreSummary:
     without confusing partial totals, so the engine returns the
     sentinel instead of a misleading 0. The renderer surfaces this
     as "—" so the operator can tell "unknown" from "no columns".
+
+    `source_connection_ids` lists the distinct sources that have data
+    in the store. Populated only on the unfiltered (cross-source)
+    build; the scoped build leaves it as a single-element tuple
+    matching the supplied filter, or empty when filter is `None` and
+    the store is empty. The renderer uses `len > 1` to surface a
+    multi-source warning banner — smoke 2026-05-19 surfaced an
+    operator whose pre-existing store had 6 entities under an older
+    source-id scheme and 6 fresh entities under the new scheme, with
+    no visual signal that 12 rendered names were 6 logical entities
+    duplicated.
+
+    When the summary is cross-source, `entity_names` / `metric_names`
+    / `join_names` are DEDUPED by name — the operator-facing answer
+    to "what's curated" should not list the same name twice. The
+    `*_count` fields match the deduped name counts so the header
+    line reads consistently with the lists below it. To inspect the
+    raw row count per source, pass `--source URL` to scope the
+    summary.
     """
 
     table_count: int
@@ -130,6 +149,7 @@ class StoreSummary:
     entity_names: tuple[str, ...]
     metric_names: tuple[str, ...]
     join_names: tuple[str, ...]
+    source_connection_ids: tuple[str, ...] = ()
 
 
 def build_summary(*, store: Store, source_connection_id: str | None) -> StoreSummary:
@@ -138,6 +158,14 @@ def build_summary(*, store: Store, source_connection_id: str | None) -> StoreSum
     `source_connection_id=None` aggregates across every source;
     supplying a value scopes counts to that source — matches the
     semantics of `list_entities` / `list_metrics` / `list_canonical_joins`.
+
+    Cross-source builds (filter is `None`) DEDUPE entity / metric /
+    join names — multiple source-ids that share a name surface as
+    one tree entry plus a multi-source banner the renderer composes
+    from `source_connection_ids`. The count fields mirror the deduped
+    name lists so the header line ("12 entities") doesn't disagree
+    with the tree below it ("6 names"). See the `StoreSummary`
+    docstring for why this matters in practice.
     """
     qualified_tables = store.list_tables(source_connection_id=source_connection_id)
     entities = store.list_entities(source_connection_id=source_connection_id)
@@ -165,15 +193,50 @@ def build_summary(*, store: Store, source_connection_id: str | None) -> StoreSum
                 continue
             column_count += len(table.columns)
 
+    if source_connection_id is None:
+        # Cross-source: dedupe names so the tree reads as the
+        # operator's mental model ("what's curated?") rather than as
+        # raw rows. Counts mirror the deduped lists so the header
+        # line agrees with the tree.
+        entity_names = tuple(sorted({e.name for e in entities}))
+        metric_names = tuple(sorted({m.name for m in metrics}))
+        join_names = tuple(sorted({j.name for j in joins}))
+        entity_count = len(entity_names)
+        metric_count = len(metric_names)
+        join_count = len(join_names)
+        # Tables already enumerate distinct (schema, name) globally,
+        # so deduping by qualified name catches the same-table-name
+        # collision across sources symmetrically.
+        deduped_tables = {f"{schema}.{name}" for schema, name in qualified_tables}
+        table_count = len(deduped_tables)
+        # `list_distinct_source_connection_ids` is the new Store
+        # protocol method (PR fix smoke 2026-05-19); spans tables +
+        # entities + metrics + canonical_joins so an old store with
+        # data in only one of those tables still surfaces.
+        source_ids = tuple(store.list_distinct_source_connection_ids())
+    else:
+        # Scoped: raw row counts equal distinct-name counts under the
+        # `(source_connection_id, name)` PK on each table, so the
+        # `len(rows)` form preserves the original v0 semantics.
+        entity_names = tuple(sorted(e.name for e in entities))
+        metric_names = tuple(sorted(m.name for m in metrics))
+        join_names = tuple(sorted(j.name for j in joins))
+        entity_count = len(entities)
+        metric_count = len(metrics)
+        join_count = len(joins)
+        table_count = len(qualified_tables)
+        source_ids = (source_connection_id,)
+
     return StoreSummary(
-        table_count=len(qualified_tables),
+        table_count=table_count,
         column_count=column_count,
-        entity_count=len(entities),
-        metric_count=len(metrics),
-        join_count=len(joins),
-        entity_names=tuple(sorted(e.name for e in entities)),
-        metric_names=tuple(sorted(m.name for m in metrics)),
-        join_names=tuple(sorted(j.name for j in joins)),
+        entity_count=entity_count,
+        metric_count=metric_count,
+        join_count=join_count,
+        entity_names=entity_names,
+        metric_names=metric_names,
+        join_names=join_names,
+        source_connection_ids=source_ids,
     )
 
 
