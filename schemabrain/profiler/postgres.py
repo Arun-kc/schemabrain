@@ -23,6 +23,7 @@ from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.pool import NullPool
 from sqlalchemy.sql.compiler import IdentifierPreparer
 
+from schemabrain._env import resolve_positive_int_env
 from schemabrain.connectors._url import safe_engine_url
 from schemabrain.connectors.errors import TableNotFoundError
 from schemabrain.core.models import Column, Table
@@ -33,7 +34,21 @@ from schemabrain.profiler.stats import (
     top_shapes,
 )
 
+# How many rows to fetch per column for stats sampling. 5 is the
+# package default — large enough to give the LLM useful exemplars on
+# typical schemas, small enough that even wide tables (50+ columns)
+# stay under a one-second profile budget on a warm cache. Operators
+# with very deep schemas or LLMs that benefit from more exemplars
+# can raise via `SCHEMABRAIN_PROFILER_SAMPLE_SIZE`; raising it
+# linearly grows per-column SELECT cost and the input-token bill on
+# the enrichment side. `on_invalid="raise"` because a typo'd sample
+# size that silently becomes too small (e.g. `"1_000"` → 1000 vs
+# `"10000"` → 10000) would silently degrade enrichment quality.
+#
+# Resolved inside `PostgresProfiler.__init__` (not at module import)
+# so test monkeypatching of the env var actually takes effect.
 _DEFAULT_SAMPLE_SIZE = 5
+_PROFILER_SAMPLE_SIZE_ENV = "SCHEMABRAIN_PROFILER_SAMPLE_SIZE"
 # Cap raw values before regex / truncation so a 10MB JSON column doesn't make
 # `redact_pii` linear in the column's worst case. Set well above any realistic
 # PII length (max ~30 chars) so PII anywhere in the captured window is fully
@@ -89,7 +104,30 @@ class PostgresProfiler:
     idempotent. Use as a context manager to guarantee cleanup.
     """
 
-    def __init__(self, url: str, *, sample_size: int = _DEFAULT_SAMPLE_SIZE) -> None:
+    def __init__(self, url: str, *, sample_size: int | None = None) -> None:
+        """Construct a PostgresProfiler.
+
+        `sample_size=None` (the default) is a SENTINEL meaning
+        "resolve from env / package default" — not "use no samples".
+        Pass an explicit `int` if you want to override regardless of
+        env state; pass nothing (or `None`) to opt into the
+        env-var-aware resolution chain.
+
+        Resolution chain for `sample_size`:
+          1. Explicit constructor arg (highest priority — caller knows best)
+          2. `SCHEMABRAIN_PROFILER_SAMPLE_SIZE` env var (operator override)
+          3. Package default (`_DEFAULT_SAMPLE_SIZE`, currently 5)
+
+        Env-var resolution happens here, not at module import, so test
+        monkeypatching takes effect mid-process. `on_invalid="raise"`
+        is intentional: a wrong sample size silently degrades
+        enrichment quality.
+        """
+        if sample_size is None:
+            sample_size = resolve_positive_int_env(
+                _PROFILER_SAMPLE_SIZE_ENV,
+                _DEFAULT_SAMPLE_SIZE,
+            )
         if sample_size < 1:
             raise ValueError(f"sample_size must be >= 1, got {sample_size}")
         self._sample_size = sample_size

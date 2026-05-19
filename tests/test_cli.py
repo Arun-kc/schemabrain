@@ -1063,6 +1063,16 @@ class TestEnrichmentCliFlags:
         # deterministically. Under default concurrency=8, all in-flight
         # tasks complete before any cap check sees the breach — fine
         # for production but not for this regression test.
+        #
+        # The `delenv` calls are load-bearing post-PR-#69: `_cmd_index`
+        # now resolves concurrency via
+        # `resolve_positive_int_env(SCHEMABRAIN_PIPELINE_*_CONCURRENCY,
+        # _PIPELINE_*_CONCURRENCY)`, so an env var inherited from CI or
+        # a developer's shell would WIN over the monkeypatched constant
+        # — silently restoring the races this test is designed to
+        # exclude. Defensively unset both to guarantee determinism.
+        monkeypatch.delenv("SCHEMABRAIN_PIPELINE_DEFAULT_CONCURRENCY", raising=False)
+        monkeypatch.delenv("SCHEMABRAIN_PIPELINE_CRYPTIC_CONCURRENCY", raising=False)
         monkeypatch.setattr("schemabrain.cli._PIPELINE_DEFAULT_CONCURRENCY", 1)
         monkeypatch.setattr("schemabrain.cli._PIPELINE_CRYPTIC_CONCURRENCY", 1)
 

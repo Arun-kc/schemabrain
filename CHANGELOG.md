@@ -8,6 +8,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Four new `SCHEMABRAIN_*` env-var overrides for tier-1 config
+  knobs surfaced by the 2026-05-19 config-flexibility audit.**
+  Following the env-var-with-strict-parser convention PR #67 locked
+  in (`SCHEMABRAIN_*` prefix + positive ASCII regex + one-shot
+  empty-env warn). All four resolve at call time, not module import,
+  so operator overrides take effect mid-process:
+  - `SCHEMABRAIN_PROFILER_SAMPLE_SIZE` (int, default `5`) —
+    rows fetched per column for stats sampling. Deep schemas with
+    LLMs that benefit from more exemplars can raise; linearly grows
+    per-column SELECT cost + enrichment input-token bill.
+  - `SCHEMABRAIN_PIPELINE_DEFAULT_CONCURRENCY` (int, default `8`)
+    and `SCHEMABRAIN_PIPELINE_CRYPTIC_CONCURRENCY` (int, default
+    `4`) — per-tier concurrency for the async enrichment pipeline.
+    Tier-1 Anthropic accounts (50 RPM) typically want lower values;
+    higher concurrency triggers cascading 429s.
+  - `SCHEMABRAIN_WIZARD_INDEX_ENRICH_CAP_USD` (float, default
+    `10.0`) — cost ceiling for the wizard's index-stage enrichment
+    when `init --enrich` is set. Previously hardcoded with no
+    override path.
+
+  All four use `on_invalid="raise"` so a typo'd env value (`"1_000"`,
+  fullwidth digits, scientific notation, leading zeros, negatives)
+  fails fast with a clear message rather than silently mis-tuning
+  the runtime knob. Test pins in `tests/test_env_resolution.py`.
+
+- **Shared `schemabrain/_env.py` env-var resolution module.**
+  Promotes the PR #67 strict-regex parser into a reusable seam
+  (`resolve_positive_int_env`, `resolve_positive_float_env`) with
+  two invalid-handling modes: `"raise"` (fail-fast for security-
+  and rate-limit-sensitive knobs) and `"warn_and_default"` (graceful
+  fallback for interactive flows like the wizard). Same shared
+  strict-regex contract for both int and float parsers — closes
+  the `float("1_000.5")` silent-coercion footgun on the cost-cap
+  surface that the int parser was already hardened against.
+  Refactored callers: `enrichment/anthropic_client.py` (max_tokens),
+  `setup/wizard.py` (entities/metrics cost caps), `cli.py`
+  (entities/metrics suggest cost). All callers now route through
+  the shared module; no behavior change for sane operator inputs;
+  three latent footgun-acceptance bugs closed on the cost-cap path.
+
+### Changed
+- **`SCHEMABRAIN_MAX_LLM_COST_USD=""` (empty) in `schemabrain
+  entities suggest` / `metrics suggest` now warns + uses the
+  package default instead of rendering a guided error + exit 2.**
+  Pre-refactor, `float("")` raised `ValueError` which the CLI
+  translated into a `suggest_cost_env_malformed` guided error. The
+  shared `_env` parser (matching the convention PR #67 established
+  for `max_tokens`) treats an empty env value as a benign
+  misconfiguration: emits a one-shot stderr breadcrumb so the
+  operator sees their override didn't take effect, then falls back
+  to the package default. The new behavior unifies CLI + wizard:
+  both now follow the same "empty != invalid" contract. Operators
+  who relied on the empty-env exit code to fail CI should set the
+  env var to a real number or unset it entirely. Invalid values
+  (`"not-a-number"`, `"-1.0"`, `"1_000"`) still raise + exit 2 as
+  before — only `""` flipped.
+
 - **Per-tier env-var override for Anthropic max-output-tokens.** Two
   new env vars expose the per-tier output cap as configuration
   without requiring a code change:

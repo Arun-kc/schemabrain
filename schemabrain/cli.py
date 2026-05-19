@@ -80,6 +80,7 @@ import yaml
 from sqlalchemy.exc import OperationalError
 
 from schemabrain import __version__
+from schemabrain._env import resolve_positive_float_env, resolve_positive_int_env
 from schemabrain.connectors._url import safe_engine_url
 from schemabrain.connectors.base import DataSource
 from schemabrain.connectors.postgres import PostgresDataSource
@@ -194,15 +195,23 @@ _NO_COST_CAP_SENTINEL = 1e12
 _DEFAULT_EVAL_LIMIT = 10
 
 # Per-tier concurrency for the async enrichment pipeline.
-# Module-level constants rather than locals so test
-# fixtures can monkeypatch them to `1` for deterministic cap
-# enforcement — under default concurrency, the per-task cap check
-# races and a cap-trip test would need >= 9 columns to land
-# deterministically. A future `--concurrency` CLI flag can plumb
-# user-facing tuning through these constants without further
-# CLI-wiring churn.
+# Module-level constants rather than locals so test fixtures can
+# monkeypatch them to `1` for deterministic cap enforcement — under
+# default concurrency, the per-task cap check races and a cap-trip
+# test would need >= 9 columns to land deterministically.
+#
+# Operators can override at runtime via
+# `SCHEMABRAIN_PIPELINE_DEFAULT_CONCURRENCY` /
+# `SCHEMABRAIN_PIPELINE_CRYPTIC_CONCURRENCY`. The env-var resolution
+# happens at `_cmd_index` call time (not module import) via
+# `resolve_positive_int_env`, falling back to these constants as
+# defaults. The two-layer resolution keeps both the test
+# monkeypatching pattern and the operator-override pattern working
+# at the same time.
 _PIPELINE_DEFAULT_CONCURRENCY = 8
 _PIPELINE_CRYPTIC_CONCURRENCY = 4
+_PIPELINE_DEFAULT_CONCURRENCY_ENV = "SCHEMABRAIN_PIPELINE_DEFAULT_CONCURRENCY"
+_PIPELINE_CRYPTIC_CONCURRENCY_ENV = "SCHEMABRAIN_PIPELINE_CRYPTIC_CONCURRENCY"
 
 # 16 hex chars = 64 bits of SHA-256. For a single user's plausible set of
 # databases (<1000), birthday-collision probability is ~10^-14. If we ever
@@ -1763,8 +1772,20 @@ def _cmd_index(
                         client=anthropic_haiku_45_client(api_key=api_key),
                         cryptic_client=cryptic_client,
                         max_cost_usd=max_cost_usd,
-                        default_concurrency=_PIPELINE_DEFAULT_CONCURRENCY,
-                        cryptic_concurrency=_PIPELINE_CRYPTIC_CONCURRENCY,
+                        # Env-var resolution at call time: operator override
+                        # > module-level constant default. `resolve_positive_int_env`
+                        # rejects underscore/leading-zero/scientific/negative
+                        # footguns; bad env values raise with a clear message
+                        # rather than silently mis-tuning concurrency (which
+                        # would trigger cascading 429s under tier-1 rate limits).
+                        default_concurrency=resolve_positive_int_env(
+                            _PIPELINE_DEFAULT_CONCURRENCY_ENV,
+                            _PIPELINE_DEFAULT_CONCURRENCY,
+                        ),
+                        cryptic_concurrency=resolve_positive_int_env(
+                            _PIPELINE_CRYPTIC_CONCURRENCY_ENV,
+                            _PIPELINE_CRYPTIC_CONCURRENCY,
+                        ),
                         store=store,
                         source_connection_id=source_id,
                     )
@@ -2562,26 +2583,32 @@ def _cmd_entities_suggest(
         return 2
     source_id = _make_source_id(source_url)
 
-    # Resolve the cost ceiling: CLI flag > env var > default.
+    # Resolve the cost ceiling: CLI flag > env var > default. Delegates
+    # to the shared `_env` parser with `on_invalid="raise"` so a typo'd
+    # env var (e.g. "1_000" — Python's `float()` would silently coerce
+    # to 1000) gets caught at the boundary and translated into the
+    # standard CLI guided-error block (vs the wizard path, which uses
+    # `on_invalid="warn_and_default"` because an interactive run
+    # shouldn't abort on a leftover env var).
     if max_cost_usd is None:
-        env_value = os.environ.get(_SUGGEST_COST_ENV_VAR)
-        if env_value is not None:
-            try:
-                max_cost_usd = float(env_value)
-            except ValueError:
-                _render_guided(
-                    GuidedError(
-                        kind="suggest_cost_env_malformed",
-                        message=f"{_SUGGEST_COST_ENV_VAR}={env_value!r} is not a valid number",
-                        why="cost ceiling must be a positive float (USD)",
-                        fix=f"unset {_SUGGEST_COST_ENV_VAR} or set it to a number "
-                        f"(e.g. {_SUGGEST_COST_ENV_VAR}=0.50)",
-                        next_step="see `schemabrain entities suggest --help`",
-                    )
+        try:
+            max_cost_usd = resolve_positive_float_env(
+                _SUGGEST_COST_ENV_VAR,
+                _DEFAULT_SUGGEST_MAX_COST_USD,
+            )
+        except ValueError as exc:
+            _render_guided(
+                GuidedError(
+                    kind="suggest_cost_env_malformed",
+                    message=str(exc),
+                    why="cost ceiling must be a positive float (USD)",
+                    fix=f"unset {_SUGGEST_COST_ENV_VAR} or set it to a positive "
+                    f"number without underscores or scientific notation "
+                    f"(e.g. {_SUGGEST_COST_ENV_VAR}=0.50)",
+                    next_step="see `schemabrain entities suggest --help`",
                 )
-                return 2
-        else:
-            max_cost_usd = _DEFAULT_SUGGEST_MAX_COST_USD
+            )
+            return 2
 
     # Build the LLM client. Stub reads canned YAML from env (so the
     # multi-line response stays out of argv). Anthropic reads
@@ -3747,26 +3774,28 @@ def _cmd_metrics_suggest(
     source_id = _make_source_id(source_url)
 
     # Resolve the cost ceiling: CLI flag > env var > default. Same
-    # precedence as `entities suggest`.
+    # precedence as `entities suggest`; delegates to the shared `_env`
+    # parser with `on_invalid="raise"` and translates the ValueError
+    # into the standard guided-error block.
     if max_cost_usd is None:
-        env_value = os.environ.get(_SUGGEST_COST_ENV_VAR)
-        if env_value is not None:
-            try:
-                max_cost_usd = float(env_value)
-            except ValueError:
-                _render_guided(
-                    GuidedError(
-                        kind="suggest_cost_env_malformed",
-                        message=f"{_SUGGEST_COST_ENV_VAR}={env_value!r} is not a valid number",
-                        why="cost ceiling must be a positive float (USD)",
-                        fix=f"unset {_SUGGEST_COST_ENV_VAR} or set it to a number "
-                        f"(e.g. {_SUGGEST_COST_ENV_VAR}=0.50)",
-                        next_step="see `schemabrain metrics suggest --help`",
-                    )
+        try:
+            max_cost_usd = resolve_positive_float_env(
+                _SUGGEST_COST_ENV_VAR,
+                _DEFAULT_SUGGEST_MAX_COST_USD,
+            )
+        except ValueError as exc:
+            _render_guided(
+                GuidedError(
+                    kind="suggest_cost_env_malformed",
+                    message=str(exc),
+                    why="cost ceiling must be a positive float (USD)",
+                    fix=f"unset {_SUGGEST_COST_ENV_VAR} or set it to a positive "
+                    f"number without underscores or scientific notation "
+                    f"(e.g. {_SUGGEST_COST_ENV_VAR}=0.50)",
+                    next_step="see `schemabrain metrics suggest --help`",
                 )
-                return 2
-        else:
-            max_cost_usd = _DEFAULT_SUGGEST_MAX_COST_USD
+            )
+            return 2
 
     # Build the LLM client. Stub reads canned YAML from env (so the
     # multi-line response stays out of argv). Anthropic reads

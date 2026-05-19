@@ -33,11 +33,9 @@ cap and can produce uncapped LLM spend.
 
 from __future__ import annotations
 
-import os
-import re
-import sys
 from typing import Any
 
+from schemabrain._env import resolve_positive_int_env
 from schemabrain.enrichment.llm import (
     CostFn,
     LLMResponse,
@@ -86,51 +84,15 @@ _HAIKU_MAX_OUTPUT_TOKENS_ENV = "SCHEMABRAIN_HAIKU_MAX_OUTPUT_TOKENS"
 _SONNET_DEFAULT_MAX_OUTPUT_TOKENS = 4096
 _SONNET_MAX_OUTPUT_TOKENS_ENV = "SCHEMABRAIN_SONNET_MAX_OUTPUT_TOKENS"
 
-# ASCII decimal positive integer with optional leading `+`. Rejects:
-# leading zeros (`"00100"`), underscore separators (`"1_000"`),
-# fullwidth unicode digits (U+FF10..FF19 fold to ASCII via int()),
-# hex/octal prefixes, decimals, and signed negatives. Python's `int()`
-# silently accepts most of those; this pattern makes the operator-facing
-# contract explicit so a typo never silently becomes a smaller-than-
-# default cap.
-_POSITIVE_INT_RE = re.compile(r"^\+?[1-9][0-9]*$")
-
-# Module-scoped set of env-var names we've already warned about for
-# "set but empty". Keeps the warn to once per process per var rather
-# than once per factory call (the wizard calls factories per stage).
-_WARNED_EMPTY_ENV_VARS: set[str] = set()
-
-
-def _resolve_max_output_tokens(env_var: str, default: int) -> int:
-    """Return per-tier max output tokens, honoring env-var override.
-
-    Returns `default` when `env_var` is unset entirely. When `env_var`
-    is set to an empty or whitespace-only string, emits a one-shot
-    stderr warning (operator probably expected the override to take
-    effect — silent fall-through would leave them chasing it) and
-    falls back to `default`. When set to a value, parses as a positive
-    ASCII decimal integer and fails fast on anything else rather than
-    sending a nonsensical `max_tokens` to the API and chasing an
-    opaque 400.
-    """
-    raw_value = os.environ.get(env_var)
-    if raw_value is None:
-        return default
-    raw = raw_value.strip()
-    if not raw:
-        if env_var not in _WARNED_EMPTY_ENV_VARS:
-            _WARNED_EMPTY_ENV_VARS.add(env_var)
-            print(
-                f"[schemabrain] warning: {env_var} is set but empty; using default {default}",
-                file=sys.stderr,
-            )
-        return default
-    if not _POSITIVE_INT_RE.match(raw):
-        raise ValueError(
-            f"{env_var}={raw!r} is not a positive decimal integer "
-            f"(no underscores, no leading zeros, no decimal point)"
-        )
-    return int(raw)
+# Per-tier max output tokens resolution delegates to the shared
+# `schemabrain._env` parser (factored out 2026-05-19 from the original
+# PR #67 implementation that lived here). The shared module's
+# `on_invalid="raise"` mode preserves PR #67's "fail fast on a
+# typo'd cap rather than send a nonsensical max_tokens to the API and
+# chase an opaque 400" contract. Test coverage of the strict-regex
+# footguns now lives in `tests/test_env_resolution.py`; behavior
+# pins on this module's factories stay in
+# `tests/test_enrichment_anthropic.py::TestMaxOutputTokensConfiguration`.
 
 
 class AnthropicClient:
@@ -211,8 +173,9 @@ def anthropic_haiku_45_client(
         model=_HAIKU_45_MODEL,
         api_key=api_key,
         client=client,
-        max_output_tokens=_resolve_max_output_tokens(
-            _HAIKU_MAX_OUTPUT_TOKENS_ENV, _HAIKU_DEFAULT_MAX_OUTPUT_TOKENS
+        max_output_tokens=resolve_positive_int_env(
+            _HAIKU_MAX_OUTPUT_TOKENS_ENV,
+            _HAIKU_DEFAULT_MAX_OUTPUT_TOKENS,
         ),
     )
 
@@ -236,8 +199,9 @@ def anthropic_sonnet_46_client(
         model=_SONNET_46_MODEL,
         api_key=api_key,
         client=client,
-        max_output_tokens=_resolve_max_output_tokens(
-            _SONNET_MAX_OUTPUT_TOKENS_ENV, _SONNET_DEFAULT_MAX_OUTPUT_TOKENS
+        max_output_tokens=resolve_positive_int_env(
+            _SONNET_MAX_OUTPUT_TOKENS_ENV,
+            _SONNET_DEFAULT_MAX_OUTPUT_TOKENS,
         ),
     )
 
