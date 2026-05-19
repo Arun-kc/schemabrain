@@ -7,7 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`schemabrain init` wizard re-rendered onto the design's hero
+  surface** — first operator-visible win from the design-system
+  migration (PR #71 + PR #72 shipped the foundation primitives).
+  The previous per-stage Rich Panel column collapses onto the
+  design's compact StageRow layout: each stage now renders as one
+  row of (zero-padded ordinal · glyph · display name · message ·
+  duration), with optional next-step hints indented under the
+  message column. A new progress rule above the stage list
+  (``  7 stages  ────────  {elapsed} · {advisory count}``)
+  summarises the run shape before the operator scans rows. The
+  bordered cyan header Panel collapses to a one-line brand line
+  (``◆ Schema Brain init — activating for {host}. ~30s.``) so the
+  visual weight lands on the stages, not the framing. The local
+  ``_STAGE_GLYPHS`` + ``_STAGE_PANEL_BORDER`` dicts in
+  ``schemabrain/cli.py`` are removed; stage status routes through
+  ``schemabrain._ui.status_glyph`` via a new
+  ``_WIZARD_STATUS_TO_TIER`` translation map
+  (``done → ok``, ``skipped → skipped``, ``failed → err``) — the
+  PR #72 deferred migration. Visible glyph flip: the previous
+  ``↷`` (RIGHTWARDS WAVE ARROW) used for skipped stages becomes
+  the design-spec ``⊘`` (CIRCLED DIVISION SLASH); the flip bundles
+  with this surface migration so the diff is auditable. Closing
+  block (``Restart Claude…``, audit/tail hints, thesis tagline)
+  + abort panel + wire-host detail rendering preserved unchanged.
+
 ### Added
+- **`GLYPH_RULE` constant + `top_rule(label, right=None, *, width,
+  style)` text builder in `schemabrain/_ui.py`** — renders the
+  design's section-header band (``  label  ────────  right``)
+  consumed by the wizard's progress rule today and by ``doctor``
+  / ``audit list`` follow-up PRs. ``Text``-returning helper
+  (not pre-rendered string) so callers can compose with other
+  Rich primitives. Narrow-terminal collapse: dashed run floors
+  at 4 dashes rather than wrapping. Six new tests in
+  ``TestTopRule`` pin the contract.
+
 - **`status_glyph(status_name)` + seven new glyph constants in
   `schemabrain/_ui.py`** — second wave of design-system primitives
   for the wizard, ``doctor``, and ``tail`` re-renders. The new
