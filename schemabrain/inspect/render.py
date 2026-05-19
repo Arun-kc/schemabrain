@@ -23,6 +23,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
 
+from schemabrain._ui import pii_marker
 from schemabrain.inspect.engine import (
     AnchoredMetric,
     EntityColumnDetail,
@@ -31,12 +32,9 @@ from schemabrain.inspect.engine import (
     StoreSummary,
 )
 
-_PII_GLYPH: dict[str, str] = {
-    "public": "[dim]public[/]",
-    "internal": "[yellow]internal[/]",
-    "confidential": "[red]confidential[/]",
-    "pii": "[red]pii[/]",
-}
+# PII sensitivity markers route through `schemabrain._ui.pii_marker` so
+# the rendered label vocabulary lives in one place across the CLI
+# (today `inspect`; soon `doctor` and `audit` callers).
 
 
 def render_summary(summary: StoreSummary, *, console: Console) -> None:
@@ -185,7 +183,7 @@ def _render_columns(
             flags.append("[bold cyan]identity[/]")
         flag_str = " ".join(flags) if flags else ""
         null_str = "[dim]not null[/]" if not col.nullable else "[dim]nullable[/]"
-        pii_cell = _PII_GLYPH.get(col.pii_sensitivity, col.pii_sensitivity)
+        pii_cell = pii_marker(col.pii_sensitivity)
         if col.pii_categories:
             pii_cell = f"{pii_cell} [dim]({', '.join(col.pii_categories)})[/]"
         table.add_row(col.name, col.data_type, null_str, flag_str, pii_cell)

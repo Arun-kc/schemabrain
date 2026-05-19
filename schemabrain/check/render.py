@@ -41,6 +41,7 @@ import json
 
 from rich.console import Console
 
+from schemabrain._ui import severity_glyph
 from schemabrain.check.engine import CheckReport, Drift
 
 _DEF_KIND_LABEL: dict[str, str] = {
@@ -49,17 +50,11 @@ _DEF_KIND_LABEL: dict[str, str] = {
     "canonical_join": "join",
 }
 
-# Map drift severity to glyph + Rich style. Entity drift is a hard
-# break (the agent loses access to the whole entity); metric / join
-# drift degrades one definition without taking the rest of the
-# semantic layer offline. The renderer reads this table so a future
-# DriftKind addition routes to the right tier by extending the def_kind
-# mapping rather than copy-pasting glyph logic across the file.
-_DRIFT_GLYPH: dict[str, tuple[str, str]] = {
-    "entity": ("✗", "red"),
-    "metric": ("⚠", "yellow"),
-    "canonical_join": ("⚠", "yellow"),
-}
+# Drift severity (glyph + Rich style) routes through `schemabrain._ui`'s
+# `severity_glyph(def_kind)` so the entity/metric/join → ✗/⚠/⚠ tiering
+# lives in one place across the CLI. Adding a new `DriftKind` only
+# requires extending the `_DRIFT_TIER` mapping in `_ui.py` — this
+# renderer keeps reading the tier through one helper.
 
 
 def render_report(
@@ -172,7 +167,7 @@ def _summary_line(
         word = kind_singular if total == 1 else kind_plural
         console.print(f"  [green]✓[/] {total} {word} healthy")
     else:
-        glyph, style = _DRIFT_GLYPH.get(def_kind, ("✗", "red"))
+        glyph, style = severity_glyph(def_kind)
         word = kind_singular if drifted == 1 else kind_plural
         console.print(
             f"  [{style}]{glyph}[/] {drifted} {word} drifted [dim]({healthy} of {total} healthy)[/]"
@@ -183,12 +178,13 @@ def _render_drift(drift: Drift, *, console: Console) -> None:
     """One drift block: glyph + def_kind + def_name on line 1, indented
     detail + fix hint below.
 
-    Glyph + colour come from `_DRIFT_GLYPH` so entity drift renders as
-    a hard red ✗ while metric / join drift renders as a yellow ⚠
-    (degraded but not blocking the rest of the semantic layer).
+    Glyph + colour resolve through `schemabrain._ui.severity_glyph` so
+    entity drift renders as a hard red ✗ while metric / join drift
+    renders as a yellow ⚠ (degraded but not blocking the rest of the
+    semantic layer).
     """
     label = _DEF_KIND_LABEL.get(drift.def_kind, drift.def_kind)
-    glyph, style = _DRIFT_GLYPH.get(drift.def_kind, ("✗", "red"))
+    glyph, style = severity_glyph(drift.def_kind)
     console.print(f"  [{style}]{glyph}[/] [bold]{label}[/]  {drift.def_name}")
     console.print(f"        [yellow]{drift.drift_kind}[/]  [dim]{drift.detail}[/]")
     console.print(f"        [dim]→[/] {drift.fix_hint}")
