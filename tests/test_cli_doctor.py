@@ -178,9 +178,11 @@ class TestDoctorJsonOutput:
             ]
         )
         captured = capsys.readouterr()
-        # No "Schema Brain doctor —" header (the human-rendered form).
-        assert "Schema Brain doctor" not in captured.err
-        assert "Schema Brain doctor" not in captured.out
+        # No design brand line (◆ environment) in JSON mode — the
+        # JSON path keeps stderr quiet so the JSON-on-stdout payload
+        # is the only render an automated consumer sees.
+        assert "◆ environment" not in captured.err
+        assert "◆ environment" not in captured.out
 
     def test_human_render_writes_to_stderr(
         self,
@@ -188,7 +190,8 @@ class TestDoctorJsonOutput:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         # Non-JSON mode renders to stderr so users can pipe stdout
-        # if they want a clean output channel.
+        # if they want a clean output channel. The design's brand
+        # line is the human-rendered surface's first row.
         main(["doctor", "--host", "manual", "--store-path", str(fresh_store)])
         captured = capsys.readouterr()
-        assert "Schema Brain doctor" in captured.err
+        assert "◆ environment" in captured.err

@@ -8,6 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **`schemabrain doctor` re-rendered onto the design's numbered
+  checklist surface** — second operator-visible win from the
+  design-system migration arc (PR #4 of #71/#72/#73/#4/...).
+  Output reshape: a cyan brand line
+  (``◆ environment · {cwd} · {host} · {os}    N / M healthy``)
+  replaces the old ``Schema Brain doctor — N pass, N warn, N fail``
+  header. A progress rule above the grid surfaces total elapsed
+  time (``  N checks  ────────  {elapsed} ms``). Per-check rows
+  render in a Table.grid with columns ``ordinal · glyph · name ·
+  detail``; the zero-padded ordinal anchors the eye for vertical
+  scanning, and remediation lines render under the detail with the
+  design's ``→ fix:`` prefix when ``suggested_next`` is set. Closing
+  footer (``N checks · A ok · B warn · C err``) mirrors the JSON
+  contract counts so a user grepping CI logs for the on-screen
+  numbers finds the same shape on disk. The terminal renderer is
+  extracted from ``schemabrain/setup/doctor_flow.py`` into a new
+  ``schemabrain/setup/doctor_render.py`` module (mirroring the
+  ``inspect/render.py`` + ``check/render.py`` boundary); the local
+  ``_GLYPHS`` dict in ``doctor_flow.py`` is removed. Per-check
+  status routes through ``schemabrain._ui.status_glyph`` via a new
+  ``_DOCTOR_STATUS_TO_TIER`` translation map
+  (``pass → ok``, ``warn → warn``, ``fail → err``) — the
+  per-surface translation pattern PR #73 established. Unknown
+  outcomes raise a ``ValueError`` rather than silently rendering as
+  ``✗`` red, so vocabulary drift between ``CheckOutcome`` and the
+  translation map surfaces visibly. The JSON output
+  (``--json`` flag) contract (``checks`` / ``summary`` / ``exit_code``)
+  is unchanged — wall-clock elapsed-ms is a presentation-only field
+  threaded from ``cli._cmd_doctor`` into the renderer, not folded
+  into the JSON shape. ``render_doctor`` re-exported from
+  ``doctor_flow`` so existing
+  ``from schemabrain.setup.doctor_flow import render_doctor``
+  imports keep working.
+
 - **`schemabrain init` wizard re-rendered onto the design's hero
   surface** — first operator-visible win from the design-system
   migration (PR #71 + PR #72 shipped the foundation primitives).

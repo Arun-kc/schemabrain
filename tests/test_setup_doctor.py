@@ -869,7 +869,30 @@ class TestDoctorOrchestrator:
 # ----- render_doctor (terminal) ---------------------------------------------
 
 
+def test_render_doctor_is_reexported_from_doctor_flow() -> None:
+    """Pin the re-export contract ``cli.py`` actually uses in production.
+
+    cli.py imports ``render_doctor`` from ``doctor_flow``, not from
+    ``doctor_render`` directly. A refactor that moves or renames the
+    renderer without updating the re-export would break the live CLI
+    silently — none of the fine-grained tests in
+    ``test_doctor_render.py`` exercise this import path because they
+    import directly from ``doctor_render``.
+    """
+    from schemabrain.setup.doctor_flow import render_doctor as reexported
+    from schemabrain.setup.doctor_render import render_doctor as canonical
+
+    assert reexported is canonical
+
+
 class TestRenderDoctor:
+    """Substring-level pins against the design's checklist surface.
+
+    Fine-grained layout pins (column widths, ordinal padding, brand-
+    line composition) live in ``tests/test_doctor_render.py`` so this
+    file stays focused on the orchestrator + check-logic contract.
+    """
+
     def test_writes_summary_line(self) -> None:
         import io
 
@@ -886,9 +909,10 @@ class TestRenderDoctor:
         )
         render_doctor(result, console=console)
         out = buf.getvalue()
-        assert "1 pass" in out
+        # New design's footer: ``N checks · A ok · B warn · C err``.
+        assert "1 ok" in out
         assert "1 warn" in out
-        assert "1 fail" in out
+        assert "1 err" in out
 
     def test_writes_per_check_lines(self) -> None:
         import io
@@ -904,6 +928,8 @@ class TestRenderDoctor:
         out = buf.getvalue()
         assert "uvx_invocable" in out
         assert "uvx 0.5.1" in out
+        # Numbered prefix: first check renders with the ``01`` ordinal.
+        assert "01" in out
 
     def test_suggested_next_rendered_under_check(self) -> None:
         import io
@@ -924,6 +950,8 @@ class TestRenderDoctor:
         )
         render_doctor(result, console=console)
         out = buf.getvalue()
+        # The design's ``→ fix:`` prefix introduces the remediation line.
+        assert "→ fix:" in out
         assert "schemabrain init" in out
 
     def test_empty_result_writes_summary_with_zero_counts(self) -> None:
@@ -935,8 +963,10 @@ class TestRenderDoctor:
         console = Console(file=buf, force_terminal=False, no_color=True, width=120)
         render_doctor(CheckResult(checks=()), console=console)
         out = buf.getvalue()
-        assert "0 pass" in out
-        assert "0 fail" in out
+        # Empty-result footer renders with zero counts across all tiers.
+        assert "0 checks" in out
+        assert "0 ok" in out
+        assert "0 err" in out
 
 
 class TestRenderDoctorJson:
