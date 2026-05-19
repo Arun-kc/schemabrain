@@ -1707,6 +1707,97 @@ class TestIndexDryRun:
         assert "Est. cost:" not in err
         assert "Dry-run:" in err
 
+    def test_dry_run_quiet_emits_legacy_pipe_format(
+        self,
+        seeded_pg_url: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`--dry-run --quiet` preserves the pre-v0.3.x pipe-delimited
+        machine output for CI scripts that grep the summary line.
+        Without this test the `quiet` branch in `_render_dry_run_report`
+        is uncovered — the non-quiet grid format is the only path the
+        other tests exercise.
+
+        Substring contract for the `--quiet` legacy format:
+          - leading `Would index N table(s):` from `IndexResult.summary()`
+          - trailing `| source=... store=... in Ns` machine suffix
+        Both must remain stable until a deliberate breaking-change PR
+        retires the legacy format.
+        """
+        store_path = tmp_path / "schemabrain.db"
+        exit_code = main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+                "--no-enrich",
+                "--quiet",
+            ]
+        )
+        assert exit_code == 0
+        err = capsys.readouterr().err
+        # Legacy format anchors — substring tests deliberately tight
+        # so a future refactor that drops the pipe-delimited contract
+        # surfaces here.
+        assert "Would index" in err
+        assert "| source=" in err
+        assert "store=" in err
+        # The Rich-rendered grid markers MUST NOT appear under
+        # --quiet — that's the whole point of the legacy path.
+        assert "Dry-run:" not in err
+        assert "Tables:" not in err
+
+    def test_dry_run_quiet_with_since_emits_legacy_freshness_line(
+        self,
+        seeded_pg_url: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`--dry-run --quiet --since X` renders the legacy pipe-line
+        followed by a plain `Stale since X: N columns across M tables
+        (estimated refresh $Z)` line — same prose form as the Rich
+        path, but emitted via `print` rather than `console.print` so
+        CI grep parsers see a contiguous line.
+        """
+        store_path = tmp_path / "schemabrain.db"
+        # Index once so there's something to be stale against.
+        main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--no-enrich",
+                "--quiet",
+            ]
+        )
+        capsys.readouterr()  # discard the first run's output
+
+        # Use a future timestamp so EVERY indexed table is "stale"
+        # relative to it — guarantees the freshness audit fires.
+        future = "2099-01-01T00:00:00Z"
+        exit_code = main(
+            [
+                "index",
+                seeded_pg_url,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+                "--no-enrich",
+                "--quiet",
+                "--since",
+                future,
+            ]
+        )
+        assert exit_code == 0
+        err = capsys.readouterr().err
+        assert "Would index" in err
+        assert "Stale since" in err
+        assert "estimated refresh $" in err
+
     def test_dry_run_since_renders_freshness_audit(
         self,
         seeded_pg_url: str,
