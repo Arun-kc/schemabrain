@@ -4915,9 +4915,7 @@ def _cmd_init(
     return 0
 
 
-def _resolve_tail_events_path(
-    *, events_path: str | None, store_path: str | None
-) -> str:
+def _resolve_tail_events_path(*, events_path: str | None, store_path: str | None) -> str:
     """Resolve `tail`'s events-JSONL path with the documented priority.
 
     Priority order:
@@ -4972,9 +4970,7 @@ def _cmd_tail(
         render_event_pretty,
     )
 
-    resolved_path = _resolve_tail_events_path(
-        events_path=events_path, store_path=store_path
-    )
+    resolved_path = _resolve_tail_events_path(events_path=events_path, store_path=store_path)
     path = _Path(resolved_path).expanduser()
     try:
         since_dt = parse_since(since)

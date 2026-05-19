@@ -4583,9 +4583,7 @@ class TestPromptLlmConfirmation:
         captured = capsys.readouterr()
         assert "custom-stage" in captured.err
 
-    def test_pauses_registered_spinner_around_input(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_pauses_registered_spinner_around_input(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Smoke 2026-05-19 surfaced the bug this fixes: Rich's status
         # spinner kept refreshing during ``input()``, reading as
         # "stage is already running". The helper must pause the

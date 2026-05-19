@@ -495,10 +495,11 @@ def pause_active_spinner() -> Iterator[None]:
     try:
         yield
     finally:
-        try:
+        with contextlib.suppress(Exception):
+            # Defensive against Rich impl change — pausing the spinner
+            # is a UX nicety, not correctness; a broken `.start()`
+            # after the prompt must not raise back into the wizard.
             status.start()
-        except Exception:  # pragma: no cover — defensive against Rich impl change
-            pass
 
 
 __all__ = [

@@ -1035,9 +1035,7 @@ class TestWizardRenderer:
             assert captured["entered"] is True, f"stage {stage_name!r} did not enter spinner"
             assert captured["exited"] is True, f"stage {stage_name!r} did not exit spinner"
             assert captured["spinner"] == "dots"
-            assert expected_label in str(
-                captured["text"]
-            ), f"stage {stage_name!r} label mismatch"
+            assert expected_label in str(captured["text"]), f"stage {stage_name!r} label mismatch"
 
     def test_stage_context_unknown_stage_name_skips_spinner(
         self, monkeypatch: pytest.MonkeyPatch

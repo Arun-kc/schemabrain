@@ -409,9 +409,8 @@ class TestActiveSpinnerRegistry:
                 events.append("stop")
 
         status = _RecordingStatus()
-        with register_active_spinner(status):
-            with pause_active_spinner():
-                events.append("input")
+        with register_active_spinner(status), pause_active_spinner():
+            events.append("input")
         # The exact ordering matters — stop() must precede the
         # blocking work, start() must restore the spinner after.
         assert events == ["stop", "input", "start"]
@@ -447,10 +446,9 @@ class TestActiveSpinnerRegistry:
             def stop(self) -> None:
                 raise RuntimeError("simulated rich quirk")
 
-        with register_active_spinner(_BrokenStatus()):
-            with pause_active_spinner():
-                # If pause raised, this line wouldn't execute.
-                pass
+        with register_active_spinner(_BrokenStatus()), pause_active_spinner():
+            # If pause raised, this line wouldn't execute.
+            pass
 
     def test_pause_swallows_start_exceptions_after_input(self) -> None:
         from schemabrain._ui import pause_active_spinner, register_active_spinner
@@ -467,7 +465,6 @@ class TestActiveSpinnerRegistry:
             def stop(self) -> None:
                 events.append("stop")
 
-        with register_active_spinner(_BrokenStart()):
-            with pause_active_spinner():
-                events.append("input")
+        with register_active_spinner(_BrokenStart()), pause_active_spinner():
+            events.append("input")
         assert events == ["stop", "input"]

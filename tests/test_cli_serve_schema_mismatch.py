@@ -38,9 +38,7 @@ def _seed_wrong_version_store(path: Path) -> None:
     """
     conn = sqlite3.connect(str(path))
     try:
-        conn.execute(
-            "CREATE TABLE schemabrain_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
+        conn.execute("CREATE TABLE schemabrain_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         conn.execute(
             "INSERT INTO schemabrain_meta (key, value) VALUES (?, ?)",
             ("schema_version", "0"),

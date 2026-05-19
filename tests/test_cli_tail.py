@@ -319,19 +319,14 @@ class TestTailStorePathResolution:
 
         # 1. Explicit always wins.
         monkeypatch.setenv("SCHEMABRAIN_EVENTS_PATH", env_value)
-        assert (
-            _resolve_tail_events_path(events_path=explicit, store_path=str(store))
-            == explicit
-        )
+        assert _resolve_tail_events_path(events_path=explicit, store_path=str(store)) == explicit
 
         # 2. Env beats store-derived.
         assert _resolve_tail_events_path(events_path=None, store_path=str(store)) == env_value
 
         # 3. Store-derived when sibling exists.
         monkeypatch.delenv("SCHEMABRAIN_EVENTS_PATH", raising=False)
-        assert _resolve_tail_events_path(events_path=None, store_path=str(store)) == str(
-            sibling
-        )
+        assert _resolve_tail_events_path(events_path=None, store_path=str(store)) == str(sibling)
 
         # 4. Falls back to default when nothing else applies.
         store_no_sibling = tmp_path / "isolated" / "db.sqlite"
