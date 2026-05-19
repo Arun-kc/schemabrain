@@ -376,3 +376,98 @@ class TestShortPath:
         # ``./schemabrain.db`` is relative — not inside ``$HOME``
         # via ``relative_to`` (raises ValueError) — render as-is.
         assert short_path("./schemabrain.db") == "./schemabrain.db"
+
+
+class TestActiveSpinnerRegistry:
+    """Tests for ``register_active_spinner`` / ``pause_active_spinner``
+    — the registry the wizard uses to pause Rich's status spinner
+    while ``_prompt_llm_confirmation`` blocks on ``input()``. Smoke
+    2026-05-19 surfaced the spinner-during-prompt bug this fixes;
+    the tests here pin the contract so a future Rich version or
+    threading-model change can't silently regress it.
+    """
+
+    def test_pause_is_noop_when_no_spinner_registered(self) -> None:
+        from schemabrain._ui import pause_active_spinner
+
+        # No prior register_active_spinner; the with-block runs
+        # without raising and without trying to call .stop()/.start()
+        # on a non-existent status.
+        with pause_active_spinner():
+            pass
+
+    def test_pause_stops_and_restarts_registered_spinner(self) -> None:
+        from schemabrain._ui import pause_active_spinner, register_active_spinner
+
+        events: list[str] = []
+
+        class _RecordingStatus:
+            def start(self) -> None:
+                events.append("start")
+
+            def stop(self) -> None:
+                events.append("stop")
+
+        status = _RecordingStatus()
+        with register_active_spinner(status):
+            with pause_active_spinner():
+                events.append("input")
+        # The exact ordering matters — stop() must precede the
+        # blocking work, start() must restore the spinner after.
+        assert events == ["stop", "input", "start"]
+
+    def test_register_restores_previous_status_on_exit(self) -> None:
+        from schemabrain._ui import _active_spinner, register_active_spinner
+
+        class _S:
+            def start(self) -> None: ...
+            def stop(self) -> None: ...
+
+        outer = _S()
+        inner = _S()
+        with register_active_spinner(outer):
+            assert _active_spinner.status is outer
+            with register_active_spinner(inner):
+                assert _active_spinner.status is inner
+            assert _active_spinner.status is outer
+        # Top-level exit clears the registry back to its prior state
+        # (``None`` here because nothing was registered before outer).
+        assert getattr(_active_spinner, "status", None) is None
+
+    def test_pause_swallows_stop_exceptions_to_protect_prompt(self) -> None:
+        from schemabrain._ui import pause_active_spinner, register_active_spinner
+
+        # A Rich-impl quirk that makes .stop() raise must NOT take
+        # the surrounding input() prompt down. The pause helper
+        # falls through to a plain yield in that case.
+        class _BrokenStatus:
+            def start(self) -> None:
+                raise RuntimeError("start should not run when stop failed")
+
+            def stop(self) -> None:
+                raise RuntimeError("simulated rich quirk")
+
+        with register_active_spinner(_BrokenStatus()):
+            with pause_active_spinner():
+                # If pause raised, this line wouldn't execute.
+                pass
+
+    def test_pause_swallows_start_exceptions_after_input(self) -> None:
+        from schemabrain._ui import pause_active_spinner, register_active_spinner
+
+        # Symmetric to the stop case: a broken ``.start()`` after the
+        # prompt must not raise back into the wizard. The user's
+        # confirm answer has already been read at that point.
+        events: list[str] = []
+
+        class _BrokenStart:
+            def start(self) -> None:
+                raise RuntimeError("simulated rich quirk")
+
+            def stop(self) -> None:
+                events.append("stop")
+
+        with register_active_spinner(_BrokenStart()):
+            with pause_active_spinner():
+                events.append("input")
+        assert events == ["stop", "input"]

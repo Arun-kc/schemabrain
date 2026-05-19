@@ -42,7 +42,10 @@ and inside CI captures.
 
 from __future__ import annotations
 
-from typing import IO, Final
+import contextlib
+import threading
+from collections.abc import Iterator
+from typing import IO, Final, Protocol
 
 from rich.console import Console
 from rich.text import Text
@@ -403,6 +406,101 @@ def console_render_width(console: Console, *, cap: int = _DEFAULT_DESIGN_WIDTH) 
     return min(detected, cap)
 
 
+# ---------------------------------------------------------------------------
+# Active-spinner registry — pause Rich Status during interactive prompts.
+# ---------------------------------------------------------------------------
+#
+# Smoke 2026-05-19 surfaced a UX bug: when the wizard reached stage 3
+# (Curate entities), Rich's ``console.status(...)`` was active in the
+# background while ``input()`` waited on the user's Enter. The spinner
+# kept rendering on the same line as the prompt, so the user read it as
+# "stage is already running" rather than "waiting on your confirmation".
+#
+# Pausing the spinner around ``input()`` is the right fix, but the
+# ``_prompt_llm_confirmation`` callsite in ``setup.wizard`` doesn't
+# import ``cli`` (would be a circular import). The shared primitive
+# below lets the CLI's ``_wizard_stage_context`` register the active
+# spinner, and the wizard's prompt code pause it for the duration of
+# the input — both via this module they already import.
+#
+# Thread-local because the harness tests parallelise wizard runs and
+# leaking the spinner across threads would cause sporadic
+# AttributeError on ``.stop()`` from a finalised Status. The contract
+# is "one wizard spinner per thread"; nesting is not supported (would
+# need a stack, no consumer needs it today).
+
+
+class _PausableSpinner(Protocol):
+    """Subset of ``rich.status.Status`` we depend on.
+
+    Declared explicitly so the registry doesn't pull in Rich at
+    type-check time and so test stubs can satisfy the contract with
+    two zero-arg methods instead of constructing a real ``Status``.
+    """
+
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
+
+
+_active_spinner: threading.local = threading.local()
+
+
+@contextlib.contextmanager
+def register_active_spinner(status: _PausableSpinner) -> Iterator[None]:
+    """Mark ``status`` as the currently-active wizard spinner for this thread.
+
+    Pair with ``pause_active_spinner`` from interactive prompt code so
+    the spinner stops spinning while the prompt blocks on ``input()``.
+    The status object must support ``.stop()`` and ``.start()`` —
+    Rich's ``Status`` matches this protocol natively.
+
+    Nested registrations are NOT supported — the design only has one
+    spinner per wizard stage. The function still snapshots the prior
+    registration so a defensive caller composing this with another
+    context doesn't permanently null out the registry on exit.
+    """
+    prev = getattr(_active_spinner, "status", None)
+    _active_spinner.status = status
+    try:
+        yield
+    finally:
+        _active_spinner.status = prev
+
+
+@contextlib.contextmanager
+def pause_active_spinner() -> Iterator[None]:
+    """If a spinner is registered for this thread, pause it for the with-block.
+
+    No-op when no spinner is registered (every non-interactive call
+    site, every non-spinner wizard stage, every test that doesn't
+    register one). Used by the wizard's LLM confirmation prompt so
+    the spinner doesn't visually suggest "already running" while we
+    wait on the user's Enter.
+
+    Failures in ``.stop()`` / ``.start()`` fall through to a plain
+    yield rather than raising — pausing the spinner is a UX
+    affordance, not a correctness requirement. A Rich-implementation
+    quirk that breaks ``.stop()`` shouldn't take the prompt down
+    with it.
+    """
+    status = getattr(_active_spinner, "status", None)
+    if status is None:
+        yield
+        return
+    try:
+        status.stop()
+    except Exception:  # pragma: no cover — defensive against Rich impl change
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            status.start()
+        except Exception:  # pragma: no cover — defensive against Rich impl change
+            pass
+
+
 __all__ = [
     "GLYPH_ACTIVE",
     "GLYPH_ARROW",
@@ -418,7 +516,9 @@ __all__ = [
     "console_render_width",
     "drift_glyph",
     "make_console",
+    "pause_active_spinner",
     "pii_marker",
+    "register_active_spinner",
     "short_path",
     "status_glyph",
     "top_rule",

@@ -5500,6 +5500,8 @@ def _wizard_stage_context(stage: object) -> Iterator[None]:
     guarantee, and a wizard crash with the header already on screen
     would be more confusing than no spinner.
     """
+    from schemabrain._ui import register_active_spinner
+
     name: str = getattr(stage, "name", "") or ""
     if name not in _SPINNER_STAGES:
         yield
@@ -5513,7 +5515,17 @@ def _wizard_stage_context(stage: object) -> Iterator[None]:
         yield
         return
     label = _stage_display_name(name)
-    with console.status(f"[cyan]{label}…[/]", spinner="dots"):
+    # `console.status(...)` returns a `Status` object that supports
+    # both the context-manager protocol (start on `__enter__`, stop on
+    # `__exit__`) and direct `.start()` / `.stop()` calls. The wizard's
+    # interactive prompt code pauses the spinner via the latter — see
+    # `_ui.pause_active_spinner` and `setup.wizard._prompt_llm_confirmation`.
+    # Smoke 2026-05-19 surfaced a UX bug where the spinner kept
+    # rendering during `input()` and read as "stage is already running";
+    # registering the active spinner here gives the prompt a handle to
+    # pause it during the wait.
+    status = console.status(f"[cyan]{label}…[/]", spinner="dots")
+    with status, register_active_spinner(status):
         yield
 
 
