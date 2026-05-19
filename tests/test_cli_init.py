@@ -993,6 +993,15 @@ class TestWizardRenderer:
         from schemabrain.cli import _wizard_stage_context
 
         class _RecordingStatus:
+            # Round-2 fold: include no-op `start()` / `stop()` so the
+            # stub also satisfies `_ui._PausableSpinner`. The current
+            # test only exercises the context-manager path, but the
+            # production code now registers this same status with
+            # `register_active_spinner(status)`, which would call
+            # `.stop()` if `_prompt_llm_confirmation` ran inside the
+            # block. Pre-emptive completeness so a future test
+            # expanding the pause-path coverage doesn't hit an
+            # AttributeError on a stub that looked complete.
             def __init__(self, sink: dict[str, object]) -> None:
                 self._sink = sink
 
@@ -1002,6 +1011,10 @@ class TestWizardRenderer:
 
             def __exit__(self, *exc: object) -> None:
                 self._sink["exited"] = True
+
+            def start(self) -> None: ...
+
+            def stop(self) -> None: ...
 
         class _TtyConsole:
             is_terminal = True

@@ -245,10 +245,14 @@ class TestTailStorePathResolution:
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
-        # No sibling events.jsonl → fall through to the default path.
-        # Tail against a non-existent default file is a no-op exit 0
-        # in --no-follow mode (see TestTailErrorHandling).
+        # No sibling events.jsonl → fall through to the default path
+        # AND emit a one-line note so the operator knows which file
+        # we ended up reading. The note is the Round-2 fold against
+        # the silent-failure-hunter finding: silently using the
+        # default `~/.schemabrain/events.jsonl` after the operator
+        # passed `--store-path` is rarely the right outcome.
         store_path = tmp_path / "schemabrain.db"
         store_path.touch()
         monkeypatch.delenv("SCHEMABRAIN_EVENTS_PATH", raising=False)
@@ -268,6 +272,42 @@ class TestTailStorePathResolution:
             ]
         )
         assert exit_code == 0
+        # Note must mention BOTH the missing sibling AND the fallback
+        # path so the operator can either pass --events-path or move
+        # the file.
+        captured = capsys.readouterr()
+        assert "no `events.jsonl` found alongside" in captured.err
+        assert "--events-path" in captured.err
+
+    def test_no_note_emitted_when_explicit_events_path_passed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # When the operator already chose the events path explicitly,
+        # the note is noise — suppress it. Defends against a future
+        # refactor that drops the gating condition.
+        store_path = tmp_path / "schemabrain.db"
+        explicit_events = tmp_path / "explicit.jsonl"
+        store_path.touch()
+        _write_event(explicit_events, tool_name="t1")
+        monkeypatch.delenv("SCHEMABRAIN_EVENTS_PATH", raising=False)
+        cli_main(
+            [
+                "tail",
+                "--no-follow",
+                "--json",
+                "--store-path",
+                str(store_path),
+                "--events-path",
+                str(explicit_events),
+                "--since",
+                "1h",
+            ]
+        )
+        captured = capsys.readouterr()
+        assert "no `events.jsonl` found" not in captured.err
 
     def test_explicit_events_path_wins_over_store_path(
         self,

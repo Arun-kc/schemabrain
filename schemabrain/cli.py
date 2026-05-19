@@ -2595,6 +2595,29 @@ def _cmd_serve(
             )
         )
         return 2
+    except sqlite3.DatabaseError as exc:
+        # Convergent reviewer finding (Round-2 fold): the audit-writer
+        # init at line ~2541 already names `sqlite3.DatabaseError` as
+        # a "want the same response" case, but the store-open path
+        # one level up missed it. A corrupted store file (hard
+        # shutdown mid-write, OS-level filesystem damage, truncated
+        # WAL) surfaces as DatabaseError, not OSError, and would
+        # bubble up as the same kind of raw traceback the
+        # SchemaVersionMismatchError fix above was written to prevent.
+        # Emit the same shape of guided block so the operator's
+        # recovery path is consistent.
+        _render_guided(
+            GuidedError(
+                kind="serve_store_corrupted",
+                message=f"sqlite3.DatabaseError: {exc}",
+                why="the local store file is corrupted or unreadable as SQLite "
+                "(common causes: hard shutdown mid-write, truncated WAL, "
+                "filesystem damage, hand-edited binary)",
+                fix="delete the store file and re-run `schemabrain init` to rebuild from scratch",
+                next_step=f"rm {store_path} && schemabrain init ...",
+            )
+        )
+        return 2
     except OSError as e:
         # Unwritable directory, missing parent, etc. Surface as a
         # guided block instead of a traceback — Claude Desktop config
@@ -4931,15 +4954,17 @@ def _resolve_tail_events_path(*, events_path: str | None, store_path: str | None
     4. Module-level `_DEFAULT_EVENTS_PATH`.
 
     Pure function so the priority order is testable without spinning
-    a real reader.
+    a real reader. Round-2 fold: use `is not None` rather than truthy
+    checks so an explicit empty-string from a future caller doesn't
+    silently fall through to env-var resolution.
     """
     import os as _os
     from pathlib import Path as _Path
 
-    if events_path:
+    if events_path is not None:
         return events_path
     env_path = _os.environ.get("SCHEMABRAIN_EVENTS_PATH")
-    if env_path:
+    if env_path is not None:
         return env_path
     if store_path:
         candidate = _Path(store_path).expanduser().parent / "events.jsonl"
@@ -4958,6 +4983,7 @@ def _cmd_tail(
 ) -> int:
     """Run `schemabrain tail`: stream events from the JSONL bus file."""
     import json as _json
+    import os as _os
     import sys as _sys
     from pathlib import Path as _Path
 
@@ -4972,6 +4998,26 @@ def _cmd_tail(
 
     resolved_path = _resolve_tail_events_path(events_path=events_path, store_path=store_path)
     path = _Path(resolved_path).expanduser()
+    # Round-2 fold: if the operator passed `--store-path` expecting
+    # tail to find events alongside the store, but neither
+    # `--events-path` / `$SCHEMABRAIN_EVENTS_PATH` were set AND no
+    # sibling `events.jsonl` exists, the resolver silently falls back
+    # to `~/.schemabrain/events.jsonl`. That fallback is rarely what
+    # the operator intended; surface a one-line note so they know
+    # which file we ended up reading. Suppressed when an explicit
+    # flag/env was used (the operator already picked the path).
+    if (
+        store_path is not None
+        and events_path is None
+        and _os.environ.get("SCHEMABRAIN_EVENTS_PATH") is None
+        and resolved_path == _DEFAULT_EVENTS_PATH
+    ):
+        print(
+            f"note: no `events.jsonl` found alongside {store_path}; "
+            f"tailing the default {_DEFAULT_EVENTS_PATH}. "
+            f"Pass --events-path PATH to override.",
+            file=_sys.stderr,
+        )
     try:
         since_dt = parse_since(since)
     except ValueError as exc:
@@ -5599,6 +5645,14 @@ def _wizard_stage_context(stage: object) -> Iterator[None]:
     # rendering during `input()` and read as "stage is already running";
     # registering the active spinner here gives the prompt a handle to
     # pause it during the wait.
+    #
+    # Cleanup ordering note: in `with A, B:`, Python exits B first,
+    # then A. Here that means `register_active_spinner.__exit__` runs
+    # FIRST (clears the registry), then `status.__exit__` runs (stops
+    # the spinner). The registry is cleared while the status is still
+    # live, which is what we want: it prevents another thread (or a
+    # re-entrant call) from `pause_active_spinner()`-ing a status
+    # that's about to be cleaned up.
     status = console.status(f"[cyan]{label}…[/]", spinner="dots")
     with status, register_active_spinner(status):
         yield

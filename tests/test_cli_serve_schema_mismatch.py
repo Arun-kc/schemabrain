@@ -87,3 +87,56 @@ class TestServeSchemaVersionMismatch:
         # And critically: no Python traceback.
         assert "Traceback" not in captured.err
         assert "SchemaVersionMismatchError" not in captured.err or "Traceback" not in captured.err
+
+
+def _seed_corrupted_store(path: Path) -> None:
+    """Write a file that isn't valid SQLite (truncated header).
+
+    SQLite refuses to open this with `DatabaseError: file is not a
+    database`, mirroring the hard-shutdown / truncated-WAL / OS-level
+    corruption case the Round-2 fold covers.
+    """
+    path.write_bytes(b"NOT_A_VALID_SQLITE_HEADER" + b"\x00" * 100)
+
+
+class TestServeStoreCorrupted:
+    """Round-2 fold (convergent python + silent-failure finding): a
+    corrupted store file surfaces as `sqlite3.DatabaseError`, NOT as
+    `OSError` or `SchemaVersionMismatchError`. Before this fix, the
+    bare exception would bubble up to MCP stderr as a Python
+    traceback — same UX cliff `SchemaVersionMismatchError` had
+    before its fix.
+    """
+
+    def test_emits_guided_block_not_traceback(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        store_path = tmp_path / "corrupted.db"
+        _seed_corrupted_store(store_path)
+        monkeypatch.setenv("FAKE_URL", "postgresql+psycopg://fake/serve")
+
+        exit_code = cli_main(
+            [
+                "serve",
+                "--url-env",
+                "FAKE_URL",
+                "--store-path",
+                str(store_path),
+                "--no-events",
+                "--no-audit",
+            ]
+        )
+
+        assert exit_code == 2
+
+        captured = capsys.readouterr()
+        # Block should mention the corruption symptom AND the
+        # remediation. We deliberately don't pin the exact error
+        # message text from sqlite3 — it varies by sqlite version.
+        assert "corrupted" in captured.err.lower() or "not a database" in captured.err.lower()
+        assert "schemabrain init" in captured.err
+        # No traceback — the whole point of the fix.
+        assert "Traceback" not in captured.err
