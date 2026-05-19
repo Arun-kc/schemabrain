@@ -37,7 +37,7 @@ and inside CI captures.
 
 from __future__ import annotations
 
-from typing import Final
+from typing import IO, Final
 
 from rich.console import Console
 
@@ -133,7 +133,7 @@ def pii_marker(sensitivity: str) -> str:
 def make_console(
     *,
     stderr: bool = False,
-    file=None,
+    file: IO[str] | None = None,
     force_terminal: bool | None = None,
     width: int | None = None,
     record: bool = False,

@@ -41,7 +41,7 @@ import json
 
 from rich.console import Console
 
-from schemabrain._ui import severity_glyph
+from schemabrain._ui import GLYPH_OK, severity_glyph
 from schemabrain.check.engine import CheckReport, Drift
 
 _DEF_KIND_LABEL: dict[str, str] = {
@@ -121,10 +121,10 @@ def _render_per_type_summary(report: CheckReport, *, console: Console) -> None:
     "0 joins healthy" on a project that hasn't curated joins is
     noise.
 
-    Glyph + style come from `_DRIFT_GLYPH` rather than being hard-
-    coded at each call site — keeping a single source of truth so a
-    future `DriftKind`/`DefKind` addition routes to the right tier
-    by extending the mapping rather than copy-pasting glyph logic.
+    Glyph + style resolve through `schemabrain._ui.severity_glyph` so
+    a future `DriftKind` / `DefKind` addition routes to the right
+    tier by extending `_DRIFT_TIER` in `_ui.py` rather than copy-
+    pasting glyph logic at each call site.
     """
     for kind_singular, kind_plural, def_kind, total, healthy in (
         ("entity", "entities", "entity", report.total_entities, report.entities_healthy),
@@ -156,8 +156,8 @@ def _summary_line(
     hasn't curated this definition kind isn't told it has "0 joins
     healthy" — that's noise on a fresh store.
 
-    Drift glyph + colour resolve from `_DRIFT_GLYPH` keyed on
-    `def_kind`. Healthy lines always render green ✓ regardless of
+    Drift glyph + colour resolve through `severity_glyph(def_kind)`.
+    Healthy lines always render green ✓ (`GLYPH_OK`) regardless of
     kind — success is a single tier, only drift has severity.
     """
     if total == 0:
@@ -165,7 +165,7 @@ def _summary_line(
     drifted = total - healthy
     if drifted == 0:
         word = kind_singular if total == 1 else kind_plural
-        console.print(f"  [green]✓[/] {total} {word} healthy")
+        console.print(f"  [green]{GLYPH_OK}[/] {total} {word} healthy")
     else:
         glyph, style = severity_glyph(def_kind)
         word = kind_singular if drifted == 1 else kind_plural
