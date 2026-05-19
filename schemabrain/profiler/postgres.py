@@ -105,14 +105,24 @@ class PostgresProfiler:
     """
 
     def __init__(self, url: str, *, sample_size: int | None = None) -> None:
-        # Resolution chain for `sample_size`:
-        #   1. Explicit constructor arg (highest priority — caller knows best)
-        #   2. SCHEMABRAIN_PROFILER_SAMPLE_SIZE env var (operator override)
-        #   3. Package default (5)
-        # Env-var resolution happens HERE, not at module import, so test
-        # monkeypatching takes effect mid-process. `on_invalid="raise"`
-        # is intentional: a wrong sample size silently degrades enrichment
-        # quality.
+        """Construct a PostgresProfiler.
+
+        `sample_size=None` (the default) is a SENTINEL meaning
+        "resolve from env / package default" — not "use no samples".
+        Pass an explicit `int` if you want to override regardless of
+        env state; pass nothing (or `None`) to opt into the
+        env-var-aware resolution chain.
+
+        Resolution chain for `sample_size`:
+          1. Explicit constructor arg (highest priority — caller knows best)
+          2. `SCHEMABRAIN_PROFILER_SAMPLE_SIZE` env var (operator override)
+          3. Package default (`_DEFAULT_SAMPLE_SIZE`, currently 5)
+
+        Env-var resolution happens here, not at module import, so test
+        monkeypatching takes effect mid-process. `on_invalid="raise"`
+        is intentional: a wrong sample size silently degrades
+        enrichment quality.
+        """
         if sample_size is None:
             sample_size = resolve_positive_int_env(
                 _PROFILER_SAMPLE_SIZE_ENV,

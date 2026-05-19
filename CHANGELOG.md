@@ -48,6 +48,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the shared module; no behavior change for sane operator inputs;
   three latent footgun-acceptance bugs closed on the cost-cap path.
 
+### Changed
+- **`SCHEMABRAIN_MAX_LLM_COST_USD=""` (empty) in `schemabrain
+  entities suggest` / `metrics suggest` now warns + uses the
+  package default instead of rendering a guided error + exit 2.**
+  Pre-refactor, `float("")` raised `ValueError` which the CLI
+  translated into a `suggest_cost_env_malformed` guided error. The
+  shared `_env` parser (matching the convention PR #67 established
+  for `max_tokens`) treats an empty env value as a benign
+  misconfiguration: emits a one-shot stderr breadcrumb so the
+  operator sees their override didn't take effect, then falls back
+  to the package default. The new behavior unifies CLI + wizard:
+  both now follow the same "empty != invalid" contract. Operators
+  who relied on the empty-env exit code to fail CI should set the
+  env var to a real number or unset it entirely. Invalid values
+  (`"not-a-number"`, `"-1.0"`, `"1_000"`) still raise + exit 2 as
+  before — only `""` flipped.
+
 - **Per-tier env-var override for Anthropic max-output-tokens.** Two
   new env vars expose the per-tier output cap as configuration
   without requiring a code change:

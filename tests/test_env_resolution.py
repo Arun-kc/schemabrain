@@ -328,6 +328,45 @@ class TestWizardEnrichCapEnv:
             )
 
 
+class TestCliSuggestEmptyEnvBehavior:
+    """Pinned behavior post-PR-#69: an empty `SCHEMABRAIN_MAX_LLM_COST_USD`
+    in the CLI suggest paths produces a one-shot stderr warning + falls
+    back to the package default, rather than exiting with a guided error
+    as pre-refactor. The unification matches PR #67's contract for
+    `max_tokens` env vars (empty != invalid) and the wizard's existing
+    contract.
+
+    Invalid values (`"not-a-number"`, `"-1.0"`, `"1_000"`) still raise +
+    exit 2 — only the empty-string case flipped behavior. This test
+    class pins the new contract so a future refactor doesn't drift it
+    back without conscious choice.
+    """
+
+    def test_empty_env_warns_and_returns_default(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Set the env to empty + call the same resolver the CLI uses.
+        # We exercise the resolver directly (not the full CLI) because
+        # the CLI's `_cmd_*_suggest` paths require a full source URL +
+        # store fixture; the resolver's behavior is what the CLI
+        # depends on, and pinning it here covers the contract.
+        monkeypatch.setenv("SCHEMABRAIN_MAX_LLM_COST_USD", "")
+        result = resolve_positive_float_env("SCHEMABRAIN_MAX_LLM_COST_USD", 0.5)
+        assert result == 0.5
+        captured = capsys.readouterr()
+        assert "SCHEMABRAIN_MAX_LLM_COST_USD" in captured.err
+        assert "set but empty" in captured.err
+
+    def test_invalid_env_still_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The opposite case: invalid (non-empty) values still raise
+        # even with the unified empty-env contract. Together with the
+        # above test these pin the boundary: empty == benign,
+        # invalid == loud.
+        monkeypatch.setenv("SCHEMABRAIN_MAX_LLM_COST_USD", "junk")
+        with pytest.raises(ValueError, match="positive decimal number"):
+            resolve_positive_float_env("SCHEMABRAIN_MAX_LLM_COST_USD", 0.5)
+
+
 class TestPipelineConcurrencyEnv:
     """`SCHEMABRAIN_PIPELINE_DEFAULT_CONCURRENCY` and
     `SCHEMABRAIN_PIPELINE_CRYPTIC_CONCURRENCY` must flow through to

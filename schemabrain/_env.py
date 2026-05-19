@@ -102,8 +102,20 @@ def _reset_warned_empty_cache_for_tests() -> None:
 T = TypeVar("T", int, float)
 
 
-def _warn_empty_once(env_var: str, default: T, default_display: str | None) -> None:
-    """Emit a one-shot stderr warning when `env_var` is set but empty."""
+def _warn_empty_once(
+    env_var: str,
+    default: int | float,
+    default_display: str | None,
+) -> None:
+    """Emit a one-shot stderr warning when `env_var` is set but empty.
+
+    `default` is typed as `int | float` (not the `TypeVar T`) because
+    this function only `str()`-converts the value for the warning
+    message and has no return type that needs to preserve the input
+    type. Using `T` here would imply a constraint the body doesn't
+    enforce. Save the generic for `_handle_invalid` which actually
+    returns the same type it accepts.
+    """
     if env_var in _WARNED_EMPTY_ENV_VARS:
         return
     _WARNED_EMPTY_ENV_VARS.add(env_var)

@@ -353,6 +353,23 @@ class TestErrorHandling:
             client.complete(system="sys", user="user")
 
 
+@pytest.fixture(autouse=True)
+def _clear_env_warned_cache() -> None:
+    """Reset `schemabrain._env._WARNED_EMPTY_ENV_VARS` before every
+    test in this module so cross-test bleed doesn't silently mask
+    an expected-warning assertion (state from a prior test would
+    dedup the warning, making `capsys.err == ""` falsely pass).
+
+    Scoped at module level rather than class-level because the
+    factories indirectly resolve env vars via the shared cache —
+    any future test class touching `anthropic_*_client` would have
+    the same hazard if not auto-cleared.
+    """
+    from schemabrain._env import _reset_warned_empty_cache_for_tests
+
+    _reset_warned_empty_cache_for_tests()
+
+
 class TestMaxOutputTokensConfiguration:
     """Per-tier max-output-tokens defaults + env-var override surface.
 
@@ -513,12 +530,8 @@ class TestMaxOutputTokensConfiguration:
         # not once per factory call — the wizard calls the factory per
         # stage and we don't want to spam.
         #
-        # The warned-empty set lives in `schemabrain._env` after the
-        # 2026-05-19 parser-promotion refactor; we reset via the
-        # public-for-tests seam to keep the cache scoped per-test.
-        from schemabrain._env import _reset_warned_empty_cache_for_tests
-
-        _reset_warned_empty_cache_for_tests()
+        # The warned-empty set is reset by the module-level autouse
+        # fixture `_clear_env_warned_cache` (no inline reset needed).
         monkeypatch.setenv(_SONNET_MAX_OUTPUT_TOKENS_ENV, "")
 
         anthropic_sonnet_46_client(api_key="sk-ant-fake")
