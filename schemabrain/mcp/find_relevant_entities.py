@@ -6,11 +6,29 @@ binding, returning the entity name (not the qualified table) as the
 primary identifier so the agent can chain straight into
 `describe_entity` / `resolve_join` / `get_metric`.
 
-No new embedding work: the existing column-level embedding index is
-the semantic signal. An entity's score is the MAX cosine similarity
-across the columns of its bound table — same per-table aggregation
-as `find_relevant_tables`, gated by the entity-binding lookup so only
-curated entities surface.
+Two ranking signals contribute, scored independently and combined
+per-entity by MAX cosine:
+
+  1. **Column-level** — embedded column descriptions for the entity's
+     bound table. This is what `find_relevant_tables` ranks; we
+     intersect it with the entity-binding lookup so only curated
+     entities surface.
+  2. **Entity-description** — the one-sentence LLM-generated
+     description of each entity (`Entity.description`), embedded
+     at query time and cached in `_DESC_EMBED_CACHE` so the cost
+     amortizes across calls within a serve process.
+
+Why both: the column signal is good when the user's query maps to a
+specific column (e.g. "email addresses" → users.email). The
+description signal is good when the user's query maps to the
+entity's overall concept (e.g. "customer" → user.description even
+when no column literally mentions "customer"). Without the
+description signal, short entity names like `user` lose to
+longer-named neighbors like `order` whose `user_id` column
+description coincidentally scores higher on "customer" than
+`email` does. The MAX combination picks whichever signal is
+strongest per entity rather than averaging — averaging would
+dilute a strong description match with weak column matches.
 """
 
 from __future__ import annotations
@@ -30,6 +48,60 @@ from schemabrain.mcp.shapes import EntityHit
 # every embedded column at v1 scale, < 10k columns) rather than by a
 # shared constant whose semantics differ as the project grows.
 _BULK_FETCH_COLUMN_K = 10_000
+
+# Sentinel value placed in the `best_column` field of an `EntityHit`
+# when the ranking score came from the entity-description embedding
+# rather than from one of the entity's bound-table column embeddings.
+# Surfaced to the agent so it sees WHY the entity surfaced — distinct
+# from any real column name (parenthesised strings are not legal
+# Postgres identifiers per `_IDENT_RE` in `core/entity.py`).
+_ENTITY_DESCRIPTION_MATCH_LABEL = "(entity description)"
+
+# Process-local cache of `description text -> embedding vector`.
+# Embeddings are deterministic for the same `(embedder, text)` pair
+# (modulo ONNX nondeterminism the embedder itself warns about); the
+# cache key is text alone because a serve process has exactly one
+# `Embedder` instance shared by every tool call. Without the cache,
+# every `find_relevant_entities` invocation would re-embed every
+# entity description, costing ~O(entities * embedder_latency) per
+# call. Cache size is bounded in practice (~100 entities * ~400-dim
+# float32 = ~150KB per source) — small enough to skip an LRU eviction
+# policy at v1 scale. Cleared between tests via
+# `_clear_description_embedding_cache()`.
+_DESC_EMBED_CACHE: dict[str, np.ndarray] = {}
+
+
+def _clear_description_embedding_cache() -> None:
+    """Reset the description-embedding cache. Test-only seam — tests
+    that exercise the ranking path need a clean cache so cached
+    embeddings from a prior test don't bleed into the current one.
+    """
+    _DESC_EMBED_CACHE.clear()
+
+
+def _get_description_embedding(embedder: Embedder, text: str) -> np.ndarray:
+    """Embed `text` once per process and cache the result.
+
+    Returns a float32 numpy array of length `embedder.dimension`.
+    """
+    cached = _DESC_EMBED_CACHE.get(text)
+    if cached is not None:
+        return cached
+    vec = np.asarray(embedder.embed(text), dtype=np.float32)
+    _DESC_EMBED_CACHE[text] = vec
+    return vec
+
+
+def _cosine_or_zero(a: np.ndarray, b: np.ndarray) -> float:
+    """Cosine similarity of two float32 vectors. Returns 0.0 on any
+    zero-norm input rather than raising — matches the silent-skip
+    behavior the surrounding code uses for degenerate query vectors.
+    """
+    a_norm = float(np.linalg.norm(a))
+    b_norm = float(np.linalg.norm(b))
+    if a_norm == 0.0 or b_norm == 0.0:
+        return 0.0
+    return float(np.dot(a, b) / (a_norm * b_norm))
 
 
 class _EntityBest(NamedTuple):
@@ -129,6 +201,36 @@ def find_relevant_entities_impl(
                 score=score, schema=schema, table=table, best_column=col
             )
 
+    # Entity-description signal: independent of column embeddings.
+    # For every entity with a non-empty description, embed it (cached)
+    # and compare cosine to the query. If the description score beats
+    # the column score for the same entity, promote it — and tag the
+    # match with the sentinel `_ENTITY_DESCRIPTION_MATCH_LABEL` so the
+    # caller sees WHY the entity surfaced. Entities that had NO column
+    # contribution (e.g. tables whose columns have no embeddings yet)
+    # but DO have a description still join the result set via this
+    # path. This is the fix for the S6 quality issue: short, generic
+    # entity names like `user` lose to longer column-rich neighbors on
+    # cosine-against-columns alone; the description signal restores
+    # the natural "customer" → user mapping that the LLM-generated
+    # one-sentence description carries explicitly.
+    query_np = np.asarray(query_vec, dtype=np.float32)
+    for (schema, table), entity in table_to_entity.items():
+        if not entity.description:
+            continue
+        desc_vec = _get_description_embedding(embedder, entity.description)
+        desc_score = _cosine_or_zero(query_np, desc_vec)
+        if desc_score <= 0.0:
+            continue
+        current = best_per_entity.get(entity.name)
+        if current is None or desc_score > current.score:
+            best_per_entity[entity.name] = _EntityBest(
+                score=desc_score,
+                schema=schema,
+                table=table,
+                best_column=_ENTITY_DESCRIPTION_MATCH_LABEL,
+            )
+
     # Sort by descending score, alphabetical tiebreak on entity name.
     ranked = sorted(
         best_per_entity.items(),
@@ -138,11 +240,20 @@ def find_relevant_entities_impl(
 
     hits: list[EntityHit] = []
     for entity_name, best in top:
-        descs = store.get_table_descriptions(
-            best.schema, best.table, source_connection_id=source_connection_id
-        )
-        best_desc_obj = descs.get(best.best_column)
-        best_desc = best_desc_obj.text if best_desc_obj is not None else ""
+        if best.best_column == _ENTITY_DESCRIPTION_MATCH_LABEL:
+            # Entity-description match path. The sentinel best_column
+            # isn't a real column, so we don't query the column-
+            # description store; instead surface the entity's own
+            # description text as `best_column_description` so the
+            # agent sees WHY the entity scored.
+            entity = table_to_entity[(best.schema, best.table)]
+            best_desc = entity.description
+        else:
+            descs = store.get_table_descriptions(
+                best.schema, best.table, source_connection_id=source_connection_id
+            )
+            best_desc_obj = descs.get(best.best_column)
+            best_desc = best_desc_obj.text if best_desc_obj is not None else ""
         partial = EntityHit(
             name=entity_name,
             score=best.score,

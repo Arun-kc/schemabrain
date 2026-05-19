@@ -49,6 +49,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   get an empty response with no actionable next step — a silent
   dead-end. The hint now surfaces `describe_table` as the
   embedding-independent fallback so the agent has somewhere to chain.
+- **`find_relevant_entities` ranks entity descriptions alongside
+  column embeddings.** Per-entity score is now
+  `MAX(column_cosine, description_cosine)` rather than `column_cosine`
+  alone. The smoke surfaced this as: query "customer" surfacing
+  `order` above `user` because the user-id column description in
+  orders scored higher on "customer" than the email/full_name
+  columns in users. With description-embedding ranking, the
+  LLM-generated one-sentence description (`"customer accounts and
+  identity"`) embedded against the query promotes `user` correctly.
+  Description embeddings are cached per process in `_DESC_EMBED_CACHE`
+  so the first call pays O(entities) embedder calls and subsequent
+  calls amortize to zero. Empty descriptions skip the embedder
+  entirely — no `embedder.embed("")` call. When the description
+  wins, `EntityHit.best_column` is set to the sentinel
+  `(entity description)` and `best_column_description` carries the
+  description text, so the agent sees WHY the entity surfaced
+  rather than a confusing column-name attribution.
 
 ### Fixed
 - **`schemabrain inspect --source <VARNAME>` AND
