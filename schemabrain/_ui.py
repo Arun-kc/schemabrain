@@ -12,22 +12,27 @@ Design anchor (handoff bundle ``schemabrain-v1`` · ``cli/shell.css``):
 * **Glyph-first severity** — colour is decoration, never load-bearing.
   Every severity carrier is a glyph plus colour, so colour-blind users
   and ``NO_COLOR=1`` readers see the same information.
-* Five severity tiers map onto a fixed glyph set:
-  ``✓ ok · ⚠ warn · ✗ err · ▸ active · ◇ pending``.
+* Six status tiers map onto a fixed glyph set:
+  ``✓ ok · ⚠ warn · ✗ err · ▸ active · ◇ pending · ⊘ skipped``.
 
-Scope discipline for this module's first ship:
+Scope discipline:
 
-* Only the constants + helpers consumed by ``cli_ui.py``,
-  ``check/render.py``, and ``inspect/render.py`` are exported. New
-  callers add their constants here rather than redefining locally.
-* The richer primitives the design specifies (run-signature line, brand
-  ``◆`` surface header, top-rule, footer-hint band, grouped help
-  formatter) land in follow-up PRs when their consumer surfaces are
-  actually re-rendered. Shipping them empty would be speculative.
+* Only the primitives that have at least one consumer (today or in
+  the immediate next PR) ship here. Speculative additions get
+  deferred until their renderer materialises.
+* This module exposes two parallel severity helpers:
+  ``drift_glyph(def_kind)`` for ``schemabrain check`` drift rows
+  (input is a definition-kind noun: ``entity`` / ``metric`` /
+  ``canonical_join``) and ``status_glyph(status_name)`` for the
+  general operator-status vocabulary the wizard and ``doctor``
+  consume (input is a tier name: ``ok`` / ``warn`` / ``err`` /
+  ``active`` / ``pending`` / ``skipped``). The split keeps each
+  function's input domain honest — ``drift_glyph`` routes by what
+  drifted, ``status_glyph`` routes by how the work went.
 * ``NO_COLOR`` handling is delegated to ``rich.console.Console``'s
   built-in environment check — ``make_console`` is the single hook
-  every surface should resolve through so a future ``--no-color`` CLI
-  flag, ``--json`` mode, or palette swap flips one place.
+  every surface should resolve through so a future ``--no-color``
+  CLI flag, ``--json`` mode, or palette swap flips one place.
 
 Future migration note: when truecolor support is the floor, the named
 Rich colours below can flip to hex literals (``#c1ff72`` etc.). Today
@@ -45,28 +50,34 @@ from rich.console import Console
 # Glyph vocabulary — design bundle ``schemabrain-v1/project/cli/shell.jsx``.
 # ---------------------------------------------------------------------------
 #
-# Severity carriers (consumed in PR #1):
-#   ✓ ok      ⚠ warn     ✗ err
+# Severity carriers:
+#   ✓ ok       ⚠ warn      ✗ err
 #
-# Status carriers (consumed in later PRs):
-#   ▸ active  ◇ pending  ⊘ skipped
+# Status carriers:
+#   ▸ active   ◇ pending   ⊘ skipped
 #
-# Anchors (consumed in later PRs):
-#   ◆ brand   → arrow    · sep    • bullet    ─ rule
+# Anchors:
+#   ◆ brand    → arrow     · sep     • bullet
 #
-# The full set lives in a single comment block so future callers can
-# scan it in one place. PR #1 exports only the three severity glyphs
-# its consumers reference today — when a renderer in a later PR needs
-# ``▸`` or ``◆``, it adds the constant here next to its kin rather
-# than scattering glyph literals across the codebase.
+# Every glyph the design's surfaces consume has a named constant here,
+# so a future renderer never reaches for a character literal. Constants
+# without a current consumer document the design vocabulary for
+# follow-up PRs (wizard stage rows, doctor headers, error renderers).
 
 GLYPH_OK: Final[str] = "✓"
 GLYPH_WARN: Final[str] = "⚠"
 GLYPH_ERR: Final[str] = "✗"
+GLYPH_ACTIVE: Final[str] = "▸"
+GLYPH_PENDING: Final[str] = "◇"
+GLYPH_SKIPPED: Final[str] = "⊘"
+GLYPH_BRAND: Final[str] = "◆"
+GLYPH_ARROW: Final[str] = "→"
+GLYPH_BULLET: Final[str] = "•"
+GLYPH_SEP: Final[str] = "·"
 
 
 # ---------------------------------------------------------------------------
-# Severity routing — definition-kind → (glyph, rich-style) tuple.
+# Drift severity routing — definition-kind → (glyph, rich-style) tuple.
 # ---------------------------------------------------------------------------
 #
 # Entity drift is a hard break (the agent loses access to the whole
@@ -84,8 +95,13 @@ _DRIFT_TIER: Final[dict[str, tuple[str, str]]] = {
 }
 
 
-def severity_glyph(def_kind: str) -> tuple[str, str]:
+def drift_glyph(def_kind: str) -> tuple[str, str]:
     """Return ``(glyph, rich_style)`` for a drift on ``def_kind``.
+
+    Input is a definition-kind noun (``entity`` / ``metric`` /
+    ``canonical_join``) — not a tier name. Use ``status_glyph`` for
+    the general ``ok`` / ``warn`` / ``err`` / ``active`` /
+    ``pending`` / ``skipped`` operator-status vocabulary.
 
     Unknown kinds collapse to the hard-break tier (``✗`` red) rather
     than silently rendering as a benign warning — a new ``def_kind``
@@ -94,6 +110,47 @@ def severity_glyph(def_kind: str) -> tuple[str, str]:
     route it correctly.
     """
     return _DRIFT_TIER.get(def_kind, (GLYPH_ERR, "red"))
+
+
+# ---------------------------------------------------------------------------
+# Status routing — operator-status tier name → (glyph, rich-style).
+# ---------------------------------------------------------------------------
+#
+# Six tiers — three severity + three lifecycle — the wizard's per-
+# stage outcomes, ``doctor``'s per-check outcomes, and ``tail``'s
+# per-event severity all map onto this vocabulary. Renderers that
+# previously kept local glyph dicts (``setup/doctor_flow._GLYPHS``,
+# ``cli._STAGE_GLYPHS``) collapse onto ``status_glyph`` once their
+# surface is migrated — bundling the migration with the visible
+# glyph flip (e.g. wizard's ``↷`` → ``⊘`` for skipped) is the
+# follow-up PR's job, not this primitive's.
+
+_STATUS_TIER: Final[dict[str, tuple[str, str]]] = {
+    "ok": (GLYPH_OK, "green"),
+    "warn": (GLYPH_WARN, "yellow"),
+    "err": (GLYPH_ERR, "red"),
+    "active": (GLYPH_ACTIVE, "green"),
+    "pending": (GLYPH_PENDING, "bright_black"),
+    "skipped": (GLYPH_SKIPPED, "yellow"),
+}
+
+
+def status_glyph(status_name: str) -> tuple[str, str]:
+    """Return ``(glyph, rich_style)`` for an operator-status tier.
+
+    Input is a tier name (``ok`` / ``warn`` / ``err`` / ``active``
+    / ``pending`` / ``skipped``) — not a domain noun. Use
+    ``drift_glyph`` for ``schemabrain check`` drift rows where the
+    input is a ``def_kind``.
+
+    Unknown tier names collapse to the hard-break tier (``✗`` red)
+    rather than silently rendering as a benign warning, matching
+    ``drift_glyph``'s contract. A renderer reaching for a tier that
+    isn't routed yet should surface visibly. Extend ``_STATUS_TIER``
+    to add a new tier rather than hand-rolling a glyph at the call
+    site.
+    """
+    return _STATUS_TIER.get(status_name, (GLYPH_ERR, "red"))
 
 
 # ---------------------------------------------------------------------------
@@ -176,10 +233,18 @@ def make_console(
 
 
 __all__ = [
+    "GLYPH_ACTIVE",
+    "GLYPH_ARROW",
+    "GLYPH_BRAND",
+    "GLYPH_BULLET",
     "GLYPH_ERR",
     "GLYPH_OK",
+    "GLYPH_PENDING",
+    "GLYPH_SEP",
+    "GLYPH_SKIPPED",
     "GLYPH_WARN",
+    "drift_glyph",
     "make_console",
     "pii_marker",
-    "severity_glyph",
+    "status_glyph",
 ]

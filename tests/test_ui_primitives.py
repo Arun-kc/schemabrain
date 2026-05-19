@@ -1,22 +1,28 @@
 """Tests for `schemabrain._ui` — the shared CLI shell vocabulary.
 
-These pin the *contract* the three threaded callers (`cli_ui.py`,
-`check/render.py`, `inspect/render.py`) rely on. The visual surfaces
+These pin the *contract* every threaded caller (`cli_ui.py`,
+`check/render.py`, `inspect/render.py`, and the wizard / doctor
+surfaces that will migrate next) relies on. The visual surfaces
 have their own snapshot-style tests in `test_cli_ui.py`,
 `test_check_render.py`, and `test_inspect_render.py`; this module
-focuses on the primitives themselves and on the zero-behavior-change
-guarantee:
+focuses on the primitives themselves:
 
-* `severity_glyph(def_kind)` returns the same tuples the previous
-  hand-rolled `_DRIFT_GLYPH` dict did, including the unknown-kind
-  fall-through to the entity-tier hard break.
-* `pii_marker(sensitivity)` returns the same Rich-markup strings
-  the previous hand-rolled `_PII_GLYPH` dict did, including the
-  unknown-tier verbatim pass-through.
+* `drift_glyph(def_kind)` routes a definition-kind noun (`entity` /
+  `metric` / `canonical_join`) to its `(glyph, rich_style)` tuple,
+  with an unknown-kind fall-through to the entity-tier hard break.
+* `status_glyph(status_name)` routes the general operator-status
+  tier vocabulary (`ok` / `warn` / `err` / `active` / `pending` /
+  `skipped`) to its tuple — the wizard's per-stage outcomes,
+  `doctor`'s per-check outcomes, and `tail`'s per-event severity
+  all resolve through this single helper.
+* `pii_marker(sensitivity)` returns Rich-markup-tagged labels for
+  the four PII tiers, with verbatim pass-through for unknown tiers.
 * `make_console(...)` returns a Console with the same default shape
-  every threaded caller previously got from `Console(stderr=True)`.
-* `NO_COLOR=1` is honoured by the factory's product (delegated to
-  Rich's built-in env handling).
+  every threaded caller previously got from `Console(stderr=True)`,
+  honouring `NO_COLOR=1` via Rich's built-in env contract.
+* The exported glyph constants (`GLYPH_OK` through `GLYPH_SEP`) are
+  the single source of truth — callers reach for the constant
+  rather than redefining the character at the call site.
 """
 
 from __future__ import annotations
@@ -28,59 +34,126 @@ import pytest
 from rich.console import Console
 
 from schemabrain._ui import (
+    GLYPH_ACTIVE,
+    GLYPH_ARROW,
+    GLYPH_BRAND,
+    GLYPH_BULLET,
     GLYPH_ERR,
     GLYPH_OK,
+    GLYPH_PENDING,
+    GLYPH_SEP,
+    GLYPH_SKIPPED,
     GLYPH_WARN,
+    drift_glyph,
     make_console,
     pii_marker,
-    severity_glyph,
+    status_glyph,
 )
 
 
-class TestSeverityGlyph:
-    """Pins the severity tier map for `schemabrain check` (and any
-    future caller, e.g. `doctor`, that wants the same vocabulary).
+class TestDriftGlyph:
+    """Pins the drift-severity tier map for `schemabrain check`.
 
-    The previous hand-rolled `_DRIFT_GLYPH` in `check/render.py`
-    returned the same three tuples. These tests are the contract
-    snapshot — flipping any tuple here is a deliberate, visible
-    change to operator output.
+    Input is a `def_kind` noun (`entity` / `metric` /
+    `canonical_join`). These tests are the contract snapshot —
+    flipping any tuple here is a deliberate, visible change to
+    operator output.
     """
 
     def test_entity_drift_is_hard_break(self) -> None:
         # Entity drift takes the whole entity offline — operator
         # must see the hard ✗ red tier, not the softer ⚠ yellow.
-        assert severity_glyph("entity") == ("✗", "red")
+        assert drift_glyph("entity") == ("✗", "red")
 
     def test_metric_drift_is_advisory(self) -> None:
         # Metric drift degrades one definition without blocking the
         # rest of the semantic layer — yellow ⚠.
-        assert severity_glyph("metric") == ("⚠", "yellow")
+        assert drift_glyph("metric") == ("⚠", "yellow")
 
     def test_canonical_join_drift_is_advisory(self) -> None:
-        assert severity_glyph("canonical_join") == ("⚠", "yellow")
+        assert drift_glyph("canonical_join") == ("⚠", "yellow")
 
     def test_unknown_def_kind_falls_back_to_hard_break(self) -> None:
         # An unclassified `def_kind` slipping through indicates a
         # routing gap — surfacing it as ✗ red rather than silently
         # painting a benign warning is intentional.
-        assert severity_glyph("brand_new_kind_2027") == ("✗", "red")
-        assert severity_glyph("") == ("✗", "red")
+        assert drift_glyph("brand_new_kind_2027") == ("✗", "red")
+        assert drift_glyph("") == ("✗", "red")
+
+
+class TestStatusGlyph:
+    """Pins the general operator-status tier map.
+
+    Input is a tier name (`ok` / `warn` / `err` / `active` /
+    `pending` / `skipped`). The wizard, `doctor`, and `tail` will
+    all migrate from local glyph dicts onto this single helper —
+    these tests fence the vocabulary so a follow-up surface
+    migration can't silently flip a glyph or colour.
+
+    Note: PR #2 ships the primitive only; the local dicts in
+    `schemabrain/setup/doctor_flow.py:_GLYPHS` and
+    `schemabrain/cli.py:_STAGE_GLYPHS` are migrated when the
+    wizard / doctor surfaces are re-rendered (visible glyph flip
+    for `skipped`: current `↷` → design-spec `⊘`).
+    """
+
+    @pytest.mark.parametrize(
+        ("status_name", "expected_glyph", "expected_style"),
+        [
+            ("ok", "✓", "green"),
+            ("warn", "⚠", "yellow"),
+            ("err", "✗", "red"),
+            ("active", "▸", "green"),
+            ("pending", "◇", "bright_black"),
+            ("skipped", "⊘", "yellow"),
+        ],
+    )
+    def test_known_tiers_route_through_status_glyph(
+        self,
+        status_name: str,
+        expected_glyph: str,
+        expected_style: str,
+    ) -> None:
+        assert status_glyph(status_name) == (expected_glyph, expected_style)
+
+    def test_unknown_status_falls_back_to_hard_break(self) -> None:
+        # Mirrors `drift_glyph`'s contract: a renderer reaching for
+        # a tier that isn't routed yet should surface visibly.
+        assert status_glyph("brand_new_tier_2027") == ("✗", "red")
+        assert status_glyph("") == ("✗", "red")
 
 
 class TestGlyphConstants:
-    """The exported glyph constants are part of the public contract.
+    """The exported glyph constants are the single source of truth.
 
     Callers that compose multi-line output (e.g. `check/render.py`'s
-    healthy summary line, which hardcodes `✓`) should be able to
-    reference these without redefining the character at the call
-    site.
+    healthy summary line, which references `GLYPH_OK`) should be
+    able to import the constant rather than embedding the character
+    at the call site. The wizard's stage rows, `doctor`'s severity
+    column, and the error renderers will all consume from this
+    list.
     """
 
     def test_severity_glyph_constants(self) -> None:
         assert GLYPH_OK == "✓"
         assert GLYPH_WARN == "⚠"
         assert GLYPH_ERR == "✗"
+
+    def test_status_glyph_constants(self) -> None:
+        # The wizard's per-stage outcomes and `doctor`'s active
+        # check indicator both consume these.
+        assert GLYPH_ACTIVE == "▸"
+        assert GLYPH_PENDING == "◇"
+        assert GLYPH_SKIPPED == "⊘"
+
+    def test_anchor_glyph_constants(self) -> None:
+        # Surface-anchoring glyphs the design uses across the
+        # brand line (◆), arrow hints (→), bullet lists (•), and
+        # the dot separator on metadata strips (·).
+        assert GLYPH_BRAND == "◆"
+        assert GLYPH_ARROW == "→"
+        assert GLYPH_BULLET == "•"
+        assert GLYPH_SEP == "·"
 
 
 class TestPIIMarker:

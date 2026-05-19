@@ -8,11 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`status_glyph(status_name)` + seven new glyph constants in
+  `schemabrain/_ui.py`** — second wave of design-system primitives
+  for the wizard, ``doctor``, and ``tail`` re-renders. The new
+  helper routes general operator-status tier names (``ok`` /
+  ``warn`` / ``err`` / ``active`` / ``pending`` / ``skipped``) to
+  ``(glyph, rich_style)`` tuples, matching ``drift_glyph``'s
+  unknown-tier hard-break fallback by design. The new glyph
+  constants (``GLYPH_ACTIVE`` ``▸``, ``GLYPH_PENDING`` ``◇``,
+  ``GLYPH_SKIPPED`` ``⊘``, ``GLYPH_BRAND`` ``◆``, ``GLYPH_ARROW``
+  ``→``, ``GLYPH_BULLET`` ``•``, ``GLYPH_SEP`` ``·``) round out
+  the design's glyph vocabulary. Local stage / check glyph dicts
+  in ``setup/doctor_flow.py:_GLYPHS`` and ``cli.py:_STAGE_GLYPHS``
+  collapse onto ``status_glyph`` when their surfaces are
+  re-rendered (visible glyph flip for ``skipped``: current ``↷``
+  → design-spec ``⊘`` bundles with that surface's re-render).
+
 - **Shared CLI shell vocabulary `schemabrain/_ui.py`** — foundation
   for the design-system migration anchored on the ``schemabrain-v1``
   handoff bundle. Defines the glyph constants
   (``GLYPH_OK``/``GLYPH_WARN``/``GLYPH_ERR``), the
-  ``severity_glyph(def_kind) -> (glyph, rich_style)`` router
+  ``drift_glyph(def_kind) -> (glyph, rich_style)`` router
   (entity → ``✗ red``, metric / canonical_join → ``⚠ yellow``,
   unknown → hard-break fallback by design), the
   ``pii_marker(sensitivity)`` label vocabulary (verbatim
@@ -24,6 +40,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ``check/render.py``, and ``inspect/render.py`` with zero
   behaviour change. Follow-up PRs migrate one operator surface at
   a time on top of this seam.
+
+### Changed
+- **`schemabrain._ui.severity_glyph` renamed to `drift_glyph`**
+  (PR #71's foundation helper). The function's input is a
+  ``def_kind`` noun (``entity`` / ``metric`` / ``canonical_join``),
+  not a tier name — the rename makes its scope honest now that the
+  general ``status_glyph(status_name)`` primitive ships alongside.
+  Sole consumer (``check/render.py``) updated in the same commit;
+  no other in-repo callsites existed. Surfaced by the PR #71
+  3-agent reviewer rotation (code-reviewer MED #4); deferred to
+  this PR so PR #71 stayed foundation-only.
 
 - **Four new `SCHEMABRAIN_*` env-var overrides for tier-1 config
   knobs surfaced by the 2026-05-19 config-flexibility audit.**
