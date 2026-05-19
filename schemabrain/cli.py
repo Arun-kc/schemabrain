@@ -512,6 +512,63 @@ def _nonneg_int(value: str) -> int:
     return parsed
 
 
+class _GroupedInitHelpAction(argparse.Action):
+    """Replacement ``-h/--help`` action for the ``init`` subparser.
+
+    Suppresses argparse's plain-text help dump in favour of the
+    design's grouped help surface (handoff bundle
+    ``cli/operator.jsx:InitHelp``). The rendered output reads
+    the parser's argument groups so the visual layout stays in
+    sync with the wire-up declarations.
+
+    Built as an ``argparse.Action`` (not a wrapper around
+    ``parser.exit``) so it composes cleanly with argparse's
+    standard help-flag conventions: ``-h``/``--help`` short-
+    circuits parsing the moment it appears, before any value-
+    bearing flag forces a missing-argument error.
+
+    nargs=0 — the help flag takes no argument value, matching
+    argparse's built-in ``_HelpAction``.
+    """
+
+    def __init__(
+        self,
+        option_strings: list[str],
+        dest: str = argparse.SUPPRESS,
+        default: object = argparse.SUPPRESS,
+        help: str | None = None,
+        **kwargs: object,
+    ) -> None:
+        # ``**kwargs`` forwards any future argparse-introduced
+        # action kwargs (eg ``deprecated`` on Python 3.12+) so
+        # this subclass keeps working as the stdlib evolves —
+        # without forwarding, a stdlib change that began injecting
+        # a new kwarg at registration time would raise ``TypeError``
+        # at parser-build time.
+        super().__init__(
+            option_strings=option_strings,
+            dest=dest,
+            default=default,
+            nargs=0,
+            help=help,
+            **kwargs,
+        )
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        # Lazy import to keep ``init_help_render`` (Rich-dependent)
+        # out of the import path for every other subcommand.
+        from schemabrain.init_help_render import render_init_help
+
+        render_init_help(parser, console=_stderr_console())
+        parser.exit(0)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="schemabrain",
@@ -1343,50 +1400,74 @@ def _build_parser() -> argparse.ArgumentParser:
     p_init = sub.add_parser(
         "init",
         help="Wire schemabrain into an MCP host (Claude Desktop, Claude Code, or print snippet)",
+        add_help=False,
     )
+    # Custom ``-h/--help`` action so we can render the design's
+    # grouped help surface (handoff bundle ``cli/operator.jsx:InitHelp``).
+    # ``add_help=False`` above suppresses argparse's default
+    # ``-h/--help`` action; this replacement lives inside the
+    # ``Behavior`` group below so it does not leak into a sixth
+    # render-block in the help screen.
     p_init.add_argument(
+        "-h",
+        "--help",
+        action=_GroupedInitHelpAction,
+        help="show this help message and exit",
+    )
+
+    # Argument groups carry the design's group labels (title) and
+    # one-line purposes (description). The grouped help renderer
+    # walks `parser._action_groups` and emits one design block per
+    # group; argparse's default ``--help`` would print the same
+    # groups as plain-text headers, so an operator's fallback
+    # experience (eg redirected to a file) still gets a structured
+    # help screen. The groups also surface in shell completions
+    # generated from ``argparse``'s introspection.
+    g_source = p_init.add_argument_group(
+        "Source",
+        description="where does the schema come from?",
+    )
+    g_source.add_argument(
         "--source",
+        metavar="URL",
         default=None,
-        help="Source URL (e.g. postgresql+psycopg://...). DEPRECATED when the URL "
-        "contains a password; prefer --url-env. One of --source / --url-env is required.",
+        help="Postgres URL · prefer --url-env when the URL contains a password.",
     )
-    p_init.add_argument(
+    g_source.add_argument(
         "--url-env",
         dest="url_env",
         metavar="VARNAME",
         default=None,
-        help="Name of the environment variable that holds the source URL "
-        "(e.g. --url-env DATABASE_URL). Preferred over --source so credentials "
-        "never appear in argv. Mutually exclusive with --source.",
+        help="Env var holding the source URL (eg DATABASE_URL) · keeps creds out of argv.",
     )
-    p_init.add_argument(
-        "--store-path",
-        default=_DEFAULT_STORE_PATH,
-        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    g_source.add_argument(
+        "--from-dbt",
+        dest="from_dbt",
+        metavar="PATH",
+        default=None,
+        help="Import entities + metrics from a dbt manifest · auto-detected from "
+        "$DBT_PROJECT_DIR when omitted.",
     )
-    p_init.add_argument(
-        "--host",
-        choices=("claude-desktop", "claude-code", "manual"),
-        default="claude-desktop",
-        help="Which host to wire. `manual` prints the snippet without writing "
-        "anywhere (default: claude-desktop)",
+
+    g_stages = p_init.add_argument_group(
+        "Stages",
+        description="turn individual wizard stages on or off",
     )
-    p_init.add_argument(
-        "--env-var",
-        dest="env_var",
-        default="SCHEMABRAIN_DATABASE_URL",
-        help="Name of the env var the host will set when launching the MCP server "
-        "(default: SCHEMABRAIN_DATABASE_URL). The DB URL goes into this env var, "
-        "not into argv.",
-    )
-    p_init.add_argument(
+    g_stages.add_argument(
         "--skip-index",
         dest="skip_index",
         action="store_true",
         help="Skip the wizard's index stage. Pass this when you've already "
         "indexed in a different session or plan to index later.",
     )
-    p_init.add_argument(
+    g_stages.add_argument(
+        "--enrich",
+        dest="enrich",
+        action="store_true",
+        help="LLM column descriptions (Haiku) during index · needs ANTHROPIC_API_KEY · "
+        "~$0.10-$2.00 for a 50-table schema.",
+    )
+    g_stages.add_argument(
         "--no-entities",
         dest="no_entities",
         action="store_true",
@@ -1394,25 +1475,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "wires the MCP host; you can curate entities later via "
         "`schemabrain entities suggest --apply`.",
     )
-    p_init.add_argument(
-        "--enrich",
-        dest="enrich",
-        action="store_true",
-        help="Run column-level LLM enrichment during the index stage. Requires "
-        "ANTHROPIC_API_KEY and incurs LLM cost (typically $0.10-$2.00 for a "
-        "50-table schema). Default off; the wizard is cost-free out of the box.",
-    )
-    p_init.add_argument(
-        "--entities-max-cost-usd",
-        dest="entities_max_cost_usd",
-        type=_positive_float,
-        default=None,
-        help="Cost ceiling for the entity-suggestion stage (USD). Must be "
-        "positive. Defaults to $SCHEMABRAIN_MAX_LLM_COST_USD or the package "
-        "default. The pipeline aborts cleanly if the next call would exceed "
-        "this cap.",
-    )
-    p_init.add_argument(
+    g_stages.add_argument(
         "--no-metrics",
         dest="no_metrics",
         action="store_true",
@@ -1420,17 +1483,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "wires the MCP host; you can curate metrics later via "
         "`schemabrain metrics suggest --apply`.",
     )
-    p_init.add_argument(
-        "--metrics-max-cost-usd",
-        dest="metrics_max_cost_usd",
-        type=_positive_float,
-        default=None,
-        help="Cost ceiling for the metric-suggestion stage (USD). Must be "
-        "positive. Defaults to $SCHEMABRAIN_MAX_LLM_COST_USD or the package "
-        "default. The pipeline aborts cleanly if the next call would exceed "
-        "this cap.",
-    )
-    p_init.add_argument(
+    g_stages.add_argument(
         "--no-joins",
         dest="no_joins",
         action="store_true",
@@ -1439,39 +1492,71 @@ def _build_parser() -> argparse.ArgumentParser:
         "`schemabrain joins suggest --apply`. The join suggester is "
         "deterministic (FK + query-log mining) — no LLM cost, no API key.",
     )
-    p_init.add_argument(
-        "--from-dbt",
-        dest="from_dbt",
-        metavar="PATH",
-        default=None,
-        help="Import entities + metrics from a compiled dbt manifest "
-        "(`target/manifest.json`) instead of running the LLM suggester. "
-        "Stage 5 (joins) still uses FK + query-log mining since dbt has "
-        "no canonical-join concept. The wizard also auto-detects a manifest "
-        "from $DBT_PROJECT_DIR or the cwd-walk fallback when this flag "
-        "is omitted; pass --from-dbt to force a specific path.",
+
+    g_host = p_init.add_argument_group(
+        "Host",
+        description="which AI agent to wire up + where the store lives",
     )
-    p_init.add_argument(
+    g_host.add_argument(
+        "--host",
+        choices=("claude-desktop", "claude-code", "manual"),
+        default="claude-desktop",
+        help="Which host to wire. `manual` prints the snippet without writing "
+        "anywhere (default: claude-desktop)",
+    )
+    g_host.add_argument(
+        "--store-path",
+        metavar="PATH",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    g_host.add_argument(
+        "--env-var",
+        dest="env_var",
+        metavar="VARNAME",
+        default="SCHEMABRAIN_DATABASE_URL",
+        help="Env var the host sets to the DB URL (default: SCHEMABRAIN_DATABASE_URL).",
+    )
+
+    g_cost = p_init.add_argument_group(
+        "Cost",
+        description="spend ceilings · enforced before each LLM call",
+    )
+    g_cost.add_argument(
+        "--entities-max-cost-usd",
+        dest="entities_max_cost_usd",
+        metavar="USD",
+        type=_positive_float,
+        default=None,
+        help="Stage 03 cost cap · positive · defaults to $SCHEMABRAIN_MAX_LLM_COST_USD.",
+    )
+    g_cost.add_argument(
+        "--metrics-max-cost-usd",
+        dest="metrics_max_cost_usd",
+        metavar="USD",
+        type=_positive_float,
+        default=None,
+        help="Stage 04 cost cap · positive · defaults to $SCHEMABRAIN_MAX_LLM_COST_USD.",
+    )
+
+    g_behavior = p_init.add_argument_group(
+        "Behavior",
+        description="how the wizard runs",
+    )
+    g_behavior.add_argument(
         "--yes",
         "-y",
         dest="assume_yes",
         action="store_true",
-        help="Run the wizard fully non-interactively: overwrite an existing "
-        "schemabrain entry in the host config without prompting, AND skip the "
-        "Enter-to-continue pause before each LLM-driven stage. Equivalent to "
-        "passing both `--skip-llm-confirm` and the legacy host-overwrite "
-        "auto-confirm. Use in CI / scripted environments.",
+        help="Accept every prompt · for CI · implies --skip-llm-confirm + host-overwrite confirm.",
     )
-    p_init.add_argument(
+    g_behavior.add_argument(
         "--skip-llm-confirm",
         dest="skip_llm_confirm",
         action="store_true",
-        help="Skip the Enter-to-continue pause that fires before each "
-        "LLM-driven stage (entities + metrics). Does not affect the "
-        "host-overwrite prompt (use --yes for that too). The pause is "
-        "auto-suppressed in non-TTY environments regardless of this flag.",
+        help="Skip the Enter-to-continue pause before LLM stages · auto-on in non-TTY.",
     )
-    p_init.add_argument(
+    g_behavior.add_argument(
         "--print-only",
         dest="print_only",
         action="store_true",
