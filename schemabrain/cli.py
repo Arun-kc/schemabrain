@@ -6076,6 +6076,16 @@ def _render_closing_block(
     _render_pending_joins_block(wizard_result, console=console)
     console.print("Inspect activity:  [bold]schemabrain tail --follow[/]")  # type: ignore[attr-defined]
     console.print("Review the audit:  [bold]schemabrain audit list[/]")  # type: ignore[attr-defined]
+    # Day-one UX overhaul: discovery links for the other commands a
+    # new user benefits from after init. `inspect` is the most
+    # common next step (see what was curated); `doctor` verifies
+    # the wiring on demand; `check` runs the drift check after
+    # schema changes. Kept short — one line per command, dim
+    # styling so it reads as supplementary, not as the primary
+    # call-to-action.
+    console.print("See what was curated:  [bold]schemabrain inspect[/]")  # type: ignore[attr-defined]
+    console.print("Verify the wiring:     [bold]schemabrain doctor[/]")  # type: ignore[attr-defined]
+    console.print("Detect schema drift:   [bold]schemabrain check[/]")  # type: ignore[attr-defined]
     console.print()  # type: ignore[attr-defined]
     console.print("[dim]The agent reads. It doesn't write. That's the whole point.[/]")  # type: ignore[attr-defined]
 

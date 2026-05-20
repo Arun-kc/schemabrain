@@ -163,6 +163,16 @@ def render_summary(
     console.print()
 
     console.print("[dim]Drill into one: `schemabrain inspect <name>`[/]")
+    # Day-one UX overhaul: discovery links to the other commands a
+    # new user would benefit from once they have entities/metrics
+    # to look at. `inspect` is often the first command run after
+    # `init`, so this is the highest-leverage place to surface the
+    # rest of the post-init surface. Rendered as a compact 3-line
+    # block — short and skimmable, not a wall of recommendations.
+    console.print()
+    console.print("[dim]Verify wiring:  `schemabrain doctor`[/]")
+    console.print("[dim]Detect drift:   `schemabrain check`[/]")
+    console.print("[dim]Watch traffic:  `schemabrain tail --follow`[/]")
 
 
 def _compose_summary_brand_line(store_path: str | None) -> Text:
