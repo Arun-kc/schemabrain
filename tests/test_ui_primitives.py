@@ -468,3 +468,211 @@ class TestActiveSpinnerRegistry:
         with register_active_spinner(_BrokenStart()), pause_active_spinner():
             events.append("input")
         assert events == ["stop", "input"]
+
+
+class TestPromptForUrl:
+    """Tests for ``prompt_for_url`` — the interactive URL prompt the
+    wizard's stage 0 and post-init commands use when ``DATABASE_URL``
+    is missing in env. Verifies the helper:
+
+    * Returns the entered URL stripped of whitespace.
+    * Returns ``None`` for empty input (caller routes to abort or
+      default — the helper doesn't decide policy).
+    * Calls ``Prompt.ask`` with ``password=True`` so the URL never
+      appears in terminal scrollback (URLs often embed passwords).
+    * Pauses an active wizard spinner around the input so the user
+      doesn't see "stage running" while typing.
+    * Propagates ``KeyboardInterrupt`` for clean Ctrl-C abort.
+    """
+
+    def test_returns_stripped_url_on_input(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import make_console, prompt_for_url
+
+        captured: dict[str, object] = {}
+
+        def fake_ask(*args: object, **kwargs: object) -> str:
+            captured.update(kwargs)
+            return "  postgresql://user:pw@host:5432/db  "
+
+        monkeypatch.setattr("rich.prompt.Prompt.ask", fake_ask)
+        out = prompt_for_url(make_console(file=io.StringIO()), purpose="to index")
+        assert out == "postgresql://user:pw@host:5432/db"
+        # ``password=True`` is load-bearing — the URL may contain
+        # credentials and must not echo to the terminal.
+        assert captured.get("password") is True
+
+    def test_returns_none_on_empty_input(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import make_console, prompt_for_url
+
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: "")
+        assert prompt_for_url(make_console(file=io.StringIO()), purpose="x") is None
+
+    def test_returns_none_on_whitespace_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import make_console, prompt_for_url
+
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: "   ")
+        assert prompt_for_url(make_console(file=io.StringIO()), purpose="x") is None
+
+    def test_pauses_active_spinner(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import (
+            make_console,
+            prompt_for_url,
+            register_active_spinner,
+        )
+
+        events: list[str] = []
+
+        class _RecordingStatus:
+            def start(self) -> None:
+                events.append("start")
+
+            def stop(self) -> None:
+                events.append("stop")
+
+        def fake_ask(*args: object, **kwargs: object) -> str:
+            events.append("ask")
+            return ""
+
+        monkeypatch.setattr("rich.prompt.Prompt.ask", fake_ask)
+        with register_active_spinner(_RecordingStatus()):
+            prompt_for_url(make_console(file=io.StringIO()), purpose="x")
+        # Spinner must stop BEFORE Prompt.ask blocks on stdin, then
+        # restart AFTER — otherwise the user sees "stage running"
+        # on the same line as the prompt and reads the wizard as
+        # already done, missing that they're blocking it.
+        assert events == ["stop", "ask", "start"]
+
+    def test_propagates_keyboard_interrupt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import make_console, prompt_for_url
+
+        def raising_ask(*args: object, **kwargs: object) -> str:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("rich.prompt.Prompt.ask", raising_ask)
+        with pytest.raises(KeyboardInterrupt):
+            prompt_for_url(make_console(file=io.StringIO()), purpose="x")
+
+
+class TestPromptForAnthropicKey:
+    """Tests for ``prompt_for_anthropic_key`` — the API key prompt
+    with cost disclosure. Verifies the helper:
+
+    * Returns the entered key stripped, or ``None`` for empty input.
+    * Renders the cost / cap / skip_hint disclosure before prompting.
+    * Calls ``Prompt.ask`` with ``password=True``.
+    * Pauses the active wizard spinner around the input.
+    * Propagates ``KeyboardInterrupt``.
+    """
+
+    def test_returns_stripped_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import make_console, prompt_for_anthropic_key
+
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: "  sk-ant-xyz  ")
+        out = prompt_for_anthropic_key(
+            make_console(file=io.StringIO()),
+            purpose="suggest entities",
+            cost_estimate_usd=0.01,
+            cap_usd=0.5,
+        )
+        assert out == "sk-ant-xyz"
+
+    def test_returns_none_on_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import make_console, prompt_for_anthropic_key
+
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: "")
+        assert (
+            prompt_for_anthropic_key(
+                make_console(file=io.StringIO()),
+                purpose="x",
+                cost_estimate_usd=0.01,
+                cap_usd=0.5,
+            )
+            is None
+        )
+
+    def test_disclosure_includes_cost_cap_and_skip_hint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain._ui import make_console, prompt_for_anthropic_key
+
+        buf = io.StringIO()
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: "")
+        prompt_for_anthropic_key(
+            make_console(file=buf, force_terminal=False, width=120),
+            purpose="suggest entities",
+            cost_estimate_usd=0.0123,
+            cap_usd=0.50,
+            skip_hint="press Enter to skip (degraded mode)",
+        )
+        out = buf.getvalue()
+        # All three numbers must appear so the user understands the
+        # bounds before pasting a key. Cost rounds to 2dp; cap is the
+        # actual ceiling (the env-var override), not a stub.
+        assert "$0.01" in out
+        assert "$0.50" in out
+        assert "press Enter to skip (degraded mode)" in out
+        assert "suggest entities" in out
+
+    def test_password_true_load_bearing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import make_console, prompt_for_anthropic_key
+
+        captured: dict[str, object] = {}
+
+        def fake_ask(*args: object, **kwargs: object) -> str:
+            captured.update(kwargs)
+            return ""
+
+        monkeypatch.setattr("rich.prompt.Prompt.ask", fake_ask)
+        prompt_for_anthropic_key(
+            make_console(file=io.StringIO()),
+            purpose="x",
+            cost_estimate_usd=0.01,
+            cap_usd=0.5,
+        )
+        # API keys must not echo — they're as sensitive as passwords.
+        assert captured.get("password") is True
+
+    def test_pauses_active_spinner(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import (
+            make_console,
+            prompt_for_anthropic_key,
+            register_active_spinner,
+        )
+
+        events: list[str] = []
+
+        class _RecordingStatus:
+            def start(self) -> None:
+                events.append("start")
+
+            def stop(self) -> None:
+                events.append("stop")
+
+        def fake_ask(*args: object, **kwargs: object) -> str:
+            events.append("ask")
+            return ""
+
+        monkeypatch.setattr("rich.prompt.Prompt.ask", fake_ask)
+        with register_active_spinner(_RecordingStatus()):
+            prompt_for_anthropic_key(
+                make_console(file=io.StringIO()),
+                purpose="x",
+                cost_estimate_usd=0.01,
+                cap_usd=0.5,
+            )
+        assert events == ["stop", "ask", "start"]
+
+    def test_propagates_keyboard_interrupt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import make_console, prompt_for_anthropic_key
+
+        def raising_ask(*args: object, **kwargs: object) -> str:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("rich.prompt.Prompt.ask", raising_ask)
+        with pytest.raises(KeyboardInterrupt):
+            prompt_for_anthropic_key(
+                make_console(file=io.StringIO()),
+                purpose="x",
+                cost_estimate_usd=0.01,
+                cap_usd=0.5,
+            )
