@@ -58,6 +58,20 @@ class TestDetectDocker:
 
 
 class TestPromptForInitSetup:
+    @pytest.fixture(autouse=True)
+    def _disable_auto_docker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # D2 added auto-`docker run` to the demo path. These existing
+        # tests pre-date D2 and pin the manual-recipe UX (the path
+        # that fires when auto-docker fails). Short-circuit
+        # `_try_auto_docker_demo` to False so they exercise the
+        # fallback path verbatim — same intent, no real subprocess
+        # work. The auto-docker path itself has its own dedicated
+        # test class below (`TestAutoDockerDemoPath`).
+        monkeypatch.setattr(
+            "schemabrain.setup.setup_stage._try_auto_docker_demo",
+            lambda *, console: False,
+        )
+
     def test_demo_choice_returns_pinned_demo_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Default path — user accepts the demo fork [2] and presses
         # Enter at the wait-for-Postgres prompt. Returns the pinned
@@ -183,3 +197,554 @@ class TestDemoCommandsConsistency:
         assert "PGPASSWORD=local" in DEMO_FIXTURE_LOAD_COMMAND
         # Must reference the bundled fixture path.
         assert "ecommerce.sql" in DEMO_FIXTURE_LOAD_COMMAND
+
+
+class TestAutoDockerDemoPath:
+    """D2: auto-`docker run` orchestration for the stage 0 demo path.
+
+    Three subprocess helpers (`_docker_run_demo_postgres`,
+    `_wait_for_postgres_ready`, `_docker_load_fixture`) compose via
+    `_try_auto_docker_demo` into the end-to-end flow. On any failure,
+    the orchestrator returns False and `_handle_demo_path` falls
+    through to the pre-D2 manual copy-paste recipe — auto-docker
+    augments the safe path, never replaces it.
+    """
+
+    def test_orchestrator_returns_true_when_all_three_steps_succeed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # End-to-end happy path: container starts, readiness probe
+        # connects, fixture loads. Orchestrator returns True so
+        # `_handle_demo_path` skips the manual recipe.
+        from schemabrain.setup import setup_stage
+
+        monkeypatch.setattr(setup_stage, "_docker_run_demo_postgres", lambda *, console: True)
+        monkeypatch.setattr(setup_stage, "_wait_for_postgres_ready", lambda **_kw: True)
+        monkeypatch.setattr(setup_stage, "_docker_load_fixture", lambda *, console: True)
+
+        assert setup_stage._try_auto_docker_demo(console=make_console(file=io.StringIO())) is True
+
+    def test_orchestrator_short_circuits_on_docker_run_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # First step fails: `_wait_for_postgres_ready` and
+        # `_docker_load_fixture` must NOT be called. The orchestrator
+        # is fail-fast — a partial setup (container up but fixture
+        # missing) is more confusing than clean fall-through to manual.
+        from schemabrain.setup import setup_stage
+
+        wait_calls: list[object] = []
+        fixture_calls: list[object] = []
+        monkeypatch.setattr(setup_stage, "_docker_run_demo_postgres", lambda *, console: False)
+        monkeypatch.setattr(
+            setup_stage,
+            "_wait_for_postgres_ready",
+            lambda **kw: wait_calls.append(kw) or True,
+        )
+        monkeypatch.setattr(
+            setup_stage,
+            "_docker_load_fixture",
+            lambda *, console: fixture_calls.append(console) or True,
+        )
+
+        result = setup_stage._try_auto_docker_demo(console=make_console(file=io.StringIO()))
+        assert result is False
+        assert wait_calls == []
+        assert fixture_calls == []
+
+    def test_orchestrator_short_circuits_on_readiness_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Container starts but Postgres never becomes ready (timeout).
+        # Fixture-load must NOT be attempted — loading into a
+        # not-yet-ready DB would surface a confusing psql error.
+        from schemabrain.setup import setup_stage
+
+        fixture_calls: list[object] = []
+        monkeypatch.setattr(setup_stage, "_docker_run_demo_postgres", lambda *, console: True)
+        monkeypatch.setattr(setup_stage, "_wait_for_postgres_ready", lambda **_kw: False)
+        monkeypatch.setattr(
+            setup_stage,
+            "_docker_load_fixture",
+            lambda *, console: fixture_calls.append(console) or True,
+        )
+
+        assert setup_stage._try_auto_docker_demo(console=make_console(file=io.StringIO())) is False
+        assert fixture_calls == []
+
+    def test_orchestrator_returns_false_on_fixture_load_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # All steps run; last one fails. Returns False so caller
+        # falls through to manual recipe — the operator may have
+        # a partial state (container running, no fixture) but the
+        # manual psql command can complete the setup.
+        from schemabrain.setup import setup_stage
+
+        monkeypatch.setattr(setup_stage, "_docker_run_demo_postgres", lambda *, console: True)
+        monkeypatch.setattr(setup_stage, "_wait_for_postgres_ready", lambda **_kw: True)
+        monkeypatch.setattr(setup_stage, "_docker_load_fixture", lambda *, console: False)
+
+        assert setup_stage._try_auto_docker_demo(console=make_console(file=io.StringIO())) is False
+
+    def test_demo_path_skips_manual_recipe_when_auto_docker_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # End-to-end: when auto-docker succeeds, `_handle_demo_path`
+        # must NOT print the manual recipe block. The "Falling back
+        # to manual setup" line is the user-visible signal the path
+        # is degraded; its absence is the success contract.
+        from schemabrain.setup import setup_stage
+
+        monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(setup_stage, "_try_auto_docker_demo", lambda *, console: True)
+        responses = iter(["2"])
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: next(responses))
+
+        buf = io.StringIO()
+        result = prompt_for_init_setup(
+            console=make_console(file=buf, force_terminal=False, width=120)
+        )
+        assert result == DEMO_DATABASE_URL
+        out = buf.getvalue()
+        # No fallback signal, no manual recipe.
+        assert "Falling back to manual setup" not in out
+        assert DEMO_DOCKER_RUN_COMMAND not in out
+        # Success line still appears.
+        assert "Demo Postgres ready" in out
+
+
+class TestDockerRunDemoPostgres:
+    """D2: `_docker_run_demo_postgres` — fresh-run + reuse paths."""
+
+    def test_reuses_running_container_without_docker_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # If `sb-demo-pg` is already running, skip `docker run` —
+        # idempotent re-invocation of the wizard shouldn't fail
+        # on the name conflict that a fresh `docker run` would
+        # hit.
+        from schemabrain.setup import setup_stage
+
+        argv_log: list[list[str]] = []
+
+        def fake_safe_subprocess(argv, *, timeout_s):  # type: ignore[no-untyped-def]
+            argv_log.append(argv)
+            # `docker inspect ... .State.Running` → "true\n" + rc=0
+            from subprocess import CompletedProcess
+
+            return CompletedProcess(args=argv, returncode=0, stdout="true\n", stderr="")
+
+        monkeypatch.setattr(setup_stage, "_safe_subprocess", fake_safe_subprocess)
+
+        buf = io.StringIO()
+        assert (
+            setup_stage._docker_run_demo_postgres(
+                console=make_console(file=buf, force_terminal=False, width=120)
+            )
+            is True
+        )
+        # Exactly one subprocess call — the inspect probe.
+        assert len(argv_log) == 1
+        assert argv_log[0][:2] == ["docker", "inspect"]
+        # No `docker run` argv issued.
+        assert all("run" not in argv for argv in argv_log)
+        assert "already running" in buf.getvalue()
+
+    def test_starts_stopped_container_via_docker_start(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Container exists but is stopped (.State.Running == "false").
+        # `docker start <name>` is the idempotent restart.
+        from subprocess import CompletedProcess
+
+        from schemabrain.setup import setup_stage
+
+        argv_log: list[list[str]] = []
+
+        def fake_safe_subprocess(argv, *, timeout_s):  # type: ignore[no-untyped-def]
+            argv_log.append(argv)
+            if argv[:2] == ["docker", "inspect"]:
+                return CompletedProcess(args=argv, returncode=0, stdout="false\n", stderr="")
+            if argv[:2] == ["docker", "start"]:
+                return CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+            raise AssertionError(f"unexpected argv: {argv}")
+
+        monkeypatch.setattr(setup_stage, "_safe_subprocess", fake_safe_subprocess)
+
+        buf = io.StringIO()
+        assert (
+            setup_stage._docker_run_demo_postgres(
+                console=make_console(file=buf, force_terminal=False, width=120)
+            )
+            is True
+        )
+        assert any(argv[:2] == ["docker", "start"] for argv in argv_log)
+        assert "Started existing container" in buf.getvalue()
+
+    def test_runs_fresh_container_when_none_exists(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # `docker inspect` returns rc=1 (no such object). Fresh
+        # `docker run` is issued with the pinned image + port + env.
+        from subprocess import CompletedProcess
+
+        from schemabrain.setup import setup_stage
+
+        argv_log: list[list[str]] = []
+
+        def fake_safe_subprocess(argv, *, timeout_s):  # type: ignore[no-untyped-def]
+            argv_log.append(argv)
+            if argv[:2] == ["docker", "inspect"]:
+                return CompletedProcess(args=argv, returncode=1, stdout="", stderr="No such object")
+            if argv[:2] == ["docker", "run"]:
+                return CompletedProcess(args=argv, returncode=0, stdout="container_id\n", stderr="")
+            raise AssertionError(f"unexpected argv: {argv}")
+
+        monkeypatch.setattr(setup_stage, "_safe_subprocess", fake_safe_subprocess)
+
+        buf = io.StringIO()
+        assert (
+            setup_stage._docker_run_demo_postgres(
+                console=make_console(file=buf, force_terminal=False, width=120)
+            )
+            is True
+        )
+        # Run argv pins the demo's host/port/password/image.
+        run_argv = next(argv for argv in argv_log if argv[:2] == ["docker", "run"])
+        assert "127.0.0.1:5433:5432" in run_argv
+        assert "POSTGRES_PASSWORD=local" in run_argv
+        assert "postgres:16-alpine" in run_argv
+        assert "sb-demo-pg" in run_argv
+
+    def test_returns_false_when_docker_run_exits_non_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Daemon down / port conflict / perm denied → non-zero exit.
+        # Helper surfaces the stderr first line so the operator
+        # has a real diagnostic before the fallback recipe.
+        from subprocess import CompletedProcess
+
+        from schemabrain.setup import setup_stage
+
+        def fake_safe_subprocess(argv, *, timeout_s):  # type: ignore[no-untyped-def]
+            if argv[:2] == ["docker", "inspect"]:
+                return CompletedProcess(args=argv, returncode=1, stdout="", stderr="No such object")
+            return CompletedProcess(
+                args=argv,
+                returncode=125,
+                stdout="",
+                stderr="docker: Error response from daemon: port is already allocated\n",
+            )
+
+        monkeypatch.setattr(setup_stage, "_safe_subprocess", fake_safe_subprocess)
+
+        buf = io.StringIO()
+        assert (
+            setup_stage._docker_run_demo_postgres(
+                console=make_console(file=buf, force_terminal=False, width=120)
+            )
+            is False
+        )
+        out = buf.getvalue()
+        assert "couldn't start Postgres container" in out
+        # First stderr line surfaced verbatim.
+        assert "port is already allocated" in out
+
+    def test_returns_false_when_subprocess_helper_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `_safe_subprocess` returns None on `FileNotFoundError`
+        # (docker missing) or `TimeoutExpired` (hung). Helper must
+        # not crash on the None — translated to False + explanation.
+        from schemabrain.setup import setup_stage
+
+        monkeypatch.setattr(setup_stage, "_safe_subprocess", lambda argv, *, timeout_s: None)
+
+        buf = io.StringIO()
+        assert (
+            setup_stage._docker_run_demo_postgres(
+                console=make_console(file=buf, force_terminal=False, width=120)
+            )
+            is False
+        )
+        assert "subprocess didn't return" in buf.getvalue()
+
+
+class TestWaitForPostgresReady:
+    """D2: `_wait_for_postgres_ready` — connect-loop with driver rewrite."""
+
+    def test_returns_true_on_first_successful_connect(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Connection succeeds on first iteration → return True
+        # immediately. No `time.sleep` should fire.
+        from schemabrain.setup import setup_stage
+
+        sleeps: list[float] = []
+        monkeypatch.setattr(setup_stage.time, "sleep", lambda s: sleeps.append(s))
+
+        class _FakeConn:
+            def execute(self, *a):
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                pass
+
+        class _FakeEngine:
+            def connect(self):
+                return _FakeConn()
+
+            def dispose(self):
+                pass
+
+        monkeypatch.setattr("sqlalchemy.create_engine", lambda *a, **kw: _FakeEngine())
+
+        buf = io.StringIO()
+        result = setup_stage._wait_for_postgres_ready(
+            url="postgresql://u:p@h/d",
+            console=make_console(file=buf, force_terminal=False, width=120),
+            timeout_s=5,
+        )
+        assert result is True
+        assert sleeps == []
+        assert "Postgres ready" in buf.getvalue()
+
+    def test_returns_false_after_timeout_with_persistent_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Connection always fails. Loop should respect `timeout_s`
+        # and return False. Use tiny interval + timeout so the
+        # test runs in milliseconds.
+        from sqlalchemy.exc import OperationalError
+
+        from schemabrain.setup import setup_stage
+
+        def always_fail(*a, **kw):
+            raise OperationalError("simulated", None, Exception("connection refused"))
+
+        monkeypatch.setattr("sqlalchemy.create_engine", always_fail)
+
+        buf = io.StringIO()
+        result = setup_stage._wait_for_postgres_ready(
+            url="postgresql://u:p@h/d",
+            console=make_console(file=buf, force_terminal=False, width=120),
+            timeout_s=0.05,
+            interval_s=0.01,
+        )
+        assert result is False
+        out = buf.getvalue()
+        assert "didn't become ready" in out
+        # Surfaces the last error so the operator has a clue.
+        assert "connection refused" in out
+
+    def test_rewrites_bare_postgresql_url_to_psycopg_driver(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Bare `postgresql://` would default SQLAlchemy to psycopg2
+        # (not installed). Helper must rewrite to `postgresql+psycopg://`
+        # so the connect actually uses the v3 driver Schema Brain ships.
+        from schemabrain.setup import setup_stage
+
+        captured_urls: list[str] = []
+
+        class _FakeEngine:
+            def connect(self):
+                raise RuntimeError("don't care — only the URL matters")
+
+            def dispose(self):
+                pass
+
+        def fake_create_engine(url, *a, **kw):
+            captured_urls.append(url)
+            return _FakeEngine()
+
+        monkeypatch.setattr("sqlalchemy.create_engine", fake_create_engine)
+        monkeypatch.setattr(setup_stage.time, "sleep", lambda s: None)
+
+        buf = io.StringIO()
+        setup_stage._wait_for_postgres_ready(
+            url="postgresql://postgres:local@localhost:5433/postgres",
+            console=make_console(file=buf, force_terminal=False, width=120),
+            timeout_s=0.01,
+            interval_s=0.001,
+        )
+        # At least one create_engine call; URL must carry the driver suffix.
+        assert len(captured_urls) >= 1
+        assert all(url.startswith("postgresql+psycopg://") for url in captured_urls)
+
+
+class TestDockerLoadFixture:
+    """D2: `_docker_load_fixture` — psql shell-out + fixture-path check."""
+
+    def test_returns_false_when_fixture_file_missing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        # Operator ran init from outside the repo. Helper must
+        # surface a helpful message instead of issuing a docker
+        # subprocess that would fail with a less helpful error.
+        from schemabrain.setup import setup_stage
+
+        monkeypatch.setattr("pathlib.Path.cwd", lambda: tmp_path)  # type: ignore[arg-type,return-value]
+        # Guard: no real subprocess should fire.
+        monkeypatch.setattr(
+            setup_stage,
+            "_safe_subprocess",
+            lambda *a, **kw: (_ for _ in ()).throw(
+                AssertionError("subprocess should not run when fixture is missing")
+            ),
+        )
+
+        buf = io.StringIO()
+        assert (
+            setup_stage._docker_load_fixture(
+                console=make_console(file=buf, force_terminal=False, width=120)
+            )
+            is False
+        )
+        assert "Fixture not found" in buf.getvalue()
+        assert "from the repo root" in buf.getvalue()
+
+    def test_returns_true_when_psql_subprocess_exits_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from subprocess import CompletedProcess
+
+        from schemabrain.setup import setup_stage
+
+        # Bypass the fixture-exists check by pretending any path exists.
+        monkeypatch.setattr("pathlib.Path.exists", lambda self: True)
+        argv_log: list[list[str]] = []
+
+        def fake_safe_subprocess(argv, *, timeout_s):  # type: ignore[no-untyped-def]
+            argv_log.append(argv)
+            return CompletedProcess(args=argv, returncode=0, stdout="LOAD 1.2k\n", stderr="")
+
+        monkeypatch.setattr(setup_stage, "_safe_subprocess", fake_safe_subprocess)
+
+        buf = io.StringIO()
+        assert (
+            setup_stage._docker_load_fixture(
+                console=make_console(file=buf, force_terminal=False, width=120)
+            )
+            is True
+        )
+        assert "Fixture loaded" in buf.getvalue()
+        # Argv must contain the psql command shape.
+        argv = argv_log[0]
+        assert "psql" in argv
+        assert "-f" in argv
+        assert "/f.sql" in argv
+        # The /v mount references the absolute fixture path.
+        assert any("ecommerce.sql" in a for a in argv)
+
+    def test_returns_false_when_psql_subprocess_exits_non_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Connection refused / fixture syntax error → non-zero exit.
+        # Surface the stderr first line.
+        from subprocess import CompletedProcess
+
+        from schemabrain.setup import setup_stage
+
+        monkeypatch.setattr("pathlib.Path.exists", lambda self: True)
+        monkeypatch.setattr(
+            setup_stage,
+            "_safe_subprocess",
+            lambda argv, *, timeout_s: CompletedProcess(
+                args=argv,
+                returncode=2,
+                stdout="",
+                stderr="psql: error: connection to server at ... refused\n",
+            ),
+        )
+
+        buf = io.StringIO()
+        assert (
+            setup_stage._docker_load_fixture(
+                console=make_console(file=buf, force_terminal=False, width=120)
+            )
+            is False
+        )
+        out = buf.getvalue()
+        assert "couldn't load the ecommerce fixture" in out
+        assert "connection to server" in out
+
+
+class TestSafeSubprocess:
+    """D2: `_safe_subprocess` — try/except wrapper around `subprocess.run`."""
+
+    def test_returns_completed_process_for_real_subprocess(self) -> None:
+        # Exercise the actual `subprocess.run` path with a trivial,
+        # CI-portable command (Python is guaranteed to be present
+        # since pytest is running).
+        from schemabrain.setup import setup_stage
+
+        result = setup_stage._safe_subprocess(["python", "-c", "print('hello')"], timeout_s=5)
+        assert result is not None
+        assert result.returncode == 0
+        assert "hello" in result.stdout
+
+
+class TestDockerStartFailure:
+    """D2: branch where `docker start` (re-start of stopped container) fails.
+
+    Distinct from `docker run` failure — covers the case where a
+    container exists but is stopped AND can't be started (corrupted
+    state, image gone, etc.).
+    """
+
+    def test_failed_docker_start_surfaces_explanation_and_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from subprocess import CompletedProcess
+
+        from schemabrain.setup import setup_stage
+
+        def fake_safe_subprocess(argv, *, timeout_s):  # type: ignore[no-untyped-def]
+            if argv[:2] == ["docker", "inspect"]:
+                return CompletedProcess(args=argv, returncode=0, stdout="false\n", stderr="")
+            if argv[:2] == ["docker", "start"]:
+                return CompletedProcess(
+                    args=argv,
+                    returncode=1,
+                    stdout="",
+                    stderr="Error response from daemon: image not found\n",
+                )
+            raise AssertionError(f"unexpected argv: {argv}")
+
+        monkeypatch.setattr(setup_stage, "_safe_subprocess", fake_safe_subprocess)
+
+        buf = io.StringIO()
+        assert (
+            setup_stage._docker_run_demo_postgres(
+                console=make_console(file=buf, force_terminal=False, width=120)
+            )
+            is False
+        )
+        out = buf.getvalue()
+        assert "couldn't start the existing container" in out
+        assert "image not found" in out
+
+
+class TestPrintDockerFailureEmptyStderr:
+    """D2: `_print_docker_failure` fallback when subprocess exits non-zero
+    with no stderr — surfaces the exit code instead of leaving the
+    operator with a blank diagnostic."""
+
+    def test_no_stderr_surfaces_exit_code(self) -> None:
+        from subprocess import CompletedProcess
+
+        from schemabrain.setup import setup_stage
+
+        result = CompletedProcess(args=["docker", "run"], returncode=125, stdout="", stderr="")
+        buf = io.StringIO()
+        setup_stage._print_docker_failure(
+            make_console(file=buf, force_terminal=False, width=120),
+            "couldn't start Postgres container",
+            result,
+        )
+        out = buf.getvalue()
+        assert "couldn't start Postgres container" in out
+        assert "exited 125 with no stderr" in out
