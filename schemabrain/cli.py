@@ -3161,8 +3161,22 @@ def _cmd_entities_suggest(
         )
         return 1
 
+    # F1: wrap the LLM round-trip in a cost preamble + spinner so the
+    # operator sees what's being spent BEFORE the ~20s wait. Skipped
+    # for `--provider stub` (returns instantly; preamble's cost framing
+    # would be misleading) and auto-suppressed on non-TTY stderr.
+    if provider == "stub":
+        progress_ctx: AbstractContextManager[None] = contextlib.nullcontext()
+    else:
+        progress_ctx = _suggest_llm_progress(
+            action=f"identify business entities ({len(tables)} tables)",
+            model="claude-sonnet-4-6",
+            cost_estimate_usd=0.01,
+            cap_usd=max_cost_usd,
+        )
     try:
-        result = pipeline.propose_from_tables(tables, top_k=top_k)
+        with progress_ctx:
+            result = pipeline.propose_from_tables(tables, top_k=top_k)
     except CostCeilingExceededError as exc:
         _render_guided(
             GuidedError(
@@ -4398,8 +4412,21 @@ def _cmd_metrics_suggest(
         )
         return 1
 
+    # F1 mirror of entities suggest — preamble + spinner around the
+    # LLM call. Metrics estimate is 2x entities (more context tokens
+    # via entity list + table schemas), matching the wizard preamble.
+    if provider == "stub":
+        progress_ctx: AbstractContextManager[None] = contextlib.nullcontext()
+    else:
+        progress_ctx = _suggest_llm_progress(
+            action=f"define metrics ({len(entities)} entities, {len(tables)} tables)",
+            model="claude-sonnet-4-6",
+            cost_estimate_usd=0.02,
+            cap_usd=max_cost_usd,
+        )
     try:
-        result = pipeline.propose_from_entities(entities, tables, top_k=top_k)
+        with progress_ctx:
+            result = pipeline.propose_from_entities(entities, tables, top_k=top_k)
     except CostCeilingExceededError as exc:
         _render_guided(
             GuidedError(
@@ -5758,6 +5785,74 @@ def _format_path_for_terminal(path: Path, *, max_width: int = 60) -> str:
 # stage 4 looking frozen for ~56s without the spinner — adding
 # `metrics` here restores symmetry with stage 3.
 _SPINNER_STAGES: frozenset[str] = frozenset({"index", "entities", "metrics"})
+
+
+@contextlib.contextmanager
+def _suggest_llm_progress(
+    *,
+    action: str,
+    model: str,
+    cost_estimate_usd: float,
+    cap_usd: float,
+) -> Iterator[None]:
+    """Show a cost preamble + ticking spinner around a standalone-suggest LLM call.
+
+    F1: wizard stages 3+4 already print the cost preview line via
+    ``print_llm_stage_preamble``; the matching standalone commands
+    (``entities suggest`` / ``metrics suggest``) were silent for the
+    full ~20s LLM round-trip and read as "frozen". This helper
+    brings the wizard's preamble shape to the CLI surface plus a
+    spinner so the operator can see the request is in flight.
+
+    Auto-suppresses on non-TTY stderr (CI logs, redirected output) —
+    matches ``_wizard_stage_context``'s discipline so carriage-return
+    spinner frames don't pollute log files. Callers are expected to
+    skip this entirely when ``provider == "stub"`` because the stub
+    returns instantly and the cost framing ("~$0.01 · claude-sonnet-4-6")
+    would be misleading.
+
+    No ``--quiet`` flag is added to the suggest subparsers — TTY
+    auto-detect covers the CI case (the only real "I don't want
+    spinner output" need), and shaving the parser surface area is
+    preferable to per-command flag proliferation. Operators who
+    want to suppress on a TTY can redirect stderr (``2>/dev/null``).
+    """
+    from schemabrain._ui import (
+        make_console,
+        print_llm_stage_preamble,
+        register_active_spinner,
+    )
+
+    # Narrow try: only the Rich console construction. If `make_console`
+    # itself raises (Rich init bug, broken terminfo), silently no-op
+    # — the spinner is a UX nicety, not a correctness requirement.
+    # MUST NOT wrap the `yield` below: catching a body-raised exception
+    # via the yield re-raise would double-yield and trip contextlib's
+    # "generator didn't stop after throw()" guard, masking the original
+    # exception from the F5 handler downstream.
+    try:
+        console = make_console(stderr=True)
+    except Exception:  # pragma: no cover — defensive against Rich init failures
+        yield
+        return
+
+    if not console.is_terminal:
+        yield
+        return
+
+    print_llm_stage_preamble(
+        console,
+        action=action,
+        model=model,
+        cost_estimate_usd=cost_estimate_usd,
+        cap_usd=cap_usd,
+    )
+    # Spinner label kept short — the cost-preview line above already
+    # carried the verbose framing. ``dots`` matches the spinner used
+    # by ``_wizard_stage_context`` for cross-surface consistency.
+    status = console.status("[cyan]waiting on Claude…[/]", spinner="dots")
+    with status, register_active_spinner(status):
+        yield
 
 
 @contextlib.contextmanager

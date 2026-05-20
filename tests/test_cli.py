@@ -3423,3 +3423,101 @@ class TestCmdIndexLlmFailureShape:
                 tmp_path=tmp_path,
                 monkeypatch=monkeypatch,
             )
+
+
+class TestSuggestLlmProgressHelper:
+    """F1: `_suggest_llm_progress` is the wizard-parity preamble + spinner helper.
+
+    Used by `_cmd_entities_suggest` and `_cmd_metrics_suggest` to
+    surface a cost preview + ticking spinner around the ~20s LLM
+    round-trip (pre-F1 these commands were silent the whole time
+    and read as "frozen"). Joins suggest is excluded by design —
+    sub-second deterministic operation.
+
+    Helper auto-suppresses on non-TTY stderr (CI safety) and never
+    fires when the caller passes `--provider stub` (the stub
+    returns instantly; cost framing would be misleading).
+    """
+
+    def test_no_op_when_stderr_is_not_tty(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Non-TTY (CI logs, redirected output) → skip preamble + spinner
+        # so log scrapers don't get carriage-return noise.
+        from schemabrain.cli import _suggest_llm_progress
+
+        class _NonTtyConsole:
+            is_terminal = False
+
+            def status(self, *_a: object, **_kw: object) -> None:  # pragma: no cover
+                raise AssertionError("status should not fire on non-TTY")
+
+            def print(self, *_a: object, **_kw: object) -> None:  # pragma: no cover
+                raise AssertionError("print should not fire on non-TTY")
+
+        monkeypatch.setattr("schemabrain._ui.make_console", lambda **_kw: _NonTtyConsole())
+
+        with _suggest_llm_progress(
+            action="identify business entities",
+            model="claude-sonnet-4-6",
+            cost_estimate_usd=0.01,
+            cap_usd=1.0,
+        ):
+            pass
+
+        # Nothing should have reached stderr.
+        assert capsys.readouterr().err == ""
+
+    def test_tty_path_prints_preamble_and_starts_spinner(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # On a TTY, preamble line goes out + a status spinner is
+        # entered/exited cleanly.
+        from schemabrain.cli import _suggest_llm_progress
+
+        captured: dict[str, object] = {"prints": [], "entered": False, "exited": False}
+
+        class _RecordingStatus:
+            def __enter__(self) -> "_RecordingStatus":
+                captured["entered"] = True
+                return self
+
+            def __exit__(self, *_exc: object) -> None:
+                captured["exited"] = True
+
+            def start(self) -> None: ...
+
+            def stop(self) -> None: ...
+
+        class _TtyConsole:
+            is_terminal = True
+
+            def print(self, *args: object, **_kw: object) -> None:
+                captured["prints"].append(args[0] if args else None)
+
+            def status(self, text: str, *, spinner: str) -> _RecordingStatus:
+                captured["spinner_text"] = text
+                captured["spinner"] = spinner
+                return _RecordingStatus()
+
+        monkeypatch.setattr("schemabrain._ui.make_console", lambda **_kw: _TtyConsole())
+
+        with _suggest_llm_progress(
+            action="identify business entities (7 tables)",
+            model="claude-sonnet-4-6",
+            cost_estimate_usd=0.01,
+            cap_usd=1.0,
+        ):
+            pass
+
+        # Preamble line printed before the spinner started.
+        assert captured["entered"] is True
+        assert captured["exited"] is True
+        assert captured["spinner"] == "dots"
+        assert "waiting on Claude" in str(captured["spinner_text"])
+        # The preamble carries the wizard-parity bits (model + cost + cap).
+        rendered = " ".join(str(p) for p in captured["prints"])
+        assert "claude-sonnet-4-6" in rendered
+        assert "identify business entities" in rendered
+        assert "$0.01" in rendered
+        assert "$1.00" in rendered

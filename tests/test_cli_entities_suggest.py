@@ -1159,3 +1159,123 @@ class TestLlmFailureShape:
                 tmp_path=tmp_path,
                 monkeypatch=monkeypatch,
             )
+
+
+class TestSuggestProgressIntegration:
+    """F1: `entities suggest` shows the wizard-parity cost preamble + spinner.
+
+    Pre-F1 the standalone suggest commands were silent for the full
+    ~20s LLM round-trip (user thought it was frozen). Now the helper
+    `_suggest_llm_progress` fires before the LLM call when:
+
+    * provider != "stub" (the stub returns instantly; preamble's
+      cost framing would lie)
+    * stderr is a TTY (CI / piped stderr auto-suppresses)
+
+    Tests pin the wiring decision (skip on stub) rather than the
+    rendered output (the helper's own unit tests in
+    test_cli.py::TestSuggestLlmProgressHelper cover that surface).
+    """
+
+    def test_stub_provider_skips_progress_helper(
+        self,
+        tmp_path: Path,
+        stub_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # `--provider stub` must NOT call `_suggest_llm_progress` —
+        # the stub returns instantly and the cost framing
+        # ("~$0.01 · claude-sonnet-4-6") would be wrong.
+        progress_calls: list[dict[str, object]] = []
+
+        from contextlib import nullcontext
+
+        def _spy_progress(**kwargs):
+            progress_calls.append(kwargs)
+            return nullcontext()
+
+        monkeypatch.setattr("schemabrain.cli._suggest_llm_progress", _spy_progress)
+
+        store_path = tmp_path / "store.db"
+        _seed_store(store_path)
+
+        exit_code = main(
+            [
+                "entities",
+                "suggest",
+                "--source",
+                _TEST_URL,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+                "--provider",
+                "stub",
+            ]
+        )
+        assert exit_code == 0
+        assert progress_calls == [], (
+            f"stub provider must skip _suggest_llm_progress; got {len(progress_calls)} invocations"
+        )
+
+    def test_anthropic_provider_invokes_progress_helper(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # `--provider anthropic` must call `_suggest_llm_progress`
+        # exactly once before the LLM round-trip. Spy on the call
+        # and stub the pipeline so the test stays offline.
+        progress_calls: list[dict[str, object]] = []
+
+        from contextlib import nullcontext
+
+        def _spy_progress(**kwargs):
+            progress_calls.append(kwargs)
+            return nullcontext()
+
+        monkeypatch.setattr("schemabrain.cli._suggest_llm_progress", _spy_progress)
+
+        # Stub the LLM call so we don't make a real Anthropic request.
+        from schemabrain.entities.suggest import (
+            EntitySuggestionPipeline,
+            SuggestionResult,
+        )
+
+        monkeypatch.setattr(
+            EntitySuggestionPipeline,
+            "propose_from_tables",
+            lambda self, *args, **kwargs: SuggestionResult(
+                candidates=[], total_cost_usd=0.0, llm_model="claude-sonnet-4-6"
+            ),
+        )
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+
+        store_path = tmp_path / "store.db"
+        _seed_store(store_path)
+
+        exit_code = main(
+            [
+                "entities",
+                "suggest",
+                "--source",
+                _TEST_URL,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+            ]
+        )
+        assert exit_code == 0
+        assert len(progress_calls) == 1
+        call = progress_calls[0]
+        assert call["model"] == "claude-sonnet-4-6"
+        assert call["cost_estimate_usd"] == 0.01
+        # The cap defaults to _DEFAULT_SUGGEST_MAX_COST_USD ($1.00)
+        # when no --max-cost-usd / env var is set.
+        assert call["cap_usd"] == 1.0
+        # Action string names the surface so the operator can tell
+        # entity-suggest from metric-suggest at a glance.
+        assert "identify business entities" in str(call["action"])
+        # Includes the table count threaded through from the loaded
+        # schema (_seed_store inserts 2 tables: users + orders).
+        assert "2 tables" in str(call["action"])
