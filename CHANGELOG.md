@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-20
+
+**Highlights** — Schema Brain v0.3.0 is the first release where the
+"pluggable semantic+SQL firewall for agents" positioning is honest
+end-to-end. Ships: validated-SQL `get_metric` (the agent never sees
+or writes SQL); tamper-evident `mcp_audit` append-only chain with
+`audit verify`; 12-category PII classifier (GDPR / CCPA / HIPAA /
+PCI DSS / ISO 27018) with `--pii-block` refusal at the MCP boundary;
+10 MCP tools (5 physical-schema + 5 semantic-layer); 7-stage
+`schemabrain init` activation wizard with optional auto-Docker
+demo path; `schemabrain check` drift detection; dbt import path
+making dbt the source of truth when present; Docker + multi-
+platform image; OpenTelemetry export via `schemabrain[otel]` extra;
+design-system CLI with Rich brand-line + glyph vocabulary across
+every operator surface.
+
+Sub-sections below preserve the development order of the two
+landing phases (the post-2026-05-18 polish bundle on top, the
+original v1 semantic-layer arc that landed PRs #48-#52 below).
+Future releases will consolidate to a single Added/Changed/Fixed
+trio per release.
+
 ### Changed
 - **`inspect` + `index --dry-run` polished onto the design's
   brand-line + panel vocabulary** — final design-shape PR in the
@@ -747,16 +769,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mapping for every column. Future rule changes that regress against
   the smoke's findings fail CI before merge.
 
-## [0.3.0] - 2026-05-18
+### Added (original v1 semantic-layer arc — PRs #48-#52, landed 2026-05-18)
 
-This release rounds out the v1 semantic-layer arc. Every layer the
-Charter v1.1 envelope promises — entities, metrics, joins — now ships
-with a `suggest` LLM authoring surface, a store-only `inspect`
-browser, drift detection via `check`, and optional OpenTelemetry span
-emission so existing observability stacks see every MCP tool call.
-The one-command Docker demo stack lands alongside.
-
-### Added
 - `schemabrain metrics suggest` subcommand — LLM-driven metric
   suggestion to match the existing `entities suggest` and
   `joins suggest` surfaces. Reads the local entity store, sends the
