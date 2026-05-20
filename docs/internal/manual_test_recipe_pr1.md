@@ -1,8 +1,8 @@
 # Manual test recipe — PR-1 (feat/init-wizard-day-one-ux)
 
-**Branch:** `feat/init-wizard-day-one-ux` — 11 commits. **DO NOT** push or open a PR until every test below passes.
+**Branch:** `feat/init-wizard-day-one-ux` — 12 commits. **DO NOT** push or open a PR until every test below passes.
 
-This is the mandatory end-to-end smoke per `feedback_manual_smoke_mandatory.md`. Unit tests passing (4086 in this PR) does NOT substitute for running the CLI as a real user would.
+This is the mandatory end-to-end smoke per `feedback_manual_smoke_mandatory.md`. Unit tests passing (4088 in this PR) does NOT substitute for running the CLI as a real user would.
 
 ---
 
@@ -26,9 +26,9 @@ rm -f schemabrain-prerelease.db schemabrain-prerelease.db-shm schemabrain-prerel
 # Confirm clean env (no schemabrain-related env vars leaked from prior runs)
 env | grep -iE "schemabrain|database_url|anthropic" || echo "clean"
 
-# Checkout the PR-1 branch and confirm 11 commits ahead of main
+# Checkout the PR-1 branch and confirm 12 commits ahead of main
 git checkout feat/init-wizard-day-one-ux
-git log --oneline main..HEAD | wc -l   # should print 11
+git log --oneline main..HEAD | wc -l   # should print 12
 ```
 
 ## 1. Fresh install in a clean venv
@@ -185,13 +185,15 @@ schemabrain init --yes --url-env SCHEMABRAIN_DATABASE_URL \
 # Inspect — verify the new discovery block at bottom
 schemabrain inspect
 
-# Should show 7 entities (if you ran the API-key path) or empty (if not)
-# Bottom should have:
-#   Drill into one: schemabrain inspect <name>
-#
+# Should show 7 entities (if you ran the API-key path) or 0 (if not).
+# EVEN IF EMPTY (smoke 2026-05-20 fold), the discovery block must
+# render at the bottom:
 #   Verify wiring:  schemabrain doctor
 #   Detect drift:   schemabrain check
 #   Watch traffic:  schemabrain tail --follow
+#
+# If non-empty, you'll ALSO see "Drill into one: schemabrain inspect <name>"
+# above the discovery block.
 
 # Doctor — verify no-store branch suggests `init` (not `index`)
 rm -f /tmp/pr1-doctor-test.db
@@ -228,7 +230,7 @@ rm -rf .venv-pr1-fresh
 - §4 own-DB path accepts bare URL; Ctrl-C gives clean exit-130
 - §5 all 3 friction commands accept bare URL without crash
 - §6 `--yes` runs zero prompts
-- §7 inspect shows new discovery block; doctor suggests `init` not `index`
+- §7 inspect shows discovery block **even on empty store**; doctor suggests `init` not `index`
 
 If any of these fail, report back. If all green, the branch is ready to push.
 
