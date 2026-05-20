@@ -2911,6 +2911,91 @@ class TestResolveAnthropicKeySource:
         monkeypatch.setattr("schemabrain._ui.prompt_for_anthropic_key", lambda *a, **kw: None)
         assert _resolve_anthropic_key_source(allow_interactive=True) is None
 
+    def test_whitespace_env_value_emits_one_shot_warning(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Round-2 reviewer fold (silent-failure HIGH-2): a stale
+        # `export ANTHROPIC_API_KEY=" "` (whitespace-only — common
+        # when a secret manager appends a trailing newline) should
+        # warn the operator that their value is malformed, not just
+        # silently fall through to the same "missing" error path as
+        # a genuinely unset var.
+        from schemabrain.cli import (
+            _reset_warned_empty_key_cache_for_tests,
+            _resolve_anthropic_key_source,
+        )
+
+        _reset_warned_empty_key_cache_for_tests()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "   \t  ")
+        assert _resolve_anthropic_key_source() is None
+        err = capsys.readouterr().err
+        assert "whitespace-only" in err
+        assert "ANTHROPIC_API_KEY" in err
+
+    def test_whitespace_warning_dedupes_within_process(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Within a single process, the warning fires once — the
+        # wizard's 2 LLM stages each resolve the key, but the
+        # operator should see the warning once, not on every stage.
+        from schemabrain.cli import (
+            _reset_warned_empty_key_cache_for_tests,
+            _resolve_anthropic_key_source,
+        )
+
+        _reset_warned_empty_key_cache_for_tests()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        _resolve_anthropic_key_source()
+        _resolve_anthropic_key_source()
+        err = capsys.readouterr().err
+        # Should appear exactly once across the two calls.
+        assert err.count("whitespace-only") == 1
+
+
+class TestMainKeyboardInterruptHandling:
+    """Round-2 reviewer fold (silent-failure CRITICAL-2): main()
+    catches KeyboardInterrupt and EOFError at the entry point so
+    every subcommand produces a clean exit-130 + "aborted." stderr
+    line, instead of a raw Python traceback. Without this, a Ctrl-C
+    mid-wizard surfaced as `Traceback ... KeyboardInterrupt` while
+    a Ctrl-C at stage 0 produced a clean abort — UX inconsistency
+    that made the wizard feel broken.
+    """
+
+    def test_keyboard_interrupt_returns_130(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain import cli
+
+        def raising_dispatch(_argv: list[str] | None) -> int:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli, "_dispatch", raising_dispatch)
+        assert cli.main(["init"]) == 130
+        err = capsys.readouterr().err
+        assert "aborted" in err
+
+    def test_eof_error_returns_130(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # EOFError fires when stdin is closed mid-prompt (SSH
+        # session drop, test harness, terminal recorder). Same
+        # exit-130 path as Ctrl-C so the caller's experience is
+        # consistent regardless of HOW the interactive session
+        # ended.
+        from schemabrain import cli
+
+        def raising_dispatch(_argv: list[str] | None) -> int:
+            raise EOFError
+
+        monkeypatch.setattr(cli, "_dispatch", raising_dispatch)
+        assert cli.main(["init"]) == 130
+        assert "aborted" in capsys.readouterr().err
+
 
 class TestIndexUrlEnv:
     """`schemabrain index --url-env VARNAME` wiring."""

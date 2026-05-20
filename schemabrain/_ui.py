@@ -658,12 +658,18 @@ def print_llm_stage_preamble(
     framing, so the user who pasted a key 30 seconds ago has the
     bounds re-stated before the spend.
 
-    The line renders inside whatever stage-level Rich ``Status``
-    spinner is active. ``Console.print()`` handles the interleaving
-    by pausing the spinner around the write so the visual stays
-    clean (no carriage-return artifacts). Non-TTY consoles get plain
-    text and the line just appears in the log; spinner is no-op in
-    that path.
+    Wrapped in ``pause_active_spinner()`` because Rich's spinner
+    interleaving only fires when the print and the Status share the
+    same Console object. Callers (wizard stage 3/4 handlers) build
+    a fresh ``make_console(stderr=True)``, which is a DIFFERENT
+    Console than the one ``_wizard_stage_context`` registered as
+    the active spinner. Without the explicit pause, the spinner
+    overwrites this line on its next animation frame and the
+    operator never reads the cost preview — undermining the whole
+    point of the line. The spinner-pause registry uses a thread-
+    local handle, not a Console reference, so it pauses regardless
+    of which Console the spinner is attached to. Round-2 reviewer
+    fold (silent-failure-hunter MEDIUM-1).
 
     ``cost_estimate_usd`` is the per-call estimate (typically
     $0.01 entities, $0.02 metrics). ``cap_usd`` is the actual
@@ -678,10 +684,11 @@ def print_llm_stage_preamble(
     line ships the bulk of the UX benefit (cost transparency
     before the call) without the refactor.
     """
-    console.print(
-        f"  [bright_black]{GLYPH_PENDING} Asking Claude to {action} · "
-        f"~${cost_estimate_usd:.2f} · capped at ${cap_usd:.2f} · {model}[/]"
-    )
+    with pause_active_spinner():
+        console.print(
+            f"  [bright_black]{GLYPH_PENDING} Asking Claude to {action} · "
+            f"~${cost_estimate_usd:.2f} · capped at ${cap_usd:.2f} · {model}[/]"
+        )
 
 
 __all__ = [

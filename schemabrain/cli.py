@@ -256,6 +256,33 @@ def _resolve_max_cost(args: argparse.Namespace) -> float:
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns process exit code."""
+    try:
+        return _dispatch(argv)
+    except (KeyboardInterrupt, EOFError):
+        # Round-2 reviewer fold (silent-failure CRITICAL-2): catch
+        # KeyboardInterrupt + EOFError at the entry point so every
+        # subcommand gets the same clean exit-130 + "aborted." on
+        # stderr, regardless of which interactive prompt or which
+        # wizard stage the user was sitting in when they hit Ctrl-C
+        # (or when stdin dropped). Without this, a Ctrl-C mid-wizard
+        # produced a raw Python traceback while the same Ctrl-C at
+        # stage 0 produced a clean abort — inconsistency that made
+        # the UX feel broken. The catch is at main() rather than per-
+        # subcommand because the wizard's spinner-bearing context
+        # managers handle their own cleanup via __exit__; main()'s
+        # job is just to translate the signal into a clean exit code.
+        print("\naborted.", file=sys.stderr)
+        return 130
+
+
+def _dispatch(argv: list[str] | None) -> int:
+    """Parse args and route to the right subcommand handler.
+
+    Split out of `main` so the top-level KeyboardInterrupt / EOFError
+    catch lives in a focused wrapper. The dispatch body never catches
+    those exceptions itself — it raises (which the wrapper translates
+    into exit-130) or returns an exit code.
+    """
     parser = _build_parser()
     args = parser.parse_args(argv)
     # Configure stderr-only logging before any subcommand runs. Reads
@@ -4925,11 +4952,17 @@ def _cmd_init(
 
         try:
             source_url = prompt_for_init_setup(console=_stderr_console())
-        except KeyboardInterrupt:
-            # Ctrl-C at the setup prompt — clean abort per the
-            # standard SIGINT convention. Matches what the user
-            # would expect (exit 130) without polluting stderr with
-            # a Python traceback.
+        except (KeyboardInterrupt, EOFError):
+            # Ctrl-C or stdin-EOF at the setup prompt — clean abort
+            # per the standard SIGINT convention. EOFError fires when
+            # stdin is closed (SSH session drops, terminal recorder
+            # redirects input, pytest test harness). Both produce
+            # exit 130 + "aborted." on stderr so the user / CI sees
+            # the same shape rather than a Python traceback from
+            # rich.prompt.Prompt.ask. Round-2 reviewer fold caught
+            # the EOFError case — only KeyboardInterrupt was wrapped
+            # before, which left the SSH-drop / non-TTY-mid-prompt
+            # paths producing raw tracebacks.
             print("\naborted.", file=sys.stderr)
             return 130
     if source_url is None:
@@ -4937,6 +4970,27 @@ def _cmd_init(
     if source_url is None:
         # _resolve_url_source already rendered a guided error.
         return 2
+    # Apply the silent `+psycopg` rewrite to the resolved URL before
+    # handing it to the wizard. Without this, a user who took the
+    # stage-0 demo path (DEMO_DATABASE_URL is a bare `postgresql://`)
+    # OR typed a bare `postgresql://` in the own-DB prompt would
+    # hit stage 1's `create_engine` with the raw scheme, triggering
+    # a confusing `ModuleNotFoundError: psycopg2` instead of the
+    # silent rewrite that commit 2 added for the 5 post-init
+    # commands. Round-2 reviewer fold — python-reviewer +
+    # silent-failure-hunter both caught this as CRITICAL / HIGH-1
+    # (convergent finding).
+    #
+    # Deliberately NOT using `_resolve_url` here because the init
+    # wizard supports non-Postgres sources (sqlite:// for dbt-only
+    # paths, where stages 2/3 skip) — `_resolve_url`'s scheme
+    # validation would reject those. The rewrite-only path keeps
+    # init's broader source surface intact while fixing the
+    # Postgres footgun.
+    parsed_scheme = urlparse(source_url).scheme
+    rewritten = silent_rewrite_to_psycopg(parsed_scheme, source_url)
+    if rewritten is not None:
+        source_url = rewritten
 
     # `--yes` is a superset shorthand: it implies the LLM-prompt
     # skip AND the host-overwrite auto-confirm. A user who only
@@ -6854,6 +6908,27 @@ def _resolve_anthropic_key_source(
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if api_key is not None and api_key.strip():
         return api_key.strip()
+    # Round-2 reviewer fold (silent-failure HIGH-2): when env var is
+    # set but whitespace-only, emit a one-line stderr warning so the
+    # operator knows their export is malformed, not just absent.
+    # Without this, a `export ANTHROPIC_API_KEY=" "` from a secret
+    # manager with a trailing newline produces the same "missing"
+    # error path as a genuinely unset var — wasting debug time on
+    # the wrong problem. Warning is one-shot per process via the
+    # presence check at module scope (would dedupe across multiple
+    # resolver calls within the same `_cmd_init` if it grew them).
+    if (
+        api_key is not None
+        and not api_key.strip()
+        and "ANTHROPIC_API_KEY" not in _WARNED_EMPTY_KEY_ENV_VARS
+    ):
+        _WARNED_EMPTY_KEY_ENV_VARS.add("ANTHROPIC_API_KEY")
+        print(
+            "warning: ANTHROPIC_API_KEY is set but whitespace-only; "
+            "treating as unset. Check the export — a trailing newline "
+            "or space disqualifies the value.",
+            file=sys.stderr,
+        )
     if allow_interactive and _stderr_is_interactive_tty():
         from schemabrain._ui import prompt_for_anthropic_key
 
@@ -6865,6 +6940,21 @@ def _resolve_anthropic_key_source(
             skip_hint=interactive_skip_hint,
         )
     return None
+
+
+# Module-scoped dedup set for the whitespace-key stderr warning.
+# Keeps the warning to once per process rather than once per call
+# (which would flood the wizard's 2 LLM stages with the same line).
+# Tests reset via the public helper below.
+_WARNED_EMPTY_KEY_ENV_VARS: set[str] = set()
+
+
+def _reset_warned_empty_key_cache_for_tests() -> None:
+    """Test-only seam — wipes the once-per-process warned-empty-key set
+    so tests can re-trigger the warning in isolation without bleed-over.
+    Mirrors the `_reset_warned_empty_cache_for_tests` pattern in `_env.py`.
+    """
+    _WARNED_EMPTY_KEY_ENV_VARS.clear()
 
 
 def _resolve_url(url: str) -> str | None:

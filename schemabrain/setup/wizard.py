@@ -1312,7 +1312,7 @@ def _run_entity_suggestion(
         print_llm_stage_preamble(
             make_console(stderr=True),
             action=f"identify business entities ({len(tables)} tables)",
-            model="claude-sonnet-4",
+            model="claude-sonnet-4-6",
             cost_estimate_usd=0.01,
             cap_usd=max_cost_usd,
         )
@@ -1903,7 +1903,7 @@ def _run_metric_suggestion(
         print_llm_stage_preamble(
             make_console(stderr=True),
             action=f"define metrics ({len(entities)} entities, {len(tables)} tables)",
-            model="claude-sonnet-4",
+            model="claude-sonnet-4-6",
             cost_estimate_usd=0.02,
             cap_usd=max_cost_usd,
         )
