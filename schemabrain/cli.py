@@ -4910,7 +4910,30 @@ def _cmd_init(
             )
         )
         return 2
-    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+
+    # Stage 0 — the day-one UX overhaul's demo-vs-own-DB fork prompt.
+    # Runs ONLY when no URL was supplied via CLI flag or env AND
+    # stderr is a TTY (CI safety + the user explicitly didn't pre-
+    # commit to a source). Returns either the pinned demo URL, an
+    # own-DB URL the user typed, or None (user declined). On None,
+    # falls through to the existing `_resolve_url_source` path so
+    # the guided error + recovery hint still surface.
+    source_url: str | None = None
+    no_source_provided = positional_url is None and url_env is None
+    if no_source_provided and _stderr_is_interactive_tty():
+        from schemabrain.setup.setup_stage import prompt_for_init_setup
+
+        try:
+            source_url = prompt_for_init_setup(console=_stderr_console())
+        except KeyboardInterrupt:
+            # Ctrl-C at the setup prompt — clean abort per the
+            # standard SIGINT convention. Matches what the user
+            # would expect (exit 130) without polluting stderr with
+            # a Python traceback.
+            print("\naborted.", file=sys.stderr)
+            return 130
+    if source_url is None:
+        source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
     if source_url is None:
         # _resolve_url_source already rendered a guided error.
         return 2
