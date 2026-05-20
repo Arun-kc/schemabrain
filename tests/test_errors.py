@@ -23,6 +23,7 @@ from schemabrain.errors import (
     anthropic_auth_failed,
     postgres_operational_error,
     render_error,
+    silent_rewrite_to_psycopg,
     store_path_unwritable,
     url_wrong_driver,
 )
@@ -98,6 +99,56 @@ class TestUrlWrongDriver:
         err = url_wrong_driver("postgresql", "no-slashes-here")
         assert err is not None
         assert "postgresql+psycopg://no-slashes-here" in (err.fix or "")
+
+
+class TestSilentRewriteToPsycopg:
+    def test_bare_postgresql_rewrites(self) -> None:
+        # The README footgun — every Postgres tool accepts `postgresql://`
+        # but SQLAlchemy needs the `+psycopg` suffix. Forcing every
+        # first-time user to learn this would be pure friction.
+        out = silent_rewrite_to_psycopg("postgresql", "postgresql://user:pw@host:5432/db")
+        assert out == "postgresql+psycopg://user:pw@host:5432/db"
+
+    def test_postgres_alias_rewrites(self) -> None:
+        # `postgres://` is the Heroku-style default. Same silent rewrite.
+        out = silent_rewrite_to_psycopg("postgres", "postgres://host/db")
+        assert out == "postgresql+psycopg://host/db"
+
+    def test_explicit_psycopg2_returns_none(self) -> None:
+        # Explicit wrong driver — the user typed `+psycopg2` on purpose,
+        # so they deserve the guided error from `url_wrong_driver`, not
+        # a silent override that loses their explicit choice.
+        assert (
+            silent_rewrite_to_psycopg("postgresql+psycopg2", "postgresql+psycopg2://host/db")
+            is None
+        )
+
+    def test_explicit_asyncpg_returns_none(self) -> None:
+        assert (
+            silent_rewrite_to_psycopg("postgresql+asyncpg", "postgresql+asyncpg://host/db") is None
+        )
+
+    def test_correct_driver_returns_none(self) -> None:
+        # Already canonical — no rewrite needed; lets callers know they
+        # can skip the urlparse re-walk.
+        assert (
+            silent_rewrite_to_psycopg("postgresql+psycopg", "postgresql+psycopg://host/db") is None
+        )
+
+    def test_unknown_scheme_returns_none(self) -> None:
+        # `mysql://` falls through to `_canonical_url`'s "Unsupported
+        # scheme" path — silent rewrite must not mask that.
+        assert silent_rewrite_to_psycopg("mysql", "mysql://host/db") is None
+
+    def test_rewrite_preserves_credentials_port_and_query(self) -> None:
+        # Quirks the user added intentionally (port, query string,
+        # credentials) must survive the rewrite verbatim — only the
+        # scheme flips.
+        out = silent_rewrite_to_psycopg(
+            "postgresql",
+            "postgresql://alice:s3cret@example.com:6543/mydb?sslmode=require",
+        )
+        assert out == "postgresql+psycopg://alice:s3cret@example.com:6543/mydb?sslmode=require"
 
 
 class TestPostgresOperationalError:

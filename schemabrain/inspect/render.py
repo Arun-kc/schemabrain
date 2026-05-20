@@ -141,6 +141,13 @@ def render_summary(
             "Run `schemabrain entities suggest` or "
             "`schemabrain entities apply` to get started.[/]"
         )
+        # Empty-state users need the discovery links MORE than
+        # populated-store users — they're the new operator who
+        # just ran `init` without an API key and is figuring out
+        # what to do next. Render the same 3-line block so they
+        # see `doctor`/`check`/`tail` regardless of store contents.
+        console.print()
+        _render_discovery_block(console=console)
         return
 
     tree = Tree("[bold]Definitions[/]", guide_style="dim")
@@ -163,6 +170,25 @@ def render_summary(
     console.print()
 
     console.print("[dim]Drill into one: `schemabrain inspect <name>`[/]")
+    console.print()
+    _render_discovery_block(console=console)
+
+
+def _render_discovery_block(*, console: Console) -> None:
+    """Render the 3-line `doctor`/`check`/`tail` discovery block.
+
+    Day-one UX overhaul: discovery links to the other commands a
+    new user would benefit from. `inspect` is often the first
+    command run after `init`, so this is the highest-leverage
+    place to surface the rest of the post-init surface. Rendered
+    as a compact 3-line block — short and skimmable, not a wall
+    of recommendations. Shared between the populated-store and
+    empty-store branches so empty-state users (the most
+    confused cohort) see it too.
+    """
+    console.print("[dim]Verify wiring:  `schemabrain doctor`[/]")
+    console.print("[dim]Detect drift:   `schemabrain check`[/]")
+    console.print("[dim]Watch traffic:  `schemabrain tail --follow`[/]")
 
 
 def _compose_summary_brand_line(store_path: str | None) -> Text:

@@ -341,6 +341,126 @@ class TestInitCliUrlEnv:
         assert snippet["env"]["SCHEMABRAIN_DATABASE_URL"] == "sqlite:///:memory:"
 
 
+class TestInitYesSkipsStageZero:
+    """Round-3 live-test fix (bug B): `--yes` must skip the stage-0
+    demo/own-DB fork prompt. Previously a CI run with `--yes` and a
+    `SCHEMABRAIN_DATABASE_URL` env var (but no `--url-env` flag) would
+    still hit the fork prompt — the default `[2]` (demo) would then
+    silently override the operator's intended URL with the pinned
+    demo URL. That's the worst kind of CI bug: works interactively,
+    fails differently in automation.
+
+    The fix gates stage 0 on `not assume_yes`, matching the rest of
+    the wizard's `--yes` contract (no prompts ever).
+    """
+
+    def test_yes_skips_stage_zero_even_without_url_env_flag(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # User passed --yes but no --url-env and no --source. Without
+        # the fix, stage 0 fires and prompts. With the fix, stage 0
+        # is skipped and `_resolve_url_source` renders its standard
+        # guided error.
+        prompted = {"called": False}
+
+        def fake_prompt(*args: object, **kwargs: object) -> str | None:
+            prompted["called"] = True
+            return "should-not-be-returned"
+
+        monkeypatch.setattr("schemabrain.setup.setup_stage.prompt_for_init_setup", fake_prompt)
+        # Force TTY so the only thing gating stage 0 is the new --yes check.
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        exit_code = main(["init", "--yes"])
+        assert exit_code == 2
+        assert prompted["called"] is False
+        # Falls through to the standard "no URL provided" guided error.
+        assert "no connection URL provided" in capsys.readouterr().err
+
+
+class TestInitStageZeroAbortPaths:
+    """Round-2 reviewer fold: stage 0 prompt must catch BOTH
+    KeyboardInterrupt (Ctrl-C) AND EOFError (stdin closed mid-prompt,
+    SSH-drop, terminal recorder redirecting input). Both produce
+    exit 130 + clean "aborted." on stderr — never a Python traceback
+    from rich.prompt.Prompt.ask.
+
+    Without these tests, the empty-state branches in `_cmd_init`
+    (lines 4956-4970) sit uncovered and a future refactor could
+    drop the EOFError arm without anyone noticing until a user
+    hits it in production.
+    """
+
+    def test_stage_zero_keyboard_interrupt_exits_130(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        def fake_prompt(*args: object, **kwargs: object) -> str | None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("schemabrain.setup.setup_stage.prompt_for_init_setup", fake_prompt)
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        exit_code = main(["init"])
+        assert exit_code == 130
+        assert "aborted." in capsys.readouterr().err
+
+    def test_stage_zero_eof_error_exits_130(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        def fake_prompt(*args: object, **kwargs: object) -> str | None:
+            raise EOFError
+
+        monkeypatch.setattr("schemabrain.setup.setup_stage.prompt_for_init_setup", fake_prompt)
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        exit_code = main(["init"])
+        assert exit_code == 130
+        assert "aborted." in capsys.readouterr().err
+
+    def test_stage_zero_returns_url_then_silent_rewrite_applies(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Stage 0 returns a bare postgresql:// URL (the demo path
+        # default). The silent_rewrite_to_psycopg branch on line 4994
+        # must fire, transforming the URL before it reaches the
+        # wizard. We verify the rewrite indirectly by checking that
+        # the wizard receives the rewritten URL (or fails downstream
+        # with a postgresql+psycopg:// error, not a psycopg2 import
+        # error).
+        bare_demo_url = "postgresql://postgres:local@localhost:5433/postgres"
+
+        def fake_prompt(*args: object, **kwargs: object) -> str | None:
+            return bare_demo_url
+
+        received: dict[str, str] = {}
+
+        def fake_run_wizard(config: object, *args: object, **kwargs: object) -> object:
+            # `run_default_wizard(config, ...)` — config is a
+            # WizardConfig dataclass; the source URL lives on
+            # `config.source` (or .source_url depending on version).
+            url = getattr(config, "source", None) or getattr(config, "source_url", "")
+            received["url"] = str(url)
+            # Short-circuit before the wizard pipeline; the URL
+            # assertion is the load-bearing check.
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("schemabrain.setup.setup_stage.prompt_for_init_setup", fake_prompt)
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr("schemabrain.setup.wizard.run_default_wizard", fake_run_wizard)
+        # KeyboardInterrupt from the wizard itself bubbles up to main()
+        # and exits 130 — same shape as stage 0 abort.
+        exit_code = main(["init"])
+        assert exit_code == 130
+        # The wizard received the rewritten URL with +psycopg, not
+        # the bare scheme. This proves line 4994-4996 fired.
+        assert received["url"].startswith("postgresql+psycopg://")
+
+
 class TestInitCliEnvVarFlag:
     def test_custom_env_var_lands_in_snippet(
         self,

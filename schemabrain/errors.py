@@ -85,6 +85,29 @@ def url_wrong_driver(scheme: str, url: str) -> GuidedError | None:
     )
 
 
+def silent_rewrite_to_psycopg(scheme: str, url: str) -> str | None:
+    """Return `url` with the scheme rewritten to `postgresql+psycopg`, if eligible.
+
+    Eligible schemes are the README-friendly bare ones — ``postgresql``
+    and ``postgres`` — that every Postgres tool on the planet accepts but
+    that fail in SQLAlchemy without a driver suffix. Rewriting silently
+    means a first-time user pasting a vanilla URL from Heroku, psql, or
+    DataGrip just works, instead of hitting a guided error mid-wizard.
+
+    Returns ``None`` for any other scheme. Explicit wrong-driver choices
+    (``postgresql+psycopg2``, ``postgresql+asyncpg``) deliberately fall
+    through here so ``url_wrong_driver`` can still surface the guided
+    error — the user typed those on purpose and deserves to know we
+    can't honor that explicit choice, rather than silently overriding it.
+    Unknown schemes (``mysql``, garbage, no scheme) also fall through so
+    the existing "Unsupported scheme" path in ``_canonical_url`` keeps
+    its single responsibility.
+    """
+    if scheme in ("postgresql", "postgres"):
+        return _swap_scheme(url, "postgresql+psycopg")
+    return None
+
+
 def _swap_scheme(url: str, new_scheme: str) -> str:
     """Replace the scheme of `url` with `new_scheme`, preserving the rest.
 

@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 
 import schemabrain
-from schemabrain.cli import _build_index_reporter, _canonical_url, _make_source_id, main
+from schemabrain.cli import (
+    _build_index_reporter,
+    _canonical_url,
+    _make_source_id,
+    _resolve_url,
+    main,
+)
 from schemabrain.core.store import SQLiteStore
 from schemabrain.indexer import NullReporter
 
@@ -203,22 +209,31 @@ class TestIndexCommandValidation:
         assert "Unsupported scheme" in err
         assert "fix:" in err
 
-    def test_bare_postgresql_scheme_rejected_with_guided_error(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ):
-        # Papercut: bare `postgresql://` resolves to psycopg2 in
-        # SQLAlchemy but we ship only psycopg v3, producing a confusing
-        # `ModuleNotFoundError: psycopg2` traceback at create_engine
-        # time. We catch this at the URL boundary with a guided error
-        # pointing at the correct scheme.
-        store_path = tmp_path / "schemabrain.db"
-        exit_code = main(["index", "postgresql://user:pw@host/db", "--store-path", str(store_path)])
-        assert exit_code == 2
-        err = capsys.readouterr().err
-        assert "psycopg v3" in err
-        # The fix line must include the EXACT corrected URL — the
-        # user shouldn't have to figure out the rewrite themselves.
-        assert "postgresql+psycopg://user:pw@host/db" in err
+    def test_bare_postgresql_scheme_silently_rewritten(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The bare `postgresql://` scheme is the most common URL form
+        # every Postgres tool accepts. Forcing first-time users to
+        # learn `+psycopg` was the README's #1 papercut — we now
+        # silently rewrite at the URL boundary so they never see it.
+        # The rewrite is genuinely silent: no warning, no error,
+        # nothing on stderr. Downstream code sees the canonical form.
+        canonical = _resolve_url("postgresql://user:pw@host:5432/db")
+        assert canonical is not None
+        assert canonical.startswith("postgresql+psycopg://")
+        assert "host:5432/db" in canonical
+        captured = capsys.readouterr()
+        # Silent means silent — no error, no warning. The whole point
+        # of the rewrite is the user never knows it happened.
+        assert captured.err == ""
+
+    def test_postgres_alias_silently_rewritten(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Heroku-style `postgres://` — same silent rewrite. Users
+        # migrating from Heroku or Vercel-style URLs should just work.
+        canonical = _resolve_url("postgres://host/db")
+        assert canonical is not None
+        assert canonical.startswith("postgresql+psycopg://")
+        assert capsys.readouterr().err == ""
 
     def test_psycopg2_explicit_scheme_rejected_with_guided_error(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -2675,6 +2690,69 @@ class TestResolveUrlSource:
         assert _resolve_url_source(positional=url, url_env=None) == url
         assert capsys.readouterr().err == ""
 
+    def test_silent_rewrite_applied_to_env_value(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Round-3 live-test fix (bug A): the silent +psycopg rewrite
+        # must fire at the source-resolution boundary, BEFORE the
+        # caller sees the URL. Without this, 14 callsites that
+        # discard `_resolve_url`'s return value (validating via
+        # `if _resolve_url(url) is None: return 2` then continuing
+        # to use the raw URL) silently passed bare postgresql:// to
+        # PostgresDataSource, which crashed with ModuleNotFoundError:
+        # psycopg2. Pinning the rewrite at this boundary closes that
+        # gap for ALL 17 callsites in one place.
+        from schemabrain.cli import _resolve_url_source
+
+        monkeypatch.setenv("BARE_URL", "postgresql://user:pw@host:5432/db")
+        result = _resolve_url_source(positional=None, url_env="BARE_URL")
+        assert result == "postgresql+psycopg://user:pw@host:5432/db"
+        # Silent really means silent — no warning, no error.
+        assert capsys.readouterr().err == ""
+
+    def test_silent_rewrite_applied_to_positional(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Same Round-3 fix — positional URL path also gets the
+        # silent rewrite applied at exit.
+        from schemabrain.cli import _resolve_url_source
+
+        result = _resolve_url_source(positional="postgres://host/db", url_env=None)
+        assert result == "postgresql+psycopg://host/db"
+        # No warning (no credentials → no leak) and no rewrite chatter.
+        assert capsys.readouterr().err == ""
+
+    def test_silent_rewrite_applied_to_interactive_prompt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # And the interactive path. A user who pastes bare
+        # postgresql:// at the prompt also gets the silent rewrite.
+        from schemabrain.cli import _resolve_url_source
+
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr(
+            "schemabrain._ui.prompt_for_url",
+            lambda console, *, purpose: "postgresql://app:pass@db/x",
+        )
+        result = _resolve_url_source(
+            positional=None,
+            url_env=None,
+            allow_interactive=True,
+        )
+        assert result == "postgresql+psycopg://app:pass@db/x"
+
+    def test_already_canonical_url_passes_through_unchanged(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # When the URL is already canonical, no double-rewrite — the
+        # helper returns None for already-canonical schemes, and the
+        # _apply_silent_rewrite wrapper returns the original.
+        from schemabrain.cli import _resolve_url_source
+
+        result = _resolve_url_source(positional="postgresql+psycopg://host/db", url_env=None)
+        assert result == "postgresql+psycopg://host/db"
+        assert capsys.readouterr().err == ""
+
     def test_env_var_with_credentials_is_silent(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -2687,6 +2765,302 @@ class TestResolveUrlSource:
         result = _resolve_url_source(positional=None, url_env="SAFE_DB_URL")
         assert result == "postgresql+psycopg://alice:s3cret@host/db"
         assert capsys.readouterr().err == ""
+
+
+class TestResolveUrlSourceInteractive:
+    """Tests for the new ``allow_interactive`` escape hatch in
+    ``_resolve_url_source``. The day-one UX overhaul wires this
+    through `init`, `index`, `check`, and `*/suggest` so first-time
+    users get a prompt instead of a guided error when env vars are
+    missing.
+
+    Critical contract: ``allow_interactive=True`` must STILL render
+    the guided error when stderr is non-TTY (CI safety) AND when the
+    user presses Enter without typing (explicit decline → respect it).
+    Default ``allow_interactive=False`` must preserve existing
+    behavior — no callsite that didn't opt in should see a prompt.
+    """
+
+    def test_default_allow_interactive_false_renders_guided_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from schemabrain.cli import _resolve_url_source
+
+        # No env, no positional, default allow_interactive=False:
+        # behaves exactly like the pre-overhaul helper — guided
+        # error to stderr, returns None, never blocks on stdin.
+        prompted = {"called": False}
+
+        def fake_prompt(*args: object, **kwargs: object) -> str | None:
+            prompted["called"] = True
+            return "should-not-be-returned"
+
+        monkeypatch.setattr("schemabrain._ui.prompt_for_url", fake_prompt)
+        result = _resolve_url_source(positional=None, url_env=None)
+        assert result is None
+        assert prompted["called"] is False
+        err = capsys.readouterr().err
+        assert "no connection URL provided" in err
+
+    def test_allow_interactive_with_non_tty_renders_guided_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Critical CI safety: even when callers opt in, a non-TTY
+        # path (pytest, docker run -i, GitHub Actions) MUST NOT
+        # block on stdin. The TTY gate is the universal predicate.
+        from schemabrain.cli import _resolve_url_source
+
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: False)
+        prompted = {"called": False}
+        monkeypatch.setattr(
+            "schemabrain._ui.prompt_for_url",
+            lambda *a, **kw: prompted.__setitem__("called", True) or "x",
+        )
+        result = _resolve_url_source(positional=None, url_env=None, allow_interactive=True)
+        assert result is None
+        assert prompted["called"] is False
+        # Guided error must still fire.
+        assert "no connection URL provided" in capsys.readouterr().err
+
+    def test_allow_interactive_tty_returns_prompt_value(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from schemabrain.cli import _resolve_url_source
+
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr(
+            "schemabrain._ui.prompt_for_url",
+            lambda console, *, purpose: "postgresql://user:pw@host/db",
+        )
+        result = _resolve_url_source(
+            positional=None,
+            url_env=None,
+            allow_interactive=True,
+            interactive_purpose="to index your database",
+        )
+        # Round-3 fix: the rewrite is now applied AT the source-
+        # resolution boundary, not later — so a bare `postgresql://`
+        # the user pasted at the prompt comes back as
+        # `postgresql+psycopg://`. This closes the bug where the 14
+        # callsites that discard `_resolve_url`'s canonical form
+        # were silently passing the raw URL to PostgresDataSource.
+        assert result == "postgresql+psycopg://user:pw@host/db"
+        # No guided error when prompt succeeded.
+        assert "no connection URL provided" not in capsys.readouterr().err
+
+    def test_allow_interactive_tty_empty_prompt_falls_through(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # User pressed Enter without typing — explicit decline.
+        # Helper must fall through to the guided error so the user
+        # sees the same recovery hint (exit 2 + --url-env recipe) as
+        # the non-interactive path. Doesn't silently return None.
+        from schemabrain.cli import _resolve_url_source
+
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr("schemabrain._ui.prompt_for_url", lambda *a, **kw: None)
+        result = _resolve_url_source(positional=None, url_env=None, allow_interactive=True)
+        assert result is None
+        assert "no connection URL provided" in capsys.readouterr().err
+
+
+class TestResolveAnthropicKeySource:
+    """Tests for the new ``_resolve_anthropic_key_source`` helper —
+    centralized ANTHROPIC_API_KEY resolution with optional interactive
+    prompt-on-miss. Used by `index --enrich`, `entities suggest`,
+    `metrics suggest`, and the wizard's stages 3+4.
+
+    Unlike ``_resolve_url_source`` this helper does NOT render a
+    guided error on miss — each callsite renders its own command-
+    specific GuidedError with different `fix` wording. The helper
+    returns None and lets the caller decide.
+    """
+
+    def test_returns_stripped_env_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain.cli import _resolve_anthropic_key_source
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "  sk-ant-xyz  ")
+        assert _resolve_anthropic_key_source() == "sk-ant-xyz"
+
+    def test_returns_none_when_env_unset_and_non_interactive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.cli import _resolve_anthropic_key_source
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        assert _resolve_anthropic_key_source() is None
+        # Critical: returns None SILENTLY — caller renders its own
+        # GuidedError, helper doesn't print anything itself.
+
+    def test_returns_none_when_env_empty_or_whitespace(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.cli import _resolve_anthropic_key_source
+
+        # Empty string = treated as missing (matches the existing
+        # env-resolution behavior in cli.py:1817 et al — a stale
+        # `export ANTHROPIC_API_KEY=""` in shell rc should not get
+        # mistaken for a present key).
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        assert _resolve_anthropic_key_source() is None
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "   \t  ")
+        assert _resolve_anthropic_key_source() is None
+
+    def test_default_allow_interactive_false_skips_prompt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.cli import _resolve_anthropic_key_source
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        prompted = {"called": False}
+        monkeypatch.setattr(
+            "schemabrain._ui.prompt_for_anthropic_key",
+            lambda *a, **kw: prompted.__setitem__("called", True) or "x",
+        )
+        assert _resolve_anthropic_key_source() is None
+        assert prompted["called"] is False
+
+    def test_allow_interactive_with_non_tty_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.cli import _resolve_anthropic_key_source
+
+        # Same CI-safety contract as _resolve_url_source.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: False)
+        prompted = {"called": False}
+        monkeypatch.setattr(
+            "schemabrain._ui.prompt_for_anthropic_key",
+            lambda *a, **kw: prompted.__setitem__("called", True) or "x",
+        )
+        assert _resolve_anthropic_key_source(allow_interactive=True) is None
+        assert prompted["called"] is False
+
+    def test_allow_interactive_tty_returns_prompt_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.cli import _resolve_anthropic_key_source
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr(
+            "schemabrain._ui.prompt_for_anthropic_key",
+            lambda console, **kw: "sk-ant-from-prompt",
+        )
+        assert (
+            _resolve_anthropic_key_source(
+                allow_interactive=True,
+                interactive_purpose="suggest entities",
+                interactive_cost_estimate_usd=0.01,
+                interactive_cap_usd=0.50,
+            )
+            == "sk-ant-from-prompt"
+        )
+
+    def test_allow_interactive_tty_empty_prompt_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # User pressed Enter to skip — helper returns None, caller
+        # routes to its own degrade-vs-abort policy.
+        from schemabrain.cli import _resolve_anthropic_key_source
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr("schemabrain._ui.prompt_for_anthropic_key", lambda *a, **kw: None)
+        assert _resolve_anthropic_key_source(allow_interactive=True) is None
+
+    def test_whitespace_env_value_emits_one_shot_warning(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Round-2 reviewer fold (silent-failure HIGH-2): a stale
+        # `export ANTHROPIC_API_KEY=" "` (whitespace-only — common
+        # when a secret manager appends a trailing newline) should
+        # warn the operator that their value is malformed, not just
+        # silently fall through to the same "missing" error path as
+        # a genuinely unset var.
+        from schemabrain.cli import (
+            _reset_warned_empty_key_cache_for_tests,
+            _resolve_anthropic_key_source,
+        )
+
+        _reset_warned_empty_key_cache_for_tests()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "   \t  ")
+        assert _resolve_anthropic_key_source() is None
+        err = capsys.readouterr().err
+        assert "whitespace-only" in err
+        assert "ANTHROPIC_API_KEY" in err
+
+    def test_whitespace_warning_dedupes_within_process(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Within a single process, the warning fires once — the
+        # wizard's 2 LLM stages each resolve the key, but the
+        # operator should see the warning once, not on every stage.
+        from schemabrain.cli import (
+            _reset_warned_empty_key_cache_for_tests,
+            _resolve_anthropic_key_source,
+        )
+
+        _reset_warned_empty_key_cache_for_tests()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        _resolve_anthropic_key_source()
+        _resolve_anthropic_key_source()
+        err = capsys.readouterr().err
+        # Should appear exactly once across the two calls.
+        assert err.count("whitespace-only") == 1
+
+
+class TestMainKeyboardInterruptHandling:
+    """Round-2 reviewer fold (silent-failure CRITICAL-2): main()
+    catches KeyboardInterrupt and EOFError at the entry point so
+    every subcommand produces a clean exit-130 + "aborted." stderr
+    line, instead of a raw Python traceback. Without this, a Ctrl-C
+    mid-wizard surfaced as `Traceback ... KeyboardInterrupt` while
+    a Ctrl-C at stage 0 produced a clean abort — UX inconsistency
+    that made the wizard feel broken.
+    """
+
+    def test_keyboard_interrupt_returns_130(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from schemabrain import cli
+
+        def raising_dispatch(_argv: list[str] | None) -> int:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli, "_dispatch", raising_dispatch)
+        assert cli.main(["init"]) == 130
+        err = capsys.readouterr().err
+        assert "aborted" in err
+
+    def test_eof_error_returns_130(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # EOFError fires when stdin is closed mid-prompt (SSH
+        # session drop, test harness, terminal recorder). Same
+        # exit-130 path as Ctrl-C so the caller's experience is
+        # consistent regardless of HOW the interactive session
+        # ended.
+        from schemabrain import cli
+
+        def raising_dispatch(_argv: list[str] | None) -> int:
+            raise EOFError
+
+        monkeypatch.setattr(cli, "_dispatch", raising_dispatch)
+        assert cli.main(["init"]) == 130
+        assert "aborted" in capsys.readouterr().err
 
 
 class TestIndexUrlEnv:

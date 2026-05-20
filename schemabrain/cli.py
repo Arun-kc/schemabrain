@@ -114,6 +114,7 @@ from schemabrain.errors import (
     anthropic_auth_failed,
     postgres_operational_error,
     render_error,
+    silent_rewrite_to_psycopg,
     store_path_unwritable,
     url_wrong_driver,
 )
@@ -255,6 +256,33 @@ def _resolve_max_cost(args: argparse.Namespace) -> float:
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns process exit code."""
+    try:
+        return _dispatch(argv)
+    except (KeyboardInterrupt, EOFError):
+        # Round-2 reviewer fold (silent-failure CRITICAL-2): catch
+        # KeyboardInterrupt + EOFError at the entry point so every
+        # subcommand gets the same clean exit-130 + "aborted." on
+        # stderr, regardless of which interactive prompt or which
+        # wizard stage the user was sitting in when they hit Ctrl-C
+        # (or when stdin dropped). Without this, a Ctrl-C mid-wizard
+        # produced a raw Python traceback while the same Ctrl-C at
+        # stage 0 produced a clean abort — inconsistency that made
+        # the UX feel broken. The catch is at main() rather than per-
+        # subcommand because the wizard's spinner-bearing context
+        # managers handle their own cleanup via __exit__; main()'s
+        # job is just to translate the signal into a clean exit code.
+        print("\naborted.", file=sys.stderr)
+        return 130
+
+
+def _dispatch(argv: list[str] | None) -> int:
+    """Parse args and route to the right subcommand handler.
+
+    Split out of `main` so the top-level KeyboardInterrupt / EOFError
+    catch lives in a focused wrapper. The dispatch body never catches
+    those exceptions itself — it raises (which the wrapper translates
+    into exit-130) or returns an exit code.
+    """
     parser = _build_parser()
     args = parser.parse_args(argv)
     # Configure stderr-only logging before any subcommand runs. Reads
@@ -1787,7 +1815,12 @@ def _cmd_index(
             "--no-pii-classify to populate tags.",
             file=sys.stderr,
         )
-    url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    url = _resolve_url_source(
+        positional=positional_url,
+        url_env=url_env,
+        allow_interactive=True,
+        interactive_purpose="to index your database",
+    )
     if url is None:
         return 2
     canonical = _resolve_url(url)
@@ -1811,10 +1844,19 @@ def _cmd_index(
 
     # API key check happens BEFORE the store opens — failing fast on
     # configuration is friendlier than half-initialising the SQLite
-    # file and then aborting.
+    # file and then aborting. With `allow_interactive=True` a TTY user
+    # missing the env var sees a cost-disclosure prompt instead of the
+    # guided error; pressing Enter at the prompt falls through to the
+    # guided error so the recovery hint still lands.
     api_key: str | None = None
     if not no_enrich:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = _resolve_anthropic_key_source(
+            allow_interactive=True,
+            interactive_purpose="enrich column descriptions",
+            interactive_cost_estimate_usd=0.02,
+            interactive_cap_usd=max_cost_usd,
+            interactive_skip_hint="press Enter to abort (or re-run with --no-enrich)",
+        )
         if not api_key:
             _render_guided(
                 GuidedError(
@@ -3001,7 +3043,12 @@ def _cmd_entities_suggest(
          breached, dbt-guard refusal)
       2: structural (missing URL, missing API key, unwritable store)
     """
-    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    source_url = _resolve_url_source(
+        positional=positional_url,
+        url_env=url_env,
+        allow_interactive=True,
+        interactive_purpose="to suggest entities for",
+    )
     if source_url is None:
         return 2
     if _resolve_url(source_url) is None:  # pragma: no cover — defensive
@@ -3037,7 +3084,8 @@ def _cmd_entities_suggest(
 
     # Build the LLM client. Stub reads canned YAML from env (so the
     # multi-line response stays out of argv). Anthropic reads
-    # ANTHROPIC_API_KEY — same env source as `index`.
+    # ANTHROPIC_API_KEY via the shared resolver — same env source as
+    # `index`, with interactive prompt-on-miss when stderr is a TTY.
     llm_client: LLMClient
     if provider == "stub":
         canned = os.environ.get(_SUGGEST_STUB_RESPONSE_ENV_VAR)
@@ -3056,7 +3104,13 @@ def _cmd_entities_suggest(
             canned = "candidates: []"
         llm_client = FakeLLMClient(text_provider=lambda _s, _u: canned)
     else:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = _resolve_anthropic_key_source(
+            allow_interactive=True,
+            interactive_purpose="suggest entities",
+            interactive_cost_estimate_usd=0.01,
+            interactive_cap_usd=max_cost_usd,
+            interactive_skip_hint="press Enter to abort (or re-run with --provider stub)",
+        )
         if not api_key:
             _render_guided(
                 GuidedError(
@@ -3749,7 +3803,12 @@ def _cmd_joins_suggest(
       1: user-input class (parse error in store, FK violation)
       2: structural (missing URL, unwritable store, unwritable report)
     """
-    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    source_url = _resolve_url_source(
+        positional=positional_url,
+        url_env=url_env,
+        allow_interactive=True,
+        interactive_purpose="to mine canonical joins for",
+    )
     if source_url is None:
         return 2
     if _resolve_url(source_url) is None:  # pragma: no cover — defensive
@@ -4191,7 +4250,12 @@ def _cmd_metrics_suggest(
          ceiling breached, anchor-FK violation)
       2: structural (missing URL, missing API key, unwritable store)
     """
-    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    source_url = _resolve_url_source(
+        positional=positional_url,
+        url_env=url_env,
+        allow_interactive=True,
+        interactive_purpose="to suggest metrics for",
+    )
     if source_url is None:
         return 2
     if _resolve_url(source_url) is None:  # pragma: no cover — defensive
@@ -4224,7 +4288,8 @@ def _cmd_metrics_suggest(
 
     # Build the LLM client. Stub reads canned YAML from env (so the
     # multi-line response stays out of argv). Anthropic reads
-    # ANTHROPIC_API_KEY — same env source as `entities suggest`.
+    # ANTHROPIC_API_KEY via the shared resolver — same env source as
+    # `entities suggest`, with interactive prompt-on-miss when TTY.
     llm_client: LLMClient
     if provider == "stub":
         canned = os.environ.get(_SUGGEST_STUB_RESPONSE_ENV_VAR)
@@ -4243,7 +4308,13 @@ def _cmd_metrics_suggest(
             canned = "candidates: []"
         llm_client = FakeLLMClient(text_provider=lambda _s, _u: canned)
     else:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = _resolve_anthropic_key_source(
+            allow_interactive=True,
+            interactive_purpose="suggest metrics",
+            interactive_cost_estimate_usd=0.02,
+            interactive_cap_usd=max_cost_usd,
+            interactive_skip_hint="press Enter to abort (or re-run with --provider stub)",
+        )
         if not api_key:
             _render_guided(
                 GuidedError(
@@ -4866,10 +4937,63 @@ def _cmd_init(
             )
         )
         return 2
-    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+
+    # Stage 0 — the day-one UX overhaul's demo-vs-own-DB fork prompt.
+    # Runs ONLY when no URL was supplied via CLI flag or env AND
+    # stderr is a TTY AND --yes was NOT passed. Round-3 live-test
+    # fix: previously `--yes` did not skip stage 0 — a CI run with
+    # `--yes` plus an env var would still hit the fork prompt, and
+    # the demo-default `[2]` would silently override the env var's
+    # URL with the pinned demo URL (the worst kind of CI bug: works
+    # interactively, fails differently in automation). Treating
+    # `--yes` as "fully non-interactive — no prompts, ever" matches
+    # the rest of the wizard's `--yes` contract.
+    source_url: str | None = None
+    no_source_provided = positional_url is None and url_env is None
+    if no_source_provided and _stderr_is_interactive_tty() and not assume_yes:
+        from schemabrain.setup.setup_stage import prompt_for_init_setup
+
+        try:
+            source_url = prompt_for_init_setup(console=_stderr_console())
+        except (KeyboardInterrupt, EOFError):
+            # Ctrl-C or stdin-EOF at the setup prompt — clean abort
+            # per the standard SIGINT convention. EOFError fires when
+            # stdin is closed (SSH session drops, terminal recorder
+            # redirects input, pytest test harness). Both produce
+            # exit 130 + "aborted." on stderr so the user / CI sees
+            # the same shape rather than a Python traceback from
+            # rich.prompt.Prompt.ask. Round-2 reviewer fold caught
+            # the EOFError case — only KeyboardInterrupt was wrapped
+            # before, which left the SSH-drop / non-TTY-mid-prompt
+            # paths producing raw tracebacks.
+            print("\naborted.", file=sys.stderr)
+            return 130
+    if source_url is None:
+        source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
     if source_url is None:
         # _resolve_url_source already rendered a guided error.
         return 2
+    # Apply the silent `+psycopg` rewrite to the resolved URL before
+    # handing it to the wizard. Without this, a user who took the
+    # stage-0 demo path (DEMO_DATABASE_URL is a bare `postgresql://`)
+    # OR typed a bare `postgresql://` in the own-DB prompt would
+    # hit stage 1's `create_engine` with the raw scheme, triggering
+    # a confusing `ModuleNotFoundError: psycopg2` instead of the
+    # silent rewrite that commit 2 added for the 5 post-init
+    # commands. Round-2 reviewer fold — python-reviewer +
+    # silent-failure-hunter both caught this as CRITICAL / HIGH-1
+    # (convergent finding).
+    #
+    # Deliberately NOT using `_resolve_url` here because the init
+    # wizard supports non-Postgres sources (sqlite:// for dbt-only
+    # paths, where stages 2/3 skip) — `_resolve_url`'s scheme
+    # validation would reject those. The rewrite-only path keeps
+    # init's broader source surface intact while fixing the
+    # Postgres footgun.
+    parsed_scheme = urlparse(source_url).scheme
+    rewritten = silent_rewrite_to_psycopg(parsed_scheme, source_url)
+    if rewritten is not None:
+        source_url = rewritten
 
     # `--yes` is a superset shorthand: it implies the LLM-prompt
     # skip AND the host-overwrite auto-confirm. A user who only
@@ -6009,6 +6133,16 @@ def _render_closing_block(
     _render_pending_joins_block(wizard_result, console=console)
     console.print("Inspect activity:  [bold]schemabrain tail --follow[/]")  # type: ignore[attr-defined]
     console.print("Review the audit:  [bold]schemabrain audit list[/]")  # type: ignore[attr-defined]
+    # Day-one UX overhaul: discovery links for the other commands a
+    # new user benefits from after init. `inspect` is the most
+    # common next step (see what was curated); `doctor` verifies
+    # the wiring on demand; `check` runs the drift check after
+    # schema changes. Kept short — one line per command, dim
+    # styling so it reads as supplementary, not as the primary
+    # call-to-action.
+    console.print("See what was curated:  [bold]schemabrain inspect[/]")  # type: ignore[attr-defined]
+    console.print("Verify the wiring:     [bold]schemabrain doctor[/]")  # type: ignore[attr-defined]
+    console.print("Detect schema drift:   [bold]schemabrain check[/]")  # type: ignore[attr-defined]
     console.print()  # type: ignore[attr-defined]
     console.print("[dim]The agent reads. It doesn't write. That's the whole point.[/]")  # type: ignore[attr-defined]
 
@@ -6291,7 +6425,12 @@ def _cmd_check(
     from schemabrain.check.render import render_json, render_report
     from schemabrain.core.store import SchemaVersionMismatchError
 
-    url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    url = _resolve_url_source(
+        positional=positional_url,
+        url_env=url_env,
+        allow_interactive=True,
+        interactive_purpose="to check for schema drift",
+    )
     if url is None:
         # _resolve_url_source already rendered a guided error.
         return 2
@@ -6598,14 +6737,18 @@ def _resolve_url_source(
     *,
     positional: str | None,
     url_env: str | None,
+    allow_interactive: bool = False,
+    interactive_purpose: str = "to connect to your database",
 ) -> str | None:
     """Resolve a connection URL from either a positional arg or a named env var.
 
-    Returns the raw URL string on success, or `None` after rendering a
-    guided error to stderr. Emits a single-line deprecation warning to
-    stderr when `positional` is used AND contains an embedded password,
-    nudging the user toward `--url-env`. Env-var resolution is always
-    silent — env is the safe path we're nudging users toward.
+    Returns the URL string (with bare `postgresql://` / `postgres://`
+    silently rewritten to `postgresql+psycopg://` for free — see Round-3
+    fix below) on success, or `None` after rendering a guided error to
+    stderr. Emits a single-line deprecation warning to stderr when
+    `positional` is used AND contains an embedded password, nudging the
+    user toward `--url-env`. Env-var resolution is always silent — env
+    is the safe path we're nudging users toward.
 
     Rules:
       - exactly one of {positional, url_env} must be provided
@@ -6613,7 +6756,56 @@ def _resolve_url_source(
       - the warning does NOT echo the password back at the user (which
         would defeat the point — the warning would itself become a leak
         on a shared terminal or screen-recording)
+
+    Round-3 live-test fix: applies ``silent_rewrite_to_psycopg`` to
+    every returned URL, BEFORE the caller sees it. Previously the
+    rewrite lived only inside ``_resolve_url``, which all callers
+    invoke for validation — but 14 of the 17 callsites discard
+    `_resolve_url`'s return value (`if _resolve_url(url) is None:
+    return 2`) and continue using the raw URL from
+    ``_resolve_url_source``. Result: bare `postgresql://` URLs
+    silently slipped past validation and reached ``PostgresDataSource``
+    with the raw scheme, triggering ``ModuleNotFoundError: psycopg2``.
+    Applying the rewrite at the source-resolution boundary fixes the
+    bug for all 17 callsites without requiring each to be touched.
+
+    Interactive escape hatch (``allow_interactive=True``): when neither
+    `positional` nor `url_env` is provided AND stderr is a TTY, prompt
+    the user for a URL via ``prompt_for_url`` instead of rendering the
+    "no URL provided" guided error. The prompt uses ``password=True`` so
+    URLs with embedded credentials don't echo to scrollback. If the user
+    presses Enter without typing, falls through to the guided error
+    (preserves the existing exit-2 behavior for non-interactive paths
+    AND for interactive users who decline to provide a URL). Default
+    `False` preserves the strict env-var-or-die behavior for every
+    callsite that hasn't opted in.
+
+    ``interactive_purpose`` is the verb-phrase shown in the prompt's
+    preamble ("to index your database", "to check for drift"). Only
+    used when the prompt actually fires.
     """
+
+    def _apply_silent_rewrite(url: str) -> str:
+        """Apply the bare-scheme rewrite at every exit point.
+
+        Centralised so a future contributor adding a new return path
+        cannot accidentally skip the rewrite (the Round-3 bug). Returns
+        the URL unchanged when the scheme isn't eligible.
+
+        Tolerates malformed URLs (e.g. unclosed IPv6 brackets that
+        make ``urlparse`` raise ``ValueError``) by returning the
+        input as-is — the downstream ``_resolve_url`` will render the
+        real diagnostic. Without the try/except, the
+        `test_malformed_positional_url_falls_through_without_warning`
+        contract regressed.
+        """
+        try:
+            scheme = urlparse(url).scheme
+        except ValueError:
+            return url
+        rewritten = silent_rewrite_to_psycopg(scheme, url)
+        return rewritten if rewritten is not None else url
+
     if positional is not None and url_env is not None:
         _render_guided(
             GuidedError(
@@ -6626,6 +6818,23 @@ def _resolve_url_source(
         )
         return None
     if positional is None and url_env is None:
+        # Interactive escape hatch: when the caller opted in AND the
+        # user is sitting at a TTY, ask for the URL directly instead
+        # of dying with a "no URL provided" guided error. The day-one
+        # UX overhaul wires this through `init`, `index`, `check`, and
+        # the three `*/suggest` commands so a first-time user no
+        # longer has to know about `--url-env` or the +psycopg
+        # driver suffix.
+        if allow_interactive and _stderr_is_interactive_tty():
+            from schemabrain._ui import prompt_for_url
+
+            entered = prompt_for_url(_stderr_console(), purpose=interactive_purpose)
+            if entered is not None:
+                return _apply_silent_rewrite(entered)
+            # User pressed Enter without typing — they explicitly
+            # declined to provide a URL. Fall through to the guided
+            # error so they see the recovery hint, exit 2, and can
+            # re-run with the URL on the command line if they prefer.
         # If the user already has a URL in $DATABASE_URL (the most common
         # convention), surface the exact recipe they probably wanted —
         # `--url-env DATABASE_URL`. Without this hint, a first-time user
@@ -6674,7 +6883,7 @@ def _resolve_url_source(
         if value == "":
             render_missing_secret_error(env_var=url_env, state="empty", console=_stderr_console())
             return None
-        return value
+        return _apply_silent_rewrite(value)
     # Positional path. We accept it for backwards compatibility, but if
     # it embeds a non-empty password we warn — that's the exact leak the
     # audit flagged HIGH (argv visible to ps, shell history, journald).
@@ -6698,7 +6907,93 @@ def _resolve_url_source(
             "--url-env VARNAME to read the URL from an environment variable.",
             file=sys.stderr,
         )
-    return positional
+    return _apply_silent_rewrite(positional)
+
+
+def _resolve_anthropic_key_source(
+    *,
+    allow_interactive: bool = False,
+    interactive_purpose: str = "use Claude",
+    interactive_cost_estimate_usd: float = 0.04,
+    interactive_cap_usd: float = 0.50,
+    interactive_skip_hint: str = "press Enter to skip",
+) -> str | None:
+    """Resolve ``ANTHROPIC_API_KEY`` from env, optionally prompting on miss.
+
+    Returns the stripped key string when env var is set and non-empty,
+    or ``None`` when missing — the caller routes ``None`` based on its
+    own degrade-vs-abort policy (entities suggest aborts; the wizard's
+    LLM stages skip with a hint).
+
+    When ``allow_interactive=True`` AND stderr is a TTY AND the env
+    var is missing or empty, prompts the user via
+    ``prompt_for_anthropic_key`` instead of returning ``None`` early.
+    The prompt renders a cost / cap / skip-hint disclosure before
+    asking for the key so the user understands the bounds before
+    pasting. If the prompt returns empty (user pressed Enter to skip),
+    falls through and returns ``None``.
+
+    Default ``allow_interactive=False`` preserves the existing
+    env-var-or-render-guided-error behavior; callers that opt in
+    accept that an interactive run may block on stdin.
+
+    Unlike ``_resolve_url_source`` this helper does NOT render a
+    GuidedError on miss — the four existing callsites (index --enrich,
+    entities suggest, metrics suggest, wizard stages 3+4) each render
+    command-specific guided errors with different `fix` wording. The
+    helper returns ``None`` and lets the caller render whichever
+    GuidedError it already had.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key is not None and api_key.strip():
+        return api_key.strip()
+    # Round-2 reviewer fold (silent-failure HIGH-2): when env var is
+    # set but whitespace-only, emit a one-line stderr warning so the
+    # operator knows their export is malformed, not just absent.
+    # Without this, a `export ANTHROPIC_API_KEY=" "` from a secret
+    # manager with a trailing newline produces the same "missing"
+    # error path as a genuinely unset var — wasting debug time on
+    # the wrong problem. Warning is one-shot per process via the
+    # presence check at module scope (would dedupe across multiple
+    # resolver calls within the same `_cmd_init` if it grew them).
+    if (
+        api_key is not None
+        and not api_key.strip()
+        and "ANTHROPIC_API_KEY" not in _WARNED_EMPTY_KEY_ENV_VARS
+    ):
+        _WARNED_EMPTY_KEY_ENV_VARS.add("ANTHROPIC_API_KEY")
+        print(
+            "warning: ANTHROPIC_API_KEY is set but whitespace-only; "
+            "treating as unset. Check the export — a trailing newline "
+            "or space disqualifies the value.",
+            file=sys.stderr,
+        )
+    if allow_interactive and _stderr_is_interactive_tty():
+        from schemabrain._ui import prompt_for_anthropic_key
+
+        return prompt_for_anthropic_key(
+            _stderr_console(),
+            purpose=interactive_purpose,
+            cost_estimate_usd=interactive_cost_estimate_usd,
+            cap_usd=interactive_cap_usd,
+            skip_hint=interactive_skip_hint,
+        )
+    return None
+
+
+# Module-scoped dedup set for the whitespace-key stderr warning.
+# Keeps the warning to once per process rather than once per call
+# (which would flood the wizard's 2 LLM stages with the same line).
+# Tests reset via the public helper below.
+_WARNED_EMPTY_KEY_ENV_VARS: set[str] = set()
+
+
+def _reset_warned_empty_key_cache_for_tests() -> None:
+    """Test-only seam — wipes the once-per-process warned-empty-key set
+    so tests can re-trigger the warning in isolation without bleed-over.
+    Mirrors the `_reset_warned_empty_cache_for_tests` pattern in `_env.py`.
+    """
+    _WARNED_EMPTY_KEY_ENV_VARS.clear()
 
 
 def _resolve_url(url: str) -> str | None:
@@ -6721,6 +7016,18 @@ def _resolve_url(url: str) -> str | None:
          ValueError is wrapped into a `url_invalid` guided error.
     """
     parsed = urlparse(url)
+    # Silent rewrite for the bare `postgresql://` / `postgres://` schemes
+    # that every Postgres tool accepts but SQLAlchemy rejects without
+    # `+psycopg`. Forcing a first-time user to learn the driver suffix
+    # is pure friction with no security or correctness payoff. Explicit
+    # wrong drivers (`postgresql+psycopg2`, `postgresql+asyncpg`) are
+    # NOT rewritten — they fall through to `url_wrong_driver` so the
+    # user learns their explicit choice can't be honored, rather than
+    # being silently overridden.
+    rewritten = silent_rewrite_to_psycopg(parsed.scheme, url)
+    if rewritten is not None:
+        url = rewritten
+        parsed = urlparse(url)
     wrong = url_wrong_driver(parsed.scheme, url)
     if wrong is not None:
         _render_guided(wrong)

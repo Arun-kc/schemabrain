@@ -502,6 +502,195 @@ def pause_active_spinner() -> Iterator[None]:
             status.start()
 
 
+# ---------------------------------------------------------------------------
+# Interactive prompt primitives — day-one UX overhaul.
+# ---------------------------------------------------------------------------
+#
+# Used by the wizard's new stage 0 (fork + setup prompts) and by 5
+# post-init commands (`index`, `check`, `entities|metrics|joins
+# suggest`) that today fail with a `GuidedError` when their env vars
+# are missing. The prompts let those callers fall back to an
+# interactive ask instead of dead-ending on a CI-shaped error.
+#
+# Both prompts are pure UI: they assume the caller has already gated
+# on `_stderr_is_interactive_tty()`. They never decide policy (whether
+# to abort vs degrade on empty input) — the caller routes the return
+# value. Empty input returns `None`; the caller distinguishes
+# "skipped" from "provided" by checking for None.
+#
+# `pause_active_spinner` wraps every `Prompt.ask` so the wizard
+# spinner doesn't bleed into the prompt line — same primitive
+# `_prompt_llm_confirmation` already uses (`wizard.py:392`).
+#
+# Cancellation: `KeyboardInterrupt` propagates verbatim. The caller
+# (the wizard stage handler, the CLI subcommand) catches it and
+# translates to the right outcome — abort, skip, exit non-zero —
+# because that decision is policy, not UI.
+
+
+def prompt_for_url(
+    console: Console,
+    *,
+    purpose: str,
+) -> str | None:
+    """Interactively ask for a Postgres connection URL.
+
+    Used by the wizard's stage 0 (own-DB path) and by post-init
+    commands that need a URL but were invoked without one in env.
+    The caller MUST gate on `_stderr_is_interactive_tty()` before
+    calling — this helper does not check TTY itself, so a CI run
+    that wires this in by mistake would block on stdin forever.
+
+    Returns the raw URL string the user typed, or ``None`` if they
+    pressed Enter without typing anything (which the caller can
+    route to "abort with guided error" or to "fall back to a
+    default" depending on context). ``KeyboardInterrupt`` propagates
+    so Ctrl-C aborts cleanly.
+
+    The prompt uses ``password=True`` so the URL (which may embed a
+    password) is not echoed to the terminal — consistent with the
+    `_redact_env_args` precedent in `cli.py` and the README's
+    "credentials never in argv" posture.
+
+    The ``purpose`` string is shown in the prompt's preamble so the
+    user sees WHY the wizard is asking ("to index your database",
+    "to check for schema drift"). Keep it short — one verb phrase.
+    """
+    from rich.prompt import Prompt
+
+    with pause_active_spinner():
+        console.print(
+            f"  [bright_black]{GLYPH_PENDING} Paste your Postgres URL "
+            f"{purpose}. We'll normalize the driver suffix for you.[/]"
+        )
+        console.print("    [bright_black]Example: postgresql://user:pass@host:5432/dbname[/]")
+        answer = Prompt.ask(
+            "  [cyan]DATABASE_URL[/]",
+            password=True,
+            console=console,
+            default="",
+            show_default=False,
+        )
+    stripped = (answer or "").strip()
+    return stripped or None
+
+
+def prompt_for_anthropic_key(
+    console: Console,
+    *,
+    purpose: str,
+    cost_estimate_usd: float,
+    cap_usd: float,
+    skip_hint: str = "press Enter to skip",
+) -> str | None:
+    """Interactively ask for an Anthropic API key with cost disclosure.
+
+    Used by the wizard's stage 0 (cost-disclosure + skip-friendly
+    path) and by post-init `entities|metrics|joins suggest`
+    commands. The caller MUST gate on TTY before calling.
+
+    Renders a four-line preamble before the prompt:
+
+        ◆ Schema Brain uses Claude to {purpose}.
+
+          ◇ Cost:  ~${cost} (capped at ${cap})
+          ◇ Time:  ~30s
+          ◇ {skip_hint}
+
+    Cost numbers come from the caller because the per-stage estimate
+    varies (entities ~$0.01, metrics ~$0.02, full enrichment more).
+    The cap is the env-var override (`SCHEMABRAIN_*_CAP_USD`) so the
+    user sees the actual ceiling they'd hit, not a hardcoded display
+    value.
+
+    The ``skip_hint`` defaults to "press Enter to skip" — appropriate
+    for the wizard, where empty key = degraded mode. Post-init
+    commands that require the key pass ``skip_hint="press Ctrl-C
+    to abort"`` so the user understands Enter won't help them.
+    Returns ``None`` for empty input regardless; the caller routes
+    based on context.
+
+    Returns the raw key string, or ``None`` if the user pressed
+    Enter without typing anything. ``KeyboardInterrupt`` propagates.
+    """
+    from rich.prompt import Prompt
+
+    with pause_active_spinner():
+        console.print(f"  [bold]{GLYPH_BRAND} Schema Brain uses Claude to {purpose}.[/]")
+        console.print()
+        console.print(
+            f"    [bright_black]{GLYPH_PENDING} Cost:  "
+            f"~${cost_estimate_usd:.2f} (capped at ${cap_usd:.2f})[/]"
+        )
+        console.print(f"    [bright_black]{GLYPH_PENDING} Time:  ~30s[/]")
+        console.print(f"    [bright_black]{GLYPH_PENDING} {skip_hint}[/]")
+        console.print()
+        answer = Prompt.ask(
+            "  [cyan]Paste ANTHROPIC_API_KEY[/]",
+            password=True,
+            console=console,
+            default="",
+            show_default=False,
+        )
+    stripped = (answer or "").strip()
+    return stripped or None
+
+
+# ---------------------------------------------------------------------------
+# LLM cost-preview line — day-one UX overhaul "what's happening" sub-step.
+# ---------------------------------------------------------------------------
+
+
+def print_llm_stage_preamble(
+    console: Console,
+    *,
+    action: str,
+    model: str,
+    cost_estimate_usd: float,
+    cap_usd: float,
+) -> None:
+    """Print a one-line cost preview before an LLM call.
+
+    Used inside the wizard's entity / metric suggestion stages so the
+    user sees what's about to be spent BEFORE the LLM call goes out
+    (~30s of waiting otherwise reads as "stuck"). Pairs with the
+    ``prompt_for_anthropic_key`` cost disclosure — same numbers, same
+    framing, so the user who pasted a key 30 seconds ago has the
+    bounds re-stated before the spend.
+
+    Wrapped in ``pause_active_spinner()`` because Rich's spinner
+    interleaving only fires when the print and the Status share the
+    same Console object. Callers (wizard stage 3/4 handlers) build
+    a fresh ``make_console(stderr=True)``, which is a DIFFERENT
+    Console than the one ``_wizard_stage_context`` registered as
+    the active spinner. Without the explicit pause, the spinner
+    overwrites this line on its next animation frame and the
+    operator never reads the cost preview — undermining the whole
+    point of the line. The spinner-pause registry uses a thread-
+    local handle, not a Console reference, so it pauses regardless
+    of which Console the spinner is attached to. Round-2 reviewer
+    fold (silent-failure-hunter MEDIUM-1).
+
+    ``cost_estimate_usd`` is the per-call estimate (typically
+    $0.01 entities, $0.02 metrics). ``cap_usd`` is the actual
+    ceiling that will trip the ``CostCeilingGuard``, threaded down
+    from the wizard's ``max_cost_usd`` config — operator sees the
+    real ceiling, not a hardcoded display value.
+
+    Future PR-2 work: replace this static line with a Rich ``Live``
+    display showing elapsed time + ticking spinner. That refactor
+    needs ``_wizard_stage_context`` to coexist cleanly with an
+    inner ``Live``, which is too much surface for PR-1. The static
+    line ships the bulk of the UX benefit (cost transparency
+    before the call) without the refactor.
+    """
+    with pause_active_spinner():
+        console.print(
+            f"  [bright_black]{GLYPH_PENDING} Asking Claude to {action} · "
+            f"~${cost_estimate_usd:.2f} · capped at ${cap_usd:.2f} · {model}[/]"
+        )
+
+
 __all__ = [
     "GLYPH_ACTIVE",
     "GLYPH_ARROW",
@@ -519,6 +708,9 @@ __all__ = [
     "make_console",
     "pause_active_spinner",
     "pii_marker",
+    "print_llm_stage_preamble",
+    "prompt_for_anthropic_key",
+    "prompt_for_url",
     "register_active_spinner",
     "short_path",
     "status_glyph",

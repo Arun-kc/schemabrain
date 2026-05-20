@@ -307,7 +307,13 @@ def check_store_schema_version(path: Path) -> Check:
             name="store_schema_version",
             outcome="warn",
             message=f"store not found at {path}",
-            suggested_next="run `schemabrain index` to create and populate the store",
+            # Day-one UX overhaul: front-door `schemabrain init` is
+            # the right entry for a brand-new user with no store
+            # yet. `schemabrain index` alone is the re-index path
+            # for users who already have a store — suggesting it
+            # to a new user skips the host-wiring + entity / metric
+            # curation they actually need.
+            suggested_next="run `schemabrain init` to set up the store and wire your host",
         )
     # Defer import — SQLiteStore lifecycle is heavy; the store check
     # is the only doctor surface that needs it.
@@ -337,7 +343,9 @@ def check_store_entity_count(path: Path) -> Check:
             name="store_entity_count",
             outcome="warn",
             message="store not found",
-            suggested_next="run `schemabrain index` to populate the store",
+            # See check_store_schema_version above — front-door
+            # `init` is the right pointer for a brand-new user.
+            suggested_next="run `schemabrain init` to set up the store and curate entities",
         )
     from schemabrain.core.store import SchemaVersionMismatchError, SQLiteStore
 
