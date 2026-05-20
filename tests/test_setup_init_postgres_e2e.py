@@ -413,7 +413,11 @@ class TestWizardAgainstPostgres16:
         capsys.readouterr()  # discard
 
         # Second run: stages 2 + 3 auto-skip via the
-        # "already indexed" / "ANTHROPIC_API_KEY missing" paths.
+        # "reusing N table(s) from a prior indexing run" /
+        # "ANTHROPIC_API_KEY missing" paths. The F4 framing fix
+        # replaced the ambiguous "already indexed" with explicit
+        # prior-run language so the operator can temporally locate
+        # the stage's skip.
         second_exit = main(
             [
                 "init",
@@ -426,8 +430,8 @@ class TestWizardAgainstPostgres16:
         )
         assert second_exit == 0
         captured = capsys.readouterr()
-        # Stage 2 reports already-indexed skip.
-        assert "already indexed" in captured.err
+        # Stage 2 reports prior-run reuse skip.
+        assert "from a prior indexing run" in captured.err
 
     def test_wizard_skip_index_no_entities_against_postgres(
         self,

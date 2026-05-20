@@ -62,7 +62,7 @@ from sqlalchemy.exc import OperationalError
 
 from schemabrain import _ui
 from schemabrain._env import resolve_positive_float_env
-from schemabrain._ui import make_console, prompt_yes_no
+from schemabrain._ui import make_console, prompt_yes_no, short_path
 from schemabrain.errors import GuidedError
 from schemabrain.errors_render import LlmFailureKind, classify_llm_failure
 from schemabrain.setup.hosts import HostName, is_postgres_url
@@ -653,13 +653,32 @@ def _stage_index(ctx: WizardContext) -> StageOutcome:
         if isinstance(existing, StageOutcome):
             return existing  # schema-version mismatch surfaced as failed
         if existing > 0:
+            # F4 (post-PR-#79 polish): the message used to read
+            # "already indexed: 7 table(s) present for this source",
+            # which the operator couldn't temporally locate — they
+            # saw the hero panel saying "Setting up SchemaBrain"
+            # then "already indexed" and wondered if their fresh
+            # `init` was even doing anything. The check happens
+            # BEFORE any writes in this stage, so a non-zero
+            # `existing` count is unambiguously from a prior run
+            # (no other code path inside this single wizard run
+            # could have populated the store before stage 2 reached
+            # this check). Make the temporal framing explicit and
+            # surface the store path so the operator knows which
+            # artifact is being reused.
+            refresh_command = (
+                f"run `schemabrain index --url-env {cfg.env_var_name}` "
+                "to re-index against the live source"
+            )
             return StageOutcome(
                 stage=2,
                 name="index",
                 status="skipped",
-                message=f"already indexed: {existing} table(s) present for this source",
-                next_step="run `schemabrain index` directly to refresh "
-                "if the source schema has changed",
+                message=(
+                    f"reusing {existing} table(s) from a prior indexing run "
+                    f"({short_path(str(cfg.store_path))})"
+                ),
+                next_step=(f"{refresh_command} if the source schema has changed"),
             )
 
     api_key: str | None = None

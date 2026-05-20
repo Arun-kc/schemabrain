@@ -847,8 +847,64 @@ class TestStageIndex:
         outcome = wizard._stage_index(WizardContext(config=cfg))
 
         assert outcome.status == "skipped"
-        assert "already indexed" in outcome.message
-        assert "7 table" in outcome.message
+        # F4: framing was "already indexed: 7 table(s) present" pre-F4
+        # — operator couldn't tell same-run vs prior-run. New framing
+        # makes the temporal claim explicit ("from a prior indexing
+        # run") so the operator knows their fresh `init` is reusing
+        # cached data, not silently doing nothing.
+        assert "reusing 7 table(s) from a prior indexing run" in outcome.message
+        # Pre-F4 wording must NOT survive — a regression that
+        # accidentally restores "already indexed" should fail loudly.
+        assert "already indexed" not in outcome.message
+
+    def test_skipped_message_includes_store_path_for_disambiguation(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # F4: the store path appears so the operator knows which
+        # artifact is being reused — useful when running init across
+        # multiple projects with different --store-path values.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_store_table_count", lambda _p, _sid: 3)
+        monkeypatch.setattr(
+            wizard, "_run_indexer", lambda **_kw: pytest.fail("indexer should not run")
+        )
+
+        outcome = wizard._stage_index(WizardContext(config=cfg))
+
+        # Path appears in parens; `short_path` collapses HOME to ~ but
+        # the test store lives under /var/folders (pytest tmp_path)
+        # which stays verbatim — assert the trailing filename rather
+        # than the full path to stay platform-stable.
+        assert str(cfg.store_path.name) in outcome.message
+
+    def test_skipped_next_step_threads_env_var_name_for_refresh(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # F4: the refresh hint must use the operator's chosen env var
+        # name so the copy-paste command works without modification.
+        # Pre-F4 the hint said generic `schemabrain index` with no
+        # URL source, which the operator would have to figure out.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        # Switch the env-var name to a non-default value so a
+        # regression that hardcodes "DATABASE_URL" or similar gets
+        # caught.
+        from dataclasses import replace
+
+        cfg = replace(cfg, env_var_name="MY_CUSTOM_DB_URL")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_store_table_count", lambda _p, _sid: 5)
+        monkeypatch.setattr(
+            wizard, "_run_indexer", lambda **_kw: pytest.fail("indexer should not run")
+        )
+
+        outcome = wizard._stage_index(WizardContext(config=cfg))
+
+        assert outcome.next_step is not None
+        assert "--url-env MY_CUSTOM_DB_URL" in outcome.next_step
+        assert "schemabrain index" in outcome.next_step
 
     def test_failed_on_schema_version_mismatch(
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
