@@ -511,6 +511,41 @@ class TestWaitForPostgresReady:
         assert sleeps == []
         assert "Postgres ready" in buf.getvalue()
 
+    def test_breaks_early_on_argument_error_without_full_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Round-2 fold MED (silent-failure-hunter): a malformed URL
+        # is deterministic — polling for 30s won't help and the
+        # operator deserves the error fast. Pre-fold, the broad
+        # `except Exception` caught ArgumentError, set last_error,
+        # then slept and retried — burning the full 30s for a
+        # deterministic failure. Now ArgumentError breaks the loop
+        # immediately.
+        from sqlalchemy.exc import ArgumentError
+
+        from schemabrain.setup import setup_stage
+
+        sleeps: list[float] = []
+        monkeypatch.setattr(setup_stage.time, "sleep", lambda s: sleeps.append(s))
+
+        def always_arg_error(*a, **kw):
+            raise ArgumentError("Could not parse SQLAlchemy URL")
+
+        monkeypatch.setattr("sqlalchemy.create_engine", always_arg_error)
+
+        buf = io.StringIO()
+        result = setup_stage._wait_for_postgres_ready(
+            url="postgresql://malformed",
+            console=make_console(file=buf, force_terminal=False, width=120),
+            timeout_s=30,  # generous timeout — fix should bail FAST, not wait
+            interval_s=0.01,
+        )
+        assert result is False
+        # The break should fire before any sleep at all.
+        assert sleeps == []
+        # Operator sees the real error in the timeout message.
+        assert "ArgumentError" in buf.getvalue()
+
     def test_returns_false_after_timeout_with_persistent_failure(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -685,6 +720,41 @@ class TestSafeSubprocess:
         assert result is not None
         assert result.returncode == 0
         assert "hello" in result.stdout
+
+    def test_returns_none_on_permission_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Round-2 fold HIGH convergent (silent-failure-hunter +
+        # Reality Checker B1): pre-fold, only FileNotFoundError +
+        # TimeoutExpired were caught. A binary on PATH but not
+        # executable (mode 0555 stripped, snap confinement, macOS
+        # quarantine, non-docker-group user on Linux) raised
+        # PermissionError and bypassed the fall-through-to-manual
+        # design intent. Now catches the full `OSError` family.
+        import subprocess
+
+        from schemabrain.setup import setup_stage
+
+        def boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(subprocess, "run", boom)
+
+        assert setup_stage._safe_subprocess(["docker", "ps"], timeout_s=5) is None
+
+    def test_returns_none_on_generic_oserror(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Defensive: ENOMEM, EACCES, or any other OSError flavor
+        # the OS may surface during spawn — all must funnel to None
+        # so the caller's "fall through to manual recipe" branch
+        # always wins.
+        import subprocess
+
+        from schemabrain.setup import setup_stage
+
+        def boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise OSError(12, "Cannot allocate memory")
+
+        monkeypatch.setattr(subprocess, "run", boom)
+
+        assert setup_stage._safe_subprocess(["docker", "ps"], timeout_s=5) is None
 
 
 class TestDockerStartFailure:

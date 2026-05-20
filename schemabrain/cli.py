@@ -7089,6 +7089,26 @@ def _resolve_url_source(
     return _apply_silent_rewrite(positional)
 
 
+# Module-scoped dedup set for the whitespace-key stderr warning.
+# Keeps the warning to once per process rather than once per call
+# (which would flood the wizard's 2 LLM stages with the same line).
+# Tests reset via the public helper below.
+# Round-2 fold MED (python-reviewer): defined here, immediately
+# before its sole consumer `_resolve_anthropic_key_source`, instead
+# of 100+ lines later. Closing the read-order gap so the function
+# body's first reference to this set resolves visually within
+# scrolling distance.
+_WARNED_EMPTY_KEY_ENV_VARS: set[str] = set()
+
+
+def _reset_warned_empty_key_cache_for_tests() -> None:
+    """Test-only seam — wipes the once-per-process warned-empty-key set
+    so tests can re-trigger the warning in isolation without bleed-over.
+    Mirrors the `_reset_warned_empty_cache_for_tests` pattern in `_env.py`.
+    """
+    _WARNED_EMPTY_KEY_ENV_VARS.clear()
+
+
 def _resolve_anthropic_key_source(
     *,
     allow_interactive: bool = False,
@@ -7186,21 +7206,6 @@ def _resolve_anthropic_key_source(
                 )
         return prompted_key
     return None
-
-
-# Module-scoped dedup set for the whitespace-key stderr warning.
-# Keeps the warning to once per process rather than once per call
-# (which would flood the wizard's 2 LLM stages with the same line).
-# Tests reset via the public helper below.
-_WARNED_EMPTY_KEY_ENV_VARS: set[str] = set()
-
-
-def _reset_warned_empty_key_cache_for_tests() -> None:
-    """Test-only seam — wipes the once-per-process warned-empty-key set
-    so tests can re-trigger the warning in isolation without bleed-over.
-    Mirrors the `_reset_warned_empty_cache_for_tests` pattern in `_env.py`.
-    """
-    _WARNED_EMPTY_KEY_ENV_VARS.clear()
 
 
 def _resolve_url(url: str) -> str | None:

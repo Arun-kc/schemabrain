@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import types
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, assert_never
 
 from rich.text import Text
 
@@ -446,13 +446,13 @@ def _llm_failure_titles(kind: LlmFailureKind) -> tuple[str, str]:
             "Anthropic returned an error",
             "the API call reached Anthropic but came back with an error",
         )
-    raise ValueError(
-        f"unknown kind {kind!r}; expected one of "
-        "'overloaded' | 'rate_limited' | 'connection' | 'api_error'. "
-        "Add the new kind to `LlmFailureKind` and update both "
-        "`_llm_failure_titles` and `_llm_failure_retry_hint` if "
-        "introducing a new shape."
-    )
+    # Round-2 fold MED (python-reviewer): `assert_never` gives mypy /
+    # pyright a static exhaustiveness check at this position so a
+    # future fifth `LlmFailureKind` value would be caught at type-
+    # check time rather than at runtime via the `ValueError` raise.
+    # Unreachable at runtime when the `if` chain covers every Literal
+    # member — kept as a typed proof obligation, not a fallback.
+    assert_never(kind)
 
 
 def _llm_failure_retry_hint(kind: LlmFailureKind) -> str:
@@ -470,10 +470,10 @@ def _llm_failure_retry_hint(kind: LlmFailureKind) -> str:
         return "check network / proxy, then retry"
     if kind == "api_error":
         return "retry; if it persists, check the message above"
-    raise ValueError(
-        f"unknown kind {kind!r}; expected one of "
-        "'overloaded' | 'rate_limited' | 'connection' | 'api_error'."
-    )
+    # Same exhaustiveness contract as `_llm_failure_titles` above —
+    # adding a new `LlmFailureKind` member without updating this
+    # function is now a type-check error, not a runtime crash.
+    assert_never(kind)
 
 
 def classify_llm_failure(exc: BaseException) -> LlmFailureKind | None:

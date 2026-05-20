@@ -203,6 +203,46 @@ class TestInitToClaudeDesktop:
         assert merged["mcpServers"]["other"] == {"command": "x"}
 
 
+class TestInitInstallToClaudeDesktopMalformedConfig:
+    """Round-2 fold HIGH (silent-failure-hunter): the TOCTOU mirror
+    of the MalformedConfigError wrap in `compare_existing_claude_desktop_entry`.
+
+    Covers the case where the config was malformed between the
+    wizard's pre-check pass AND the `init()` write — OR the F3-bypass
+    path where `assume_yes=True` skipped the pre-check entirely.
+    Without the wrap, this branch crashed with a raw Python
+    traceback.
+    """
+
+    def test_init_wraps_malformed_config_as_init_refusal(
+        self,
+        seeded_store: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        stub_uvx: None,
+    ) -> None:
+        claude_dir = tmp_path / "Claude"
+        claude_dir.mkdir()
+        cfg = claude_dir / "claude_desktop_config.json"
+        cfg.write_text("{not valid json", encoding="utf-8")
+        monkeypatch.setattr(
+            "schemabrain.setup.init_flow.claude_desktop_config_path",
+            lambda: cfg,
+        )
+
+        with pytest.raises(InitRefusal) as exc_info:
+            init(
+                source_url="sqlite:///:memory:",
+                store_path=seeded_store,
+                host="claude-desktop",
+                env_var_name="DB_URL",
+                skip_index=False,
+                assume_yes=True,  # bypasses the pre-check; exercises the wrap at the write boundary
+            )
+        assert exc_info.value.error.kind == "init_host_config_malformed"
+        assert "not valid JSON" in exc_info.value.error.message
+
+
 # ----- idempotency ----------------------------------------------------------
 
 
@@ -868,6 +908,28 @@ class TestCompareExistingClaudeDesktopEntry:
         result = compare_existing_claude_desktop_entry(snippet=snippet, config_path=cfg)
         assert result.state == "differs"
         assert result.differing_field_names == ("env",)
+
+    def test_malformed_config_wraps_as_init_refusal(self, tmp_path: Path) -> None:
+        # Round-2 fold HIGH (silent-failure-hunter): pre-fold, the
+        # docstring CLAIMED this function "raises InitRefusal if the
+        # config file is present but malformed" — but the code
+        # raised MalformedConfigError directly. The wizard's
+        # `except InitRefusal` guard at stage 6 missed it, crashing
+        # init on any malformed claude_desktop_config.json with a
+        # raw Python traceback. Fix wraps MalformedConfigError at
+        # this boundary so the guard catches it and renders a
+        # guided error.
+        cfg = tmp_path / "claude_desktop_config.json"
+        cfg.write_text("{this is: not valid json", encoding="utf-8")
+
+        with pytest.raises(InitRefusal) as exc_info:
+            compare_existing_claude_desktop_entry(
+                snippet=_build_snippet_for_test(),
+                config_path=cfg,
+            )
+        assert exc_info.value.error.kind == "init_host_config_malformed"
+        assert "not valid JSON" in exc_info.value.error.message
+        assert "line" in exc_info.value.error.why
 
     def test_differs_when_command_changes(self, tmp_path: Path) -> None:
         # uvx → installed schemabrain entrypoint (or vice versa) is

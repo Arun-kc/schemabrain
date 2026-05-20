@@ -43,6 +43,8 @@ and inside CI captures.
 from __future__ import annotations
 
 import contextlib
+import shutil
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -645,7 +647,7 @@ def offer_persist_anthropic_key_to_env_file(
 ) -> bool:
     """Ask whether to save a freshly-pasted API key to ``.env`` and persist on yes.
 
-    Called by ``_resolve_anthropic_api_key`` immediately after
+    Called by ``_resolve_anthropic_key_source`` immediately after
     ``prompt_for_anthropic_key`` returns a non-empty key, so the
     operator who just pasted a key once doesn't have to paste it
     again every time they re-run the wizard or a suggest command.
@@ -677,8 +679,6 @@ def offer_persist_anthropic_key_to_env_file(
     next step is filling in the other placeholders — they can see
     what to fill in instead of having to dig up the template.
     """
-    import shutil
-
     from rich.prompt import Confirm
 
     from schemabrain.setup.env_file import (
@@ -688,16 +688,28 @@ def offer_persist_anthropic_key_to_env_file(
 
     with pause_active_spinner():
         if not is_path_in_gitignore(target=env_path, gitignore=gitignore_path):
-            # Yellow + explicit "not in .gitignore" wording so the
-            # operator can't miss the risk. We deliberately do NOT
-            # auto-add the entry to .gitignore — that's the
-            # operator's repo to manage; we don't want to mutate
-            # their git state during a key-paste flow.
-            console.print(
-                f"  [yellow]{GLYPH_WARN} {env_path.name} is NOT listed in "
-                f"{gitignore_path.name} — saving here will commit the key "
-                f"if you `git add` this file.[/]"
-            )
+            # Yellow warning so the operator can't miss the leak risk
+            # before saying yes. We deliberately do NOT auto-add the
+            # entry to .gitignore — that's the operator's repo to
+            # manage; we don't want to mutate their git state during
+            # a key-paste flow. Round-2 fold MED (silent-failure-hunter):
+            # branch the wording on whether `.gitignore` exists at all.
+            # The "not listed in .gitignore" copy is literally wrong
+            # for a fresh repo with no `.gitignore` and reads as
+            # alarmist; the "no .gitignore found" wording is honest
+            # and actionable.
+            if gitignore_path.exists():
+                warning_body = (
+                    f"{env_path.name} is NOT listed in {gitignore_path.name} — "
+                    f"saving here will commit the key if you `git add` this file."
+                )
+            else:
+                warning_body = (
+                    f"no {gitignore_path.name} found — consider adding "
+                    f"{env_path.name} to {gitignore_path.name} before saving "
+                    f"so the key doesn't get committed."
+                )
+            console.print(f"  [yellow]{GLYPH_WARN} {warning_body}[/]")
         consent = Confirm.ask(
             f"  [cyan]Save ANTHROPIC_API_KEY to {env_path.name} for next time?[/]",
             default=False,
@@ -713,7 +725,23 @@ def offer_persist_anthropic_key_to_env_file(
         template_path = env_path.parent / (env_path.name + ".example")
         seeded_from_template = False
         if not env_path.exists() and template_path.exists():
-            shutil.copy(template_path, env_path)
+            # Round-2 fold CRITICAL (python-reviewer): `shutil.copy`
+            # preserves the source mode. `.env.example` is typically
+            # `0o644` (committed to the repo, world-readable). Without
+            # the explicit `chmod` below, the freshly-seeded `.env`
+            # inherits `0o644`, and the subsequent
+            # `persist_key_to_env_file` reads that mode back in and
+            # preserves it — the API key lands group/world-readable.
+            # Round-2 fold MED (silent-failure-hunter): if the copy
+            # fails mid-write (quota exhausted, NFS timeout, ENOSPC),
+            # clean up the partial file so the next run's loader
+            # doesn't pick up garbage bytes.
+            try:
+                shutil.copy(template_path, env_path)
+                env_path.chmod(0o600)
+            except OSError:
+                env_path.unlink(missing_ok=True)
+                raise
             seeded_from_template = True
         persist_key_to_env_file(
             key_name="ANTHROPIC_API_KEY",
@@ -747,9 +775,7 @@ def stderr_is_interactive_tty() -> bool:
     backwards compatibility with existing tests that monkeypatch it
     directly.
     """
-    import sys as _sys
-
-    return _sys.stdin.isatty() and _sys.stderr.isatty()
+    return sys.stdin.isatty() and sys.stderr.isatty()
 
 
 def prompt_yes_no(

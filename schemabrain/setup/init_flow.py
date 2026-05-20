@@ -44,6 +44,7 @@ from sqlalchemy import create_engine, text
 from schemabrain import __version__
 from schemabrain.errors import GuidedError
 from schemabrain.setup.config_io import (
+    MalformedConfigError,
     format_mcp_entry_diff,
     merge_schemabrain_entry,
     read_mcp_config,
@@ -189,9 +190,15 @@ def compare_existing_claude_desktop_entry(
       generic ``"differs"`` (prompt-required).
 
     Raises ``InitRefusal`` if the config file is present but
-    malformed — same posture as ``read_mcp_config``; the wizard
-    handler propagates this so the operator sees a guided error
-    rather than a silent fall-through to "new".
+    malformed — wraps ``read_mcp_config``'s ``MalformedConfigError``
+    so the wizard's ``except InitRefusal`` guard at stage 6 catches it
+    and the operator sees a guided error rather than a raw Python
+    traceback. Round-2 fold HIGH (silent-failure-hunter): pre-fold,
+    the docstring claimed this conversion but the code raised
+    ``MalformedConfigError`` directly — escaped both
+    ``_stage_wire_host``'s ``except InitRefusal`` and
+    ``_install_to_claude_desktop``'s, crashing init on any malformed
+    ``claude_desktop_config.json``.
     """
     if not config_path.exists():
         return ClaudeDesktopEntryComparison(
@@ -199,7 +206,20 @@ def compare_existing_claude_desktop_entry(
             config_path=config_path,
             new_store_path=_extract_store_path_from_args(snippet.args),
         )
-    existing = read_mcp_config(config_path)
+    try:
+        existing = read_mcp_config(config_path)
+    except MalformedConfigError as exc:
+        raise InitRefusal(
+            GuidedError(
+                kind="init_host_config_malformed",
+                message=f"existing host config at {config_path} is not valid JSON",
+                why=f"{exc.decode_error.msg} (line {exc.decode_error.lineno}, "
+                f"col {exc.decode_error.colno}) — re-running init would "
+                "destroy the unparseable contents",
+                fix="inspect the file or restore from the .bak sibling, then re-run init",
+                next_step=None,
+            )
+        ) from exc
     existing_entry = schemabrain_entry_in(existing)
     new_entry = snippet.to_mcp_entry()
     new_store_path = _extract_store_path_from_args(snippet.args)
@@ -593,7 +613,25 @@ def _install_to_claude_desktop(
 ) -> InitResult:
     existing = None
     if config_path.exists():
-        existing = read_mcp_config(config_path)
+        try:
+            existing = read_mcp_config(config_path)
+        except MalformedConfigError as exc:
+            # Round-2 fold HIGH (silent-failure-hunter): mirror of the
+            # wrap in `compare_existing_claude_desktop_entry` above —
+            # without this wrap, a malformed pre-existing config
+            # crashed `init` even when the wizard's pre-check had
+            # passed (e.g., file corrupted between pre-check and
+            # write, or in the F3-bypass `assume_yes` path).
+            raise InitRefusal(
+                GuidedError(
+                    kind="init_host_config_malformed",
+                    message=f"existing host config at {config_path} is not valid JSON",
+                    why=f"{exc.decode_error.msg} (line {exc.decode_error.lineno}, "
+                    f"col {exc.decode_error.colno})",
+                    fix="inspect the file or restore from the .bak sibling, then re-run init",
+                    next_step=None,
+                )
+            ) from exc
     existing_entry = schemabrain_entry_in(existing)
     new_entry = snippet.to_mcp_entry()
     if existing_entry == new_entry:

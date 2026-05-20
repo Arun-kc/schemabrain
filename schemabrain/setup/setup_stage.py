@@ -320,7 +320,7 @@ def _wait_for_postgres_ready(
     from urllib.parse import urlparse
 
     from sqlalchemy import create_engine, text
-    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.exc import ArgumentError, OperationalError
 
     from schemabrain.errors import silent_rewrite_to_psycopg
 
@@ -353,6 +353,14 @@ def _wait_for_postgres_ready(
         except OperationalError as exc:
             # Expected during startup — keep polling.
             last_error = str(exc).splitlines()[0]
+        except ArgumentError as exc:
+            # Round-2 fold MED (silent-failure-hunter): a malformed
+            # URL is deterministic — polling for 30s won't help and
+            # the operator deserves the real error fast. Bail out
+            # immediately so the fall-through to the manual recipe
+            # fires inside the user's attention span, not 30s later.
+            last_error = f"{type(exc).__name__}: {exc}"
+            break
         except Exception as exc:  # pragma: no cover — defensive, non-OperationalError surface
             last_error = f"{type(exc).__name__}: {exc}"
             # Don't immediately bail on a non-OperationalError — could
@@ -436,9 +444,19 @@ def _safe_subprocess(
     stays one line. Returns:
     - The completed process (operator inspects ``returncode`` /
       ``stderr``) on successful spawn — including non-zero exit.
-    - ``None`` on `FileNotFoundError` (binary missing — should be
-      pre-checked by ``detect_docker`` but defensive) or `TimeoutExpired`
+    - ``None`` on any OS-level spawn failure (`FileNotFoundError`,
+      `PermissionError`, broader `OSError`) or `TimeoutExpired`
       (subprocess hung past the deadline).
+
+    Round-2 fold HIGH convergent (silent-failure-hunter + Reality
+    Checker B1): pre-fold this only caught `FileNotFoundError` and
+    `TimeoutExpired`. A docker binary present on PATH but not
+    executable (mode 0555 stripped, snap confinement, macOS
+    quarantine, non-docker-group user on Linux) raised
+    `PermissionError` which propagated out — bypassing the
+    fall-through-to-manual-recipe design intent. `OSError` is the
+    broadest correct ancestor (covers both via inheritance + future
+    OS-level errors like `ENOMEM`).
     """
     try:
         return subprocess.run(
@@ -448,10 +466,7 @@ def _safe_subprocess(
             check=False,
             timeout=timeout_s,
         )
-    except (
-        FileNotFoundError,
-        subprocess.TimeoutExpired,
-    ):  # pragma: no cover — exercised via monkeypatch in tests
+    except (OSError, subprocess.TimeoutExpired):
         return None
 
 
@@ -470,7 +485,7 @@ def _print_docker_failure(
     """
     detail: str
     if result is None:
-        detail = "subprocess didn't return (binary missing or hung past deadline)"
+        detail = "subprocess didn't return (binary missing or not runnable, or hung past deadline)"
     elif result.stderr:
         detail = result.stderr.strip().splitlines()[0] if result.stderr.strip() else ""
     else:

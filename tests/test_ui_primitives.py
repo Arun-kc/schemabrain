@@ -28,6 +28,7 @@ focuses on the primitives themselves:
 from __future__ import annotations
 
 import io
+import os
 import sys
 from pathlib import Path
 
@@ -792,9 +793,12 @@ class TestOfferPersistAnthropicKeyToEnvFile:
 
         out = buf.getvalue()
         # Operator must see the leak-risk line before the prompt fires.
+        # Round-2 fold MED: when .gitignore is missing entirely, the
+        # warning wording changed from "NOT listed in .gitignore"
+        # (literally wrong) to "no .gitignore found" (honest).
         assert ".env" in out
         assert ".gitignore" in out
-        assert "NOT" in out
+        assert "no .gitignore found" in out
 
     def test_no_warning_when_env_is_in_gitignore(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -895,6 +899,75 @@ class TestOfferPersistAnthropicKeyToEnvFile:
         assert "TEMPLATE_VAR" not in body
         # Key was appended, not seeded from template.
         assert "ANTHROPIC_API_KEY=sk-ant-secret" in body
+
+    def test_template_seed_writes_at_0o600_not_0o644(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Round-2 fold CRITICAL (python-reviewer): pre-fold,
+        # `shutil.copy(template, env)` preserved the template's
+        # `0o644` mode bits; the subsequent `persist_key_to_env_file`
+        # read that mode back in and preserved it — the API key
+        # landed group/world-readable. The fix `env_path.chmod(0o600)`
+        # immediately after the copy now enforces owner-only.
+        if os.name != "posix":
+            pytest.skip("chmod bits not honored the same way on Windows")
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        env_path = tmp_path / ".env"
+        template = tmp_path / ".env.example"
+        template.write_text(
+            "DATABASE_URL=\nANTHROPIC_API_KEY=\n",
+            encoding="utf-8",
+        )
+        template.chmod(0o644)  # the world-readable mode this test guards against
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: True)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=io.StringIO()),
+            key_value="sk-ant-secret",
+            env_path=env_path,
+            gitignore_path=gi,
+        )
+
+        mode = env_path.stat().st_mode & 0o777
+        # No group/world bits. Owner-only.
+        assert mode & 0o077 == 0, (
+            f"API key written at mode {oct(mode)} — group/world can read the secret"
+        )
+
+    def test_warning_distinguishes_missing_gitignore_from_unlisted_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Round-2 fold MED (silent-failure-hunter): pre-fold, the
+        # warning text said ".env is NOT listed in .gitignore" even
+        # when no .gitignore existed at all — alarmist and literally
+        # wrong. Fix branches the wording.
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        buf = io.StringIO()
+        gi_missing = tmp_path / ".gitignore"  # does NOT exist
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: False)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=buf, force_terminal=False, width=120),
+            key_value="sk-ant-secret",
+            env_path=tmp_path / ".env",
+            gitignore_path=gi_missing,
+        )
+
+        out = buf.getvalue()
+        # Honest copy when no .gitignore exists.
+        assert "no .gitignore found" in out
+        # Make sure the alarmist "NOT listed in" wording is NOT used here.
+        assert "NOT listed in" not in out
 
     def test_no_template_seed_when_template_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

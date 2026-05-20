@@ -68,11 +68,29 @@ def load_env_file_into_environ(path: Path) -> int:
     empty strings — downstream resolvers treat ``DATABASE_URL=""``
     as "set, use it" and would crash before the operator filled in
     the real value.
+
+    File read failures (``OSError`` from ``chmod 000``,
+    ``UnicodeDecodeError`` from a non-UTF-8 ``.env``) emit a one-line
+    stderr warning and return 0. The loader is best-effort — every
+    schemabrain command would otherwise crash with a raw Python
+    traceback at startup before any subcommand logic ran, which is a
+    worse UX than a silent skip with operator-visible context about
+    what was skipped and why.
     """
     if not path.exists():
         return 0
+    import sys as _sys
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        print(
+            f"warning: could not read {path} ({type(exc).__name__}: {exc}); skipping .env load",
+            file=_sys.stderr,
+        )
+        return 0
     loaded = 0
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in text.splitlines():
         line = raw.lstrip()
         if not line or line.startswith("#"):
             continue

@@ -289,10 +289,15 @@ class TestRenderLlmFailure:
         out = _render(self._default_call(kind="api_error"))
         assert "Anthropic returned an error" in out
 
-    def test_unknown_kind_raises_value_error(self) -> None:
-        # Same posture as `render_missing_secret_error` — typos must
-        # surface visibly, not silently render with an empty title.
-        with pytest.raises(ValueError, match="unknown kind"):
+    def test_unknown_kind_raises_assertion_error(self) -> None:
+        # Round-2 fold MED (python-reviewer): contract moved from
+        # `raise ValueError("unknown kind")` to `typing.assert_never`
+        # so static type-checkers (mypy / pyright) flag a missing
+        # branch BEFORE the test runs. Runtime guard is now an
+        # `AssertionError` (what `assert_never` raises when called)
+        # — same loud-failure posture as before, just with a
+        # type-system anchor.
+        with pytest.raises(AssertionError):
             _render(self._default_call(kind="not_a_kind"))
 
     def test_cause_string_rendered_under_glyph(self) -> None:

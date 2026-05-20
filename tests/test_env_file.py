@@ -104,6 +104,43 @@ class TestLoadEnvFileIntoEnviron:
         assert "DATABASE_URL" not in os.environ
         assert "ANOTHER_EMPTY" not in os.environ
 
+    def test_unreadable_file_warns_and_returns_zero(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Round-2 fold HIGH convergent (python-reviewer + silent-failure-hunter):
+        # a `.env` that exists but isn't readable (chmod 000, NFS
+        # permission revoke) must NOT crash main() with a raw
+        # PermissionError traceback. Skip + warn so every subcommand
+        # can still run.
+        env_file = tmp_path / ".env"
+        env_file.write_text("FOO=bar\n", encoding="utf-8")
+        if os.name == "posix":
+            env_file.chmod(0o000)
+            try:
+                loaded = load_env_file_into_environ(env_file)
+            finally:
+                env_file.chmod(0o600)
+            assert loaded == 0
+            err = capsys.readouterr().err
+            assert "could not read" in err
+            assert ".env" in err
+
+    def test_non_utf8_file_warns_and_returns_zero(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Round-2 fold HIGH convergent: a `.env` containing non-UTF-8
+        # bytes (Windows-1252-encoded password, embedded null, binary
+        # paste) must NOT crash with UnicodeDecodeError traceback.
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"FOO=\xff\xfe\x00bar\n")
+
+        loaded = load_env_file_into_environ(env_file)
+
+        assert loaded == 0
+        err = capsys.readouterr().err
+        assert "could not read" in err
+        assert "UnicodeDecodeError" in err
+
     def test_malformed_lines_silently_skipped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
