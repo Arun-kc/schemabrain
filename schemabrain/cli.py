@@ -4940,14 +4940,17 @@ def _cmd_init(
 
     # Stage 0 — the day-one UX overhaul's demo-vs-own-DB fork prompt.
     # Runs ONLY when no URL was supplied via CLI flag or env AND
-    # stderr is a TTY (CI safety + the user explicitly didn't pre-
-    # commit to a source). Returns either the pinned demo URL, an
-    # own-DB URL the user typed, or None (user declined). On None,
-    # falls through to the existing `_resolve_url_source` path so
-    # the guided error + recovery hint still surface.
+    # stderr is a TTY AND --yes was NOT passed. Round-3 live-test
+    # fix: previously `--yes` did not skip stage 0 — a CI run with
+    # `--yes` plus an env var would still hit the fork prompt, and
+    # the demo-default `[2]` would silently override the env var's
+    # URL with the pinned demo URL (the worst kind of CI bug: works
+    # interactively, fails differently in automation). Treating
+    # `--yes` as "fully non-interactive — no prompts, ever" matches
+    # the rest of the wizard's `--yes` contract.
     source_url: str | None = None
     no_source_provided = positional_url is None and url_env is None
-    if no_source_provided and _stderr_is_interactive_tty():
+    if no_source_provided and _stderr_is_interactive_tty() and not assume_yes:
         from schemabrain.setup.setup_stage import prompt_for_init_setup
 
         try:
@@ -6739,11 +6742,13 @@ def _resolve_url_source(
 ) -> str | None:
     """Resolve a connection URL from either a positional arg or a named env var.
 
-    Returns the raw URL string on success, or `None` after rendering a
-    guided error to stderr. Emits a single-line deprecation warning to
-    stderr when `positional` is used AND contains an embedded password,
-    nudging the user toward `--url-env`. Env-var resolution is always
-    silent — env is the safe path we're nudging users toward.
+    Returns the URL string (with bare `postgresql://` / `postgres://`
+    silently rewritten to `postgresql+psycopg://` for free — see Round-3
+    fix below) on success, or `None` after rendering a guided error to
+    stderr. Emits a single-line deprecation warning to stderr when
+    `positional` is used AND contains an embedded password, nudging the
+    user toward `--url-env`. Env-var resolution is always silent — env
+    is the safe path we're nudging users toward.
 
     Rules:
       - exactly one of {positional, url_env} must be provided
@@ -6751,6 +6756,18 @@ def _resolve_url_source(
       - the warning does NOT echo the password back at the user (which
         would defeat the point — the warning would itself become a leak
         on a shared terminal or screen-recording)
+
+    Round-3 live-test fix: applies ``silent_rewrite_to_psycopg`` to
+    every returned URL, BEFORE the caller sees it. Previously the
+    rewrite lived only inside ``_resolve_url``, which all callers
+    invoke for validation — but 14 of the 17 callsites discard
+    `_resolve_url`'s return value (`if _resolve_url(url) is None:
+    return 2`) and continue using the raw URL from
+    ``_resolve_url_source``. Result: bare `postgresql://` URLs
+    silently slipped past validation and reached ``PostgresDataSource``
+    with the raw scheme, triggering ``ModuleNotFoundError: psycopg2``.
+    Applying the rewrite at the source-resolution boundary fixes the
+    bug for all 17 callsites without requiring each to be touched.
 
     Interactive escape hatch (``allow_interactive=True``): when neither
     `positional` nor `url_env` is provided AND stderr is a TTY, prompt
@@ -6767,6 +6784,28 @@ def _resolve_url_source(
     preamble ("to index your database", "to check for drift"). Only
     used when the prompt actually fires.
     """
+
+    def _apply_silent_rewrite(url: str) -> str:
+        """Apply the bare-scheme rewrite at every exit point.
+
+        Centralised so a future contributor adding a new return path
+        cannot accidentally skip the rewrite (the Round-3 bug). Returns
+        the URL unchanged when the scheme isn't eligible.
+
+        Tolerates malformed URLs (e.g. unclosed IPv6 brackets that
+        make ``urlparse`` raise ``ValueError``) by returning the
+        input as-is — the downstream ``_resolve_url`` will render the
+        real diagnostic. Without the try/except, the
+        `test_malformed_positional_url_falls_through_without_warning`
+        contract regressed.
+        """
+        try:
+            scheme = urlparse(url).scheme
+        except ValueError:
+            return url
+        rewritten = silent_rewrite_to_psycopg(scheme, url)
+        return rewritten if rewritten is not None else url
+
     if positional is not None and url_env is not None:
         _render_guided(
             GuidedError(
@@ -6791,7 +6830,7 @@ def _resolve_url_source(
 
             entered = prompt_for_url(_stderr_console(), purpose=interactive_purpose)
             if entered is not None:
-                return entered
+                return _apply_silent_rewrite(entered)
             # User pressed Enter without typing — they explicitly
             # declined to provide a URL. Fall through to the guided
             # error so they see the recovery hint, exit 2, and can
@@ -6844,7 +6883,7 @@ def _resolve_url_source(
         if value == "":
             render_missing_secret_error(env_var=url_env, state="empty", console=_stderr_console())
             return None
-        return value
+        return _apply_silent_rewrite(value)
     # Positional path. We accept it for backwards compatibility, but if
     # it embeds a non-empty password we warn — that's the exact leak the
     # audit flagged HIGH (argv visible to ps, shell history, journald).
@@ -6868,7 +6907,7 @@ def _resolve_url_source(
             "--url-env VARNAME to read the URL from an environment variable.",
             file=sys.stderr,
         )
-    return positional
+    return _apply_silent_rewrite(positional)
 
 
 def _resolve_anthropic_key_source(

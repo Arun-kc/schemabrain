@@ -2690,6 +2690,69 @@ class TestResolveUrlSource:
         assert _resolve_url_source(positional=url, url_env=None) == url
         assert capsys.readouterr().err == ""
 
+    def test_silent_rewrite_applied_to_env_value(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Round-3 live-test fix (bug A): the silent +psycopg rewrite
+        # must fire at the source-resolution boundary, BEFORE the
+        # caller sees the URL. Without this, 14 callsites that
+        # discard `_resolve_url`'s return value (validating via
+        # `if _resolve_url(url) is None: return 2` then continuing
+        # to use the raw URL) silently passed bare postgresql:// to
+        # PostgresDataSource, which crashed with ModuleNotFoundError:
+        # psycopg2. Pinning the rewrite at this boundary closes that
+        # gap for ALL 17 callsites in one place.
+        from schemabrain.cli import _resolve_url_source
+
+        monkeypatch.setenv("BARE_URL", "postgresql://user:pw@host:5432/db")
+        result = _resolve_url_source(positional=None, url_env="BARE_URL")
+        assert result == "postgresql+psycopg://user:pw@host:5432/db"
+        # Silent really means silent — no warning, no error.
+        assert capsys.readouterr().err == ""
+
+    def test_silent_rewrite_applied_to_positional(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Same Round-3 fix — positional URL path also gets the
+        # silent rewrite applied at exit.
+        from schemabrain.cli import _resolve_url_source
+
+        result = _resolve_url_source(positional="postgres://host/db", url_env=None)
+        assert result == "postgresql+psycopg://host/db"
+        # No warning (no credentials → no leak) and no rewrite chatter.
+        assert capsys.readouterr().err == ""
+
+    def test_silent_rewrite_applied_to_interactive_prompt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # And the interactive path. A user who pastes bare
+        # postgresql:// at the prompt also gets the silent rewrite.
+        from schemabrain.cli import _resolve_url_source
+
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr(
+            "schemabrain._ui.prompt_for_url",
+            lambda console, *, purpose: "postgresql://app:pass@db/x",
+        )
+        result = _resolve_url_source(
+            positional=None,
+            url_env=None,
+            allow_interactive=True,
+        )
+        assert result == "postgresql+psycopg://app:pass@db/x"
+
+    def test_already_canonical_url_passes_through_unchanged(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # When the URL is already canonical, no double-rewrite — the
+        # helper returns None for already-canonical schemes, and the
+        # _apply_silent_rewrite wrapper returns the original.
+        from schemabrain.cli import _resolve_url_source
+
+        result = _resolve_url_source(positional="postgresql+psycopg://host/db", url_env=None)
+        assert result == "postgresql+psycopg://host/db"
+        assert capsys.readouterr().err == ""
+
     def test_env_var_with_credentials_is_silent(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -2781,10 +2844,13 @@ class TestResolveUrlSourceInteractive:
             allow_interactive=True,
             interactive_purpose="to index your database",
         )
-        # Returns the user-supplied URL verbatim — `_resolve_url`
-        # (called next by the caller) will do the silent `+psycopg`
-        # rewrite, normalization, etc.
-        assert result == "postgresql://user:pw@host/db"
+        # Round-3 fix: the rewrite is now applied AT the source-
+        # resolution boundary, not later — so a bare `postgresql://`
+        # the user pasted at the prompt comes back as
+        # `postgresql+psycopg://`. This closes the bug where the 14
+        # callsites that discard `_resolve_url`'s canonical form
+        # were silently passing the raw URL to PostgresDataSource.
+        assert result == "postgresql+psycopg://user:pw@host/db"
         # No guided error when prompt succeeded.
         assert "no connection URL provided" not in capsys.readouterr().err
 
