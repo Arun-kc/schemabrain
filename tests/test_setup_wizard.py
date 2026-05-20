@@ -166,6 +166,44 @@ class TestStageOutcome:
         with pytest.raises(ValueError, match="duration_s must be >= 0"):
             StageOutcome(stage=1, name="x", status="done", message="m", duration_s=-0.1)
 
+    def test_user_cancelled_defaults_to_false(self) -> None:
+        # Round-1 fold H3: the field is opt-in; non-F3 stage
+        # handlers never need to set it.
+        outcome = StageOutcome(stage=1, name="x", status="done", message="m")
+        assert outcome.user_cancelled is False
+
+    def test_user_cancelled_accepted_on_failed_outcome(self) -> None:
+        # The only sanctioned use: stage 6 (`_stage_wire_host`) when
+        # the operator declines the F3 overwrite prompt.
+        outcome = StageOutcome(
+            stage=6,
+            name="wire_host",
+            status="failed",
+            message="not overwritten",
+            next_step="re-run with --yes",
+            user_cancelled=True,
+        )
+        assert outcome.user_cancelled is True
+
+    def test_user_cancelled_rejected_on_done_outcome(self) -> None:
+        # Setting `user_cancelled=True` on a non-failed outcome is a
+        # contract violation — `_cmd_init`'s exit-code mapping
+        # checks both `aborted` AND `user_cancelled`, so a done
+        # outcome with the flag set would silently never reach
+        # exit-0 mapping. Fail loudly at construction.
+        with pytest.raises(ValueError, match="user_cancelled is only valid"):
+            StageOutcome(stage=1, name="x", status="done", message="m", user_cancelled=True)
+
+    def test_user_cancelled_rejected_on_skipped_outcome(self) -> None:
+        with pytest.raises(ValueError, match="user_cancelled is only valid"):
+            StageOutcome(
+                stage=1,
+                name="x",
+                status="skipped",
+                message="m",
+                user_cancelled=True,
+            )
+
 
 class TestWizardConfigInvariants:
     def _build(self, **overrides: object) -> WizardConfig:
@@ -5115,8 +5153,9 @@ class TestStageWireHostF3InlineOverwrite:
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Interactive + differs + user says no → failed StageOutcome
-        # with the "cancelled by user" sentinel prefix that _cmd_init
-        # maps to exit code 0 (graceful cancel, not error).
+        # with `user_cancelled=True` so `_cmd_init` maps to exit 0
+        # (graceful cancel, not error). Round-1 fold H3 replaced
+        # the message-prefix-coupling shape with this typed field.
         from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
 
         comparison = ClaudeDesktopEntryComparison(
@@ -5143,7 +5182,10 @@ class TestStageWireHostF3InlineOverwrite:
         outcome = wizard._stage_wire_host(WizardContext(config=cfg))
 
         assert outcome.status == "failed"
-        assert outcome.message.startswith("cancelled by user")
+        # H3: the structured field is the contract; the message is
+        # now free to evolve without breaking the exit-code mapping.
+        assert outcome.user_cancelled is True
+        assert "not overwritten" in outcome.message
         # init() was NOT called — decline short-circuits the stage.
         assert init_calls == []
 
@@ -5306,3 +5348,15 @@ class TestLlmFailureNextStep:
         out = wizard._llm_failure_next_step(None, apply_command="schemabrain metrics apply")
         assert "max_tokens" in out
         assert "schemabrain metrics apply" in out
+
+    def test_unknown_kind_raises_value_error(self) -> None:
+        # Round-1 fold L1: a typo (or a new LlmFailureKind value
+        # forgotten in this dispatch) must fail loudly rather than
+        # silently returning the None-fallback copy. Matches the
+        # posture of `errors_render._llm_failure_titles` and
+        # `errors_render._llm_failure_retry_hint`.
+        with pytest.raises(ValueError, match="unknown kind"):
+            wizard._llm_failure_next_step(
+                "overloaad",  # type: ignore[arg-type] — testing the bad case
+                apply_command="schemabrain entities apply",
+            )

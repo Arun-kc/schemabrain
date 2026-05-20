@@ -26,6 +26,7 @@ import pytest
 from rich.console import Console
 
 from schemabrain.errors_render import (
+    cause_from_llm_error,
     classify_llm_failure,
     render_bad_argument_error,
     render_llm_failure,
@@ -406,6 +407,46 @@ class TestClassifyLlmFailure:
         exc = anthropic.APIStatusError.__new__(anthropic.APIStatusError)
         exc.status_code = 529  # type: ignore[attr-defined]
         assert classify_llm_failure(exc) == "overloaded"
+
+
+class TestCauseFromLlmError:
+    """Round-1 fold M3: `cause_from_llm_error` extracts a one-line
+    cause string from an Anthropic SDK exception. Lifted from
+    `cli._try_render_llm_failure` so the `getattr(exc, "message", ...)`
+    untyped access lives next to `classify_llm_failure` — single
+    owner, single fallback chain.
+    """
+
+    def test_prefers_anthropic_message_field(self) -> None:
+        # When the SDK exception carries a `.message` attribute,
+        # use it verbatim (it's the server-side detail).
+        import anthropic
+
+        exc = anthropic.APIStatusError.__new__(anthropic.APIStatusError)
+        exc.message = "Overloaded by model traffic"
+        assert cause_from_llm_error(exc) == "Overloaded by model traffic"
+
+    def test_falls_back_to_str_when_message_absent(self) -> None:
+        # Custom subclasses / non-SDK Python exceptions may not have
+        # a `.message` attribute. `str(exc)` is the next-best signal.
+        exc = RuntimeError("connection reset")
+        assert cause_from_llm_error(exc) == "connection reset"
+
+    def test_falls_back_to_type_name_when_str_is_empty(self) -> None:
+        # Bare `Exception()` has empty str. The type name is the
+        # last fallback so the operator still sees a signal.
+        exc = RuntimeError()
+        assert cause_from_llm_error(exc) == "RuntimeError"
+
+    def test_skips_empty_message_attribute(self) -> None:
+        # `getattr(exc, "message", None) or ...` — falsy message
+        # falls through to the next step in the chain.
+        import anthropic
+
+        exc = anthropic.APIStatusError.__new__(anthropic.APIStatusError)
+        exc.message = ""
+        exc.args = ("server temporarily unavailable",)
+        assert cause_from_llm_error(exc) == "server temporarily unavailable"
 
 
 # ---------------------------------------------------------------------------

@@ -62,7 +62,7 @@ from sqlalchemy.exc import OperationalError
 
 from schemabrain import _ui
 from schemabrain._env import resolve_positive_float_env
-from schemabrain._ui import make_console, prompt_yes_no, short_path
+from schemabrain._ui import prompt_yes_no, short_path
 from schemabrain.errors import GuidedError
 from schemabrain.errors_render import LlmFailureKind, classify_llm_failure
 from schemabrain.setup.hosts import HostName, is_postgres_url
@@ -80,7 +80,14 @@ if TYPE_CHECKING:
     from rich.console import Console
 
     from schemabrain.indexer import IndexResult
-    from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
+
+    # NOTE: `ClaudeDesktopEntryComparison` is imported at runtime
+    # at module top (used as a return type from
+    # `peek_claude_desktop_overwrite` and as an annotation on the
+    # `_render_overwrite_diff_summary` signature). No duplicate
+    # `TYPE_CHECKING` import here — Round-1 fold M1 removed it
+    # because the duplicate misleads readers into thinking the
+    # runtime import is missing or conditional.
 
 # ----- public types ---------------------------------------------------------
 
@@ -117,6 +124,19 @@ class StageOutcome:
     message: str
     next_step: str | None = None
     duration_s: float = 0.0
+    user_cancelled: bool = False
+    """True iff a `failed` outcome reflects a deliberate user choice.
+
+    Set by stage handlers that catch an interactive-prompt decline
+    (today: only `_stage_wire_host` when the F3 overwrite prompt
+    returns False). Consumed by `_cmd_init` to map the abort back
+    to exit code 0 — a user-cancelled overwrite is not a failure,
+    it's an informed choice.
+
+    Replaces the F3 message-prefix-coupling shape (`message.startswith(
+    "cancelled by user")`) which silently broke whenever the
+    copy was edited (Round-1 fold H3, silent-failure-hunter HIGH).
+    """
 
     def __post_init__(self) -> None:
         if self.stage < 1:
@@ -142,6 +162,11 @@ class StageOutcome:
                 "StageOutcome with status='failed' must include next_step "
                 "pointing the user at a recovery action"
             )
+        # `user_cancelled=True` is only meaningful on a `failed`
+        # outcome. Setting it on done/skipped is a contract violation
+        # the orchestrator's exit-code mapping would silently ignore.
+        if self.user_cancelled and self.status != "failed":
+            raise ValueError("StageOutcome.user_cancelled is only valid with status='failed'")
 
 
 @dataclass(frozen=True)
@@ -1245,6 +1270,20 @@ def _llm_failure_next_step(
     classifier returns ``None`` for (RuntimeError, not an SDK-typed
     error).
     """
+    # Round-1 fold L1: handle the documented `kind is None` fallback
+    # FIRST, then dispatch on the four known kinds. Pre-fold, an
+    # unknown kind (typo or a new `LlmFailureKind` value forgotten
+    # here) silently fell into the None branch and returned the
+    # max_tokens-style copy — the only dispatch across the three
+    # parallel per-kind functions that didn't loudly fail on a
+    # typo (`_llm_failure_titles` and `_llm_failure_retry_hint` in
+    # `errors_render.py` raise on unknown kinds; this one didn't).
+    if kind is None:
+        return (
+            "re-run — transient LLM/network errors usually clear. "
+            "If the message mentions `max_tokens`, the model went off-prompt; "
+            f"re-run or curate by hand via `{apply_command}`."
+        )
     if kind == "overloaded":
         return (
             "Anthropic is overloaded — wait 30-60s and re-run. "
@@ -1260,10 +1299,12 @@ def _llm_failure_next_step(
         return (
             "Anthropic returned an error — re-run later; if it persists, check the message above."
         )
-    return (
-        "re-run — transient LLM/network errors usually clear. "
-        "If the message mentions `max_tokens`, the model went off-prompt; "
-        f"re-run or curate by hand via `{apply_command}`."
+    raise ValueError(
+        f"unknown kind {kind!r}; expected one of "
+        "'overloaded' | 'rate_limited' | 'connection' | 'api_error' | None. "
+        "Add the new kind to `LlmFailureKind` (in errors_render.py) and update "
+        "this dispatch + `_llm_failure_titles` + `_llm_failure_retry_hint` "
+        "together so all three stay aligned."
     )
 
 
@@ -2399,6 +2440,14 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
     """
     cfg = ctx.config
     effective_assume_yes = cfg.assume_yes
+    # Round-1 fold H1: capture the pre-write comparison in a local
+    # so `_wire_host_message` can render the `(replaced /old → /new)`
+    # trailer. Pre-fold, `_get_overwrite_comparison` re-peeked AFTER
+    # `init()` had already written the new entry — the second peek
+    # always saw `state="unchanged"`, making the replacement message
+    # dead code in production (caught convergently by python-reviewer
+    # AND silent-failure-hunter).
+    overwrite_comparison: ClaudeDesktopEntryComparison | None = None
 
     if cfg.host == "claude-desktop" and not cfg.assume_yes:
         try:
@@ -2410,6 +2459,7 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
         except InitRefusal as refusal:
             return _failed_from_refusal(stage=6, name="wire_host", error=refusal.error)
         if comparison is not None:
+            overwrite_comparison = comparison
             if comparison.state == "differs_store_path_only":
                 # Common case: operator moved their store. Auto-accept
                 # so they don't see a prompt for what is, in practice,
@@ -2428,7 +2478,13 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
                 # `_ui.stderr_is_interactive_tty` once and reach this
                 # call site without a separate `wizard.…` patch.
                 if _ui.stderr_is_interactive_tty():
-                    console = make_console(stderr=True)
+                    # Round-1 fold M2: access `make_console` through
+                    # the module to match the `_ui.stderr_is_interactive_tty()`
+                    # call above — keeps both call sites
+                    # monkeypatchable via one symbol (`_ui.<name>`)
+                    # and avoids the latent binding asymmetry
+                    # python-reviewer flagged.
+                    console = _ui.make_console(stderr=True)
                     _render_overwrite_diff_summary(console, comparison)
                     accepted = prompt_yes_no(
                         console,
@@ -2436,21 +2492,20 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
                         default=False,
                     )
                     if not accepted:
-                        # `_cmd_init` checks for this exact message
-                        # prefix to map the abort to exit code 0 — a
-                        # user-cancelled overwrite is not a failure,
-                        # it's an informed choice. Pre-F3 the CLI
-                        # printed "cancelled" and returned 0 from the
-                        # retry-loop branch; F3 preserves that
-                        # contract via the message-prefix check.
+                        # Round-1 fold H3: signal user-cancellation
+                        # via the structured `user_cancelled=True`
+                        # field instead of a message-prefix check
+                        # in `_cmd_init`. Pre-fold, a copy edit
+                        # to this string would have silently broken
+                        # the exit-0 contract; the typed field
+                        # eliminates the cross-module string coupling.
                         return StageOutcome(
                             stage=6,
                             name="wire_host",
                             status="failed",
-                            message=(
-                                "cancelled by user — existing schemabrain entry not overwritten"
-                            ),
+                            message="existing schemabrain entry not overwritten",
                             next_step="re-run with --yes to overwrite, or hand-edit the config",
+                            user_cancelled=True,
                         )
                     effective_assume_yes = True
 
@@ -2470,32 +2525,8 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
         stage=6,
         name="wire_host",
         status="done",
-        message=_wire_host_message(result, comparison=_get_overwrite_comparison(cfg)),
+        message=_wire_host_message(result, comparison=overwrite_comparison),
     )
-
-
-def _get_overwrite_comparison(cfg: WizardConfig) -> ClaudeDesktopEntryComparison | None:
-    """Cheap re-peek so `_wire_host_message` can surface store-path replacement.
-
-    Called only on the success path after `init()` returned. The
-    work duplicates the pre-flight comparison in `_stage_wire_host`,
-    but the simpler interface keeps the stage handler clean —
-    passing the comparison through a local variable would require
-    threading it across the try/except boundaries that produce both
-    the success and failure paths. The duplicate work is one extra
-    file read + one snippet build per stage 6 invocation; rounding
-    error against the wall-clock cost of stage 6 (host install).
-    """
-    if cfg.host != "claude-desktop":
-        return None
-    try:
-        return peek_claude_desktop_overwrite(
-            source_url=cfg.source_url,
-            store_path=cfg.store_path,
-            env_var_name=cfg.env_var_name,
-        )
-    except InitRefusal:  # pragma: no cover — already surfaced by main path
-        return None
 
 
 def _render_overwrite_diff_summary(

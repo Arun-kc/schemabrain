@@ -119,6 +119,7 @@ from schemabrain.errors import (
     url_wrong_driver,
 )
 from schemabrain.errors_render import (
+    cause_from_llm_error,
     classify_llm_failure,
     render_llm_failure,
 )
@@ -5094,23 +5095,26 @@ def _cmd_init(
     # needs one wizard run.
     _render_wizard_header(host_display=host_display, console=console)
     result = run_default_wizard(cfg, stage_context=_wizard_stage_context)
+
+    # Round-1 fold C1: user-cancelled overwrite is an informed
+    # choice, not a failure — handle it BEFORE `_render_wizard_after`
+    # so the operator does NOT see a red "Stopped at stage 6 of 7"
+    # abort panel for a deliberate cancellation. Pre-fold, the
+    # panel rendered first, then the "cancelled" line appeared
+    # below it, then exit 0 — UX-misleading (silent-failure-hunter
+    # CRITICAL).
+    #
+    # Round-1 fold H3: use the structured `user_cancelled` field
+    # on the StageOutcome instead of a message-prefix check —
+    # eliminates the cross-module string coupling that would have
+    # silently broken if either copy were edited.
+    aborted_at = result.aborted_at
+    if result.aborted and aborted_at is not None and aborted_at.user_cancelled:
+        console.print("[yellow]cancelled[/] no changes made.")
+        return 0
+
     _render_wizard_after(result, host_display=host_display, console=console)
     if result.aborted:
-        # F3: user-cancelled overwrite is an informed choice, not a
-        # failure — map back to exit 0 to preserve the pre-F3 CLI
-        # contract (which returned 0 from the retry-loop's
-        # "cancelled no changes made" branch). The wizard stage
-        # signals the cancellation via a sentinel message prefix
-        # so the orchestrator doesn't need a structured field on
-        # `StageOutcome` for one flag.
-        aborted_at = result.aborted_at
-        if (
-            aborted_at is not None
-            and aborted_at.name == "wire_host"
-            and aborted_at.message.startswith("cancelled by user")
-        ):
-            console.print("[yellow]cancelled[/] no changes made.")
-            return 0
         return 2
     if (
         result.host_install_result is not None
@@ -6883,16 +6887,16 @@ def _try_render_llm_failure(
     kind = classify_llm_failure(exc)
     if kind is None:
         return False
-    # The SDK's `error.message` field carries the server-side detail;
-    # `str(exc)` falls back when the SDK didn't set it (network
-    # errors, custom subclasses). Either way, one short line under
-    # the ✗ glyph — long messages get visually truncated by Rich.
-    cause = getattr(exc, "message", None) or str(exc) or type(exc).__name__
+    # Round-1 fold M3: the `getattr(exc, "message", ...)` extraction
+    # was lifted into `cause_from_llm_error` in `errors_render.py`
+    # so the untyped access lives next to `classify_llm_failure`
+    # — single owner, single fallback chain. Long messages get
+    # visually truncated by Rich on the ✗-glyph line.
     render_llm_failure(
         kind=kind,
         retry_command=retry_command,
         fallback_command=fallback_command,
-        cause=cause,
+        cause=cause_from_llm_error(exc),
         console=_stderr_console(),
     )
     return True

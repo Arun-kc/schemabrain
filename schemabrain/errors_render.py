@@ -36,6 +36,7 @@ shape is reachable from any subcommand without importing through
 
 from __future__ import annotations
 
+import types
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
@@ -515,8 +516,35 @@ def classify_llm_failure(exc: BaseException) -> LlmFailureKind | None:
     return None
 
 
-def _is_overloaded_error(exc: BaseException, *, anthropic_module: object) -> bool:
+def cause_from_llm_error(exc: BaseException) -> str:
+    """Extract a one-line cause string from an Anthropic SDK exception.
+
+    Round-1 fold M3: lifted from ``cli._try_render_llm_failure`` so
+    the ``getattr(exc, "message", ...)`` access lives next to the
+    ``classify_llm_failure`` boundary that establishes the
+    ``exc is Anthropic SDK type`` invariant — single owner, single
+    untyped-access site, one fallback chain.
+
+    Callers should invoke this only AFTER ``classify_llm_failure``
+    has returned non-None, so ``exc`` is known to be an
+    ``anthropic.APIError`` subclass. The ``getattr`` fallback
+    chain (``error.message`` → ``str(exc)`` → ``type(exc).__name__``)
+    handles every SDK subclass that ships today plus any new ones
+    that may omit the ``message`` field.
+    """
+    return getattr(exc, "message", None) or str(exc) or type(exc).__name__
+
+
+def _is_overloaded_error(exc: BaseException, *, anthropic_module: types.ModuleType) -> bool:
     """Return True when ``exc`` is the SDK's 529-overloaded error.
+
+    Round-1 fold H2: ``anthropic_module`` is typed as
+    ``types.ModuleType`` rather than ``object``. Same anti-pattern
+    that python-reviewer flagged convergently in PRs #4 and #7
+    (``_compose_footer_line(summary: object)``,
+    ``_compose_entity_brand_line(entity: object)``) — the
+    ``getattr`` for SDK-version tolerance is correct, but the type
+    annotation should reflect what the parameter actually is.
 
     Wrapped to tolerate SDK versions that ship the class under a
     different attribute name. ``InternalServerError`` is the 5xx
@@ -564,6 +592,7 @@ def _visible_width(text: str) -> int:
 
 __all__ = [
     "LlmFailureKind",
+    "cause_from_llm_error",
     "classify_llm_failure",
     "render_bad_argument_error",
     "render_llm_failure",
