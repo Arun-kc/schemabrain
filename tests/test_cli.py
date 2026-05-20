@@ -2704,6 +2704,214 @@ class TestResolveUrlSource:
         assert capsys.readouterr().err == ""
 
 
+class TestResolveUrlSourceInteractive:
+    """Tests for the new ``allow_interactive`` escape hatch in
+    ``_resolve_url_source``. The day-one UX overhaul wires this
+    through `init`, `index`, `check`, and `*/suggest` so first-time
+    users get a prompt instead of a guided error when env vars are
+    missing.
+
+    Critical contract: ``allow_interactive=True`` must STILL render
+    the guided error when stderr is non-TTY (CI safety) AND when the
+    user presses Enter without typing (explicit decline → respect it).
+    Default ``allow_interactive=False`` must preserve existing
+    behavior — no callsite that didn't opt in should see a prompt.
+    """
+
+    def test_default_allow_interactive_false_renders_guided_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from schemabrain.cli import _resolve_url_source
+
+        # No env, no positional, default allow_interactive=False:
+        # behaves exactly like the pre-overhaul helper — guided
+        # error to stderr, returns None, never blocks on stdin.
+        prompted = {"called": False}
+
+        def fake_prompt(*args: object, **kwargs: object) -> str | None:
+            prompted["called"] = True
+            return "should-not-be-returned"
+
+        monkeypatch.setattr("schemabrain._ui.prompt_for_url", fake_prompt)
+        result = _resolve_url_source(positional=None, url_env=None)
+        assert result is None
+        assert prompted["called"] is False
+        err = capsys.readouterr().err
+        assert "no connection URL provided" in err
+
+    def test_allow_interactive_with_non_tty_renders_guided_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Critical CI safety: even when callers opt in, a non-TTY
+        # path (pytest, docker run -i, GitHub Actions) MUST NOT
+        # block on stdin. The TTY gate is the universal predicate.
+        from schemabrain.cli import _resolve_url_source
+
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: False)
+        prompted = {"called": False}
+        monkeypatch.setattr(
+            "schemabrain._ui.prompt_for_url",
+            lambda *a, **kw: prompted.__setitem__("called", True) or "x",
+        )
+        result = _resolve_url_source(positional=None, url_env=None, allow_interactive=True)
+        assert result is None
+        assert prompted["called"] is False
+        # Guided error must still fire.
+        assert "no connection URL provided" in capsys.readouterr().err
+
+    def test_allow_interactive_tty_returns_prompt_value(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from schemabrain.cli import _resolve_url_source
+
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr(
+            "schemabrain._ui.prompt_for_url",
+            lambda console, *, purpose: "postgresql://user:pw@host/db",
+        )
+        result = _resolve_url_source(
+            positional=None,
+            url_env=None,
+            allow_interactive=True,
+            interactive_purpose="to index your database",
+        )
+        # Returns the user-supplied URL verbatim — `_resolve_url`
+        # (called next by the caller) will do the silent `+psycopg`
+        # rewrite, normalization, etc.
+        assert result == "postgresql://user:pw@host/db"
+        # No guided error when prompt succeeded.
+        assert "no connection URL provided" not in capsys.readouterr().err
+
+    def test_allow_interactive_tty_empty_prompt_falls_through(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # User pressed Enter without typing — explicit decline.
+        # Helper must fall through to the guided error so the user
+        # sees the same recovery hint (exit 2 + --url-env recipe) as
+        # the non-interactive path. Doesn't silently return None.
+        from schemabrain.cli import _resolve_url_source
+
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr("schemabrain._ui.prompt_for_url", lambda *a, **kw: None)
+        result = _resolve_url_source(positional=None, url_env=None, allow_interactive=True)
+        assert result is None
+        assert "no connection URL provided" in capsys.readouterr().err
+
+
+class TestResolveAnthropicKeySource:
+    """Tests for the new ``_resolve_anthropic_key_source`` helper —
+    centralized ANTHROPIC_API_KEY resolution with optional interactive
+    prompt-on-miss. Used by `index --enrich`, `entities suggest`,
+    `metrics suggest`, and the wizard's stages 3+4.
+
+    Unlike ``_resolve_url_source`` this helper does NOT render a
+    guided error on miss — each callsite renders its own command-
+    specific GuidedError with different `fix` wording. The helper
+    returns None and lets the caller decide.
+    """
+
+    def test_returns_stripped_env_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain.cli import _resolve_anthropic_key_source
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "  sk-ant-xyz  ")
+        assert _resolve_anthropic_key_source() == "sk-ant-xyz"
+
+    def test_returns_none_when_env_unset_and_non_interactive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.cli import _resolve_anthropic_key_source
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        assert _resolve_anthropic_key_source() is None
+        # Critical: returns None SILENTLY — caller renders its own
+        # GuidedError, helper doesn't print anything itself.
+
+    def test_returns_none_when_env_empty_or_whitespace(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.cli import _resolve_anthropic_key_source
+
+        # Empty string = treated as missing (matches the existing
+        # env-resolution behavior in cli.py:1817 et al — a stale
+        # `export ANTHROPIC_API_KEY=""` in shell rc should not get
+        # mistaken for a present key).
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        assert _resolve_anthropic_key_source() is None
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "   \t  ")
+        assert _resolve_anthropic_key_source() is None
+
+    def test_default_allow_interactive_false_skips_prompt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.cli import _resolve_anthropic_key_source
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        prompted = {"called": False}
+        monkeypatch.setattr(
+            "schemabrain._ui.prompt_for_anthropic_key",
+            lambda *a, **kw: prompted.__setitem__("called", True) or "x",
+        )
+        assert _resolve_anthropic_key_source() is None
+        assert prompted["called"] is False
+
+    def test_allow_interactive_with_non_tty_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.cli import _resolve_anthropic_key_source
+
+        # Same CI-safety contract as _resolve_url_source.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: False)
+        prompted = {"called": False}
+        monkeypatch.setattr(
+            "schemabrain._ui.prompt_for_anthropic_key",
+            lambda *a, **kw: prompted.__setitem__("called", True) or "x",
+        )
+        assert _resolve_anthropic_key_source(allow_interactive=True) is None
+        assert prompted["called"] is False
+
+    def test_allow_interactive_tty_returns_prompt_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain.cli import _resolve_anthropic_key_source
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr(
+            "schemabrain._ui.prompt_for_anthropic_key",
+            lambda console, **kw: "sk-ant-from-prompt",
+        )
+        assert (
+            _resolve_anthropic_key_source(
+                allow_interactive=True,
+                interactive_purpose="suggest entities",
+                interactive_cost_estimate_usd=0.01,
+                interactive_cap_usd=0.50,
+            )
+            == "sk-ant-from-prompt"
+        )
+
+    def test_allow_interactive_tty_empty_prompt_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # User pressed Enter to skip — helper returns None, caller
+        # routes to its own degrade-vs-abort policy.
+        from schemabrain.cli import _resolve_anthropic_key_source
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr("schemabrain._ui.prompt_for_anthropic_key", lambda *a, **kw: None)
+        assert _resolve_anthropic_key_source(allow_interactive=True) is None
+
+
 class TestIndexUrlEnv:
     """`schemabrain index --url-env VARNAME` wiring."""
 

@@ -6599,6 +6599,8 @@ def _resolve_url_source(
     *,
     positional: str | None,
     url_env: str | None,
+    allow_interactive: bool = False,
+    interactive_purpose: str = "to connect to your database",
 ) -> str | None:
     """Resolve a connection URL from either a positional arg or a named env var.
 
@@ -6614,6 +6616,21 @@ def _resolve_url_source(
       - the warning does NOT echo the password back at the user (which
         would defeat the point — the warning would itself become a leak
         on a shared terminal or screen-recording)
+
+    Interactive escape hatch (``allow_interactive=True``): when neither
+    `positional` nor `url_env` is provided AND stderr is a TTY, prompt
+    the user for a URL via ``prompt_for_url`` instead of rendering the
+    "no URL provided" guided error. The prompt uses ``password=True`` so
+    URLs with embedded credentials don't echo to scrollback. If the user
+    presses Enter without typing, falls through to the guided error
+    (preserves the existing exit-2 behavior for non-interactive paths
+    AND for interactive users who decline to provide a URL). Default
+    `False` preserves the strict env-var-or-die behavior for every
+    callsite that hasn't opted in.
+
+    ``interactive_purpose`` is the verb-phrase shown in the prompt's
+    preamble ("to index your database", "to check for drift"). Only
+    used when the prompt actually fires.
     """
     if positional is not None and url_env is not None:
         _render_guided(
@@ -6627,6 +6644,23 @@ def _resolve_url_source(
         )
         return None
     if positional is None and url_env is None:
+        # Interactive escape hatch: when the caller opted in AND the
+        # user is sitting at a TTY, ask for the URL directly instead
+        # of dying with a "no URL provided" guided error. The day-one
+        # UX overhaul wires this through `init`, `index`, `check`, and
+        # the three `*/suggest` commands so a first-time user no
+        # longer has to know about `--url-env` or the +psycopg
+        # driver suffix.
+        if allow_interactive and _stderr_is_interactive_tty():
+            from schemabrain._ui import prompt_for_url
+
+            entered = prompt_for_url(_stderr_console(), purpose=interactive_purpose)
+            if entered is not None:
+                return entered
+            # User pressed Enter without typing — they explicitly
+            # declined to provide a URL. Fall through to the guided
+            # error so they see the recovery hint, exit 2, and can
+            # re-run with the URL on the command line if they prefer.
         # If the user already has a URL in $DATABASE_URL (the most common
         # convention), surface the exact recipe they probably wanted —
         # `--url-env DATABASE_URL`. Without this hint, a first-time user
@@ -6700,6 +6734,56 @@ def _resolve_url_source(
             file=sys.stderr,
         )
     return positional
+
+
+def _resolve_anthropic_key_source(
+    *,
+    allow_interactive: bool = False,
+    interactive_purpose: str = "use Claude",
+    interactive_cost_estimate_usd: float = 0.04,
+    interactive_cap_usd: float = 0.50,
+    interactive_skip_hint: str = "press Enter to skip",
+) -> str | None:
+    """Resolve ``ANTHROPIC_API_KEY`` from env, optionally prompting on miss.
+
+    Returns the stripped key string when env var is set and non-empty,
+    or ``None`` when missing — the caller routes ``None`` based on its
+    own degrade-vs-abort policy (entities suggest aborts; the wizard's
+    LLM stages skip with a hint).
+
+    When ``allow_interactive=True`` AND stderr is a TTY AND the env
+    var is missing or empty, prompts the user via
+    ``prompt_for_anthropic_key`` instead of returning ``None`` early.
+    The prompt renders a cost / cap / skip-hint disclosure before
+    asking for the key so the user understands the bounds before
+    pasting. If the prompt returns empty (user pressed Enter to skip),
+    falls through and returns ``None``.
+
+    Default ``allow_interactive=False`` preserves the existing
+    env-var-or-render-guided-error behavior; callers that opt in
+    accept that an interactive run may block on stdin.
+
+    Unlike ``_resolve_url_source`` this helper does NOT render a
+    GuidedError on miss — the four existing callsites (index --enrich,
+    entities suggest, metrics suggest, wizard stages 3+4) each render
+    command-specific guided errors with different `fix` wording. The
+    helper returns ``None`` and lets the caller render whichever
+    GuidedError it already had.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key is not None and api_key.strip():
+        return api_key.strip()
+    if allow_interactive and _stderr_is_interactive_tty():
+        from schemabrain._ui import prompt_for_anthropic_key
+
+        return prompt_for_anthropic_key(
+            _stderr_console(),
+            purpose=interactive_purpose,
+            cost_estimate_usd=interactive_cost_estimate_usd,
+            cap_usd=interactive_cap_usd,
+            skip_hint=interactive_skip_hint,
+        )
+    return None
 
 
 def _resolve_url(url: str) -> str | None:
