@@ -61,8 +61,8 @@ class DbtOwnedEntityError(ValueError):
     """Raised when a manual or LLM-suggested write targets a dbt-owned entity.
 
     An entity with `origin = "dbt_import"` is owned upstream by the
-    user's dbt project. The wk-12 dbt-import write-path is the only
-    code path allowed to overwrite it; manual edits and LLM-suggested
+    user's dbt project. The dbt-import write-path is the only code
+    path allowed to overwrite it; manual edits and LLM-suggested
     edits are refused at the store boundary so a re-import never has
     to litigate "whose version of the entity wins."
 

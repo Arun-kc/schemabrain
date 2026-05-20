@@ -411,7 +411,7 @@ class EntityDetail(BaseModel):
     token_estimate: int
 
 
-# ----- canonical-join shapes (wk-13) ----------------------------------------
+# ----- canonical-join shapes ------------------------------------------------
 
 
 class NoCanonicalJoinError(LookupError):

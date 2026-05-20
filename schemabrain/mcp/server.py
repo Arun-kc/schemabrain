@@ -89,10 +89,9 @@ from schemabrain.observability import (
 # path gets the same dedup-once-for-OSError + log-every-time-for-
 # programming-bug split — without forcing those helpers into the
 # public observability surface area. If their signatures change, the
-# rejection path follows. Reviewed in the 2026-05-19 fold pass as the
-# convergent HIGH (python-reviewer + silent-failure-hunter both
-# flagged the original hand-rolled try/except for losing the OSError
-# distinction).
+# rejection path follows. (An earlier hand-rolled try/except here
+# flattened the OSError-vs-programming-bug distinction; delegating
+# preserves it.)
 from schemabrain.observability.instrument import (
     _safe_audit_write,
     _safe_emit,

@@ -27,7 +27,7 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent
 # searches across `eval/`, `imports/`, and `joins/` so the user-facing
 # `fixture-path` CLI doesn't leak the internal directory layout.
 _IMPORTS_FIXTURES_DIR: Path = _PACKAGE_ROOT.parent / "imports" / "fixtures"
-# Bundled canonical-join example pack (wk-13). Files live at
+# Bundled canonical-join example pack. Files live at
 # `joins/fixtures/ecommerce/*.yaml` — one directory deeper than the
 # other bundled fixtures so the per-vertical grouping is explicit.
 _JOINS_FIXTURES_DIR: Path = _PACKAGE_ROOT.parent / "joins" / "fixtures" / "ecommerce"

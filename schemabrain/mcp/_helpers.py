@@ -14,7 +14,7 @@ from pydantic import BaseModel
 # Literal so a maintainer who adds a new call site gets a type error
 # rather than a runtime parse error message with an unrecognised role.
 # `"entity"` is used by the `describe_entity` name argument;
-# `"entity_a"`, `"entity_b"`, and `"name"` are used by the wk-13
+# `"entity_a"`, `"entity_b"`, and `"name"` are used by the
 # `resolve_join` arg surface (three positional/keyword args that
 # each need identifier-shape validation).
 IdentRole = Literal["schema", "table", "column", "entity", "entity_a", "entity_b", "name"]

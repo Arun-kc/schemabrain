@@ -861,12 +861,12 @@ The one-command Docker demo stack lands alongside.
 - Self-join refusal in `CanonicalJoin.__post_init__` now surfaces an
   actionable workaround in the error message — "model each side as a
   separate entity (e.g. `manager` and `direct_report`) and define
-  the canonical join on the FK column from one side" — replacing
-  the stale "deferred to v1 wk-15" roadmap reference. 10 internal
-  `wk-15` comment references cleaned up across `schemabrain/core/
-  join.py`, `schemabrain/core/store.py`, `schemabrain/core/store_
-  protocol.py`, `schemabrain/joins/suggest.py`, `schemabrain/joins/
-  yaml_grammar.py`, and three test files.
+  the canonical join on the FK column from one side" — replacing a
+  stale roadmap reference. 10 internal milestone-tagged comment
+  references cleaned up across `schemabrain/core/join.py`,
+  `schemabrain/core/store.py`, `schemabrain/core/store_protocol.py`,
+  `schemabrain/joins/suggest.py`, `schemabrain/joins/yaml_grammar.py`,
+  and three test files.
 
 ### Documentation
 - `docs/observability.md` expanded with OTel integration section:

@@ -11,7 +11,8 @@ v0.5 entry point:
   - `schemabrain.mining.pipeline.mine_queries` (programmatic)
 
 PII fields on the written rows stay at the safe defaults
-(`sensitivity='public'`, `pii_categories=frozenset()`) at v0.5; the
-PII classifier ships in v1 wk-11 and a subsequent re-mining of the
-same rows will reclassify them via the UPSERT.
+(`sensitivity='public'`, `pii_categories=frozenset()`) at this
+layer; once full PII classification integration lands on mined
+queries, a subsequent re-mining of the same rows will reclassify
+them via the UPSERT.
 """

@@ -327,9 +327,9 @@ def _wait_for_postgres_ready(
     # `silent_rewrite_to_psycopg` normalises bare `postgresql://` to
     # `postgresql+psycopg://` so SQLAlchemy doesn't try to import the
     # missing psycopg2 driver. Schema Brain ships psycopg v3 only —
-    # same fix as the Round-3 boundary rewrite in `_resolve_url_source`.
-    # The helper returns `None` for already-correctly-suffixed URLs;
-    # the `or url` fallback keeps those verbatim.
+    # same boundary rewrite as `_resolve_url_source`. The helper
+    # returns `None` for already-correctly-suffixed URLs; the
+    # `or url` fallback keeps those verbatim.
     rewritten_url = silent_rewrite_to_psycopg(urlparse(url).scheme, url) or url
     console.print(
         f"  [bright_black]{GLYPH_PENDING} Waiting for Postgres to accept connections "
@@ -354,11 +354,11 @@ def _wait_for_postgres_ready(
             # Expected during startup — keep polling.
             last_error = str(exc).splitlines()[0]
         except ArgumentError as exc:
-            # Round-2 fold MED (silent-failure-hunter): a malformed
-            # URL is deterministic — polling for 30s won't help and
-            # the operator deserves the real error fast. Bail out
-            # immediately so the fall-through to the manual recipe
-            # fires inside the user's attention span, not 30s later.
+            # A malformed URL is deterministic — polling for 30s
+            # won't help and the operator deserves the real error
+            # fast. Bail out immediately so the fall-through to the
+            # manual recipe fires inside the user's attention span,
+            # not 30s later.
             last_error = f"{type(exc).__name__}: {exc}"
             break
         except Exception as exc:  # pragma: no cover — defensive, non-OperationalError surface
@@ -448,15 +448,13 @@ def _safe_subprocess(
       `PermissionError`, broader `OSError`) or `TimeoutExpired`
       (subprocess hung past the deadline).
 
-    Round-2 fold HIGH convergent (silent-failure-hunter + Reality
-    Checker B1): pre-fold this only caught `FileNotFoundError` and
-    `TimeoutExpired`. A docker binary present on PATH but not
-    executable (mode 0555 stripped, snap confinement, macOS
-    quarantine, non-docker-group user on Linux) raised
-    `PermissionError` which propagated out — bypassing the
-    fall-through-to-manual-recipe design intent. `OSError` is the
-    broadest correct ancestor (covers both via inheritance + future
-    OS-level errors like `ENOMEM`).
+    Catches the broad `OSError` ancestor (not just
+    `FileNotFoundError`) so a docker binary present on PATH but
+    not executable (mode 0555 stripped, snap confinement, macOS
+    quarantine, non-docker-group user on Linux) — which raises
+    `PermissionError` — also falls through to the manual recipe
+    rather than propagating. `OSError` covers both via inheritance
+    plus future OS-level errors like `ENOMEM`.
     """
     try:
         return subprocess.run(

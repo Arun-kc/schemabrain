@@ -191,14 +191,12 @@ def compare_existing_claude_desktop_entry(
 
     Raises ``InitRefusal`` if the config file is present but
     malformed — wraps ``read_mcp_config``'s ``MalformedConfigError``
-    so the wizard's ``except InitRefusal`` guard at stage 6 catches it
-    and the operator sees a guided error rather than a raw Python
-    traceback. Round-2 fold HIGH (silent-failure-hunter): pre-fold,
-    the docstring claimed this conversion but the code raised
-    ``MalformedConfigError`` directly — escaped both
-    ``_stage_wire_host``'s ``except InitRefusal`` and
-    ``_install_to_claude_desktop``'s, crashing init on any malformed
-    ``claude_desktop_config.json``.
+    so the wizard's ``except InitRefusal`` guard at stage 6 catches
+    it and the operator sees a guided error rather than a raw Python
+    traceback. (An earlier shape raised ``MalformedConfigError``
+    directly, which escaped both ``_stage_wire_host``'s ``except
+    InitRefusal`` and ``_install_to_claude_desktop``'s, crashing
+    init on any malformed ``claude_desktop_config.json``.)
     """
     if not config_path.exists():
         return ClaudeDesktopEntryComparison(
@@ -616,12 +614,12 @@ def _install_to_claude_desktop(
         try:
             existing = read_mcp_config(config_path)
         except MalformedConfigError as exc:
-            # Round-2 fold HIGH (silent-failure-hunter): mirror of the
-            # wrap in `compare_existing_claude_desktop_entry` above —
-            # without this wrap, a malformed pre-existing config
-            # crashed `init` even when the wizard's pre-check had
-            # passed (e.g., file corrupted between pre-check and
-            # write, or in the F3-bypass `assume_yes` path).
+            # Mirror of the wrap in
+            # `compare_existing_claude_desktop_entry` above — without
+            # this wrap, a malformed pre-existing config would crash
+            # `init` even when the wizard's pre-check had passed
+            # (e.g., file corrupted between pre-check and write, or
+            # in the `assume_yes` path that bypasses the pre-check).
             raise InitRefusal(
                 GuidedError(
                     kind="init_host_config_malformed",

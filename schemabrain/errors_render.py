@@ -54,7 +54,7 @@ from schemabrain._ui import (
 # imports Rich unconditionally, so any importer of this module has
 # already paid the cost — keeping ``Text`` at module top removes
 # four redundant lazy imports without changing the import surface
-# (matches ``setup/doctor_render.py`` after PR #4's round-2 fold).
+# (matches ``setup/doctor_render.py``).
 #
 # ``Console`` stays under TYPE_CHECKING — we accept one from the
 # caller, never instantiate one here.
@@ -446,12 +446,12 @@ def _llm_failure_titles(kind: LlmFailureKind) -> tuple[str, str]:
             "Anthropic returned an error",
             "the API call reached Anthropic but came back with an error",
         )
-    # Round-2 fold MED (python-reviewer): `assert_never` gives mypy /
-    # pyright a static exhaustiveness check at this position so a
-    # future fifth `LlmFailureKind` value would be caught at type-
-    # check time rather than at runtime via the `ValueError` raise.
-    # Unreachable at runtime when the `if` chain covers every Literal
-    # member — kept as a typed proof obligation, not a fallback.
+    # `assert_never` gives mypy / pyright a static exhaustiveness
+    # check at this position so a future fifth `LlmFailureKind` value
+    # would be caught at type-check time rather than at runtime via
+    # the `ValueError` raise. Unreachable at runtime when the `if`
+    # chain covers every Literal member — kept as a typed proof
+    # obligation, not a fallback.
     assert_never(kind)
 
 
@@ -519,11 +519,10 @@ def classify_llm_failure(exc: BaseException) -> LlmFailureKind | None:
 def cause_from_llm_error(exc: BaseException) -> str:
     """Extract a one-line cause string from an Anthropic SDK exception.
 
-    Round-1 fold M3: lifted from ``cli._try_render_llm_failure`` so
-    the ``getattr(exc, "message", ...)`` access lives next to the
-    ``classify_llm_failure`` boundary that establishes the
-    ``exc is Anthropic SDK type`` invariant — single owner, single
-    untyped-access site, one fallback chain.
+    Lives here (not in the CLI) so the ``getattr(exc, "message", ...)``
+    access sits next to the ``classify_llm_failure`` boundary that
+    establishes the ``exc is Anthropic SDK type`` invariant — single
+    owner, single untyped-access site, one fallback chain.
 
     Callers should invoke this only AFTER ``classify_llm_failure``
     has returned non-None, so ``exc`` is known to be an
@@ -538,13 +537,11 @@ def cause_from_llm_error(exc: BaseException) -> str:
 def _is_overloaded_error(exc: BaseException, *, anthropic_module: types.ModuleType) -> bool:
     """Return True when ``exc`` is the SDK's 529-overloaded error.
 
-    Round-1 fold H2: ``anthropic_module`` is typed as
-    ``types.ModuleType`` rather than ``object``. Same anti-pattern
-    that python-reviewer flagged convergently in PRs #4 and #7
-    (``_compose_footer_line(summary: object)``,
-    ``_compose_entity_brand_line(entity: object)``) — the
-    ``getattr`` for SDK-version tolerance is correct, but the type
-    annotation should reflect what the parameter actually is.
+    ``anthropic_module`` is typed as ``types.ModuleType`` rather
+    than ``object``. The ``getattr`` for SDK-version tolerance is
+    correct, but the type annotation should reflect what the
+    parameter actually is — pass concrete types and let static
+    type-checkers catch renames at lint time.
 
     Wrapped to tolerate SDK versions that ship the class under a
     different attribute name. ``InternalServerError`` is the 5xx
