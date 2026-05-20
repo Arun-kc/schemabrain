@@ -1,8 +1,7 @@
 """End-to-end demo: Claude Haiku answers a database question via Schema Brain MCP.
 
-This is the standalone Anthropic-SDK demo script called out in the v0
-preview-launch DoD. It proves the wedge end-to-end without requiring
-Claude Desktop:
+A standalone Anthropic-SDK demo that proves Schema Brain plugs into
+any agent loop, not just Claude Desktop:
 
   1. Spawn `schemabrain serve` as a stdio subprocess.
   2. Use the official `mcp` SDK to discover tools and proxy calls.
@@ -13,8 +12,9 @@ Claude Desktop:
 
 Usage:
     export ANTHROPIC_API_KEY=sk-ant-...
+    export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/db"
     python examples/anthropic_demo.py \\
-        --source "postgresql+psycopg://user:pass@host:5432/db" \\
+        --url-env DATABASE_URL \\
         --store-path /path/to/schemabrain.db \\
         --question "Where do we store customer order totals?"
 
@@ -92,7 +92,7 @@ def _content_to_text(content: list[Any]) -> str:
 
 async def _run_agent_loop(
     *,
-    source_url: str,
+    url_env: str,
     store_path: str,
     question: str,
     max_turns: int,
@@ -102,6 +102,11 @@ async def _run_agent_loop(
 
     Returns the process exit code (0 on success, 1 on max-turns trip,
     2 on a tool failure).
+
+    ``url_env`` is the name of the environment variable that holds the
+    database URL — matches the rest of the CLI surface (`schemabrain
+    serve --url-env DATABASE_URL`). Passing the URL via env keeps it
+    out of `ps` output, shell history, and process argv.
     """
     server_params = StdioServerParameters(
         command="uv",
@@ -109,8 +114,8 @@ async def _run_agent_loop(
             "run",
             "schemabrain",
             "serve",
-            "--source",
-            source_url,
+            "--url-env",
+            url_env,
             "--store-path",
             store_path,
         ],
@@ -189,10 +194,14 @@ def main() -> int:
         description="Drive Schema Brain MCP from Claude Haiku via the Anthropic SDK.",
     )
     parser.add_argument(
-        "--source",
+        "--url-env",
+        dest="url_env",
         required=True,
-        help="The same Postgres URL passed to `schemabrain index`. "
-        "Must use postgresql+psycopg://... scheme (psycopg v3).",
+        help="Name of the environment variable that holds the database URL "
+        "(e.g. DATABASE_URL). The same variable Schema Brain's CLI reads "
+        "via --url-env. Keeps the URL out of argv / ps output / shell "
+        "history. Standard Postgres URL formats accepted; bare "
+        "postgresql:// is silently normalised to postgresql+psycopg://.",
     )
     parser.add_argument(
         "--store-path",
@@ -217,9 +226,21 @@ def main() -> int:
         print("error: ANTHROPIC_API_KEY not set in environment", file=sys.stderr)
         return 2
 
+    # Validate the named env var resolves to a non-empty URL before we
+    # spawn a subprocess that would fail with a less obvious error.
+    db_url = os.environ.get(args.url_env)
+    if not db_url:
+        print(
+            f"error: env var {args.url_env!r} (passed via --url-env) is not "
+            f"set or is empty. Export it first, e.g. "
+            f"`export {args.url_env}=postgresql://user:pass@host:5432/db`.",
+            file=sys.stderr,
+        )
+        return 2
+
     return asyncio.run(
         _run_agent_loop(
-            source_url=args.source,
+            url_env=args.url_env,
             store_path=args.store_path,
             question=args.question,
             max_turns=args.max_turns,
