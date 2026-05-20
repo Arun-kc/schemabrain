@@ -636,6 +636,54 @@ def prompt_for_anthropic_key(
     return stripped or None
 
 
+# ---------------------------------------------------------------------------
+# LLM cost-preview line — day-one UX overhaul "what's happening" sub-step.
+# ---------------------------------------------------------------------------
+
+
+def print_llm_stage_preamble(
+    console: Console,
+    *,
+    action: str,
+    model: str,
+    cost_estimate_usd: float,
+    cap_usd: float,
+) -> None:
+    """Print a one-line cost preview before an LLM call.
+
+    Used inside the wizard's entity / metric suggestion stages so the
+    user sees what's about to be spent BEFORE the LLM call goes out
+    (~30s of waiting otherwise reads as "stuck"). Pairs with the
+    ``prompt_for_anthropic_key`` cost disclosure — same numbers, same
+    framing, so the user who pasted a key 30 seconds ago has the
+    bounds re-stated before the spend.
+
+    The line renders inside whatever stage-level Rich ``Status``
+    spinner is active. ``Console.print()`` handles the interleaving
+    by pausing the spinner around the write so the visual stays
+    clean (no carriage-return artifacts). Non-TTY consoles get plain
+    text and the line just appears in the log; spinner is no-op in
+    that path.
+
+    ``cost_estimate_usd`` is the per-call estimate (typically
+    $0.01 entities, $0.02 metrics). ``cap_usd`` is the actual
+    ceiling that will trip the ``CostCeilingGuard``, threaded down
+    from the wizard's ``max_cost_usd`` config — operator sees the
+    real ceiling, not a hardcoded display value.
+
+    Future PR-2 work: replace this static line with a Rich ``Live``
+    display showing elapsed time + ticking spinner. That refactor
+    needs ``_wizard_stage_context`` to coexist cleanly with an
+    inner ``Live``, which is too much surface for PR-1. The static
+    line ships the bulk of the UX benefit (cost transparency
+    before the call) without the refactor.
+    """
+    console.print(
+        f"  [bright_black]{GLYPH_PENDING} Asking Claude to {action} · "
+        f"~${cost_estimate_usd:.2f} · capped at ${cap_usd:.2f} · {model}[/]"
+    )
+
+
 __all__ = [
     "GLYPH_ACTIVE",
     "GLYPH_ARROW",
@@ -653,6 +701,7 @@ __all__ = [
     "make_console",
     "pause_active_spinner",
     "pii_marker",
+    "print_llm_stage_preamble",
     "prompt_for_anthropic_key",
     "prompt_for_url",
     "register_active_spinner",

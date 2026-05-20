@@ -1277,6 +1277,7 @@ def _run_entity_suggestion(
     """
     from sqlite3 import IntegrityError
 
+    from schemabrain._ui import make_console, print_llm_stage_preamble
     from schemabrain.core.store import DbtOwnedEntityError, SQLiteStore
     from schemabrain.enrichment.anthropic_client import anthropic_sonnet_46_client
     from schemabrain.entities.suggest import (
@@ -1301,6 +1302,20 @@ def _run_entity_suggestion(
                 tables.append(table)
         if not tables:
             raise _EmptySchemaAtWizard()
+
+        # Cost-preview line: tells the user what's about to be spent
+        # BEFORE the ~30s LLM call goes out. Without this, the wizard
+        # spinner reads as "stuck" — the user has no visibility into
+        # what's happening or how much it'll cost. Pairs with the
+        # cost disclosure in `prompt_for_anthropic_key` (same shape,
+        # same numbers).
+        print_llm_stage_preamble(
+            make_console(stderr=True),
+            action=f"identify business entities ({len(tables)} tables)",
+            model="claude-sonnet-4",
+            cost_estimate_usd=0.01,
+            cap_usd=max_cost_usd,
+        )
 
         try:
             result = pipeline.propose_from_tables(tables)
@@ -1840,6 +1855,7 @@ def _run_metric_suggestion(
     """
     from sqlite3 import IntegrityError
 
+    from schemabrain._ui import make_console, print_llm_stage_preamble
     from schemabrain.core.store import DbtOwnedMetricError, SQLiteStore
     from schemabrain.enrichment.anthropic_client import anthropic_sonnet_46_client
     from schemabrain.entities.suggest import (
@@ -1878,6 +1894,19 @@ def _run_metric_suggestion(
                 tables.append(table)
         if not tables:
             raise _EmptySchemaAtWizard()
+
+        # Cost-preview line — same shape as the entities stage so the
+        # operator sees the spend ceiling before the ~30s LLM call.
+        # Metrics suggestion is typically a bit more expensive than
+        # entities (more context tokens — entity list + table schemas
+        # — so the estimate is 2x the entities default).
+        print_llm_stage_preamble(
+            make_console(stderr=True),
+            action=f"define metrics ({len(entities)} entities, {len(tables)} tables)",
+            model="claude-sonnet-4",
+            cost_estimate_usd=0.02,
+            cap_usd=max_cost_usd,
+        )
 
         try:
             result = pipeline.propose_from_entities(entities, tables)

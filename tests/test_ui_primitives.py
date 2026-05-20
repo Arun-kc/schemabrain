@@ -676,3 +676,75 @@ class TestPromptForAnthropicKey:
                 cost_estimate_usd=0.01,
                 cap_usd=0.5,
             )
+
+
+class TestPrintLlmStagePreamble:
+    """Tests for ``print_llm_stage_preamble`` — the cost-preview
+    line that prints inside the wizard's entity / metric suggestion
+    stages BEFORE the ~30s LLM call goes out. Without this line, the
+    wizard's spinner reads as "stuck" because the user has no
+    visibility into what's about to happen or how much it'll cost.
+
+    The line is informational only — the actual cost gating is done
+    by ``CostCeilingGuard``. The cap_usd shown here must match the
+    real ceiling so the user isn't misled.
+    """
+
+    def test_renders_action_model_cost_and_cap(self) -> None:
+        from schemabrain._ui import make_console, print_llm_stage_preamble
+
+        buf = io.StringIO()
+        print_llm_stage_preamble(
+            make_console(file=buf, force_terminal=False, width=120),
+            action="identify business entities (14 tables)",
+            model="claude-sonnet-4",
+            cost_estimate_usd=0.01,
+            cap_usd=0.50,
+        )
+        out = buf.getvalue()
+        # All four numbers/strings must appear so the user can
+        # connect the spend to the action.
+        assert "identify business entities (14 tables)" in out
+        assert "claude-sonnet-4" in out
+        assert "$0.01" in out
+        assert "$0.50" in out
+
+    def test_cost_renders_at_two_decimal_places(self) -> None:
+        # Floats like 0.0123 must render as $0.01, not $0.0123 — the
+        # user wants a quick visual bound, not a billing-precision
+        # number. Two decimal places matches the disclosure in
+        # prompt_for_anthropic_key.
+        from schemabrain._ui import make_console, print_llm_stage_preamble
+
+        buf = io.StringIO()
+        print_llm_stage_preamble(
+            make_console(file=buf, force_terminal=False, width=120),
+            action="x",
+            model="m",
+            cost_estimate_usd=0.0123,
+            cap_usd=0.5078,
+        )
+        out = buf.getvalue()
+        assert "$0.01" in out
+        assert "$0.51" in out
+        # Don't leak excess precision.
+        assert "$0.0123" not in out
+        assert "$0.5078" not in out
+
+    def test_uses_pending_glyph_for_in_flight_signal(self) -> None:
+        # The pending glyph (◇) is the design's "in progress / about
+        # to happen" marker — distinct from the active glyph (▸) used
+        # for the stage-row header. The visual hierarchy is:
+        # ▸ Stage row (running)
+        #   ◇ Sub-line (about to happen)
+        from schemabrain._ui import GLYPH_PENDING, make_console, print_llm_stage_preamble
+
+        buf = io.StringIO()
+        print_llm_stage_preamble(
+            make_console(file=buf, force_terminal=False, width=120),
+            action="x",
+            model="m",
+            cost_estimate_usd=0.01,
+            cap_usd=0.5,
+        )
+        assert GLYPH_PENDING in buf.getvalue()
