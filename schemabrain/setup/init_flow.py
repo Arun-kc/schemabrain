@@ -114,6 +114,226 @@ class InitResult:
     skip_index: bool = False
 
 
+ClaudeDesktopEntryVerdict = Literal[
+    "new",
+    "unchanged",
+    "differs_store_path_only",
+    "differs",
+]
+"""Result of comparing the new claude-desktop snippet against the existing config.
+
+* ``"new"`` — no existing schemabrain entry (file missing or no
+  ``mcpServers.schemabrain`` key). Safe to write without prompting.
+* ``"unchanged"`` — existing entry matches the new one byte-for-byte
+  in command + args + env. ``init()`` no-ops (state=``"unchanged"``).
+* ``"differs_store_path_only"`` — the only difference is the value
+  passed to ``--store-path``. Common case (operator moved their
+  store), auto-acceptable without a prompt.
+* ``"differs"`` — some other field (env var name, db_url, version
+  pin, runner) differs. Surface a prompt so the operator confirms
+  the overwrite is intentional.
+"""
+
+
+@dataclass(frozen=True)
+class ClaudeDesktopEntryComparison:
+    """Verdict + diff summary returned by ``compare_existing_claude_desktop_entry``.
+
+    Used by the wizard's stage 6 (``_stage_wire_host``) to decide
+    whether to prompt the operator before calling ``init()`` —
+    moving the prompt INTO the stage handler (F3 fix) so it doesn't
+    fire as an orphaned line BETWEEN the hero panel and the 7-stage
+    table.
+
+    ``existing_store_path`` and ``new_store_path`` are populated for
+    every state EXCEPT ``"new"`` so the renderer can surface a
+    ``replaced /old → /new`` line when the auto-accept fires.
+    """
+
+    state: ClaudeDesktopEntryVerdict
+    config_path: Path
+    differing_field_names: tuple[str, ...] = ()
+    existing_store_path: str | None = None
+    new_store_path: str | None = None
+
+
+def compare_existing_claude_desktop_entry(
+    *,
+    snippet: SchemabrainSnippet,
+    config_path: Path,
+) -> ClaudeDesktopEntryComparison:
+    """Compare ``snippet`` against the existing claude-desktop config.
+
+    Pure read — does NOT mutate the config file or shell out. Used
+    by the wizard's stage 6 to decide whether to prompt the operator
+    before calling ``init()`` (the F3 fix that moved the overwrite
+    prompt INTO stage 6, eliminating the orphaned prompt between
+    the hero panel and the 7-stage table).
+
+    Field-level diff:
+
+    * Compares ``command`` and ``env`` strictly.
+    * Strips the ``--store-path PATH`` pair from ``args`` before
+      comparing the rest, so a store-path-only difference reports as
+      ``"differs_store_path_only"`` (auto-acceptable) rather than
+      generic ``"differs"`` (prompt-required).
+
+    Raises ``InitRefusal`` if the config file is present but
+    malformed — same posture as ``read_mcp_config``; the wizard
+    handler propagates this so the operator sees a guided error
+    rather than a silent fall-through to "new".
+    """
+    if not config_path.exists():
+        return ClaudeDesktopEntryComparison(
+            state="new",
+            config_path=config_path,
+            new_store_path=_extract_store_path_from_args(snippet.args),
+        )
+    existing = read_mcp_config(config_path)
+    existing_entry = schemabrain_entry_in(existing)
+    new_entry = snippet.to_mcp_entry()
+    new_store_path = _extract_store_path_from_args(snippet.args)
+    if existing_entry is None:
+        return ClaudeDesktopEntryComparison(
+            state="new",
+            config_path=config_path,
+            new_store_path=new_store_path,
+        )
+    existing_store_path = _extract_store_path_from_args(tuple(existing_entry.get("args", ())))
+    if existing_entry == new_entry:
+        return ClaudeDesktopEntryComparison(
+            state="unchanged",
+            config_path=config_path,
+            existing_store_path=existing_store_path,
+            new_store_path=new_store_path,
+        )
+    differing_fields = _diff_mcp_entry_fields(existing_entry, new_entry)
+    # When the only differing field is the store-path arg, treat it
+    # as auto-acceptable. Operators commonly move their store
+    # between projects; forcing a prompt for that case turns into
+    # noise. Any other diff (env-var name, db_url, version pin,
+    # runner change) keeps the prompt.
+    if differing_fields == ("args[--store-path]",):
+        state: ClaudeDesktopEntryVerdict = "differs_store_path_only"
+    else:
+        state = "differs"
+    return ClaudeDesktopEntryComparison(
+        state=state,
+        config_path=config_path,
+        differing_field_names=differing_fields,
+        existing_store_path=existing_store_path,
+        new_store_path=new_store_path,
+    )
+
+
+def _extract_store_path_from_args(args: tuple[str, ...]) -> str | None:
+    """Return the value passed to ``--store-path`` in ``args``, or ``None``.
+
+    Used by the entry-comparison renderer so the auto-accept message
+    can show ``replaced /old → /new``. Returns ``None`` when
+    ``--store-path`` is absent (defensive — every snippet we build
+    today includes it via ``build_snippet``).
+    """
+    for idx, token in enumerate(args):
+        if token == "--store-path" and idx + 1 < len(args):
+            return args[idx + 1]
+    return None
+
+
+def _diff_mcp_entry_fields(existing: dict[str, object], new: dict[str, object]) -> tuple[str, ...]:
+    """Return the canonical names of fields that differ between two MCP entries.
+
+    Returns a stable-ordered tuple of identifier strings:
+
+    * ``"command"`` — the executable changed
+    * ``"env"`` — the env-var block changed (any key)
+    * ``"args[--store-path]"`` — only the store-path value changed
+    * ``"args"`` — args differ in a way beyond just the store-path
+
+    Used to drive the verdict logic in
+    ``compare_existing_claude_desktop_entry`` — the wizard's
+    auto-accept fires only when the diff is exactly
+    ``("args[--store-path]",)`` (one cell, store-path only).
+    """
+    diffs: list[str] = []
+    if existing.get("command") != new.get("command"):
+        diffs.append("command")
+    existing_args = tuple(existing.get("args", ()))
+    new_args = tuple(new.get("args", ()))
+    if existing_args != new_args:
+        existing_store = _extract_store_path_from_args(existing_args)
+        new_store = _extract_store_path_from_args(new_args)
+        existing_args_without_store = _strip_store_path_pair(existing_args)
+        new_args_without_store = _strip_store_path_pair(new_args)
+        if (
+            existing_args_without_store == new_args_without_store
+            and existing_store is not None
+            and new_store is not None
+            and existing_store != new_store
+        ):
+            diffs.append("args[--store-path]")
+        else:
+            diffs.append("args")
+    if existing.get("env") != new.get("env"):
+        diffs.append("env")
+    return tuple(diffs)
+
+
+def _strip_store_path_pair(args: tuple[str, ...]) -> tuple[str, ...]:
+    """Return ``args`` with the ``--store-path PATH`` pair removed.
+
+    Helper for ``_diff_mcp_entry_fields``: lets the diff detect
+    store-path-only differences by comparing the residual args.
+    """
+    out: list[str] = []
+    skip_next = False
+    for token in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if token == "--store-path":
+            skip_next = True
+            continue
+        out.append(token)
+    return tuple(out)
+
+
+def peek_claude_desktop_overwrite(
+    *,
+    source_url: str,
+    store_path: Path,
+    env_var_name: str,
+) -> ClaudeDesktopEntryComparison | None:
+    """Resolve the config path, build the snippet, and compare against existing.
+
+    Returns the comparison verdict, or ``None`` when no config path
+    can be resolved (claude-desktop config dir missing on this
+    platform — ``init()`` will raise ``InitRefusal`` later with a
+    guided error, so we early-out here without prompting).
+
+    Propagates ``InitRefusal`` from ``_resolve_runner`` so the
+    "neither uvx nor schemabrain on PATH" error surfaces to the
+    operator as a failed StageOutcome rather than being silently
+    swallowed. The wizard's stage 6 calls this BEFORE calling
+    ``init()`` so the inline overwrite prompt (F3) can fire with
+    the same `claude_desktop_config_path` / `build_snippet` /
+    `_resolve_runner` bindings tests already monkeypatch on this
+    module — keeping the test surface small.
+    """
+    config_path = claude_desktop_config_path()
+    if config_path is None:
+        return None
+    runner = _resolve_runner()
+    snippet = build_snippet(
+        version_pin=__version__,
+        env_var_name=env_var_name,
+        store_path=store_path.expanduser().resolve(),
+        db_url=source_url,
+        runner=runner,
+    )
+    return compare_existing_claude_desktop_entry(snippet=snippet, config_path=config_path)
+
+
 def init(
     *,
     source_url: str,
@@ -408,4 +628,12 @@ def _install_to_claude_code_host(*, snippet: SchemabrainSnippet, skip_index: boo
     )
 
 
-__all__ = ["InitRefusal", "InitResult", "InitState", "init"]
+__all__ = [
+    "ClaudeDesktopEntryComparison",
+    "ClaudeDesktopEntryVerdict",
+    "InitRefusal",
+    "InitResult",
+    "InitState",
+    "compare_existing_claude_desktop_entry",
+    "init",
+]

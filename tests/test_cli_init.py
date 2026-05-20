@@ -657,7 +657,10 @@ class TestInitCliInteractiveOverlay:
 
     @pytest.fixture
     def force_interactive(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        # F3: TTY check now lives in `_ui.stderr_is_interactive_tty`
+        # — single source of truth used by both `cli` and `wizard`.
+        # Tests just monkeypatch that one function.
+        monkeypatch.setattr("schemabrain._ui.stderr_is_interactive_tty", lambda: True)
         yield
 
     def test_overwrite_prompt_y_proceeds_with_assume_yes(
@@ -688,8 +691,11 @@ class TestInitCliInteractiveOverlay:
             "schemabrain.setup.init_flow.claude_desktop_config_path",
             lambda: cfg,
         )
-        # User confirms overwrite.
-        monkeypatch.setattr("schemabrain.cli._prompt_yes_no", lambda *_a, **_kw: True)
+        # F3: prompt now fires from the wizard, not from cli's
+        # retry-loop — monkeypatch the lifted helper. The wizard
+        # imports `prompt_yes_no` from `_ui`, so the patch must
+        # target the binding visible inside `wizard`.
+        monkeypatch.setattr("schemabrain.setup.wizard.prompt_yes_no", lambda *_a, **_kw: True)
         exit_code = main(
             [
                 "init",
@@ -734,8 +740,9 @@ class TestInitCliInteractiveOverlay:
             "schemabrain.setup.init_flow.claude_desktop_config_path",
             lambda: cfg,
         )
-        # User declines overwrite.
-        monkeypatch.setattr("schemabrain.cli._prompt_yes_no", lambda *_a, **_kw: False)
+        # F3: prompt now fires from the wizard — monkeypatch the
+        # lifted helper at the binding inside `wizard`.
+        monkeypatch.setattr("schemabrain.setup.wizard.prompt_yes_no", lambda *_a, **_kw: False)
         exit_code = main(
             [
                 "init",
@@ -747,7 +754,10 @@ class TestInitCliInteractiveOverlay:
                 "claude-desktop",
             ]
         )
-        # Exit 0 — graceful cancel, not refusal.
+        # Exit 0 — graceful cancel, not refusal. F3 preserves the
+        # pre-F3 contract: the "cancelled by user" sentinel-prefix
+        # message tells `_cmd_init` to map the aborted wizard back
+        # to exit 0.
         assert exit_code == 0
         # File untouched.
         assert cfg.read_text() == original

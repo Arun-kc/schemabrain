@@ -641,6 +641,50 @@ def prompt_for_anthropic_key(
 # ---------------------------------------------------------------------------
 
 
+def stderr_is_interactive_tty() -> bool:
+    """True iff init/wizard can safely prompt — both stdin AND stderr are TTYs.
+
+    Single source of truth shared by ``cli`` and ``wizard`` so tests
+    can monkeypatch one function and reach both code paths. The CLI
+    keeps its private ``_stderr_is_interactive_tty`` shim for
+    backwards compatibility with existing tests that monkeypatch it
+    directly.
+    """
+    import sys as _sys
+
+    return _sys.stdin.isatty() and _sys.stderr.isatty()
+
+
+def prompt_yes_no(
+    console: Console,
+    question: str,
+    *,
+    default: bool,
+) -> bool:
+    """Ask a yes/no question via ``rich.prompt.Confirm``, pausing any spinner.
+
+    Caller MUST gate on ``_stderr_is_interactive_tty()`` before
+    calling — this helper does not check TTY itself, so a non-
+    interactive run would block on stdin forever.
+
+    Wrapped in ``pause_active_spinner()`` so when called from inside
+    a wizard stage that has registered a Status spinner, the spinner
+    stops while the prompt blocks on stdin. Without the pause, the
+    spinner overwrites the prompt's response line as the user
+    types ([y/N]:).
+
+    Lifted out of ``cli._prompt_yes_no`` (F3) so the wizard's
+    stage-6 inline overwrite prompt can use the same primitive
+    without importing from ``cli``. ``cli._prompt_yes_no`` remains
+    as a thin shim for the residual CLI callsites that don't have
+    a Console handy.
+    """
+    from rich.prompt import Confirm
+
+    with pause_active_spinner():
+        return Confirm.ask(question, default=default, console=console)
+
+
 def print_llm_stage_preamble(
     console: Console,
     *,
@@ -711,8 +755,10 @@ __all__ = [
     "print_llm_stage_preamble",
     "prompt_for_anthropic_key",
     "prompt_for_url",
+    "prompt_yes_no",
     "register_active_spinner",
     "short_path",
     "status_glyph",
+    "stderr_is_interactive_tty",
     "top_rule",
 ]

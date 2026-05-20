@@ -33,9 +33,12 @@ from schemabrain.core.models import Column, Table
 from schemabrain.core.store import SQLiteStore
 from schemabrain.setup.hosts import SchemabrainSnippet
 from schemabrain.setup.init_flow import (
+    ClaudeDesktopEntryComparison,
     InitRefusal,
     InitResult,
+    compare_existing_claude_desktop_entry,
     init,
+    peek_claude_desktop_overwrite,
 )
 
 # ----- fixtures -------------------------------------------------------------
@@ -720,3 +723,274 @@ class TestInitValidatesHostConfigDir:
                 skip_index=False,
                 assume_yes=False,
             )
+
+
+# ----- compare_existing_claude_desktop_entry --------------------------------
+
+
+def _build_snippet_for_test(
+    *,
+    store_path: str = "/tmp/sb.db",
+    db_url_env: str = "DATABASE_URL",
+    version: str = "0.99.0",
+    runner: str = "uvx",
+) -> SchemabrainSnippet:
+    """Tiny helper — F3 comparison tests construct snippets directly."""
+    serve_args: tuple[str, ...] = (
+        "serve",
+        "--url-env",
+        db_url_env,
+        "--store-path",
+        store_path,
+    )
+    if runner == "uvx":
+        return SchemabrainSnippet(
+            command="uvx",
+            args=(f"schemabrain=={version}", *serve_args),
+            env={db_url_env: "postgresql://u:p@h/d"},
+        )
+    return SchemabrainSnippet(
+        command=runner,
+        args=serve_args,
+        env={db_url_env: "postgresql://u:p@h/d"},
+    )
+
+
+class TestCompareExistingClaudeDesktopEntry:
+    """F3: comparison verdict + diff field naming for the wizard's pre-check."""
+
+    def test_new_when_config_file_missing(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "claude_desktop_config.json"
+        # File does NOT exist.
+        result = compare_existing_claude_desktop_entry(
+            snippet=_build_snippet_for_test(),
+            config_path=cfg,
+        )
+        assert result.state == "new"
+        assert result.config_path == cfg
+        # The snippet's store path threads through so the renderer
+        # can mention it even on a fresh-write path.
+        assert result.new_store_path == "/tmp/sb.db"
+        assert result.existing_store_path is None
+
+    def test_new_when_config_has_no_schemabrain_entry(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "claude_desktop_config.json"
+        cfg.write_text(json.dumps({"mcpServers": {"other": {}}}))
+        result = compare_existing_claude_desktop_entry(
+            snippet=_build_snippet_for_test(),
+            config_path=cfg,
+        )
+        assert result.state == "new"
+
+    def test_unchanged_when_entries_match_byte_for_byte(self, tmp_path: Path) -> None:
+        snippet = _build_snippet_for_test(store_path="/tmp/sb.db")
+        cfg = tmp_path / "claude_desktop_config.json"
+        cfg.write_text(json.dumps({"mcpServers": {"schemabrain": snippet.to_mcp_entry()}}))
+        result = compare_existing_claude_desktop_entry(snippet=snippet, config_path=cfg)
+        assert result.state == "unchanged"
+        assert result.differing_field_names == ()
+        # Both store-path values present so the renderer can choose.
+        assert result.existing_store_path == "/tmp/sb.db"
+        assert result.new_store_path == "/tmp/sb.db"
+
+    def test_differs_store_path_only_when_only_store_path_changes(self, tmp_path: Path) -> None:
+        # The common case: operator moved their store. Verdict must
+        # be the auto-acceptable one — anything else would surface a
+        # noisy prompt for what's effectively a path update.
+        existing_snippet = _build_snippet_for_test(store_path="/old/sb.db")
+        new_snippet = _build_snippet_for_test(store_path="/new/sb.db")
+        cfg = tmp_path / "claude_desktop_config.json"
+        cfg.write_text(json.dumps({"mcpServers": {"schemabrain": existing_snippet.to_mcp_entry()}}))
+        result = compare_existing_claude_desktop_entry(snippet=new_snippet, config_path=cfg)
+        assert result.state == "differs_store_path_only"
+        assert result.differing_field_names == ("args[--store-path]",)
+        assert result.existing_store_path == "/old/sb.db"
+        assert result.new_store_path == "/new/sb.db"
+
+    def test_differs_when_env_var_name_changes(self, tmp_path: Path) -> None:
+        # env-var name change is a meaningful difference — the user
+        # may have moved their DB credentials to a different env var,
+        # or worse, mis-typed it. Prompt the operator.
+        existing_snippet = _build_snippet_for_test(db_url_env="OLD_DB_URL")
+        new_snippet = _build_snippet_for_test(db_url_env="DATABASE_URL")
+        cfg = tmp_path / "claude_desktop_config.json"
+        cfg.write_text(json.dumps({"mcpServers": {"schemabrain": existing_snippet.to_mcp_entry()}}))
+        result = compare_existing_claude_desktop_entry(snippet=new_snippet, config_path=cfg)
+        assert result.state == "differs"
+        # Both args (DB URL env appears in --url-env arg) and env
+        # (the env block keyed on the DB-URL env-var name) differ.
+        assert "args" in result.differing_field_names
+        assert "env" in result.differing_field_names
+
+    def test_differs_when_version_pin_changes(self, tmp_path: Path) -> None:
+        # Version pin upgrade (e.g. 0.3.0 → 0.4.0) is meaningful —
+        # the operator should know the host is being re-pointed at
+        # a different schemabrain release.
+        existing_snippet = _build_snippet_for_test(version="0.3.0")
+        new_snippet = _build_snippet_for_test(version="0.4.0")
+        cfg = tmp_path / "claude_desktop_config.json"
+        cfg.write_text(json.dumps({"mcpServers": {"schemabrain": existing_snippet.to_mcp_entry()}}))
+        result = compare_existing_claude_desktop_entry(snippet=new_snippet, config_path=cfg)
+        assert result.state == "differs"
+        assert "args" in result.differing_field_names
+
+    def test_differs_when_only_env_block_changes(self, tmp_path: Path) -> None:
+        # Edge case: args identical, env differs. Exercised when an
+        # operator hand-edits the env block (e.g. adds extra
+        # environment variables beyond the DB URL). The diff
+        # reports `env` only, not `args`.
+        snippet = _build_snippet_for_test(store_path="/same/sb.db")
+        existing_entry = snippet.to_mcp_entry()
+        # Mutate the env block in the existing entry to differ from
+        # the new snippet's env. Args stay identical.
+        existing_entry["env"] = {"DATABASE_URL": "postgresql://different@h/d"}
+        cfg = tmp_path / "claude_desktop_config.json"
+        cfg.write_text(json.dumps({"mcpServers": {"schemabrain": existing_entry}}))
+
+        result = compare_existing_claude_desktop_entry(snippet=snippet, config_path=cfg)
+        assert result.state == "differs"
+        assert result.differing_field_names == ("env",)
+
+    def test_differs_when_command_changes(self, tmp_path: Path) -> None:
+        # uvx → installed schemabrain entrypoint (or vice versa) is
+        # a runner swap; surface the prompt.
+        existing_snippet = _build_snippet_for_test(runner="uvx")
+        new_snippet = _build_snippet_for_test(runner="/opt/sb/bin/schemabrain")
+        cfg = tmp_path / "claude_desktop_config.json"
+        cfg.write_text(json.dumps({"mcpServers": {"schemabrain": existing_snippet.to_mcp_entry()}}))
+        result = compare_existing_claude_desktop_entry(snippet=new_snippet, config_path=cfg)
+        assert result.state == "differs"
+        assert "command" in result.differing_field_names
+
+
+class TestPeekClaudeDesktopOverwrite:
+    """F3: end-to-end pre-check helper that the wizard's stage 6 calls."""
+
+    def test_returns_none_when_no_claude_desktop_config_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # On a platform without a Claude Desktop config directory,
+        # `claude_desktop_config_path` returns None — peek must
+        # gracefully early-out so init()'s downstream InitRefusal
+        # owns the messaging.
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda n: "/usr/local/bin/uvx" if n == "uvx" else None,
+        )
+        monkeypatch.setattr(
+            "schemabrain.setup.init_flow.claude_desktop_config_path",
+            lambda: None,
+        )
+        result = peek_claude_desktop_overwrite(
+            source_url="postgresql://u:p@h/d",
+            store_path=tmp_path / "sb.db",
+            env_var_name="DATABASE_URL",
+        )
+        assert result is None
+
+    def test_returns_differs_when_existing_entry_conflicts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # End-to-end happy path: existing config has a different
+        # entry; peek returns "differs" so the wizard can prompt.
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda n: "/usr/local/bin/uvx" if n == "uvx" else None,
+        )
+        cfg = tmp_path / "claude_desktop_config.json"
+        cfg.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "schemabrain": {
+                            "command": "uvx",
+                            "args": ["schemabrain==0.0.99", "serve"],
+                            "env": {},
+                        }
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr(
+            "schemabrain.setup.init_flow.claude_desktop_config_path",
+            lambda: cfg,
+        )
+        result = peek_claude_desktop_overwrite(
+            source_url="postgresql://u:p@h/d",
+            store_path=tmp_path / "sb.db",
+            env_var_name="DATABASE_URL",
+        )
+        assert result is not None
+        assert result.state == "differs"
+        assert result.config_path == cfg
+
+
+class TestStageWireHostInlineOverwritePrompt:
+    """F3: the wizard's stage 6 owns the overwrite prompt (not the CLI loop).
+
+    Tests in `tests/test_cli_init.py::TestInitCliInteractiveOverlay`
+    cover the end-to-end CLI behavior; tests here pin the helper's
+    auto-accept rule for the store-path-only case, which the
+    end-to-end test would need a more elaborate setup to exercise.
+    """
+
+    def test_store_path_only_diff_renders_replaced_in_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Auto-accept fires when only --store-path differs; the
+        # `wire_host` stage's "wrote ..." message must surface
+        # `(replaced /old → /new)` so the operator sees what changed
+        # without needing to read the JSON diff.
+        from schemabrain.setup.wizard import _wire_host_message
+
+        old_path = "/old/sb.db"
+        new_path = "/new/sb.db"
+        comparison = ClaudeDesktopEntryComparison(
+            state="differs_store_path_only",
+            config_path=tmp_path / "claude_desktop_config.json",
+            differing_field_names=("args[--store-path]",),
+            existing_store_path=old_path,
+            new_store_path=new_path,
+        )
+        result = InitResult(
+            host="claude-desktop",
+            snippet=_build_snippet_for_test(store_path=new_path),
+            state="written",
+            config_path=tmp_path / "claude_desktop_config.json",
+            backup_made=False,
+        )
+        msg = _wire_host_message(result, comparison=comparison)
+        assert "(replaced /old/sb.db → /new/sb.db)" in msg
+
+    def test_unchanged_state_does_not_render_replaced(self, tmp_path: Path) -> None:
+        from schemabrain.setup.wizard import _wire_host_message
+
+        comparison = ClaudeDesktopEntryComparison(
+            state="unchanged",
+            config_path=tmp_path / "claude_desktop_config.json",
+            existing_store_path="/same/sb.db",
+            new_store_path="/same/sb.db",
+        )
+        result = InitResult(
+            host="claude-desktop",
+            snippet=_build_snippet_for_test(store_path="/same/sb.db"),
+            state="written",
+            config_path=tmp_path / "claude_desktop_config.json",
+            backup_made=False,
+        )
+        msg = _wire_host_message(result, comparison=comparison)
+        # No "replaced" trailer when state is not differs_store_path_only.
+        assert "replaced" not in msg
+
+    def test_no_comparison_falls_back_to_plain_message(self) -> None:
+        # claude-code + manual hosts never set comparison; helper
+        # must handle the None case cleanly.
+        from schemabrain.setup.wizard import _wire_host_message
+
+        result = InitResult(
+            host="claude-code",
+            snippet=_build_snippet_for_test(),
+            state="shell_out_succeeded",
+        )
+        msg = _wire_host_message(result, comparison=None)
+        assert "registered schemabrain with Claude Code" in msg

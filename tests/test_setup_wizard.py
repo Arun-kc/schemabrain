@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 
 import pytest
@@ -4911,6 +4912,184 @@ class TestStageWireHost:
         assert outcome.status == "failed"
         assert outcome.message == "Claude Desktop config directory not found"
         assert ctx.host_install_result is None
+
+
+class TestStageWireHostF3InlineOverwrite:
+    """F3: stage 6 owns the overwrite prompt (no orphan between hero + table).
+
+    Tests pin the pre-check decision tree:
+    * peek None → fall through (no prompt)
+    * peek raises InitRefusal (e.g. _resolve_runner failure) → failed StageOutcome
+    * differs_store_path_only → auto-accept (effective_assume_yes=True)
+    * differs + non-interactive → fall through (init() decides)
+    * differs + interactive + user accepts → effective_assume_yes=True
+    * differs + interactive + user declines → cancelled failed StageOutcome
+    """
+
+    def _stub_init(self, *, captured: dict[str, object], base_cfg: WizardConfig) -> object:
+        """Build a fake `init` that records its assume_yes kwarg + returns OK."""
+
+        def fake_init(**kwargs: object) -> InitResult:
+            captured.update(kwargs)
+            return InitResult(
+                host="claude-desktop",
+                snippet=_snippet_for(base_cfg),
+                state="written",
+                config_path=Path("/tmp/cfg.json"),  # nosec B108
+                backup_made=False,
+            )
+
+        return fake_init
+
+    def test_peek_none_falls_through_with_original_assume_yes(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # peek returns None (no claude-desktop config dir on this
+        # platform) — stage must skip the pre-check entirely and
+        # pass `cfg.assume_yes` (False) straight to init().
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(wizard, "peek_claude_desktop_overwrite", lambda **_kw: None)
+        monkeypatch.setattr(
+            wizard, "init", self._stub_init(captured=captured, base_cfg=base_config)
+        )
+
+        cfg = _dc_replace(base_config, host="claude-desktop", assume_yes=False)
+        outcome = wizard._stage_wire_host(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert captured["assume_yes"] is False
+
+    def test_peek_raises_init_refusal_propagates_as_failed_stage(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `peek_claude_desktop_overwrite` propagates `_resolve_runner`'s
+        # InitRefusal so the operator sees the guided error (runner
+        # missing on PATH) at stage 6 instead of crashing.
+        err = GuidedError(
+            kind="init_runner_missing",
+            message="neither uvx nor schemabrain on PATH",
+            why="MCP server needs a launcher",
+            fix="install uv or add schemabrain to PATH",
+            next_step=None,
+        )
+
+        def _raise(**_kw: object) -> object:
+            raise InitRefusal(err)
+
+        monkeypatch.setattr(wizard, "peek_claude_desktop_overwrite", _raise)
+
+        cfg = _dc_replace(base_config, host="claude-desktop", assume_yes=False)
+        outcome = wizard._stage_wire_host(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "neither uvx nor schemabrain on PATH" in outcome.message
+
+    def test_differs_store_path_only_auto_accepts_without_prompt(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Common case: operator moved their store. No prompt should
+        # fire — `effective_assume_yes=True` is set silently.
+        from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
+
+        comparison = ClaudeDesktopEntryComparison(
+            state="differs_store_path_only",
+            config_path=Path("/tmp/cfg.json"),  # nosec B108
+            differing_field_names=("args[--store-path]",),
+            existing_store_path="/old/sb.db",
+            new_store_path="/new/sb.db",
+        )
+        prompt_calls: list[object] = []
+
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(wizard, "peek_claude_desktop_overwrite", lambda **_kw: comparison)
+        monkeypatch.setattr(
+            wizard,
+            "prompt_yes_no",
+            lambda *a, **kw: prompt_calls.append((a, kw)) or False,
+        )
+        monkeypatch.setattr(
+            wizard, "init", self._stub_init(captured=captured, base_cfg=base_config)
+        )
+
+        cfg = _dc_replace(base_config, host="claude-desktop", assume_yes=False)
+        outcome = wizard._stage_wire_host(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        # Critical: init() was called with assume_yes=True (auto-accept).
+        assert captured["assume_yes"] is True
+        # Critical: no prompt fired — store-path-only is silent.
+        assert prompt_calls == []
+
+    def test_differs_non_interactive_falls_through_without_prompt(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Non-interactive (CI / piped stderr) + differs → no prompt
+        # fires. Stage falls through to init() which will raise
+        # InitRefusal (pre-F3 behavior preserved for non-TTY runs).
+        from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
+
+        comparison = ClaudeDesktopEntryComparison(
+            state="differs",
+            config_path=Path("/tmp/cfg.json"),  # nosec B108
+            differing_field_names=("env",),
+        )
+        prompt_calls: list[object] = []
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(wizard, "peek_claude_desktop_overwrite", lambda **_kw: comparison)
+        monkeypatch.setattr("schemabrain._ui.stderr_is_interactive_tty", lambda: False)
+        monkeypatch.setattr(
+            wizard,
+            "prompt_yes_no",
+            lambda *a, **kw: prompt_calls.append((a, kw)) or False,
+        )
+        monkeypatch.setattr(
+            wizard, "init", self._stub_init(captured=captured, base_cfg=base_config)
+        )
+
+        cfg = _dc_replace(base_config, host="claude-desktop", assume_yes=False)
+        outcome = wizard._stage_wire_host(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        # init() called with original assume_yes=False — non-interactive
+        # mode never auto-accepts a real diff.
+        assert captured["assume_yes"] is False
+        assert prompt_calls == []
+
+    def test_differs_interactive_decline_returns_cancelled_failed_outcome(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Interactive + differs + user says no → failed StageOutcome
+        # with the "cancelled by user" sentinel prefix that _cmd_init
+        # maps to exit code 0 (graceful cancel, not error).
+        from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
+
+        comparison = ClaudeDesktopEntryComparison(
+            state="differs",
+            config_path=Path("/tmp/cfg.json"),  # nosec B108
+            differing_field_names=("env",),
+        )
+        init_calls: list[object] = []
+        monkeypatch.setattr(wizard, "peek_claude_desktop_overwrite", lambda **_kw: comparison)
+        monkeypatch.setattr("schemabrain._ui.stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr(wizard, "prompt_yes_no", lambda *_a, **_kw: False)
+        monkeypatch.setattr(
+            wizard,
+            "init",
+            lambda **kw: (
+                init_calls.append(kw)  # type: ignore[func-returns-value]
+                or (_ for _ in ()).throw(
+                    AssertionError("init must not be called when user declined")
+                )
+            ),
+        )
+
+        cfg = _dc_replace(base_config, host="claude-desktop", assume_yes=False)
+        outcome = wizard._stage_wire_host(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert outcome.message.startswith("cancelled by user")
+        # init() was NOT called — decline short-circuits the stage.
+        assert init_calls == []
 
 
 # ----- _stage_next_step ----------------------------------------------------

@@ -60,20 +60,27 @@ from typing import TYPE_CHECKING, Literal, get_args
 
 from sqlalchemy.exc import OperationalError
 
+from schemabrain import _ui
 from schemabrain._env import resolve_positive_float_env
+from schemabrain._ui import make_console, prompt_yes_no
 from schemabrain.errors import GuidedError
 from schemabrain.errors_render import LlmFailureKind, classify_llm_failure
 from schemabrain.setup.hosts import HostName, is_postgres_url
 from schemabrain.setup.init_flow import (
+    ClaudeDesktopEntryComparison,
     InitRefusal,
     InitResult,
     _validate_source_reachable,
     _validate_source_read_only,
     init,
+    peek_claude_desktop_overwrite,
 )
 
 if TYPE_CHECKING:
+    from rich.console import Console
+
     from schemabrain.indexer import IndexResult
+    from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
 
 # ----- public types ---------------------------------------------------------
 
@@ -2360,8 +2367,74 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
     because stage 2 has already managed the indexed-store
     precondition (either by running index, or by recording an
     explicit skip).
+
+    F3 (post-PR-#79 polish): when the claude-desktop config already
+    has a different schemabrain entry, this handler now prompts
+    INLINE during stage 6 rather than letting `init()` raise
+    `InitRefusal` so the orchestrator can prompt afterwards (which
+    rendered the prompt as an orphaned line between the hero panel
+    and the 7-stage table). The pre-check + inline prompt + retry
+    is now scoped to one stage handler, with one render path.
+    Store-path-only diffs auto-accept (operator moved the store —
+    no need to prompt for the common case).
     """
     cfg = ctx.config
+    effective_assume_yes = cfg.assume_yes
+
+    if cfg.host == "claude-desktop" and not cfg.assume_yes:
+        try:
+            comparison = peek_claude_desktop_overwrite(
+                source_url=cfg.source_url,
+                store_path=cfg.store_path,
+                env_var_name=cfg.env_var_name,
+            )
+        except InitRefusal as refusal:
+            return _failed_from_refusal(stage=6, name="wire_host", error=refusal.error)
+        if comparison is not None:
+            if comparison.state == "differs_store_path_only":
+                # Common case: operator moved their store. Auto-accept
+                # so they don't see a prompt for what is, in practice,
+                # a no-op-ish field change. The renderer surfaces the
+                # `wrote (replaced /old → /new)` line off
+                # `comparison.existing_store_path` for transparency.
+                effective_assume_yes = True
+            elif comparison.state == "differs":  # noqa: SIM102 — keep state vs tty branches readable
+                # Real diff (env-var, db_url, version pin, runner) —
+                # surface the inline prompt only if stderr/stdin are
+                # both TTYs. Non-interactive runs fall through to
+                # `init()` which will raise InitRefusal, translated
+                # to a failed StageOutcome as before (no behavior
+                # change for CI / piped stderr).
+                # Access through the module so tests can monkeypatch
+                # `_ui.stderr_is_interactive_tty` once and reach this
+                # call site without a separate `wizard.…` patch.
+                if _ui.stderr_is_interactive_tty():
+                    console = make_console(stderr=True)
+                    _render_overwrite_diff_summary(console, comparison)
+                    accepted = prompt_yes_no(
+                        console,
+                        "Overwrite the existing schemabrain entry?",
+                        default=False,
+                    )
+                    if not accepted:
+                        # `_cmd_init` checks for this exact message
+                        # prefix to map the abort to exit code 0 — a
+                        # user-cancelled overwrite is not a failure,
+                        # it's an informed choice. Pre-F3 the CLI
+                        # printed "cancelled" and returned 0 from the
+                        # retry-loop branch; F3 preserves that
+                        # contract via the message-prefix check.
+                        return StageOutcome(
+                            stage=6,
+                            name="wire_host",
+                            status="failed",
+                            message=(
+                                "cancelled by user — existing schemabrain entry not overwritten"
+                            ),
+                            next_step="re-run with --yes to overwrite, or hand-edit the config",
+                        )
+                    effective_assume_yes = True
+
     try:
         result = init(
             source_url=cfg.source_url,
@@ -2369,7 +2442,7 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
             host=cfg.host,
             env_var_name=cfg.env_var_name,
             skip_index=True,
-            assume_yes=cfg.assume_yes,
+            assume_yes=effective_assume_yes,
         )
     except InitRefusal as refusal:
         return _failed_from_refusal(stage=6, name="wire_host", error=refusal.error)
@@ -2378,19 +2451,83 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
         stage=6,
         name="wire_host",
         status="done",
-        message=_wire_host_message(result),
+        message=_wire_host_message(result, comparison=_get_overwrite_comparison(cfg)),
     )
 
 
-def _wire_host_message(result: InitResult) -> str:
-    """Pick a short summary line for the stage-4 outcome.
+def _get_overwrite_comparison(cfg: WizardConfig) -> ClaudeDesktopEntryComparison | None:
+    """Cheap re-peek so `_wire_host_message` can surface store-path replacement.
+
+    Called only on the success path after `init()` returned. The
+    work duplicates the pre-flight comparison in `_stage_wire_host`,
+    but the simpler interface keeps the stage handler clean —
+    passing the comparison through a local variable would require
+    threading it across the try/except boundaries that produce both
+    the success and failure paths. The duplicate work is one extra
+    file read + one snippet build per stage 6 invocation; rounding
+    error against the wall-clock cost of stage 6 (host install).
+    """
+    if cfg.host != "claude-desktop":
+        return None
+    try:
+        return peek_claude_desktop_overwrite(
+            source_url=cfg.source_url,
+            store_path=cfg.store_path,
+            env_var_name=cfg.env_var_name,
+        )
+    except InitRefusal:  # pragma: no cover — already surfaced by main path
+        return None
+
+
+def _render_overwrite_diff_summary(
+    console: Console, comparison: ClaudeDesktopEntryComparison
+) -> None:
+    """Print a one-line diff summary before the overwrite prompt.
+
+    Keeps the inline surface minimal (no full unified diff — that
+    comes in D3, the `.bak` + diff-preview commit). One line lets
+    the operator confirm the prompt is about the right entry
+    without burying the prompt itself.
+    """
+    fields = ", ".join(comparison.differing_field_names) or "schemabrain entry"
+    console.print(
+        f"  [yellow]A different schemabrain entry already exists in {comparison.config_path}.[/]"
+    )
+    console.print(f"  [bright_black]differing fields: {fields}[/]")
+
+
+def _wire_host_message(
+    result: InitResult,
+    *,
+    comparison: ClaudeDesktopEntryComparison | None = None,
+) -> str:
+    """Pick a short summary line for the stage-6 outcome.
 
     The detailed rendering (path, backup, redacted shell-out argv)
     lives in the CLI renderer, which reads from
     `WizardResult.host_install_result`. The wizard outcome just
     captures the one-liner version for the stage list.
+
+    F3: when ``comparison`` reports a store-path-only diff that the
+    wizard auto-accepted, the "written" message gets a
+    ``(replaced /old → /new)`` trailer so the operator sees what
+    actually changed. Other replacement paths render the plain
+    "wrote" line — the diff is more meaningful in the
+    store-path-only case because the operator usually intended it.
     """
     if result.state == "written":
+        if (
+            comparison is not None
+            and comparison.state == "differs_store_path_only"
+            and comparison.existing_store_path is not None
+            and comparison.new_store_path is not None
+            and comparison.existing_store_path != comparison.new_store_path
+        ):
+            return (
+                f"wrote schemabrain entry to {result.config_path} "
+                f"(replaced {comparison.existing_store_path} → "
+                f"{comparison.new_store_path})"
+            )
         return f"wrote schemabrain entry to {result.config_path}"
     if result.state == "unchanged":
         return f"schemabrain entry already configured in {result.config_path}; no changes"

@@ -4978,7 +4978,6 @@ def _cmd_init(
     `--print-only` is an alias for `--host manual` — when either is
     set, stage 6 never writes; the snippet renders to stdout.
     """
-    from dataclasses import replace as _dc_replace
     from typing import get_args as _get_args
 
     from schemabrain.setup.hosts import HostName
@@ -5081,41 +5080,37 @@ def _cmd_init(
         skip_llm_confirm=effective_skip_llm_confirm,
     )
 
-    interactive = _stderr_is_interactive_tty()
     host_display = _host_display_name(effective_host)
     console = _stderr_console()
     # Print the header BEFORE the wizard runs so the user sees the
-    # banner immediately and the stage-context spinner has a place to
-    # land. The header re-prints on a conflict-overwrite retry isn't
-    # an issue because the loop is a no-op on the second turn (the
-    # spinner re-runs are the visible artifact).
+    # banner immediately and the stage-context spinner has a place
+    # to land. F3 (post-PR-#79): pre-F3 this block ran inside a
+    # `while True:` loop that re-ran the entire wizard when the
+    # operator accepted an overwrite prompt — rendering the header
+    # twice and orphaning the prompt between the hero panel and
+    # the 7-stage table. The overwrite handling now lives INSIDE
+    # `_stage_wire_host` (with the prompt rendered inline during
+    # stage 6, paused-spinner-aware), so the orchestrator only
+    # needs one wizard run.
     _render_wizard_header(host_display=host_display, console=console)
-    while True:
-        result = run_default_wizard(cfg, stage_context=_wizard_stage_context)
-        # The only interactive recovery path is the entry-exists case
-        # at stage 4 — the wizard reports it as a `failed` outcome at
-        # the `wire_host` stage with a message containing "entry
-        # already exists". Other aborts surface to the renderer.
-        aborted_at = result.aborted_at
-        if (
-            interactive
-            and aborted_at is not None
-            and aborted_at.name == "wire_host"
-            and "entry already exists" in aborted_at.message.lower()
-            and not cfg.assume_yes
-        ):
-            if _prompt_yes_no(
-                "Overwrite the existing schemabrain entry?",
-                default=False,
-            ):
-                cfg = _dc_replace(cfg, assume_yes=True)
-                continue
-            console.print("[yellow]cancelled[/] no changes made.")
-            return 0
-        break
-
+    result = run_default_wizard(cfg, stage_context=_wizard_stage_context)
     _render_wizard_after(result, host_display=host_display, console=console)
     if result.aborted:
+        # F3: user-cancelled overwrite is an informed choice, not a
+        # failure — map back to exit 0 to preserve the pre-F3 CLI
+        # contract (which returned 0 from the retry-loop's
+        # "cancelled no changes made" branch). The wizard stage
+        # signals the cancellation via a sentinel message prefix
+        # so the orchestrator doesn't need a structured field on
+        # `StageOutcome` for one flag.
+        aborted_at = result.aborted_at
+        if (
+            aborted_at is not None
+            and aborted_at.name == "wire_host"
+            and aborted_at.message.startswith("cancelled by user")
+        ):
+            console.print("[yellow]cancelled[/] no changes made.")
+            return 0
         return 2
     if (
         result.host_install_result is not None
@@ -5614,21 +5609,28 @@ def _cmd_audit_list(
 def _stderr_is_interactive_tty() -> bool:
     """True iff init can safely prompt — both stdin AND stderr are TTYs.
 
-    Wrapped so tests can monkeypatch this one function instead of
-    patching `sys.stdin.isatty` and `sys.stderr.isatty` separately.
+    Thin shim over ``_ui.stderr_is_interactive_tty`` (F3 lift) so
+    every existing CLI callsite + test monkeypatch keeps working.
+    The wizard imports the canonical helper directly to keep the
+    test surface small.
     """
-    return sys.stdin.isatty() and sys.stderr.isatty()
+    from schemabrain._ui import stderr_is_interactive_tty
+
+    return stderr_is_interactive_tty()
 
 
 def _prompt_yes_no(question: str, *, default: bool) -> bool:
-    """Ask the user a yes/no question via rich.prompt.Confirm.
+    """Ask the user a yes/no question via the shared ``_ui.prompt_yes_no``.
 
-    Lazy-imported so the cli's import-cost path isn't affected
-    when no subcommand needs interactive input.
+    Lazy-imported so the cli's import-cost path isn't affected when
+    no subcommand needs interactive input. Thin shim over the
+    primitive in ``_ui`` so the CLI's residual callsites (those
+    without a console handy) share the same spinner-pause discipline
+    as the wizard's inline prompts.
     """
-    from rich.prompt import Confirm
+    from schemabrain._ui import prompt_yes_no
 
-    return Confirm.ask(question, default=default, console=_stderr_console())
+    return prompt_yes_no(_stderr_console(), question, default=default)
 
 
 def _redact_env_args(cmd: tuple[str, ...]) -> list[str]:

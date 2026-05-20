@@ -748,3 +748,97 @@ class TestPrintLlmStagePreamble:
             cap_usd=0.5,
         )
         assert GLYPH_PENDING in buf.getvalue()
+
+
+class TestPromptYesNo:
+    """F3: ``prompt_yes_no`` is the shared yes/no helper used by the wizard's
+    inline stage-6 overwrite prompt. Mirrors `prompt_for_url` shape: pauses
+    the active spinner around the blocking prompt so spinner frames don't
+    overwrite the user's response line.
+    """
+
+    def test_returns_true_when_confirm_ask_returns_true(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain._ui import make_console, prompt_yes_no
+
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: True)
+        assert prompt_yes_no(make_console(file=io.StringIO()), "overwrite?", default=False) is True
+
+    def test_returns_false_when_confirm_ask_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain._ui import make_console, prompt_yes_no
+
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: False)
+        assert prompt_yes_no(make_console(file=io.StringIO()), "overwrite?", default=False) is False
+
+    def test_passes_default_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import make_console, prompt_yes_no
+
+        captured: dict[str, object] = {}
+
+        def fake_ask(*args: object, **kwargs: object) -> bool:
+            captured.update(kwargs)
+            return False
+
+        monkeypatch.setattr("rich.prompt.Confirm.ask", fake_ask)
+        prompt_yes_no(make_console(file=io.StringIO()), "overwrite?", default=True)
+        assert captured.get("default") is True
+
+    def test_pauses_active_spinner_around_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import (
+            make_console,
+            prompt_yes_no,
+            register_active_spinner,
+        )
+
+        events: list[str] = []
+
+        class _RecordingStatus:
+            def start(self) -> None:
+                events.append("start")
+
+            def stop(self) -> None:
+                events.append("stop")
+
+        def fake_ask(*args: object, **kwargs: object) -> bool:
+            events.append("ask")
+            return False
+
+        monkeypatch.setattr("rich.prompt.Confirm.ask", fake_ask)
+        with register_active_spinner(_RecordingStatus()):
+            prompt_yes_no(make_console(file=io.StringIO()), "q?", default=False)
+        # Spinner must stop BEFORE Confirm.ask blocks on stdin, then
+        # restart after — same contract as prompt_for_url.
+        assert events == ["stop", "ask", "start"]
+
+
+class TestStderrIsInteractiveTty:
+    """F3: ``stderr_is_interactive_tty`` is the single source of truth for
+    "can we safely prompt?" — shared by cli and wizard so tests can
+    monkeypatch one symbol and reach both code paths.
+    """
+
+    def test_true_when_both_stdin_and_stderr_are_ttys(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain._ui import stderr_is_interactive_tty
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+        assert stderr_is_interactive_tty() is True
+
+    def test_false_when_stdin_is_not_tty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import stderr_is_interactive_tty
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+        assert stderr_is_interactive_tty() is False
+
+    def test_false_when_stderr_is_not_tty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import stderr_is_interactive_tty
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("sys.stderr.isatty", lambda: False)
+        assert stderr_is_interactive_tty() is False
