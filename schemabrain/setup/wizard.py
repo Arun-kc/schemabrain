@@ -2537,18 +2537,52 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
 def _render_overwrite_diff_summary(
     console: Console, comparison: ClaudeDesktopEntryComparison
 ) -> None:
-    """Print a one-line diff summary before the overwrite prompt.
+    """Print the overwrite diff preview before the overwrite prompt.
 
-    Keeps the inline surface minimal (no full unified diff — that
-    comes in D3, the `.bak` + diff-preview commit). One line lets
-    the operator confirm the prompt is about the right entry
-    without burying the prompt itself.
+    Two-block format:
+
+      1. **Header lines** — yellow "A different schemabrain entry…"
+         + bright_black "differing fields: …". Lets the operator
+         eyeball whether the prompt is about the right entry without
+         reading the full diff.
+      2. **Unified diff** (D3) — each line of
+         ``comparison.diff_preview`` rendered with a color matched to
+         its leader byte: bright_black for ``---/+++/@@`` markers,
+         red for ``-`` removals, green for ``+`` additions, default
+         for context. Lets the operator see exactly which JSON bytes
+         are about to change before approving the overwrite.
+
+    The ``.bak`` sibling that captures the pre-write contents is
+    written by ``write_mcp_config_atomic`` (PR-1 contract). D3
+    surfaces what's about to change; the rollback target was already
+    guaranteed by the existing atomic-write path.
     """
     fields = ", ".join(comparison.differing_field_names) or "schemabrain entry"
     console.print(
         f"  [yellow]A different schemabrain entry already exists in {comparison.config_path}.[/]"
     )
     console.print(f"  [bright_black]differing fields: {fields}[/]")
+    if not comparison.diff_preview:
+        # Defensive: comparison.diff_preview is always non-empty for
+        # the differs/differs_store_path_only verdicts the caller
+        # gates on, but this skip keeps the renderer safe if some
+        # future caller passes a "new"/"unchanged" comparison.
+        return
+    console.print("")
+    for raw_line in comparison.diff_preview.splitlines():
+        # Rich treats square brackets as markup — JSON contains them
+        # in ``args`` arrays. Use ``markup=False`` so the literal
+        # bracket pair renders intact instead of triggering a parse
+        # error / silent eat.
+        if raw_line.startswith(("---", "+++", "@@")):
+            style = "bright_black"
+        elif raw_line.startswith("-"):
+            style = "red"
+        elif raw_line.startswith("+"):
+            style = "green"
+        else:
+            style = ""
+        console.print(raw_line, style=style, markup=False, highlight=False)
 
 
 def _wire_host_message(

@@ -772,6 +772,9 @@ class TestCompareExistingClaudeDesktopEntry:
         # can mention it even on a fresh-write path.
         assert result.new_store_path == "/tmp/sb.db"
         assert result.existing_store_path is None
+        # D3: no diff preview for fresh-write paths — nothing
+        # meaningful to diff against.
+        assert result.diff_preview == ""
 
     def test_new_when_config_has_no_schemabrain_entry(self, tmp_path: Path) -> None:
         cfg = tmp_path / "claude_desktop_config.json"
@@ -792,6 +795,8 @@ class TestCompareExistingClaudeDesktopEntry:
         # Both store-path values present so the renderer can choose.
         assert result.existing_store_path == "/tmp/sb.db"
         assert result.new_store_path == "/tmp/sb.db"
+        # D3: no diff preview when there's nothing to overwrite.
+        assert result.diff_preview == ""
 
     def test_differs_store_path_only_when_only_store_path_changes(self, tmp_path: Path) -> None:
         # The common case: operator moved their store. Verdict must
@@ -806,6 +811,14 @@ class TestCompareExistingClaudeDesktopEntry:
         assert result.differing_field_names == ("args[--store-path]",)
         assert result.existing_store_path == "/old/sb.db"
         assert result.new_store_path == "/new/sb.db"
+        # D3: diff preview shows the store-path swap as a one-line
+        # change with the config-file path in both unified-diff
+        # headers so the operator can see the file context.
+        assert result.diff_preview != ""
+        assert '"/old/sb.db"' in result.diff_preview
+        assert '"/new/sb.db"' in result.diff_preview
+        assert "(current)" in result.diff_preview
+        assert "(after init)" in result.diff_preview
 
     def test_differs_when_env_var_name_changes(self, tmp_path: Path) -> None:
         # env-var name change is a meaningful difference — the user
@@ -821,6 +834,11 @@ class TestCompareExistingClaudeDesktopEntry:
         # (the env block keyed on the DB-URL env-var name) differ.
         assert "args" in result.differing_field_names
         assert "env" in result.differing_field_names
+        # D3: diff preview surfaces the env-var rename so the operator
+        # sees both the OLD and NEW names side-by-side before approving.
+        assert result.diff_preview != ""
+        assert "OLD_DB_URL" in result.diff_preview
+        assert "DATABASE_URL" in result.diff_preview
 
     def test_differs_when_version_pin_changes(self, tmp_path: Path) -> None:
         # Version pin upgrade (e.g. 0.3.0 → 0.4.0) is meaningful —
@@ -994,3 +1012,91 @@ class TestStageWireHostInlineOverwritePrompt:
         )
         msg = _wire_host_message(result, comparison=None)
         assert "registered schemabrain with Claude Code" in msg
+
+
+class TestFormatMcpEntryDiff:
+    """D3: unified-diff formatter feeding the wizard's inline preview."""
+
+    def test_full_diff_when_entries_differ(self, tmp_path: Path) -> None:
+        from schemabrain.setup.config_io import format_mcp_entry_diff
+
+        existing = {
+            "command": "uvx",
+            "args": ["schemabrain==0.3.0", "serve", "--store-path", "/old/sb.db"],
+            "env": {"OLD_DB_URL": "postgresql://u@h/d"},
+        }
+        new = {
+            "command": "uvx",
+            "args": ["schemabrain==0.3.0", "serve", "--store-path", "/new/sb.db"],
+            "env": {"DATABASE_URL": "postgresql://u@h/d"},
+        }
+        cfg = tmp_path / "claude_desktop_config.json"
+        diff = format_mcp_entry_diff(
+            existing_entry=existing,
+            new_entry=new,
+            config_path=cfg,
+        )
+        # Headers carry the config path + which-side suffix so the
+        # operator can see the file context.
+        assert f"--- {cfg} (current)" in diff
+        assert f"+++ {cfg} (after init)" in diff
+        # Both changed values surface (one removed, one added).
+        assert "/old/sb.db" in diff
+        assert "/new/sb.db" in diff
+        assert "OLD_DB_URL" in diff
+        assert "DATABASE_URL" in diff
+        # Removal/addition leaders present — this is what the
+        # wizard renderer colorizes (red for `-`, green for `+`).
+        assert any(
+            line.startswith("-") and not line.startswith("---") for line in diff.splitlines()
+        )
+        assert any(
+            line.startswith("+") and not line.startswith("+++") for line in diff.splitlines()
+        )
+
+    def test_empty_diff_when_entries_identical(self, tmp_path: Path) -> None:
+        from schemabrain.setup.config_io import format_mcp_entry_diff
+
+        entry = {"command": "uvx", "args": ["schemabrain"], "env": {}}
+        diff = format_mcp_entry_diff(
+            existing_entry=entry,
+            new_entry=entry,
+            config_path=tmp_path / "x.json",
+        )
+        # difflib emits zero bytes when the inputs are identical —
+        # the wizard relies on `if not comparison.diff_preview` to
+        # skip the diff block, so this contract must hold.
+        assert diff == ""
+
+    def test_existing_none_renders_pure_addition(self, tmp_path: Path) -> None:
+        from schemabrain.setup.config_io import format_mcp_entry_diff
+
+        new = {"command": "uvx", "args": ["schemabrain"], "env": {}}
+        diff = format_mcp_entry_diff(
+            existing_entry=None,
+            new_entry=new,
+            config_path=tmp_path / "x.json",
+        )
+        # No removal lines — every entry line shows up as `+`.
+        non_header = [
+            line for line in diff.splitlines() if not line.startswith(("---", "+++", "@@"))
+        ]
+        assert non_header  # there are body lines
+        for line in non_header:
+            assert line.startswith("+")
+
+    def test_keys_sorted_for_stable_diff(self, tmp_path: Path) -> None:
+        # The formatter must be deterministic regardless of dict
+        # iteration order — otherwise unrelated key-shuffles inside
+        # the env block would surface as a spurious "diff" and the
+        # operator would re-approve no-op overwrites.
+        from schemabrain.setup.config_io import format_mcp_entry_diff
+
+        existing = {"env": {"B": "1", "A": "2"}, "command": "uvx", "args": []}
+        new = {"command": "uvx", "args": [], "env": {"A": "2", "B": "1"}}
+        diff = format_mcp_entry_diff(
+            existing_entry=existing,
+            new_entry=new,
+            config_path=tmp_path / "x.json",
+        )
+        assert diff == ""

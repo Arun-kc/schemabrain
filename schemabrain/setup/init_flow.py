@@ -44,6 +44,7 @@ from sqlalchemy import create_engine, text
 from schemabrain import __version__
 from schemabrain.errors import GuidedError
 from schemabrain.setup.config_io import (
+    format_mcp_entry_diff,
     merge_schemabrain_entry,
     read_mcp_config,
     schemabrain_entry_in,
@@ -148,6 +149,14 @@ class ClaudeDesktopEntryComparison:
     ``existing_store_path`` and ``new_store_path`` are populated for
     every state EXCEPT ``"new"`` so the renderer can surface a
     ``replaced /old → /new`` line when the auto-accept fires.
+
+    ``diff_preview`` is the raw unified-diff text (from
+    ``format_mcp_entry_diff``) of the two entries, populated only for
+    ``"differs"`` and ``"differs_store_path_only"``. Empty string for
+    ``"new"`` and ``"unchanged"`` (nothing meaningful to diff). The
+    wizard renders this inside a Panel before the inline overwrite
+    prompt fires (D3) so operators see exactly which JSON bytes are
+    about to change before they approve.
     """
 
     state: ClaudeDesktopEntryVerdict
@@ -155,6 +164,7 @@ class ClaudeDesktopEntryComparison:
     differing_field_names: tuple[str, ...] = ()
     existing_store_path: str | None = None
     new_store_path: str | None = None
+    diff_preview: str = ""
 
 
 def compare_existing_claude_desktop_entry(
@@ -217,12 +227,18 @@ def compare_existing_claude_desktop_entry(
         state: ClaudeDesktopEntryVerdict = "differs_store_path_only"
     else:
         state = "differs"
+    diff_preview = format_mcp_entry_diff(
+        existing_entry=existing_entry,
+        new_entry=new_entry,
+        config_path=config_path,
+    )
     return ClaudeDesktopEntryComparison(
         state=state,
         config_path=config_path,
         differing_field_names=differing_fields,
         existing_store_path=existing_store_path,
         new_store_path=new_store_path,
+        diff_preview=diff_preview,
     )
 
 

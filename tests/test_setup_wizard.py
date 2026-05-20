@@ -5008,6 +5008,102 @@ class TestStageWireHost:
         assert ctx.host_install_result is None
 
 
+class TestRenderOverwriteDiffSummaryD3:
+    """D3: `_render_overwrite_diff_summary` prints headers + unified diff.
+
+    The renderer feeds the inline overwrite prompt path (F3). D3 added
+    the unified-diff block under the existing one-line header so the
+    operator sees exactly which JSON bytes are about to change before
+    the prompt fires.
+    """
+
+    def _capture_console_output(self) -> tuple[object, list[str]]:
+        """Build a real Rich Console writing to an in-memory buffer."""
+        import io
+
+        from rich.console import Console
+
+        buf = io.StringIO()
+        # force_terminal so colorization renders; no_color via env
+        # would shadow style detection. width pinned so the diff
+        # doesn't soft-wrap inside the assertion window.
+        console = Console(file=buf, force_terminal=True, width=120)
+        return console, buf
+
+    def test_diff_preview_renders_below_header_when_present(self) -> None:
+        from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
+        from schemabrain.setup.wizard import _render_overwrite_diff_summary
+
+        console, buf = self._capture_console_output()
+        diff = (
+            "--- /tmp/cfg.json (current)\n"
+            "+++ /tmp/cfg.json (after init)\n"
+            "@@ -1,3 +1,3 @@\n"
+            ' {\n-  "command": "old",\n+  "command": "new",\n }\n'
+        )
+        comparison = ClaudeDesktopEntryComparison(
+            state="differs",
+            config_path=Path("/tmp/cfg.json"),  # nosec B108
+            differing_field_names=("command",),
+            diff_preview=diff,
+        )
+        _render_overwrite_diff_summary(console, comparison)
+        out = buf.getvalue()
+        # Both the existing header line AND the diff body must
+        # appear — D3 adds the body without removing the header.
+        assert "different schemabrain entry already exists" in out
+        assert "differing fields: command" in out
+        # Diff body — at minimum, both sides of the change.
+        assert '"command": "old"' in out
+        assert '"command": "new"' in out
+
+    def test_no_diff_block_when_diff_preview_empty(self) -> None:
+        from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
+        from schemabrain.setup.wizard import _render_overwrite_diff_summary
+
+        console, buf = self._capture_console_output()
+        comparison = ClaudeDesktopEntryComparison(
+            state="differs",
+            config_path=Path("/tmp/cfg.json"),  # nosec B108
+            differing_field_names=("env",),
+            diff_preview="",
+        )
+        _render_overwrite_diff_summary(console, comparison)
+        out = buf.getvalue()
+        # Header lines still render; no diff body sneaks in.
+        assert "different schemabrain entry already exists" in out
+        # Sanity: no unified-diff marker bytes leak through.
+        assert "---" not in out
+        assert "+++" not in out
+
+    def test_json_brackets_render_intact_not_as_markup(self) -> None:
+        # Rich treats `[…]` as style markup by default; JSON arrays
+        # contain bracket pairs that would silently swallow content.
+        # The renderer must pass `markup=False` per diff line so
+        # operators see real JSON, not a Rich parse failure.
+        from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
+        from schemabrain.setup.wizard import _render_overwrite_diff_summary
+
+        console, buf = self._capture_console_output()
+        diff = (
+            "--- /tmp/cfg.json (current)\n"
+            "+++ /tmp/cfg.json (after init)\n"
+            '@@ -1,1 +1,1 @@\n-  "args": ["a", "b"]\n+  "args": ["a", "c"]\n'
+        )
+        comparison = ClaudeDesktopEntryComparison(
+            state="differs",
+            config_path=Path("/tmp/cfg.json"),  # nosec B108
+            differing_field_names=("args",),
+            diff_preview=diff,
+        )
+        _render_overwrite_diff_summary(console, comparison)
+        out = buf.getvalue()
+        # The literal `["a", "b"]` and `["a", "c"]` substrings must
+        # survive Rich's markup parser intact.
+        assert '["a", "b"]' in out
+        assert '["a", "c"]' in out
+
+
 class TestStageWireHostF3InlineOverwrite:
     """F3: stage 6 owns the overwrite prompt (no orphan between hero + table).
 
