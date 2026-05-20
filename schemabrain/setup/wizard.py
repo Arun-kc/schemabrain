@@ -62,6 +62,7 @@ from sqlalchemy.exc import OperationalError
 
 from schemabrain._env import resolve_positive_float_env
 from schemabrain.errors import GuidedError
+from schemabrain.errors_render import LlmFailureKind, classify_llm_failure
 from schemabrain.setup.hosts import HostName, is_postgres_url
 from schemabrain.setup.init_flow import (
     InitRefusal,
@@ -1051,9 +1052,10 @@ def _stage_entities(ctx: WizardContext) -> StageOutcome:
             name="entities",
             status="failed",
             message=f"LLM call failed: {exc.message}",
-            next_step="re-run — transient LLM/network errors usually clear. "
-            "If the message mentions `max_tokens`, the model went off-prompt; "
-            "re-run or curate entities by hand via `schemabrain entities apply`.",
+            next_step=_llm_failure_next_step(
+                exc.kind,
+                apply_command="schemabrain entities apply",
+            ),
         )
     except _EmptySchemaAtWizard:
         return StageOutcome(
@@ -1180,11 +1182,63 @@ class _LLMClientErrorAtWizard(Exception):
     which violates the documented "best-effort" contract for stages
     3 / 4 / 5 (failure records a guided StageOutcome, doesn't abort
     the wizard).
+
+    F5 (post-PR-#79 polish): carries an optional `kind` field set by
+    the call site using ``errors_render.classify_llm_failure``. When
+    present, the stage handler picks a kind-specific `next_step`
+    instead of the generic "re-run, transient errors usually clear"
+    fallback — a 529 overload gets "wait 30-60s and retry", a
+    connection error gets "check network/proxy", and so on. `None`
+    preserves the pre-F5 generic behavior for non-Anthropic causes
+    (e.g. `max_tokens` RuntimeError from the SDK extractor).
     """
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, kind: LlmFailureKind | None = None) -> None:
         super().__init__(message)
         self.message = message
+        self.kind = kind
+
+
+def _llm_failure_next_step(
+    kind: LlmFailureKind | None,
+    *,
+    apply_command: str,
+) -> str:
+    """Pick kind-specific `next_step` copy for a failed StageOutcome.
+
+    Kept beside `_LLMClientErrorAtWizard` so the kind→hint mapping
+    is local to one module. `apply_command` is the manual-curation
+    escape hatch surfaced in the fallback branch (e.g.
+    ``"schemabrain entities apply"``); kind-specific branches don't
+    need it because they recommend a wait + retry, not manual work.
+
+    The pre-F5 generic copy is the fallback (``kind=None``) and
+    covers non-Anthropic causes — most notably the ``max_tokens``
+    ``RuntimeError`` raised by
+    ``enrichment.anthropic_client._extract_text``, which the
+    classifier returns ``None`` for (RuntimeError, not an SDK-typed
+    error).
+    """
+    if kind == "overloaded":
+        return (
+            "Anthropic is overloaded — wait 30-60s and re-run. "
+            "See https://status.anthropic.com if it persists."
+        )
+    if kind == "rate_limited":
+        return (
+            "rate-limited — wait and re-run; consider lowering SCHEMABRAIN_*_CONCURRENCY env vars."
+        )
+    if kind == "connection":
+        return "couldn't reach Anthropic — check network / proxy / DNS, then re-run."
+    if kind == "api_error":
+        return (
+            "Anthropic returned an error — re-run later; if it persists, check the message above."
+        )
+    return (
+        "re-run — transient LLM/network errors usually clear. "
+        "If the message mentions `max_tokens`, the model went off-prompt; "
+        f"re-run or curate by hand via `{apply_command}`."
+    )
 
 
 class _DbtImportFailedAtWizard(Exception):
@@ -1342,7 +1396,13 @@ def _run_entity_suggestion(
             # letting the wizard crash mid-pipeline. `repr(exc)`
             # fallback (instead of `type(exc).__name__`) preserves
             # argument visibility when `str(exc)` is empty.
-            raise _LLMClientErrorAtWizard(str(exc) or repr(exc)) from exc
+            # F5: classify the SDK exception so the stage handler can
+            # pick kind-specific next_step copy (529 → "wait 30-60s",
+            # connection → "check network", etc.).
+            raise _LLMClientErrorAtWizard(
+                str(exc) or repr(exc),
+                kind=classify_llm_failure(exc),
+            ) from exc
 
         applied = 0
         skip_reason: str | None = None
@@ -1704,9 +1764,10 @@ def _stage_metrics(ctx: WizardContext) -> StageOutcome:
             name="metrics",
             status="failed",
             message=f"LLM call failed: {exc.message}",
-            next_step="re-run — transient LLM/network errors usually clear. "
-            "If the message mentions `max_tokens`, the model went off-prompt; "
-            "re-run or curate metrics by hand via `schemabrain metrics apply`.",
+            next_step=_llm_failure_next_step(
+                exc.kind,
+                apply_command="schemabrain metrics apply",
+            ),
         )
     except _EmptySchemaAtWizard:
         return StageOutcome(
@@ -1940,7 +2001,12 @@ def _run_metric_suggestion(
             # argument visibility when `str(exc)` is empty, so a bare
             # `RuntimeError()` surfaces as "RuntimeError()" not just
             # "RuntimeError" — better signal for the operator.
-            raise _LLMClientErrorAtWizard(str(exc) or repr(exc)) from exc
+            # F5: classify SDK exceptions so stage 4 can pick kind-
+            # specific next_step copy (mirror of stage 3's handler).
+            raise _LLMClientErrorAtWizard(
+                str(exc) or repr(exc),
+                kind=classify_llm_failure(exc),
+            ) from exc
 
         applied = 0
         skip_reason: str | None = None

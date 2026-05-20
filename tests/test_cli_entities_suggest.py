@@ -1024,3 +1024,138 @@ class TestLLMErrors:
         # Error message names the failure mode (YAML parse) so the
         # user knows it's not their input.
         assert "YAML" in err or "parse" in err.lower()
+
+
+class TestLlmFailureShape:
+    """F5: Anthropic SDK errors render Shape C, not a raw traceback.
+
+    Pre-F5, an `OverloadedError` (529) / `APIConnectionError` / etc.
+    bubbled out of `pipeline.propose_from_tables` through to
+    `main()` as an unhandled exception — the user saw a 50-line
+    Python traceback. Now the CLI catches them, classifies via
+    `errors_render.classify_llm_failure`, renders Shape C, and
+    exits 2.
+
+    These tests monkeypatch `EnrichmentPipeline.propose_from_tables`
+    directly so the failure surface is exercised without needing
+    a real Anthropic round-trip.
+    """
+
+    def _run_with_pipeline_raising(
+        self,
+        *,
+        exc: BaseException,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[int, str]:
+        """Drive `entities suggest --apply` with a patched pipeline that raises `exc`.
+
+        Returns `(exit_code, stderr)`. The pipeline import inside
+        `_cmd_entities_suggest` happens lazily, so the monkeypatch
+        targets the canonical module path.
+        """
+        from schemabrain.entities.suggest import EntitySuggestionPipeline
+
+        store_path = tmp_path / "store.db"
+        _seed_store(store_path)
+
+        def _raise(self: object, *args: object, **kwargs: object) -> None:
+            raise exc
+
+        monkeypatch.setattr(EntitySuggestionPipeline, "propose_from_tables", _raise)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        from schemabrain.cli import main as cli_main
+
+        exit_code = cli_main(
+            [
+                "entities",
+                "suggest",
+                "--source",
+                _TEST_URL,
+                "--store-path",
+                str(store_path),
+                "--apply",
+            ]
+        )
+        # capsys is fed by the parent test; we read it there.
+        return exit_code, ""
+
+    def test_overloaded_renders_shape_c_and_exits_two(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import anthropic
+
+        # 529 surfaces as APIStatusError with status_code=529 in
+        # SDK versions without a dedicated `OverloadedError` class.
+        exc = anthropic.APIStatusError.__new__(anthropic.APIStatusError)
+        exc.status_code = 529
+        exc.message = "Overloaded"
+
+        exit_code, _ = self._run_with_pipeline_raising(
+            exc=exc, tmp_path=tmp_path, monkeypatch=monkeypatch
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "◆ error" in err
+        assert "Anthropic is overloaded" in err
+        # Fallback command must NOT appear — standalone suggest has
+        # no structure-only escape hatch.
+        assert "--no-enrich" not in err
+        # Raw Python traceback must NOT appear — that's the F5 bug.
+        assert "Traceback" not in err
+
+    def test_rate_limited_renders_shape_c_and_exits_two(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import anthropic
+
+        exc = anthropic.RateLimitError.__new__(anthropic.RateLimitError)
+        exc.status_code = 429
+        exc.message = "rate limit exceeded"
+
+        exit_code, _ = self._run_with_pipeline_raising(
+            exc=exc, tmp_path=tmp_path, monkeypatch=monkeypatch
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "rate-limited by Anthropic" in err
+
+    def test_connection_error_renders_shape_c_and_exits_two(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import anthropic
+
+        exc = anthropic.APIConnectionError.__new__(anthropic.APIConnectionError)
+        exc.message = "DNS resolution failed"
+
+        exit_code, _ = self._run_with_pipeline_raising(
+            exc=exc, tmp_path=tmp_path, monkeypatch=monkeypatch
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "couldn't reach Anthropic" in err
+
+    def test_non_sdk_exception_still_propagates(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A local programming bug (not an Anthropic SDK error) must
+        # still surface as a traceback — the F5 fix narrows the
+        # catch to known SDK error types, not all exceptions.
+        with pytest.raises(RuntimeError, match="local bug"):
+            self._run_with_pipeline_raising(
+                exc=RuntimeError("local bug"),
+                tmp_path=tmp_path,
+                monkeypatch=monkeypatch,
+            )

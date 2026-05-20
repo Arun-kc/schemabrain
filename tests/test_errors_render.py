@@ -1,23 +1,21 @@
 """Pins the layout contract of ``schemabrain.errors_render``.
 
-The error renderer ships two of the three design shapes specified
-by the handoff bundle (``schemabrain-v1/project/cli/errors.jsx``):
+The error renderer ships the three design shapes specified by
+the handoff bundle (``schemabrain-v1/project/cli/errors.jsx``):
 
 * **A — bad input** (``render_bad_argument_error``) — caret-pointer
   + remediation suggestions.
 * **B — missing secret** (``render_missing_secret_error``) — three
   panel block recommending ``--url-env`` over leaky alternatives.
+* **C — LLM failure** (``render_llm_failure``) — kind-specific
+  advisory + two recovery commands. Replaces the raw Python
+  traceback when the Anthropic SDK throws.
 
 Tests pin the visible substrings each surface MUST emit so a future
 refactor that breaks a layout invariant fails at the unit level
 rather than as a visual regression caught during smoke. Tests use
 Rich's recording console so the rendered string can be inspected
 without a real TTY.
-
-Shape C (the 529 advisory) is deliberately not implemented yet —
-it requires new exception-catching plumbing inside the wizard /
-``entities suggest`` flow beyond a visual upgrade to an existing
-render call. Tracked for a follow-up PR.
 """
 
 from __future__ import annotations
@@ -28,7 +26,9 @@ import pytest
 from rich.console import Console
 
 from schemabrain.errors_render import (
+    classify_llm_failure,
     render_bad_argument_error,
+    render_llm_failure,
     render_missing_secret_error,
 )
 
@@ -249,6 +249,166 @@ class TestRenderMissingSecretError:
 
 
 # ---------------------------------------------------------------------------
+# Shape C — LLM failure advisory.
+# ---------------------------------------------------------------------------
+
+
+class TestRenderLlmFailure:
+    def _default_call(self, **overrides: object) -> object:
+        defaults: dict[str, object] = dict(
+            kind="overloaded",
+            retry_command="schemabrain index",
+            fallback_command="schemabrain index --no-enrich",
+            cause="HTTP 529 from anthropic.com",
+        )
+        defaults.update(overrides)
+        return lambda console: render_llm_failure(  # type: ignore[arg-type]
+            **defaults, console=console
+        )
+
+    def test_brand_line_carries_error_glyph(self) -> None:
+        out = _render(self._default_call())
+        assert "◆ error" in out
+
+    def test_overloaded_title_mentions_anthropic(self) -> None:
+        out = _render(self._default_call(kind="overloaded"))
+        assert "Anthropic is overloaded" in out
+
+    def test_rate_limited_title_distinct_from_overloaded(self) -> None:
+        out_rate = _render(self._default_call(kind="rate_limited"))
+        out_over = _render(self._default_call(kind="overloaded"))
+        assert "rate-limited" in out_rate
+        assert "rate-limited" not in out_over
+
+    def test_connection_title_signals_network(self) -> None:
+        out = _render(self._default_call(kind="connection"))
+        assert "couldn't reach Anthropic" in out
+
+    def test_api_error_title_is_generic(self) -> None:
+        out = _render(self._default_call(kind="api_error"))
+        assert "Anthropic returned an error" in out
+
+    def test_unknown_kind_raises_value_error(self) -> None:
+        # Same posture as `render_missing_secret_error` — typos must
+        # surface visibly, not silently render with an empty title.
+        with pytest.raises(ValueError, match="unknown kind"):
+            _render(self._default_call(kind="not_a_kind"))
+
+    def test_cause_string_rendered_under_glyph(self) -> None:
+        out = _render(self._default_call(cause="upstream connect error · 5s timeout"))
+        assert "upstream connect error · 5s timeout" in out
+
+    def test_retry_command_included(self) -> None:
+        out = _render(self._default_call(retry_command="schemabrain entities suggest"))
+        assert "schemabrain entities suggest" in out
+
+    def test_fallback_command_renders_when_provided(self) -> None:
+        out = _render(
+            self._default_call(
+                retry_command="schemabrain index",
+                fallback_command="schemabrain index --no-enrich",
+            )
+        )
+        assert "--no-enrich" in out
+        assert "skip the LLM stage" in out
+
+    def test_fallback_command_suppressed_when_none(self) -> None:
+        # Standalone `entities suggest` has no structure-only
+        # fallback (the LLM call IS the job).
+        out = _render(
+            self._default_call(
+                retry_command="schemabrain entities suggest",
+                fallback_command=None,
+            )
+        )
+        assert "skip the LLM stage" not in out
+        assert "--no-enrich" not in out
+
+    def test_retry_hint_differs_by_kind(self) -> None:
+        # Kind-specific hint is rendered as the inline `# ...` comment
+        # next to the retry command.
+        out_over = _render(self._default_call(kind="overloaded"))
+        out_conn = _render(self._default_call(kind="connection"))
+        assert "30-60s" in out_over
+        assert "30-60s" not in out_conn
+        assert "network" in out_conn
+
+    def test_next_step_breadcrumb_defaults_to_status_page(self) -> None:
+        out = _render(self._default_call())
+        assert "status.anthropic.com" in out
+
+    def test_next_step_breadcrumb_suppressed_when_none(self) -> None:
+        out = _render(self._default_call(next_step=None))
+        assert "status.anthropic.com" not in out
+
+    def test_renders_at_narrow_width_without_crashing(self) -> None:
+        out = _render(self._default_call(), width=80)
+        assert "◆ error" in out
+        assert "Anthropic is overloaded" in out
+
+
+class TestClassifyLlmFailure:
+    """`classify_llm_failure` maps SDK exception classes to kind tokens."""
+
+    def test_overloaded_error_classifies_as_overloaded(self) -> None:
+        import anthropic
+
+        # SDK 0.30+ ships `OverloadedError`. Construct via the base
+        # `APIStatusError` signature when the dedicated class is
+        # available; fall back to the attribute-based 529 path.
+        overloaded_cls = getattr(anthropic, "OverloadedError", None)
+        if overloaded_cls is None:
+            pytest.skip("anthropic SDK does not expose OverloadedError")
+        exc = overloaded_cls.__new__(overloaded_cls)
+        exc.status_code = 529  # type: ignore[attr-defined]
+        assert classify_llm_failure(exc) == "overloaded"
+
+    def test_rate_limit_error_classifies_as_rate_limited(self) -> None:
+        import anthropic
+
+        exc = anthropic.RateLimitError.__new__(anthropic.RateLimitError)
+        exc.status_code = 429  # type: ignore[attr-defined]
+        assert classify_llm_failure(exc) == "rate_limited"
+
+    def test_api_connection_error_classifies_as_connection(self) -> None:
+        import anthropic
+
+        exc = anthropic.APIConnectionError.__new__(anthropic.APIConnectionError)
+        assert classify_llm_failure(exc) == "connection"
+
+    def test_bare_api_error_classifies_as_api_error(self) -> None:
+        import anthropic
+
+        # Use APIStatusError with a non-529 / non-429 status — the
+        # branch that returns "api_error" from the APIStatusError
+        # arm of the classifier.
+        exc = anthropic.APIStatusError.__new__(anthropic.APIStatusError)
+        exc.status_code = 500  # type: ignore[attr-defined]
+        assert classify_llm_failure(exc) == "api_error"
+
+    def test_non_sdk_exception_returns_none(self) -> None:
+        # Local programming bugs / RuntimeError from `_extract_text`
+        # must NOT classify — the caller propagates them as-is so
+        # the user sees the traceback for a real bug.
+        assert classify_llm_failure(RuntimeError("max_tokens reached")) is None
+        assert classify_llm_failure(ValueError("bad input")) is None
+
+    def test_overloaded_detected_via_status_when_class_absent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # SDK-version compat path: when `OverloadedError` isn't on
+        # the anthropic module, the classifier should still flag 529s
+        # via `status_code` inspection. Simulate by hiding the
+        # attribute and constructing a base `APIStatusError`.
+        import anthropic
+
+        monkeypatch.delattr(anthropic, "OverloadedError", raising=False)
+        exc = anthropic.APIStatusError.__new__(anthropic.APIStatusError)
+        exc.status_code = 529  # type: ignore[attr-defined]
+        assert classify_llm_failure(exc) == "overloaded"
+
+
+# ---------------------------------------------------------------------------
 # Cross-shape consistency
 # ---------------------------------------------------------------------------
 
@@ -273,6 +433,16 @@ class TestRenderMissingSecretError:
                 env_var="DATABASE_URL", state="unset", console=console
             ),
             id="shape_b_missing_secret",
+        ),
+        pytest.param(
+            lambda console: render_llm_failure(
+                kind="overloaded",
+                retry_command="schemabrain index",
+                fallback_command="schemabrain index --no-enrich",
+                cause="HTTP 529",
+                console=console,
+            ),
+            id="shape_c_llm_failure",
         ),
     ],
 )

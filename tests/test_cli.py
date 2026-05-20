@@ -3277,3 +3277,149 @@ class TestEvalUrlEnv:
         assert exit_code == 2
         err = capsys.readouterr().err
         assert "error:" in err
+
+
+class TestCmdIndexLlmFailureShape:
+    """F5: `schemabrain index --enrich` renders Shape C when the SDK throws.
+
+    Pre-F5, an Anthropic `OverloadedError` / `RateLimitError` /
+    `APIConnectionError` bubbled out of `index()` (the indexing
+    function) through `_cmd_index` to `main()` as a raw traceback.
+    Now `_cmd_index` catches them, classifies via
+    `errors_render.classify_llm_failure`, renders Shape C, and
+    exits 2. `AuthenticationError` (which already had a guided
+    error) remains unchanged.
+
+    Tests monkeypatch `schemabrain.cli.index` to raise the SDK
+    exception after the Postgres + store fakes have been entered,
+    so the failure surface is exercised end-to-end through `main()`
+    without needing a real database or Anthropic round-trip.
+    """
+
+    def _fake_postgres_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Install minimal Postgres / Profiler fakes so `_cmd_index` reaches `index()`."""
+
+        class _EmptySource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return []
+
+            def get_table(self, name: str, schema: str):
+                raise NotImplementedError
+
+            def close(self) -> None:
+                pass
+
+        class _StubProfiler:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def profile_table(self, table):
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
+        monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
+
+    def _run_with_index_raising(
+        self,
+        *,
+        exc: BaseException,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> int:
+        self._fake_postgres_fixtures(monkeypatch)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+
+        def _raise(**kwargs):
+            raise exc
+
+        monkeypatch.setattr("schemabrain.cli.index", _raise)
+
+        store_path = tmp_path / "schemabrain.db"
+        return main(
+            [
+                "index",
+                "postgresql+psycopg://fake/db",
+                "--store-path",
+                str(store_path),
+            ]
+        )
+
+    def test_overloaded_renders_shape_c_and_exits_two(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import anthropic
+
+        exc = anthropic.APIStatusError.__new__(anthropic.APIStatusError)
+        exc.status_code = 529
+        exc.message = "Overloaded"
+
+        exit_code = self._run_with_index_raising(
+            exc=exc, tmp_path=tmp_path, monkeypatch=monkeypatch
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "◆ error" in err
+        assert "Anthropic is overloaded" in err
+        # `_cmd_index` DOES offer the `--no-enrich` fallback (unlike
+        # standalone suggest, which has no structure-only fallback).
+        assert "--no-enrich" in err
+        assert "Traceback" not in err
+
+    def test_auth_error_still_uses_existing_guided_path(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # AuthenticationError has its own GuidedError renderer that
+        # predates F5 — verify the F5 branch doesn't shadow it.
+        import anthropic
+
+        exc = anthropic.AuthenticationError.__new__(anthropic.AuthenticationError)
+        exc.status_code = 401
+        exc.message = "invalid api key"
+
+        exit_code = self._run_with_index_raising(
+            exc=exc, tmp_path=tmp_path, monkeypatch=monkeypatch
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        # `anthropic_auth_failed` renders a key-rotation hint that
+        # the F5 shape does not have.
+        assert "console.anthropic.com" in err or "api key" in err.lower()
+        # The F5 Shape C title must NOT appear — that would mean the
+        # F5 branch ate the AuthenticationError.
+        assert "Anthropic is overloaded" not in err
+
+    def test_non_sdk_exception_still_propagates(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with pytest.raises(RuntimeError, match="local bug"):
+            self._run_with_index_raising(
+                exc=RuntimeError("local bug"),
+                tmp_path=tmp_path,
+                monkeypatch=monkeypatch,
+            )

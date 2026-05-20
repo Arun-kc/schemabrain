@@ -1395,7 +1395,33 @@ class TestStageEntities:
         assert "LLM call failed" in outcome.message
         assert "max_tokens" in outcome.message
         assert outcome.next_step is not None
+        # kind=None (default) → fallback branch surfaces the
+        # max_tokens hint + the apply-command escape hatch.
         assert "max_tokens" in outcome.next_step
+
+    def test_failed_with_overloaded_kind_uses_kind_specific_next_step(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # F5: when the wrapped exception carries `kind="overloaded"`,
+        # the stage handler picks the kind-specific recovery hint
+        # ("wait 30-60s") instead of the generic max_tokens fallback.
+        cfg = _pg_config(base_config)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._LLMClientErrorAtWizard("Overloaded", kind="overloaded")
+
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", _raise)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert outcome.next_step is not None
+        assert "overloaded" in outcome.next_step.lower()
+        assert "30-60s" in outcome.next_step
+        # The generic max_tokens hint must NOT appear when kind is set.
+        assert "max_tokens" not in outcome.next_step
 
     def test_failed_when_pipeline_returns_zero_candidates(
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
@@ -2632,7 +2658,34 @@ class TestStageMetrics:
         assert "LLM call failed" in outcome.message
         assert "max_tokens" in outcome.message
         assert outcome.next_step is not None
+        # kind=None → fallback branch surfaces the apply-command
+        # escape hatch (metrics-specific).
         assert "metrics apply" in outcome.next_step
+
+    def test_failed_with_rate_limited_kind_uses_kind_specific_next_step(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # F5 (stage 4 mirror): kind-specific next_step for rate_limited.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 5)
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._LLMClientErrorAtWizard("rate limit exceeded", kind="rate_limited")
+
+        monkeypatch.setattr(wizard, "_run_metric_suggestion", _raise)
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert outcome.next_step is not None
+        assert "rate-limited" in outcome.next_step
+        assert "CONCURRENCY" in outcome.next_step
+        # Generic max_tokens fallback must NOT appear.
+        assert "max_tokens" not in outcome.next_step
 
     def test_failed_when_pipeline_returns_zero_candidates(
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
@@ -4972,3 +5025,49 @@ def test_run_wizard_passes_context_to_handlers(base_config: WizardConfig) -> Non
 
     assert len(seen_contexts) == 2
     assert seen_contexts[0] is seen_contexts[1]
+
+
+# ----- _llm_failure_next_step (F5 helper) ----------------------------------
+
+
+class TestLlmFailureNextStep:
+    """Pins per-kind copy of `_llm_failure_next_step` (F5).
+
+    The helper drives both stage 3 (`_stage_entities`) and stage 4
+    (`_stage_metrics`) failed-StageOutcome `next_step`. Unit tests
+    here catch a copy regression at the helper layer rather than
+    waiting for the stage-handler integration test to fail.
+    """
+
+    def test_overloaded_kind_mentions_wait_window(self) -> None:
+        out = wizard._llm_failure_next_step(
+            "overloaded", apply_command="schemabrain entities apply"
+        )
+        assert "overloaded" in out.lower()
+        assert "30-60s" in out
+        assert "status.anthropic.com" in out
+
+    def test_rate_limited_kind_recommends_concurrency_env_var(self) -> None:
+        out = wizard._llm_failure_next_step(
+            "rate_limited", apply_command="schemabrain metrics apply"
+        )
+        assert "rate-limited" in out
+        assert "CONCURRENCY" in out
+
+    def test_connection_kind_mentions_network(self) -> None:
+        out = wizard._llm_failure_next_step(
+            "connection", apply_command="schemabrain entities apply"
+        )
+        assert "network" in out.lower() or "proxy" in out.lower()
+
+    def test_api_error_kind_says_anthropic_returned_error(self) -> None:
+        out = wizard._llm_failure_next_step("api_error", apply_command="schemabrain entities apply")
+        assert "Anthropic returned an error" in out
+
+    def test_none_kind_falls_back_with_apply_command(self) -> None:
+        # Fallback covers non-Anthropic causes (max_tokens RuntimeError,
+        # network issues the classifier doesn't recognize, etc.). Must
+        # surface the apply-command escape hatch verbatim.
+        out = wizard._llm_failure_next_step(None, apply_command="schemabrain metrics apply")
+        assert "max_tokens" in out
+        assert "schemabrain metrics apply" in out

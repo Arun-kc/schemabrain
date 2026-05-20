@@ -742,3 +742,94 @@ candidates:
         # The metric itself rendered.
         assert "name: row_count" in out
         assert "count" in out
+
+
+class TestLlmFailureShape:
+    """F5: Anthropic SDK errors from `metrics suggest` render Shape C, not a traceback.
+
+    Mirrors `TestLlmFailureShape` in test_cli_entities_suggest.py
+    for the metrics-side LLM callsite (`_cmd_metrics_suggest`).
+    """
+
+    def _run_with_pipeline_raising(
+        self,
+        *,
+        exc: BaseException,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> int:
+        from schemabrain.metrics.suggest import MetricSuggestionPipeline
+
+        store_path = tmp_path / "store.db"
+        _seed_store_with_ecommerce(store_path)
+
+        def _raise(self: object, *args: object, **kwargs: object) -> None:
+            raise exc
+
+        monkeypatch.setattr(MetricSuggestionPipeline, "propose_from_entities", _raise)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        return main(
+            [
+                "metrics",
+                "suggest",
+                "--source",
+                _TEST_URL,
+                "--store-path",
+                str(store_path),
+                "--apply",
+            ]
+        )
+
+    def test_overloaded_renders_shape_c_and_exits_two(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import anthropic
+
+        exc = anthropic.APIStatusError.__new__(anthropic.APIStatusError)
+        exc.status_code = 529
+        exc.message = "Overloaded"
+
+        exit_code = self._run_with_pipeline_raising(
+            exc=exc, tmp_path=tmp_path, monkeypatch=monkeypatch
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "◆ error" in err
+        assert "Anthropic is overloaded" in err
+        # Retry command names the metrics surface, not entities.
+        assert "schemabrain metrics suggest" in err
+        assert "Traceback" not in err
+
+    def test_connection_error_renders_shape_c_and_exits_two(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import anthropic
+
+        exc = anthropic.APIConnectionError.__new__(anthropic.APIConnectionError)
+        exc.message = "connection refused"
+
+        exit_code = self._run_with_pipeline_raising(
+            exc=exc, tmp_path=tmp_path, monkeypatch=monkeypatch
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "couldn't reach Anthropic" in err
+
+    def test_non_sdk_exception_still_propagates(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with pytest.raises(ValueError, match="local bug"):
+            self._run_with_pipeline_raising(
+                exc=ValueError("local bug"),
+                tmp_path=tmp_path,
+                monkeypatch=monkeypatch,
+            )

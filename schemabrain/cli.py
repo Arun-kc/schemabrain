@@ -118,6 +118,10 @@ from schemabrain.errors import (
     store_path_unwritable,
     url_wrong_driver,
 )
+from schemabrain.errors_render import (
+    classify_llm_failure,
+    render_llm_failure,
+)
 from schemabrain.eval.bundled import resolve_bundled_path
 from schemabrain.eval.golden import DEFAULT_GOLDEN_PATH, load_golden
 from schemabrain.eval.retriever import EmbeddingRetriever, KeywordRetriever, Retriever
@@ -1983,6 +1987,12 @@ def _cmd_index(
         if anthropic is not None and isinstance(e, anthropic.AuthenticationError):
             _render_guided(anthropic_auth_failed(e))
             return 2
+        if _try_render_llm_failure(
+            e,
+            retry_command="schemabrain index",
+            fallback_command="schemabrain index --no-enrich",
+        ):
+            return 2
         raise
     elapsed = time.monotonic() - started
     _render_index_done(
@@ -3178,6 +3188,19 @@ def _cmd_entities_suggest(
             )
         )
         return 1
+    except Exception as exc:
+        # Narrow handler: only the LLM round-trip is inside this try
+        # (table load + apply happen outside). An Anthropic SDK error
+        # surfacing here is the F5 scenario — render Shape C and exit
+        # cleanly. Anything not classified by the renderer (local
+        # programming bugs) propagates so the user sees the traceback.
+        if _try_render_llm_failure(
+            exc,
+            retry_command="schemabrain entities suggest",
+            fallback_command=None,
+        ):
+            return 2
+        raise
 
     if dry_run:
         _render_dry_run(result)
@@ -4402,6 +4425,19 @@ def _cmd_metrics_suggest(
             )
         )
         return 1
+    except Exception as exc:
+        # Narrow handler: only the LLM round-trip is inside this try.
+        # F5 scenario — render Shape C and exit cleanly; anything not
+        # classified by the renderer (local programming bugs)
+        # propagates so the user sees the traceback. Mirrors the
+        # entity-suggest handler above.
+        if _try_render_llm_failure(
+            exc,
+            retry_command="schemabrain metrics suggest",
+            fallback_command=None,
+        ):
+            return 2
+        raise
 
     if dry_run:
         _render_metrics_dry_run(result)
@@ -6731,6 +6767,38 @@ def _render_guided(err: GuidedError) -> None:
     fallback).
     """
     render_error(err, console=_stderr_console())
+
+
+def _try_render_llm_failure(
+    exc: BaseException,
+    *,
+    retry_command: str,
+    fallback_command: str | None,
+) -> bool:
+    """Render the Shape C LLM-failure advisory if `exc` is a known Anthropic error.
+
+    Returns True on a successful render (caller should NOT re-raise),
+    False when `exc` is not an Anthropic SDK error the renderer knows
+    about (caller should propagate so a less-specific handler or the
+    top-level traceback sees it). Centralizes the classify + render
+    pair so every CLI callsite shares one boundary.
+    """
+    kind = classify_llm_failure(exc)
+    if kind is None:
+        return False
+    # The SDK's `error.message` field carries the server-side detail;
+    # `str(exc)` falls back when the SDK didn't set it (network
+    # errors, custom subclasses). Either way, one short line under
+    # the ✗ glyph — long messages get visually truncated by Rich.
+    cause = getattr(exc, "message", None) or str(exc) or type(exc).__name__
+    render_llm_failure(
+        kind=kind,
+        retry_command=retry_command,
+        fallback_command=fallback_command,
+        cause=cause,
+        console=_stderr_console(),
+    )
+    return True
 
 
 def _resolve_url_source(
