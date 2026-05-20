@@ -54,13 +54,13 @@ Meanwhile in the operator's terminal, `schemabrain tail` streamed every tool cal
 
 ```
 14:32:08.221  describe_table  qualified_name='public.users'
-              → columns=12 tokens=380 in 11ms
+              → columns=4 tokens=130 in 11ms
 14:32:08.224  describe_table  qualified_name='public.products'
-              → columns=7 tokens=180 in 9ms
+              → columns=5 tokens=160 in 9ms
 14:32:08.227  describe_table  qualified_name='public.order_items'
-              → columns=5 tokens=140 in 10ms
+              → columns=5 tokens=150 in 10ms
 14:32:08.231  describe_table  qualified_name='public.product_categories'
-              → columns=3 tokens=90 in 8ms
+              → columns=2 tokens=70 in 8ms
 ```
 
 Every call is auditable, replayable, and PII-aware. See [Observe the agent](#observe-the-agent) for the full surface.
@@ -81,7 +81,7 @@ Five minutes from `pip install` to a working Claude Desktop integration.
 
 ```bash
 pip install schemabrain
-schemabrain --version    # → 0.3.0
+schemabrain --version
 ```
 
 Or from source if you want to hack on it:
@@ -131,11 +131,11 @@ Schema Brain init — activation wizard
   [2/7] Index schema
         ✓ 7 tables, 30 columns indexed
   [3/7] Curate entities
-        ✓ 3 entities suggested + applied (cost: $0.02)
+        ✓ 6 entities suggested + applied (cost: $0.01)
   [4/7] Curate metrics
-        ✓ 2 metrics suggested + applied (cost: $0.01)
+        ✓ 10 metrics suggested + applied (cost: $0.03)
   [5/7] Curate joins
-        ✓ 1 canonical join created (FK-mined, no LLM)
+        ✓ 5 canonical joins created (FK-mined, no LLM)
   [6/7] Wire host
         ✓ wrote schemabrain entry to ~/Library/Application Support/Claude/claude_desktop_config.json
   [7/7] Next
@@ -533,6 +533,8 @@ If you don't want a host Postgres install at all, the repo ships a `docker-compo
 docker compose up
 ```
 
+> **Note on ports.** The compose stack binds Postgres to host port **5433** (not 5432) so it never clashes with a developer-local Postgres already running on 5432. The Quickstart §2 standalone `docker run` recipe uses 5432 because it assumes a clean host. Pick whichever fits your setup; the MCP wiring below talks to the container over the internal Docker network (`postgres:5432`), so the host-side port mapping doesn't matter for the Claude Desktop integration.
+
 Point an MCP host at the indexed store via `docker run`:
 
 ```jsonc
@@ -554,7 +556,7 @@ Point an MCP host at the indexed store via `docker run`:
 }
 ```
 
-Multi-platform images (`linux/amd64` + `linux/arm64`) are published on every release to `ghcr.io/arun-kc/schemabrain` — swap the local build for the published tag in `docker-compose.yml` to skip the build step.
+The `docker compose up` recipe builds Schema Brain from the repo's `Dockerfile`, so a checkout is all you need. A pre-built multi-platform image (`linux/amd64` + `linux/arm64`) on a public registry is on the v0.3.x roadmap so you can skip the build step.
 
 ---
 
