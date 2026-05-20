@@ -165,6 +165,31 @@ This is the only finding that warrants design discussion before code change — 
 
 ---
 
+## Round-2 reviewer-rotation deferrals (5 findings — added 2026-05-20)
+
+Captured separately from the UX/onboarding audit backlog above
+because these came from the 3-agent code review (python-reviewer +
+silent-failure-hunter + Reality Checker), not the UX audits. All
+folded into PR-2 commit `2c69be4` EXCEPT these 5, which were
+deliberately deferred:
+
+| # | Sev | Source | Finding | Fix shape | Effort |
+|---|-----|--------|---------|-----------|--------|
+| R2-1 | MED | Reality Checker B2 | `_docker_load_fixture` uses `--network host` which may be no-op on Docker Desktop for macOS/Windows. 2026-05-20 macOS live smoke ran successfully (37s wizard, fixture loaded, 7 tables indexed) — so either recent Docker Desktop supports `--network host` OR the fixture loaded via a different path. Either way: cross-platform smoke verification recommended before v0.4. | Add a CI matrix cell for Docker Desktop macOS, OR document the platform-specific recipe in `setup.md`. | M |
+| R2-2 | LOW | python-reviewer #7 | `_PreambleWithTimer.__rich__` interpolates `action` parameter into Rich markup without escaping. Today every callsite passes hardcoded strings, but the public signature accepts any `str` — a future caller passing a table name with `[` would produce a markup parse error. | Use `rich.markup.escape(action)` in both `live_llm_stage_progress` and `print_llm_stage_preamble`. | S |
+| R2-3 | LOW | python-reviewer #8 | `format_mcp_entry_diff` is called for `differs_store_path_only` verdict but the wizard's auto-accept path never renders the resulting `diff_preview`. Wasteful (`json.dumps` + `unified_diff` allocations for no consumer). | Guard the `format_mcp_entry_diff` call: only compute it when `state == "differs"`. | XS |
+| R2-4 | LOW | Reality Checker B4 | `live_llm_stage_progress`'s `Live(...)` constructor + `__enter__` could raise `LiveError` if a third-party Live is somehow active outside the wizard's pause-spinner registry. Today no such caller exists. | Wrap the `with live:` in try/except `LiveError`, fall back to static preamble. | S |
+| R2-5 | LOW | Reality Checker B5 | `_WARNED_EMPTY_KEY_ENV_VARS` cross-call dedupe is process-local; tests sharing process state could see only-fires-once behavior. Production-correct; test-isolation footgun. | Add `conftest.py` autouse fixture that calls `_reset_warned_empty_key_cache_for_tests()` between tests. | XS |
+
+### Recommended sequence
+
+Bundle R2-2, R2-3, R2-5 into PR-3b alongside the UX polish round.
+R2-1 needs its own PR with macOS CI matrix work. R2-4 is fully
+defensive — defer indefinitely unless a real LiveError surfaces in
+live smoke.
+
+---
+
 ## What this backlog deliberately does NOT include
 
 - Performance work — neither audit surfaced it as friction
