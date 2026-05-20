@@ -496,6 +496,53 @@ class TestEmptyStoreHint:
         assert "entities suggest" in out
 
 
+class TestDiscoveryBlock:
+    """Day-one UX: every `inspect` exit surface must show the
+    `doctor` / `check` / `tail` discovery links, regardless of
+    whether the store is populated. The empty-state branch is
+    where these links matter MOST — a new operator who just
+    ran `init` without an API key has zero definitions to
+    drill into and needs to know what commands exist next."""
+
+    def test_empty_store_renders_discovery_block(self) -> None:
+        # Smoke 2026-05-20: empty-state branch was early-returning
+        # before the discovery block; new operators saw the "no
+        # definitions yet" hint and nothing else.
+        summary = StoreSummary(
+            table_count=7,
+            column_count=30,
+            entity_count=0,
+            metric_count=0,
+            join_count=0,
+            entity_names=(),
+            metric_names=(),
+            join_names=(),
+        )
+        out = _capture(render_summary, summary)
+        assert "schemabrain doctor" in out
+        assert "schemabrain check" in out
+        assert "schemabrain tail --follow" in out
+
+    def test_populated_store_renders_discovery_block(self) -> None:
+        # Discovery block must still appear in the populated-store
+        # branch — moved into a helper but the contract is
+        # unchanged from the original render_summary.
+        summary = StoreSummary(
+            table_count=7,
+            column_count=30,
+            entity_count=1,
+            metric_count=0,
+            join_count=0,
+            entity_names=("customer",),
+            metric_names=(),
+            join_names=(),
+        )
+        out = _capture(render_summary, summary)
+        assert "schemabrain doctor" in out
+        assert "schemabrain check" in out
+        assert "schemabrain tail --follow" in out
+
+
 class TestNonManualEntityOrigin:
     def test_origin_suggested_renders_in_brand_line(self) -> None:
         # When an entity was suggested by the LLM (origin="llm") or
