@@ -114,6 +114,7 @@ from schemabrain.errors import (
     anthropic_auth_failed,
     postgres_operational_error,
     render_error,
+    silent_rewrite_to_psycopg,
     store_path_unwritable,
     url_wrong_driver,
 )
@@ -6721,6 +6722,18 @@ def _resolve_url(url: str) -> str | None:
          ValueError is wrapped into a `url_invalid` guided error.
     """
     parsed = urlparse(url)
+    # Silent rewrite for the bare `postgresql://` / `postgres://` schemes
+    # that every Postgres tool accepts but SQLAlchemy rejects without
+    # `+psycopg`. Forcing a first-time user to learn the driver suffix
+    # is pure friction with no security or correctness payoff. Explicit
+    # wrong drivers (`postgresql+psycopg2`, `postgresql+asyncpg`) are
+    # NOT rewritten — they fall through to `url_wrong_driver` so the
+    # user learns their explicit choice can't be honored, rather than
+    # being silently overridden.
+    rewritten = silent_rewrite_to_psycopg(parsed.scheme, url)
+    if rewritten is not None:
+        url = rewritten
+        parsed = urlparse(url)
     wrong = url_wrong_driver(parsed.scheme, url)
     if wrong is not None:
         _render_guided(wrong)

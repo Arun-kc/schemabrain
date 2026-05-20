@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 
 import schemabrain
-from schemabrain.cli import _build_index_reporter, _canonical_url, _make_source_id, main
+from schemabrain.cli import (
+    _build_index_reporter,
+    _canonical_url,
+    _make_source_id,
+    _resolve_url,
+    main,
+)
 from schemabrain.core.store import SQLiteStore
 from schemabrain.indexer import NullReporter
 
@@ -203,22 +209,31 @@ class TestIndexCommandValidation:
         assert "Unsupported scheme" in err
         assert "fix:" in err
 
-    def test_bare_postgresql_scheme_rejected_with_guided_error(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ):
-        # Papercut: bare `postgresql://` resolves to psycopg2 in
-        # SQLAlchemy but we ship only psycopg v3, producing a confusing
-        # `ModuleNotFoundError: psycopg2` traceback at create_engine
-        # time. We catch this at the URL boundary with a guided error
-        # pointing at the correct scheme.
-        store_path = tmp_path / "schemabrain.db"
-        exit_code = main(["index", "postgresql://user:pw@host/db", "--store-path", str(store_path)])
-        assert exit_code == 2
-        err = capsys.readouterr().err
-        assert "psycopg v3" in err
-        # The fix line must include the EXACT corrected URL — the
-        # user shouldn't have to figure out the rewrite themselves.
-        assert "postgresql+psycopg://user:pw@host/db" in err
+    def test_bare_postgresql_scheme_silently_rewritten(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The bare `postgresql://` scheme is the most common URL form
+        # every Postgres tool accepts. Forcing first-time users to
+        # learn `+psycopg` was the README's #1 papercut — we now
+        # silently rewrite at the URL boundary so they never see it.
+        # The rewrite is genuinely silent: no warning, no error,
+        # nothing on stderr. Downstream code sees the canonical form.
+        canonical = _resolve_url("postgresql://user:pw@host:5432/db")
+        assert canonical is not None
+        assert canonical.startswith("postgresql+psycopg://")
+        assert "host:5432/db" in canonical
+        captured = capsys.readouterr()
+        # Silent means silent — no error, no warning. The whole point
+        # of the rewrite is the user never knows it happened.
+        assert captured.err == ""
+
+    def test_postgres_alias_silently_rewritten(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Heroku-style `postgres://` — same silent rewrite. Users
+        # migrating from Heroku or Vercel-style URLs should just work.
+        canonical = _resolve_url("postgres://host/db")
+        assert canonical is not None
+        assert canonical.startswith("postgresql+psycopg://")
+        assert capsys.readouterr().err == ""
 
     def test_psycopg2_explicit_scheme_rejected_with_guided_error(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
