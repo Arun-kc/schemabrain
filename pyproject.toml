@@ -98,6 +98,33 @@ schemabrain = "schemabrain.cli:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.sdist]
+# Belt-and-suspenders against future stray venvs / scratch artifacts
+# breaking the publish pipeline. `.gitignore` already excludes these,
+# but hatchling's sdist build walks the working tree directly rather
+# than asking git — so an uncommitted `.venv-foo/` next to `pyproject`
+# would otherwise get packed and choke on absolute symlinks to a
+# Python interpreter. The list mirrors `.gitignore`'s top-level
+# directory exclusions; extend it if a new top-level scratch dir
+# emerges.
+exclude = [
+    ".venv*",
+    ".benchmarks",
+    ".hypothesis",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".review",
+    ".claude",
+    "dist",
+    "build",
+    "htmlcov",
+    "schemabrain-*.db",
+    "schemabrain.db",
+    "schemabrain.db-journal",
+    "docs/internal",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["schemabrain"]
 # Bundled data files inside the package directory. Hatchling's wheel
