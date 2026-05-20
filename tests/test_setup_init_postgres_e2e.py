@@ -340,6 +340,9 @@ class TestWizardAgainstPostgres16:
         # what most CI environments hit and is the path we most want
         # to exercise against a real database).
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        # D4: chdir so `main()`'s .env load doesn't pick up the dev
+        # repo's `.env` and silently re-populate ANTHROPIC_API_KEY.
+        monkeypatch.chdir(tmp_path)
 
         store_path = tmp_path / "wizard.db"
 

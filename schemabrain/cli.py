@@ -261,6 +261,15 @@ def _resolve_max_cost(args: argparse.Namespace) -> float:
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns process exit code."""
+    # D4: load `.env` in CWD before any subcommand reads env vars.
+    # Shell exports always win — `load_env_file_into_environ` only
+    # sets keys NOT already present. Silent no-op if `.env` is
+    # absent. We don't catch exceptions because the loader itself
+    # is malformed-line-tolerant and the only failure modes are
+    # filesystem I/O issues that the operator needs to see.
+    from schemabrain.setup.env_file import load_env_file_into_environ
+
+    load_env_file_into_environ(Path.cwd() / ".env")
     try:
         return _dispatch(argv)
     except (KeyboardInterrupt, EOFError):
@@ -7129,15 +7138,43 @@ def _resolve_anthropic_key_source(
             file=sys.stderr,
         )
     if allow_interactive and _stderr_is_interactive_tty():
-        from schemabrain._ui import prompt_for_anthropic_key
+        from schemabrain._ui import (
+            offer_persist_anthropic_key_to_env_file,
+            prompt_for_anthropic_key,
+        )
 
-        return prompt_for_anthropic_key(
-            _stderr_console(),
+        console = _stderr_console()
+        prompted_key = prompt_for_anthropic_key(
+            console,
             purpose=interactive_purpose,
             cost_estimate_usd=interactive_cost_estimate_usd,
             cap_usd=interactive_cap_usd,
             skip_hint=interactive_skip_hint,
         )
+        if prompted_key is not None:
+            # D4: offer to persist the freshly-pasted key so the
+            # operator doesn't have to paste it again. Opt-in
+            # default no. Failures inside the persistence flow
+            # MUST NOT block the resolver — the operator's key is
+            # in hand; .env is a convenience, not a precondition.
+            cwd = Path.cwd()
+            try:
+                offer_persist_anthropic_key_to_env_file(
+                    console,
+                    key_value=prompted_key,
+                    env_path=cwd / ".env",
+                    gitignore_path=cwd / ".gitignore",
+                )
+            except OSError as exc:
+                # Disk-write failure (read-only FS, permission denied,
+                # quota). Surface a one-line warning so the operator
+                # knows the save didn't happen, but don't error out —
+                # they still have the key for this run.
+                print(
+                    f"warning: could not persist ANTHROPIC_API_KEY to .env: {exc}",
+                    file=sys.stderr,
+                )
+        return prompted_key
     return None
 
 

@@ -209,6 +209,9 @@ class TestPrerequisites:
         # Without --provider stub, the default Anthropic provider
         # needs an API key — fail fast and friendly.
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        # D4: chdir so `main()`'s .env load doesn't pick up the dev
+        # repo's `.env` and silently re-populate ANTHROPIC_API_KEY.
+        monkeypatch.chdir(tmp_path)
         _seed_store(tmp_path / "store.db")
         exit_code = main(
             [

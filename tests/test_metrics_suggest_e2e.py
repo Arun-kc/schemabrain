@@ -467,6 +467,9 @@ candidates:
         store_path = tmp_path / "store.db"
         _seed_store_with_ecommerce(store_path)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        # D4: chdir so `main()`'s .env load doesn't pick up the dev
+        # repo's `.env` and silently re-populate ANTHROPIC_API_KEY.
+        monkeypatch.chdir(tmp_path)
 
         exit_code = main(
             [

@@ -1,5 +1,6 @@
 """Tests for the schemabrain CLI."""
 
+import os
 import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -339,6 +340,9 @@ class TestEnrichmentCliFlags:
         # Without ANTHROPIC_API_KEY and without --no-enrich, the CLI must
         # refuse to run rather than silently fall back to a no-LLM mode.
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        # D4: chdir so `main()`'s .env load doesn't pick up the dev
+        # repo's `.env` and silently re-populate ANTHROPIC_API_KEY.
+        monkeypatch.chdir(tmp_path)
         store_path = tmp_path / "schemabrain.db"
         exit_code = main(["index", "postgresql+psycopg://fake/db", "--store-path", str(store_path)])
         assert exit_code == 2
@@ -3061,6 +3065,173 @@ class TestMainKeyboardInterruptHandling:
         monkeypatch.setattr(cli, "_dispatch", raising_dispatch)
         assert cli.main(["init"]) == 130
         assert "aborted" in capsys.readouterr().err
+
+
+class TestMainLoadsEnvFile:
+    """D4: ``main()`` loads ``.env`` from CWD before any subcommand runs.
+
+    Shell exports always win — a ``.env`` is a convenience for
+    operators who pasted a key during the wizard, never an override
+    of an explicit shell export.
+    """
+
+    def test_main_loads_env_keys_into_environ(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from schemabrain import cli
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "ANTHROPIC_API_KEY=sk-ant-from-file\nSCHEMABRAIN_TEST_LOADED=yes\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("SCHEMABRAIN_TEST_LOADED", raising=False)
+        monkeypatch.setattr(cli, "_dispatch", lambda _argv: 0)
+
+        cli.main(["init"])
+
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-from-file"
+        assert os.environ["SCHEMABRAIN_TEST_LOADED"] == "yes"
+
+    def test_main_does_not_override_existing_shell_export(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # Hard contract: a stale `.env` MUST NOT override a freshly-
+        # rotated key the operator pasted into their shell. Without
+        # this, debugging an expired-key error becomes a hunt for
+        # the wrong file.
+        from schemabrain import cli
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("ANTHROPIC_API_KEY=sk-ant-STALE\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-FRESH")
+        monkeypatch.setattr(cli, "_dispatch", lambda _argv: 0)
+
+        cli.main(["init"])
+
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-FRESH"
+
+    def test_main_silently_no_ops_when_env_file_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # The most common case: no `.env` in CWD. Must not print
+        # anything (silent no-op) and must not block startup.
+        from schemabrain import cli
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cli, "_dispatch", lambda _argv: 0)
+
+        assert cli.main(["init"]) == 0
+        captured = capsys.readouterr()
+        # No noise from the loader on the happy "no .env" path.
+        assert captured.out == ""
+
+
+class TestResolveAnthropicApiKeyD4Persistence:
+    """D4: ``_resolve_anthropic_key_source`` offers .env persistence on
+    successful interactive key prompt.
+
+    The integration point is the resolver — every caller that opts
+    into ``allow_interactive=True`` (wizard stages, suggest commands)
+    inherits the persistence offer for free.
+    """
+
+    def test_persistence_offered_after_interactive_key_paste(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from schemabrain import _ui, cli
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(cli, "_stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr(
+            _ui,
+            "prompt_for_anthropic_key",
+            lambda *_a, **_kw: "sk-ant-pasted",
+        )
+        offer_calls: list[dict[str, object]] = []
+
+        def fake_offer(_console: object, **kwargs: object) -> bool:
+            offer_calls.append(kwargs)
+            return True
+
+        monkeypatch.setattr(_ui, "offer_persist_anthropic_key_to_env_file", fake_offer)
+
+        key = cli._resolve_anthropic_key_source(allow_interactive=True)
+
+        assert key == "sk-ant-pasted"
+        assert len(offer_calls) == 1
+        assert offer_calls[0]["key_value"] == "sk-ant-pasted"
+
+    def test_persistence_skipped_when_user_skips_key_prompt(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # If the user presses Enter at the key prompt (None), the
+        # persistence offer must NOT fire — there's no key to persist.
+        from schemabrain import _ui, cli
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(cli, "_stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr(_ui, "prompt_for_anthropic_key", lambda *_a, **_kw: None)
+        offer_calls: list[object] = []
+        monkeypatch.setattr(
+            _ui,
+            "offer_persist_anthropic_key_to_env_file",
+            lambda *a, **kw: offer_calls.append((a, kw)) or False,
+        )
+
+        key = cli._resolve_anthropic_key_source(allow_interactive=True)
+
+        assert key is None
+        assert offer_calls == []
+
+    def test_persistence_oserror_does_not_block_key_return(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Disk-write failure (read-only FS, permission denied,
+        # quota) MUST NOT abort the resolver — the operator's key
+        # is in hand; .env is a convenience.
+        from schemabrain import _ui, cli
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(cli, "_stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr(
+            _ui,
+            "prompt_for_anthropic_key",
+            lambda *_a, **_kw: "sk-ant-pasted",
+        )
+
+        def raising_offer(*_a: object, **_kw: object) -> bool:
+            raise OSError("read-only filesystem")
+
+        monkeypatch.setattr(_ui, "offer_persist_anthropic_key_to_env_file", raising_offer)
+
+        key = cli._resolve_anthropic_key_source(allow_interactive=True)
+
+        # Key still returned — operator can proceed with this run.
+        assert key == "sk-ant-pasted"
+        # Warning surfaces so the operator knows persistence failed.
+        err = capsys.readouterr().err
+        assert "could not persist" in err
 
 
 class TestIndexUrlEnv:

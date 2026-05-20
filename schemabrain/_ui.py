@@ -46,6 +46,7 @@ import contextlib
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from typing import IO, Final, Protocol
 
 from rich.console import Console
@@ -378,8 +379,6 @@ def short_path(path: str | None) -> str:
     """
     if path is None:
         return ""
-    from pathlib import Path
-
     try:
         home = Path.home()
     except (OSError, RuntimeError):
@@ -637,6 +636,76 @@ def prompt_for_anthropic_key(
     return stripped or None
 
 
+def offer_persist_anthropic_key_to_env_file(
+    console: Console,
+    *,
+    key_value: str,
+    env_path: Path,
+    gitignore_path: Path,
+) -> bool:
+    """Ask whether to save a freshly-pasted API key to ``.env`` and persist on yes.
+
+    Called by ``_resolve_anthropic_api_key`` immediately after
+    ``prompt_for_anthropic_key`` returns a non-empty key, so the
+    operator who just pasted a key once doesn't have to paste it
+    again every time they re-run the wizard or a suggest command.
+
+    Three contracts (D4):
+
+    1. **Opt-in default no.** The Confirm prompt's default is False —
+       Enter without typing accepts the safe path (don't persist).
+       The key never lands on disk without an explicit ``y``.
+    2. **Never write silently.** Both the prompt itself AND the
+       written-confirmation message print to the console. If the
+       prompt would not be visible (non-TTY), the helper returns
+       False without writing anything.
+    3. **Gitignore warning.** When ``env_path`` is not listed in
+       ``gitignore_path``, prints a one-line yellow warning above
+       the prompt so the operator sees the leak risk BEFORE saying
+       yes. Does not block — the operator decides.
+
+    Returns True iff the key was actually persisted to disk. The
+    caller does not need to act on the return; the helper handles
+    all user-facing messaging (success line, warning, decline path).
+    """
+    from rich.prompt import Confirm
+
+    from schemabrain.setup.env_file import (
+        is_path_in_gitignore,
+        persist_key_to_env_file,
+    )
+
+    with pause_active_spinner():
+        if not is_path_in_gitignore(target=env_path, gitignore=gitignore_path):
+            # Yellow + explicit "not in .gitignore" wording so the
+            # operator can't miss the risk. We deliberately do NOT
+            # auto-add the entry to .gitignore — that's the
+            # operator's repo to manage; we don't want to mutate
+            # their git state during a key-paste flow.
+            console.print(
+                f"  [yellow]{GLYPH_WARN} {env_path.name} is NOT listed in "
+                f"{gitignore_path.name} — saving here will commit the key "
+                f"if you `git add` this file.[/]"
+            )
+        consent = Confirm.ask(
+            f"  [cyan]Save ANTHROPIC_API_KEY to {env_path.name} for next time?[/]",
+            default=False,
+            console=console,
+        )
+        if not consent:
+            return False
+        persist_key_to_env_file(
+            key_name="ANTHROPIC_API_KEY",
+            key_value=key_value,
+            env_path=env_path,
+        )
+        console.print(
+            f"  [bright_black]{GLYPH_OK} saved to {env_path} — next run "
+            f"loads it automatically; never overrides an explicit export.[/]"
+        )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # LLM cost-preview line — day-one UX overhaul "what's happening" sub-step.
 # ---------------------------------------------------------------------------
@@ -850,6 +919,7 @@ __all__ = [
     "drift_glyph",
     "live_llm_stage_progress",
     "make_console",
+    "offer_persist_anthropic_key_to_env_file",
     "pause_active_spinner",
     "pii_marker",
     "print_llm_stage_preamble",

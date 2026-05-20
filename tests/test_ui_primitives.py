@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import io
 import sys
+from pathlib import Path
 
 import pytest
 from rich.console import Console
@@ -676,6 +677,181 @@ class TestPromptForAnthropicKey:
                 cost_estimate_usd=0.01,
                 cap_usd=0.5,
             )
+
+
+class TestOfferPersistAnthropicKeyToEnvFile:
+    """D4: opt-in consent prompt + .env persistence + gitignore warning.
+
+    Verifies the three hard contracts from the docstring:
+
+    1. Opt-in default no — Enter without typing accepts the safe path.
+    2. Never writes silently — every write produces a visible message.
+    3. Gitignore warning fires when ``.env`` is not listed.
+    """
+
+    def test_writes_to_env_when_user_consents(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        env_path = tmp_path / ".env"
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: True)
+
+        result = offer_persist_anthropic_key_to_env_file(
+            make_console(file=io.StringIO()),
+            key_value="sk-ant-secret",
+            env_path=env_path,
+            gitignore_path=gi,
+        )
+
+        assert result is True
+        assert env_path.exists()
+        assert "ANTHROPIC_API_KEY=sk-ant-secret" in env_path.read_text()
+
+    def test_skips_write_when_user_declines(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The opt-in default no contract: if the user presses Enter
+        # (or types n), the key MUST NOT land on disk. The whole
+        # point of D4 is to never write a secret without explicit
+        # consent.
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        env_path = tmp_path / ".env"
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: False)
+
+        result = offer_persist_anthropic_key_to_env_file(
+            make_console(file=io.StringIO()),
+            key_value="sk-ant-secret",
+            env_path=env_path,
+            gitignore_path=gi,
+        )
+
+        assert result is False
+        assert not env_path.exists()
+
+    def test_confirm_default_is_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The Confirm.ask call MUST pass `default=False` so a
+        # blank-Enter declines the save. A `default=True` would mean
+        # an operator who just wanted to dismiss the prompt
+        # accidentally writes the secret to disk.
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        captured: dict[str, object] = {}
+
+        def fake_confirm(*args: object, **kwargs: object) -> bool:
+            captured.update(kwargs)
+            return False
+
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", fake_confirm)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=io.StringIO()),
+            key_value="sk-ant-secret",
+            env_path=tmp_path / ".env",
+            gitignore_path=gi,
+        )
+
+        assert captured.get("default") is False
+
+    def test_warns_when_env_not_in_gitignore(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        buf = io.StringIO()
+        # No .gitignore at all — warning must surface.
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: False)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=buf, force_terminal=False, width=120),
+            key_value="sk-ant-secret",
+            env_path=tmp_path / ".env",
+            gitignore_path=tmp_path / ".gitignore",
+        )
+
+        out = buf.getvalue()
+        # Operator must see the leak-risk line before the prompt fires.
+        assert ".env" in out
+        assert ".gitignore" in out
+        assert "NOT" in out
+
+    def test_no_warning_when_env_is_in_gitignore(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        buf = io.StringIO()
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: False)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=buf, force_terminal=False, width=120),
+            key_value="sk-ant-secret",
+            env_path=tmp_path / ".env",
+            gitignore_path=gi,
+        )
+
+        out = buf.getvalue()
+        # No leak warning — the operator's repo is already configured
+        # to ignore .env. (The prompt itself still renders.)
+        assert "NOT" not in out
+
+    def test_success_message_printed_on_persist(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The "never write silently" contract: every successful
+        # write produces a visible confirmation so the operator
+        # knows their key is on disk now.
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        buf = io.StringIO()
+        env_path = tmp_path / ".env"
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: True)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=buf, force_terminal=False, width=120),
+            key_value="sk-ant-secret",
+            env_path=env_path,
+            gitignore_path=gi,
+        )
+
+        out = buf.getvalue()
+        assert "saved to" in out
+        # The path may soft-wrap inside Rich's width budget — assert
+        # on the path after collapsing whitespace so the basename
+        # match survives mid-word wraps.
+        collapsed = "".join(out.split())
+        assert env_path.name in collapsed
 
 
 class TestPrintLlmStagePreamble:
