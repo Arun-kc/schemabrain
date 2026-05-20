@@ -113,16 +113,18 @@ These MUST be respected; ignoring them breaks the wizard contract or introduces 
 5. **Credential redaction precedent** — `password=True` on `Prompt.ask` for URLs and keys; no log echoes; reuse `_redact_env_args` pattern (`cli.py:5463-5485`).
 6. **Host snippet `env`-block injection** — when URL is collected interactively, write it to the snippet's `env` block. Preserves env-var indirection (no URL in argv) while solving Claude Desktop cold-start.
 
-## Implementation order (commits)
+## Implementation order (commits — as shipped)
 
 1. **Commit 1 — Planning doc.** This file.
-2. **Commit 2 — Shared helpers in `_env.py`.** `resolve_url_or_prompt`, `resolve_anthropic_key_or_prompt`, silent `+psycopg` rewrite. With tests.
-3. **Commit 3 — Snippet `env`-block injection.** `init_flow.build_snippet` accepts an `inline_url` arg; when present, writes `env: { SCHEMABRAIN_DATABASE_URL: <url> }` into the snippet. With tests.
-4. **Commit 4 — Stage 0 `_stage_setup`.** New module `schemabrain/setup/setup_stage.py`. Fork prompt + Docker preflight + URL prompt + API key prompt with cost disclosure. Wire into `DEFAULT_STAGES` as stage 0. With tests.
-5. **Commit 5 — Sub-step Option B.** Rich `Live` line with elapsed timer + cost, replacing the rapid-flash 3-label pattern in `_run_entity_suggestion` + `_run_metric_suggestion`. With tests.
-6. **Commit 6 — Wire helpers into 5 post-init commands.** `index`, `check`, `entities suggest`, `metrics suggest`, `joins suggest`. With tests.
-7. **Commit 7 — Discovery surfaces.** Wizard exit panel + `inspect` next-steps + `doctor` no-store branch.
-8. **Commit 8 — Round-2 reviewer folds.** 3-agent rotation findings.
+2. **Commit 2 — Silent `postgresql://` rewrite.** `silent_rewrite_to_psycopg` in `errors.py`, wired into `_resolve_url`. With tests.
+3. **Commit 3 — UI prompt primitives.** `prompt_for_url` + `prompt_for_anthropic_key` in `_ui.py`. With tests.
+4. **Commit 4 — Resolver opt-in interactive paths.** `_resolve_url_source(allow_interactive=True)` + new `_resolve_anthropic_key_source` helper in `cli.py`. With tests.
+5. **Commit 5 — Wire prompts into 5 post-init commands.** `index`, `check`, `entities suggest`, `metrics suggest`, `joins suggest`.
+6. **Commit 6 — Stage 0 fork + Docker preflight.** New module `schemabrain/setup/setup_stage.py`. Wired into `_cmd_init` with Ctrl-C → exit-130 translation. With tests.
+7. **Commit 7 — Snippet env-block URL injection.** **NO-OP / VERIFIED.** Audit raised this as a concern, but `build_snippet` already produces `env={env_var_name: db_url}` (hosts.py:139), and the contract is already fenced by `test_db_url_lives_in_env_block_not_args` (test_setup_hosts.py:113). When the wizard collects a URL interactively (demo or own-DB), the same code path feeds it into `build_snippet`, which writes it into the snippet's env block. Claude Desktop launches `schemabrain serve` with the URL in its env on cold-start. No further code change needed.
+8. **Commit 8 — Sub-step Option B.** Rich `Live` line with elapsed timer + cost, replacing the rapid-flash 3-label pattern in `_run_entity_suggestion` + `_run_metric_suggestion`. With tests.
+9. **Commit 9 — Discovery surfaces.** Wizard exit panel + `inspect` next-steps + `doctor` no-store branch.
+10. **Commit 10 — Round-2 reviewer folds.** 3-agent rotation findings.
 
 ## Quality gates
 
