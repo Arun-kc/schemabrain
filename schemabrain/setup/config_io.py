@@ -27,6 +27,7 @@ a precise location to the user.
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import shutil
@@ -150,6 +151,47 @@ def write_mcp_config_atomic(
         tmp_path.unlink(missing_ok=True)
         raise
     return backup_made
+
+
+def format_mcp_entry_diff(
+    *,
+    existing_entry: dict[str, Any] | None,
+    new_entry: dict[str, Any],
+    config_path: Path,
+) -> str:
+    """Render a unified-diff preview of one schemabrain MCP entry change.
+
+    Pretty-prints both entries as indented JSON with sorted keys, then
+    runs them through ``difflib.unified_diff`` with the host config
+    path in both headers (suffixed with ``(current)`` and
+    ``(after init)``) so the operator can see the exact byte-level
+    delta — env-var rename, command pin, db_url shift, store-path move
+    — before approving the overwrite at stage 6.
+
+    When ``existing_entry`` is ``None`` the diff renders the new entry
+    as a pure addition (``+`` lines only) so the same renderer can
+    cover the "fresh-write" path without a None-check at the call site.
+
+    Pure function: no I/O, no host clock dependence, no mutation. The
+    wizard's ``_render_overwrite_diff_summary`` formats this through
+    Rich; tests assert on the raw text returned here.
+    """
+    existing_text = (
+        json.dumps(existing_entry, indent=2, sort_keys=True) + "\n"
+        if existing_entry is not None
+        else ""
+    )
+    new_text = json.dumps(new_entry, indent=2, sort_keys=True) + "\n"
+    fromfile = f"{config_path} (current)"
+    tofile = f"{config_path} (after init)"
+    diff_iter = difflib.unified_diff(
+        existing_text.splitlines(keepends=True),
+        new_text.splitlines(keepends=True),
+        fromfile=fromfile,
+        tofile=tofile,
+        n=3,
+    )
+    return "".join(diff_iter)
 
 
 def schemabrain_entry_in(config: dict[str, Any] | None) -> dict[str, Any] | None:

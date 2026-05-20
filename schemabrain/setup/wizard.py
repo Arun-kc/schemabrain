@@ -60,19 +60,34 @@ from typing import TYPE_CHECKING, Literal, get_args
 
 from sqlalchemy.exc import OperationalError
 
+from schemabrain import _ui
 from schemabrain._env import resolve_positive_float_env
+from schemabrain._ui import prompt_yes_no, short_path
 from schemabrain.errors import GuidedError
+from schemabrain.errors_render import LlmFailureKind, classify_llm_failure
 from schemabrain.setup.hosts import HostName, is_postgres_url
 from schemabrain.setup.init_flow import (
+    ClaudeDesktopEntryComparison,
     InitRefusal,
     InitResult,
     _validate_source_reachable,
     _validate_source_read_only,
     init,
+    peek_claude_desktop_overwrite,
 )
 
 if TYPE_CHECKING:
+    from rich.console import Console
+
     from schemabrain.indexer import IndexResult
+
+    # NOTE: `ClaudeDesktopEntryComparison` is imported at runtime
+    # at module top (used as a return type from
+    # `peek_claude_desktop_overwrite` and as an annotation on the
+    # `_render_overwrite_diff_summary` signature). No duplicate
+    # `TYPE_CHECKING` import here — Round-1 fold M1 removed it
+    # because the duplicate misleads readers into thinking the
+    # runtime import is missing or conditional.
 
 # ----- public types ---------------------------------------------------------
 
@@ -109,6 +124,19 @@ class StageOutcome:
     message: str
     next_step: str | None = None
     duration_s: float = 0.0
+    user_cancelled: bool = False
+    """True iff a `failed` outcome reflects a deliberate user choice.
+
+    Set by stage handlers that catch an interactive-prompt decline
+    (today: only `_stage_wire_host` when the F3 overwrite prompt
+    returns False). Consumed by `_cmd_init` to map the abort back
+    to exit code 0 — a user-cancelled overwrite is not a failure,
+    it's an informed choice.
+
+    Replaces the F3 message-prefix-coupling shape (`message.startswith(
+    "cancelled by user")`) which silently broke whenever the
+    copy was edited (Round-1 fold H3, silent-failure-hunter HIGH).
+    """
 
     def __post_init__(self) -> None:
         if self.stage < 1:
@@ -134,6 +162,11 @@ class StageOutcome:
                 "StageOutcome with status='failed' must include next_step "
                 "pointing the user at a recovery action"
             )
+        # `user_cancelled=True` is only meaningful on a `failed`
+        # outcome. Setting it on done/skipped is a contract violation
+        # the orchestrator's exit-code mapping would silently ignore.
+        if self.user_cancelled and self.status != "failed":
+            raise ValueError("StageOutcome.user_cancelled is only valid with status='failed'")
 
 
 @dataclass(frozen=True)
@@ -645,13 +678,32 @@ def _stage_index(ctx: WizardContext) -> StageOutcome:
         if isinstance(existing, StageOutcome):
             return existing  # schema-version mismatch surfaced as failed
         if existing > 0:
+            # F4 (post-PR-#79 polish): the message used to read
+            # "already indexed: 7 table(s) present for this source",
+            # which the operator couldn't temporally locate — they
+            # saw the hero panel saying "Setting up SchemaBrain"
+            # then "already indexed" and wondered if their fresh
+            # `init` was even doing anything. The check happens
+            # BEFORE any writes in this stage, so a non-zero
+            # `existing` count is unambiguously from a prior run
+            # (no other code path inside this single wizard run
+            # could have populated the store before stage 2 reached
+            # this check). Make the temporal framing explicit and
+            # surface the store path so the operator knows which
+            # artifact is being reused.
+            refresh_command = (
+                f"run `schemabrain index --url-env {cfg.env_var_name}` "
+                "to re-index against the live source"
+            )
             return StageOutcome(
                 stage=2,
                 name="index",
                 status="skipped",
-                message=f"already indexed: {existing} table(s) present for this source",
-                next_step="run `schemabrain index` directly to refresh "
-                "if the source schema has changed",
+                message=(
+                    f"reusing {existing} table(s) from a prior indexing run "
+                    f"({short_path(str(cfg.store_path))})"
+                ),
+                next_step=(f"{refresh_command} if the source schema has changed"),
             )
 
     api_key: str | None = None
@@ -1051,9 +1103,10 @@ def _stage_entities(ctx: WizardContext) -> StageOutcome:
             name="entities",
             status="failed",
             message=f"LLM call failed: {exc.message}",
-            next_step="re-run — transient LLM/network errors usually clear. "
-            "If the message mentions `max_tokens`, the model went off-prompt; "
-            "re-run or curate entities by hand via `schemabrain entities apply`.",
+            next_step=_llm_failure_next_step(
+                exc.kind,
+                apply_command="schemabrain entities apply",
+            ),
         )
     except _EmptySchemaAtWizard:
         return StageOutcome(
@@ -1180,11 +1233,79 @@ class _LLMClientErrorAtWizard(Exception):
     which violates the documented "best-effort" contract for stages
     3 / 4 / 5 (failure records a guided StageOutcome, doesn't abort
     the wizard).
+
+    F5 (post-PR-#79 polish): carries an optional `kind` field set by
+    the call site using ``errors_render.classify_llm_failure``. When
+    present, the stage handler picks a kind-specific `next_step`
+    instead of the generic "re-run, transient errors usually clear"
+    fallback — a 529 overload gets "wait 30-60s and retry", a
+    connection error gets "check network/proxy", and so on. `None`
+    preserves the pre-F5 generic behavior for non-Anthropic causes
+    (e.g. `max_tokens` RuntimeError from the SDK extractor).
     """
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, kind: LlmFailureKind | None = None) -> None:
         super().__init__(message)
         self.message = message
+        self.kind = kind
+
+
+def _llm_failure_next_step(
+    kind: LlmFailureKind | None,
+    *,
+    apply_command: str,
+) -> str:
+    """Pick kind-specific `next_step` copy for a failed StageOutcome.
+
+    Kept beside `_LLMClientErrorAtWizard` so the kind→hint mapping
+    is local to one module. `apply_command` is the manual-curation
+    escape hatch surfaced in the fallback branch (e.g.
+    ``"schemabrain entities apply"``); kind-specific branches don't
+    need it because they recommend a wait + retry, not manual work.
+
+    The pre-F5 generic copy is the fallback (``kind=None``) and
+    covers non-Anthropic causes — most notably the ``max_tokens``
+    ``RuntimeError`` raised by
+    ``enrichment.anthropic_client._extract_text``, which the
+    classifier returns ``None`` for (RuntimeError, not an SDK-typed
+    error).
+    """
+    # Round-1 fold L1: handle the documented `kind is None` fallback
+    # FIRST, then dispatch on the four known kinds. Pre-fold, an
+    # unknown kind (typo or a new `LlmFailureKind` value forgotten
+    # here) silently fell into the None branch and returned the
+    # max_tokens-style copy — the only dispatch across the three
+    # parallel per-kind functions that didn't loudly fail on a
+    # typo (`_llm_failure_titles` and `_llm_failure_retry_hint` in
+    # `errors_render.py` raise on unknown kinds; this one didn't).
+    if kind is None:
+        return (
+            "re-run — transient LLM/network errors usually clear. "
+            "If the message mentions `max_tokens`, the model went off-prompt; "
+            f"re-run or curate by hand via `{apply_command}`."
+        )
+    if kind == "overloaded":
+        return (
+            "Anthropic is overloaded — wait 30-60s and re-run. "
+            "See https://status.anthropic.com if it persists."
+        )
+    if kind == "rate_limited":
+        return (
+            "rate-limited — wait and re-run; consider lowering SCHEMABRAIN_*_CONCURRENCY env vars."
+        )
+    if kind == "connection":
+        return "couldn't reach Anthropic — check network / proxy / DNS, then re-run."
+    if kind == "api_error":
+        return (
+            "Anthropic returned an error — re-run later; if it persists, check the message above."
+        )
+    raise ValueError(
+        f"unknown kind {kind!r}; expected one of "
+        "'overloaded' | 'rate_limited' | 'connection' | 'api_error' | None. "
+        "Add the new kind to `LlmFailureKind` (in errors_render.py) and update "
+        "this dispatch + `_llm_failure_titles` + `_llm_failure_retry_hint` "
+        "together so all three stay aligned."
+    )
 
 
 class _DbtImportFailedAtWizard(Exception):
@@ -1277,7 +1398,7 @@ def _run_entity_suggestion(
     """
     from sqlite3 import IntegrityError
 
-    from schemabrain._ui import make_console, print_llm_stage_preamble
+    from schemabrain._ui import live_llm_stage_progress, make_console
     from schemabrain.core.store import DbtOwnedEntityError, SQLiteStore
     from schemabrain.enrichment.anthropic_client import anthropic_sonnet_46_client
     from schemabrain.entities.suggest import (
@@ -1303,13 +1424,16 @@ def _run_entity_suggestion(
         if not tables:
             raise _EmptySchemaAtWizard()
 
-        # Cost-preview line: tells the user what's about to be spent
-        # BEFORE the ~30s LLM call goes out. Without this, the wizard
-        # spinner reads as "stuck" — the user has no visibility into
-        # what's happening or how much it'll cost. Pairs with the
-        # cost disclosure in `prompt_for_anthropic_key` (same shape,
-        # same numbers).
-        print_llm_stage_preamble(
+        # D1 (post-PR-#79 polish): wrap the LLM round-trip in a Rich
+        # ``Live`` display that shows the cost preview AND an
+        # auto-updating elapsed timer. Pre-D1, the wizard printed a
+        # one-line static preamble (PR-1 c6c899e) then went silent
+        # for the ~30s LLM call — operators couldn't tell whether the
+        # call was still in flight or hung. The Live timer ticks
+        # every 0.5s so the operator gets continuous feedback.
+        # Non-TTY (CI / piped stderr) falls back to the static
+        # preamble shape automatically.
+        progress = live_llm_stage_progress(
             make_console(stderr=True),
             action=f"identify business entities ({len(tables)} tables)",
             model="claude-sonnet-4-6",
@@ -1318,7 +1442,8 @@ def _run_entity_suggestion(
         )
 
         try:
-            result = pipeline.propose_from_tables(tables)
+            with progress:
+                result = pipeline.propose_from_tables(tables)
         except CostCeilingExceededError as exc:
             raise _CostCeilingExceededAtWizard(str(exc)) from exc
         except SuggestionParseError as exc:
@@ -1342,7 +1467,13 @@ def _run_entity_suggestion(
             # letting the wizard crash mid-pipeline. `repr(exc)`
             # fallback (instead of `type(exc).__name__`) preserves
             # argument visibility when `str(exc)` is empty.
-            raise _LLMClientErrorAtWizard(str(exc) or repr(exc)) from exc
+            # F5: classify the SDK exception so the stage handler can
+            # pick kind-specific next_step copy (529 → "wait 30-60s",
+            # connection → "check network", etc.).
+            raise _LLMClientErrorAtWizard(
+                str(exc) or repr(exc),
+                kind=classify_llm_failure(exc),
+            ) from exc
 
         applied = 0
         skip_reason: str | None = None
@@ -1704,9 +1835,10 @@ def _stage_metrics(ctx: WizardContext) -> StageOutcome:
             name="metrics",
             status="failed",
             message=f"LLM call failed: {exc.message}",
-            next_step="re-run — transient LLM/network errors usually clear. "
-            "If the message mentions `max_tokens`, the model went off-prompt; "
-            "re-run or curate metrics by hand via `schemabrain metrics apply`.",
+            next_step=_llm_failure_next_step(
+                exc.kind,
+                apply_command="schemabrain metrics apply",
+            ),
         )
     except _EmptySchemaAtWizard:
         return StageOutcome(
@@ -1855,7 +1987,7 @@ def _run_metric_suggestion(
     """
     from sqlite3 import IntegrityError
 
-    from schemabrain._ui import make_console, print_llm_stage_preamble
+    from schemabrain._ui import live_llm_stage_progress, make_console
     from schemabrain.core.store import DbtOwnedMetricError, SQLiteStore
     from schemabrain.enrichment.anthropic_client import anthropic_sonnet_46_client
     from schemabrain.entities.suggest import (
@@ -1895,12 +2027,12 @@ def _run_metric_suggestion(
         if not tables:
             raise _EmptySchemaAtWizard()
 
-        # Cost-preview line — same shape as the entities stage so the
-        # operator sees the spend ceiling before the ~30s LLM call.
-        # Metrics suggestion is typically a bit more expensive than
-        # entities (more context tokens — entity list + table schemas
-        # — so the estimate is 2x the entities default).
-        print_llm_stage_preamble(
+        # D1 (post-PR-#79 polish): wrap in Rich Live with elapsed
+        # timer — same shape as the entities stage. Metrics
+        # suggestion is typically a bit more expensive than entities
+        # (more context tokens — entity list + table schemas — so the
+        # estimate is 2x the entities default).
+        progress = live_llm_stage_progress(
             make_console(stderr=True),
             action=f"define metrics ({len(entities)} entities, {len(tables)} tables)",
             model="claude-sonnet-4-6",
@@ -1909,7 +2041,8 @@ def _run_metric_suggestion(
         )
 
         try:
-            result = pipeline.propose_from_entities(entities, tables)
+            with progress:
+                result = pipeline.propose_from_entities(entities, tables)
         except CostCeilingExceededError as exc:
             raise _CostCeilingExceededAtWizard(str(exc)) from exc
         except (SuggestionParseError, MetricSuggestionParseError) as exc:
@@ -1940,7 +2073,12 @@ def _run_metric_suggestion(
             # argument visibility when `str(exc)` is empty, so a bare
             # `RuntimeError()` surfaces as "RuntimeError()" not just
             # "RuntimeError" — better signal for the operator.
-            raise _LLMClientErrorAtWizard(str(exc) or repr(exc)) from exc
+            # F5: classify SDK exceptions so stage 4 can pick kind-
+            # specific next_step copy (mirror of stage 3's handler).
+            raise _LLMClientErrorAtWizard(
+                str(exc) or repr(exc),
+                kind=classify_llm_failure(exc),
+            ) from exc
 
         applied = 0
         skip_reason: str | None = None
@@ -2294,8 +2432,88 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
     because stage 2 has already managed the indexed-store
     precondition (either by running index, or by recording an
     explicit skip).
+
+    F3 (post-PR-#79 polish): when the claude-desktop config already
+    has a different schemabrain entry, this handler now prompts
+    INLINE during stage 6 rather than letting `init()` raise
+    `InitRefusal` so the orchestrator can prompt afterwards (which
+    rendered the prompt as an orphaned line between the hero panel
+    and the 7-stage table). The pre-check + inline prompt + retry
+    is now scoped to one stage handler, with one render path.
+    Store-path-only diffs auto-accept (operator moved the store —
+    no need to prompt for the common case).
     """
     cfg = ctx.config
+    effective_assume_yes = cfg.assume_yes
+    # Round-1 fold H1: capture the pre-write comparison in a local
+    # so `_wire_host_message` can render the `(replaced /old → /new)`
+    # trailer. Pre-fold, `_get_overwrite_comparison` re-peeked AFTER
+    # `init()` had already written the new entry — the second peek
+    # always saw `state="unchanged"`, making the replacement message
+    # dead code in production (caught convergently by python-reviewer
+    # AND silent-failure-hunter).
+    overwrite_comparison: ClaudeDesktopEntryComparison | None = None
+
+    if cfg.host == "claude-desktop" and not cfg.assume_yes:
+        try:
+            comparison = peek_claude_desktop_overwrite(
+                source_url=cfg.source_url,
+                store_path=cfg.store_path,
+                env_var_name=cfg.env_var_name,
+            )
+        except InitRefusal as refusal:
+            return _failed_from_refusal(stage=6, name="wire_host", error=refusal.error)
+        if comparison is not None:
+            overwrite_comparison = comparison
+            if comparison.state == "differs_store_path_only":
+                # Common case: operator moved their store. Auto-accept
+                # so they don't see a prompt for what is, in practice,
+                # a no-op-ish field change. The renderer surfaces the
+                # `wrote (replaced /old → /new)` line off
+                # `comparison.existing_store_path` for transparency.
+                effective_assume_yes = True
+            elif comparison.state == "differs":  # noqa: SIM102 — keep state vs tty branches readable
+                # Real diff (env-var, db_url, version pin, runner) —
+                # surface the inline prompt only if stderr/stdin are
+                # both TTYs. Non-interactive runs fall through to
+                # `init()` which will raise InitRefusal, translated
+                # to a failed StageOutcome as before (no behavior
+                # change for CI / piped stderr).
+                # Access through the module so tests can monkeypatch
+                # `_ui.stderr_is_interactive_tty` once and reach this
+                # call site without a separate `wizard.…` patch.
+                if _ui.stderr_is_interactive_tty():
+                    # Round-1 fold M2: access `make_console` through
+                    # the module to match the `_ui.stderr_is_interactive_tty()`
+                    # call above — keeps both call sites
+                    # monkeypatchable via one symbol (`_ui.<name>`)
+                    # and avoids the latent binding asymmetry
+                    # python-reviewer flagged.
+                    console = _ui.make_console(stderr=True)
+                    _render_overwrite_diff_summary(console, comparison)
+                    accepted = prompt_yes_no(
+                        console,
+                        "Overwrite the existing schemabrain entry?",
+                        default=False,
+                    )
+                    if not accepted:
+                        # Round-1 fold H3: signal user-cancellation
+                        # via the structured `user_cancelled=True`
+                        # field instead of a message-prefix check
+                        # in `_cmd_init`. Pre-fold, a copy edit
+                        # to this string would have silently broken
+                        # the exit-0 contract; the typed field
+                        # eliminates the cross-module string coupling.
+                        return StageOutcome(
+                            stage=6,
+                            name="wire_host",
+                            status="failed",
+                            message="existing schemabrain entry not overwritten",
+                            next_step="re-run with --yes to overwrite, or hand-edit the config",
+                            user_cancelled=True,
+                        )
+                    effective_assume_yes = True
+
     try:
         result = init(
             source_url=cfg.source_url,
@@ -2303,7 +2521,7 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
             host=cfg.host,
             env_var_name=cfg.env_var_name,
             skip_index=True,
-            assume_yes=cfg.assume_yes,
+            assume_yes=effective_assume_yes,
         )
     except InitRefusal as refusal:
         return _failed_from_refusal(stage=6, name="wire_host", error=refusal.error)
@@ -2312,19 +2530,93 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
         stage=6,
         name="wire_host",
         status="done",
-        message=_wire_host_message(result),
+        message=_wire_host_message(result, comparison=overwrite_comparison),
     )
 
 
-def _wire_host_message(result: InitResult) -> str:
-    """Pick a short summary line for the stage-4 outcome.
+def _render_overwrite_diff_summary(
+    console: Console, comparison: ClaudeDesktopEntryComparison
+) -> None:
+    """Print the overwrite diff preview before the overwrite prompt.
+
+    Two-block format:
+
+      1. **Header lines** — yellow "A different schemabrain entry…"
+         + bright_black "differing fields: …". Lets the operator
+         eyeball whether the prompt is about the right entry without
+         reading the full diff.
+      2. **Unified diff** (D3) — each line of
+         ``comparison.diff_preview`` rendered with a color matched to
+         its leader byte: bright_black for ``---/+++/@@`` markers,
+         red for ``-`` removals, green for ``+`` additions, default
+         for context. Lets the operator see exactly which JSON bytes
+         are about to change before approving the overwrite.
+
+    The ``.bak`` sibling that captures the pre-write contents is
+    written by ``write_mcp_config_atomic`` (PR-1 contract). D3
+    surfaces what's about to change; the rollback target was already
+    guaranteed by the existing atomic-write path.
+    """
+    fields = ", ".join(comparison.differing_field_names) or "schemabrain entry"
+    console.print(
+        f"  [yellow]A different schemabrain entry already exists in {comparison.config_path}.[/]"
+    )
+    console.print(f"  [bright_black]differing fields: {fields}[/]")
+    if not comparison.diff_preview:
+        # Defensive: comparison.diff_preview is always non-empty for
+        # the differs/differs_store_path_only verdicts the caller
+        # gates on, but this skip keeps the renderer safe if some
+        # future caller passes a "new"/"unchanged" comparison.
+        return
+    console.print("")
+    for raw_line in comparison.diff_preview.splitlines():
+        # Rich treats square brackets as markup — JSON contains them
+        # in ``args`` arrays. Use ``markup=False`` so the literal
+        # bracket pair renders intact instead of triggering a parse
+        # error / silent eat.
+        if raw_line.startswith(("---", "+++", "@@")):
+            style = "bright_black"
+        elif raw_line.startswith("-"):
+            style = "red"
+        elif raw_line.startswith("+"):
+            style = "green"
+        else:
+            style = ""
+        console.print(raw_line, style=style, markup=False, highlight=False)
+
+
+def _wire_host_message(
+    result: InitResult,
+    *,
+    comparison: ClaudeDesktopEntryComparison | None = None,
+) -> str:
+    """Pick a short summary line for the stage-6 outcome.
 
     The detailed rendering (path, backup, redacted shell-out argv)
     lives in the CLI renderer, which reads from
     `WizardResult.host_install_result`. The wizard outcome just
     captures the one-liner version for the stage list.
+
+    F3: when ``comparison`` reports a store-path-only diff that the
+    wizard auto-accepted, the "written" message gets a
+    ``(replaced /old → /new)`` trailer so the operator sees what
+    actually changed. Other replacement paths render the plain
+    "wrote" line — the diff is more meaningful in the
+    store-path-only case because the operator usually intended it.
     """
     if result.state == "written":
+        if (
+            comparison is not None
+            and comparison.state == "differs_store_path_only"
+            and comparison.existing_store_path is not None
+            and comparison.new_store_path is not None
+            and comparison.existing_store_path != comparison.new_store_path
+        ):
+            return (
+                f"wrote schemabrain entry to {result.config_path} "
+                f"(replaced {comparison.existing_store_path} → "
+                f"{comparison.new_store_path})"
+            )
         return f"wrote schemabrain entry to {result.config_path}"
     if result.state == "unchanged":
         return f"schemabrain entry already configured in {result.config_path}; no changes"

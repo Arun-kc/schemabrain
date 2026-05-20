@@ -1,5 +1,6 @@
 """Tests for the schemabrain CLI."""
 
+import os
 import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -339,6 +340,9 @@ class TestEnrichmentCliFlags:
         # Without ANTHROPIC_API_KEY and without --no-enrich, the CLI must
         # refuse to run rather than silently fall back to a no-LLM mode.
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        # D4: chdir so `main()`'s .env load doesn't pick up the dev
+        # repo's `.env` and silently re-populate ANTHROPIC_API_KEY.
+        monkeypatch.chdir(tmp_path)
         store_path = tmp_path / "schemabrain.db"
         exit_code = main(["index", "postgresql+psycopg://fake/db", "--store-path", str(store_path)])
         assert exit_code == 2
@@ -3063,6 +3067,173 @@ class TestMainKeyboardInterruptHandling:
         assert "aborted" in capsys.readouterr().err
 
 
+class TestMainLoadsEnvFile:
+    """D4: ``main()`` loads ``.env`` from CWD before any subcommand runs.
+
+    Shell exports always win — a ``.env`` is a convenience for
+    operators who pasted a key during the wizard, never an override
+    of an explicit shell export.
+    """
+
+    def test_main_loads_env_keys_into_environ(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from schemabrain import cli
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "ANTHROPIC_API_KEY=sk-ant-from-file\nSCHEMABRAIN_TEST_LOADED=yes\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("SCHEMABRAIN_TEST_LOADED", raising=False)
+        monkeypatch.setattr(cli, "_dispatch", lambda _argv: 0)
+
+        cli.main(["init"])
+
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-from-file"
+        assert os.environ["SCHEMABRAIN_TEST_LOADED"] == "yes"
+
+    def test_main_does_not_override_existing_shell_export(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # Hard contract: a stale `.env` MUST NOT override a freshly-
+        # rotated key the operator pasted into their shell. Without
+        # this, debugging an expired-key error becomes a hunt for
+        # the wrong file.
+        from schemabrain import cli
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("ANTHROPIC_API_KEY=sk-ant-STALE\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-FRESH")
+        monkeypatch.setattr(cli, "_dispatch", lambda _argv: 0)
+
+        cli.main(["init"])
+
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-FRESH"
+
+    def test_main_silently_no_ops_when_env_file_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # The most common case: no `.env` in CWD. Must not print
+        # anything (silent no-op) and must not block startup.
+        from schemabrain import cli
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cli, "_dispatch", lambda _argv: 0)
+
+        assert cli.main(["init"]) == 0
+        captured = capsys.readouterr()
+        # No noise from the loader on the happy "no .env" path.
+        assert captured.out == ""
+
+
+class TestResolveAnthropicApiKeyD4Persistence:
+    """D4: ``_resolve_anthropic_key_source`` offers .env persistence on
+    successful interactive key prompt.
+
+    The integration point is the resolver — every caller that opts
+    into ``allow_interactive=True`` (wizard stages, suggest commands)
+    inherits the persistence offer for free.
+    """
+
+    def test_persistence_offered_after_interactive_key_paste(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from schemabrain import _ui, cli
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(cli, "_stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr(
+            _ui,
+            "prompt_for_anthropic_key",
+            lambda *_a, **_kw: "sk-ant-pasted",
+        )
+        offer_calls: list[dict[str, object]] = []
+
+        def fake_offer(_console: object, **kwargs: object) -> bool:
+            offer_calls.append(kwargs)
+            return True
+
+        monkeypatch.setattr(_ui, "offer_persist_anthropic_key_to_env_file", fake_offer)
+
+        key = cli._resolve_anthropic_key_source(allow_interactive=True)
+
+        assert key == "sk-ant-pasted"
+        assert len(offer_calls) == 1
+        assert offer_calls[0]["key_value"] == "sk-ant-pasted"
+
+    def test_persistence_skipped_when_user_skips_key_prompt(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # If the user presses Enter at the key prompt (None), the
+        # persistence offer must NOT fire — there's no key to persist.
+        from schemabrain import _ui, cli
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(cli, "_stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr(_ui, "prompt_for_anthropic_key", lambda *_a, **_kw: None)
+        offer_calls: list[object] = []
+        monkeypatch.setattr(
+            _ui,
+            "offer_persist_anthropic_key_to_env_file",
+            lambda *a, **kw: offer_calls.append((a, kw)) or False,
+        )
+
+        key = cli._resolve_anthropic_key_source(allow_interactive=True)
+
+        assert key is None
+        assert offer_calls == []
+
+    def test_persistence_oserror_does_not_block_key_return(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Disk-write failure (read-only FS, permission denied,
+        # quota) MUST NOT abort the resolver — the operator's key
+        # is in hand; .env is a convenience.
+        from schemabrain import _ui, cli
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(cli, "_stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr(
+            _ui,
+            "prompt_for_anthropic_key",
+            lambda *_a, **_kw: "sk-ant-pasted",
+        )
+
+        def raising_offer(*_a: object, **_kw: object) -> bool:
+            raise OSError("read-only filesystem")
+
+        monkeypatch.setattr(_ui, "offer_persist_anthropic_key_to_env_file", raising_offer)
+
+        key = cli._resolve_anthropic_key_source(allow_interactive=True)
+
+        # Key still returned — operator can proceed with this run.
+        assert key == "sk-ant-pasted"
+        # Warning surfaces so the operator knows persistence failed.
+        err = capsys.readouterr().err
+        assert "could not persist" in err
+
+
 class TestIndexUrlEnv:
     """`schemabrain index --url-env VARNAME` wiring."""
 
@@ -3277,3 +3448,273 @@ class TestEvalUrlEnv:
         assert exit_code == 2
         err = capsys.readouterr().err
         assert "error:" in err
+
+
+class TestCmdIndexLlmFailureShape:
+    """F5: `schemabrain index --enrich` renders Shape C when the SDK throws.
+
+    Pre-F5, an Anthropic `OverloadedError` / `RateLimitError` /
+    `APIConnectionError` bubbled out of `index()` (the indexing
+    function) through `_cmd_index` to `main()` as a raw traceback.
+    Now `_cmd_index` catches them, classifies via
+    `errors_render.classify_llm_failure`, renders Shape C, and
+    exits 2. `AuthenticationError` (which already had a guided
+    error) remains unchanged.
+
+    Tests monkeypatch `schemabrain.cli.index` to raise the SDK
+    exception after the Postgres + store fakes have been entered,
+    so the failure surface is exercised end-to-end through `main()`
+    without needing a real database or Anthropic round-trip.
+    """
+
+    def _fake_postgres_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Install minimal Postgres / Profiler fakes so `_cmd_index` reaches `index()`."""
+
+        class _EmptySource:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def list_tables(self, schema: str | None = None) -> list[tuple[str, str]]:
+                return []
+
+            def get_table(self, name: str, schema: str):
+                raise NotImplementedError
+
+            def close(self) -> None:
+                pass
+
+        class _StubProfiler:
+            def __init__(self, url: str) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def profile_table(self, table):
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr("schemabrain.cli.PostgresDataSource", _EmptySource)
+        monkeypatch.setattr("schemabrain.cli.PostgresProfiler", _StubProfiler)
+
+    def _run_with_index_raising(
+        self,
+        *,
+        exc: BaseException,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> int:
+        self._fake_postgres_fixtures(monkeypatch)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+
+        def _raise(**kwargs):
+            raise exc
+
+        monkeypatch.setattr("schemabrain.cli.index", _raise)
+
+        store_path = tmp_path / "schemabrain.db"
+        return main(
+            [
+                "index",
+                "postgresql+psycopg://fake/db",
+                "--store-path",
+                str(store_path),
+            ]
+        )
+
+    def test_overloaded_renders_shape_c_and_exits_two(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import anthropic
+
+        exc = anthropic.APIStatusError.__new__(anthropic.APIStatusError)
+        exc.status_code = 529
+        exc.message = "Overloaded"
+
+        exit_code = self._run_with_index_raising(
+            exc=exc, tmp_path=tmp_path, monkeypatch=monkeypatch
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "◆ error" in err
+        assert "Anthropic is overloaded" in err
+        # `_cmd_index` DOES offer the `--no-enrich` fallback (unlike
+        # standalone suggest, which has no structure-only fallback).
+        assert "--no-enrich" in err
+        assert "Traceback" not in err
+
+    def test_auth_error_still_uses_existing_guided_path(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # AuthenticationError has its own GuidedError renderer that
+        # predates F5 — verify the F5 branch doesn't shadow it.
+        import anthropic
+
+        exc = anthropic.AuthenticationError.__new__(anthropic.AuthenticationError)
+        exc.status_code = 401
+        exc.message = "invalid api key"
+
+        exit_code = self._run_with_index_raising(
+            exc=exc, tmp_path=tmp_path, monkeypatch=monkeypatch
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        # `anthropic_auth_failed` renders a key-rotation hint that
+        # the F5 shape does not have.
+        assert "console.anthropic.com" in err or "api key" in err.lower()
+        # The F5 Shape C title must NOT appear — that would mean the
+        # F5 branch ate the AuthenticationError.
+        assert "Anthropic is overloaded" not in err
+
+    def test_non_sdk_exception_still_propagates(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with pytest.raises(RuntimeError, match="local bug"):
+            self._run_with_index_raising(
+                exc=RuntimeError("local bug"),
+                tmp_path=tmp_path,
+                monkeypatch=monkeypatch,
+            )
+
+
+class TestSuggestLlmProgressHelper:
+    """F1 + D1: `_suggest_llm_progress` wraps `_ui.live_llm_stage_progress`.
+
+    Used by `_cmd_entities_suggest` and `_cmd_metrics_suggest` to
+    surface a cost preview + auto-updating elapsed timer around the
+    ~20-30s LLM round-trip. Joins suggest is excluded by design —
+    sub-second deterministic operation.
+
+    D1 (post-PR-#79 polish): replaced the F1 ``Status``-spinner shape
+    with a Rich ``Live`` display that re-renders the elapsed seconds
+    every 0.5s. Non-TTY runs degrade to the static preamble line
+    (durable in log files; no carriage-return noise). Tests here
+    pin the CLI-side wrapper's contract; the rendering primitives
+    (auto-refresh, two-line shape, exception flow) are covered by
+    `tests/test_ui_primitives.py::TestLiveLlmStageProgress`.
+    """
+
+    def test_non_tty_prints_static_preamble(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Non-TTY (CI logs, redirected output): D1 falls back to the
+        # static preamble line (no Live, no timer) so log scrapers
+        # still see what the call was. Pre-D1, the F1 helper
+        # silently no-op'd in non-TTY — losing the cost framing
+        # from CI artifact logs. D1 prefers durability.
+        import io
+
+        from rich.console import Console
+
+        from schemabrain.cli import _suggest_llm_progress
+
+        buf = io.StringIO()
+        non_tty_console = Console(file=buf, force_terminal=False, width=120)
+        monkeypatch.setattr("schemabrain._ui.make_console", lambda **_kw: non_tty_console)
+
+        with _suggest_llm_progress(
+            action="identify business entities (7 tables)",
+            model="claude-sonnet-4-6",
+            cost_estimate_usd=0.01,
+            cap_usd=1.0,
+        ):
+            pass
+
+        # Static preamble reached the buffer; no carriage-return frames.
+        rendered = buf.getvalue()
+        assert "claude-sonnet-4-6" in rendered
+        assert "identify business entities (7 tables)" in rendered
+        assert "$0.01" in rendered
+        assert "$1.00" in rendered
+        # No live-display frame markers — "elapsed Xs" only shows on
+        # the TTY path where the Live timer renders.
+        assert "elapsed" not in rendered
+
+    def test_tty_path_renders_preamble_and_elapsed_timer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # TTY path: Live renders the preamble AND a ticking elapsed
+        # timer. Use a real Rich Console with force_terminal=True so
+        # Live's auto-refresh path actually runs.
+        import io
+
+        from rich.console import Console
+
+        from schemabrain.cli import _suggest_llm_progress
+
+        buf = io.StringIO()
+        tty_console = Console(
+            file=buf, force_terminal=True, width=120, color_system=None, legacy_windows=False
+        )
+        monkeypatch.setattr("schemabrain._ui.make_console", lambda **_kw: tty_console)
+
+        with _suggest_llm_progress(
+            action="identify business entities (7 tables)",
+            model="claude-sonnet-4-6",
+            cost_estimate_usd=0.01,
+            cap_usd=1.0,
+        ):
+            # Short body — the elapsed timer's first render fires
+            # on Live.__enter__ before yield, so we always see at
+            # least "elapsed 0s".
+            pass
+
+        rendered = buf.getvalue()
+        assert "identify business entities (7 tables)" in rendered
+        assert "claude-sonnet-4-6" in rendered
+        # Elapsed-time line: D1's headline feature. Timer label
+        # rendered as "elapsed Xs" via the `_PreambleWithTimer`
+        # renderable in `live_llm_stage_progress`.
+        assert "elapsed" in rendered
+
+    def test_exception_in_body_propagates_through_live(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Critical exception-flow contract (F1-era bug): the `yield`
+        # is NOT inside any `except Exception` clause, so a body-
+        # raised exception propagates cleanly to the outer caller
+        # instead of being swallowed by a generator double-yield.
+        import io
+
+        from rich.console import Console
+
+        from schemabrain.cli import _suggest_llm_progress
+
+        buf = io.StringIO()
+        tty_console = Console(
+            file=buf, force_terminal=True, width=120, color_system=None, legacy_windows=False
+        )
+        monkeypatch.setattr("schemabrain._ui.make_console", lambda **_kw: tty_console)
+
+        class _SpecificError(RuntimeError):
+            pass
+
+        with (
+            pytest.raises(_SpecificError, match="LLM call failed"),
+            _suggest_llm_progress(
+                action="identify",
+                model="m",
+                cost_estimate_usd=0.01,
+                cap_usd=1.0,
+            ),
+        ):
+            raise _SpecificError("LLM call failed")

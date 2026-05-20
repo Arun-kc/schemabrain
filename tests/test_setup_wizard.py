@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 
 import pytest
@@ -164,6 +165,44 @@ class TestStageOutcome:
         # backwards — an orchestrator bug, not a user error. Fail fast.
         with pytest.raises(ValueError, match="duration_s must be >= 0"):
             StageOutcome(stage=1, name="x", status="done", message="m", duration_s=-0.1)
+
+    def test_user_cancelled_defaults_to_false(self) -> None:
+        # Round-1 fold H3: the field is opt-in; non-F3 stage
+        # handlers never need to set it.
+        outcome = StageOutcome(stage=1, name="x", status="done", message="m")
+        assert outcome.user_cancelled is False
+
+    def test_user_cancelled_accepted_on_failed_outcome(self) -> None:
+        # The only sanctioned use: stage 6 (`_stage_wire_host`) when
+        # the operator declines the F3 overwrite prompt.
+        outcome = StageOutcome(
+            stage=6,
+            name="wire_host",
+            status="failed",
+            message="not overwritten",
+            next_step="re-run with --yes",
+            user_cancelled=True,
+        )
+        assert outcome.user_cancelled is True
+
+    def test_user_cancelled_rejected_on_done_outcome(self) -> None:
+        # Setting `user_cancelled=True` on a non-failed outcome is a
+        # contract violation — `_cmd_init`'s exit-code mapping
+        # checks both `aborted` AND `user_cancelled`, so a done
+        # outcome with the flag set would silently never reach
+        # exit-0 mapping. Fail loudly at construction.
+        with pytest.raises(ValueError, match="user_cancelled is only valid"):
+            StageOutcome(stage=1, name="x", status="done", message="m", user_cancelled=True)
+
+    def test_user_cancelled_rejected_on_skipped_outcome(self) -> None:
+        with pytest.raises(ValueError, match="user_cancelled is only valid"):
+            StageOutcome(
+                stage=1,
+                name="x",
+                status="skipped",
+                message="m",
+                user_cancelled=True,
+            )
 
 
 class TestWizardConfigInvariants:
@@ -846,8 +885,64 @@ class TestStageIndex:
         outcome = wizard._stage_index(WizardContext(config=cfg))
 
         assert outcome.status == "skipped"
-        assert "already indexed" in outcome.message
-        assert "7 table" in outcome.message
+        # F4: framing was "already indexed: 7 table(s) present" pre-F4
+        # — operator couldn't tell same-run vs prior-run. New framing
+        # makes the temporal claim explicit ("from a prior indexing
+        # run") so the operator knows their fresh `init` is reusing
+        # cached data, not silently doing nothing.
+        assert "reusing 7 table(s) from a prior indexing run" in outcome.message
+        # Pre-F4 wording must NOT survive — a regression that
+        # accidentally restores "already indexed" should fail loudly.
+        assert "already indexed" not in outcome.message
+
+    def test_skipped_message_includes_store_path_for_disambiguation(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # F4: the store path appears so the operator knows which
+        # artifact is being reused — useful when running init across
+        # multiple projects with different --store-path values.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_store_table_count", lambda _p, _sid: 3)
+        monkeypatch.setattr(
+            wizard, "_run_indexer", lambda **_kw: pytest.fail("indexer should not run")
+        )
+
+        outcome = wizard._stage_index(WizardContext(config=cfg))
+
+        # Path appears in parens; `short_path` collapses HOME to ~ but
+        # the test store lives under /var/folders (pytest tmp_path)
+        # which stays verbatim — assert the trailing filename rather
+        # than the full path to stay platform-stable.
+        assert str(cfg.store_path.name) in outcome.message
+
+    def test_skipped_next_step_threads_env_var_name_for_refresh(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # F4: the refresh hint must use the operator's chosen env var
+        # name so the copy-paste command works without modification.
+        # Pre-F4 the hint said generic `schemabrain index` with no
+        # URL source, which the operator would have to figure out.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        # Switch the env-var name to a non-default value so a
+        # regression that hardcodes "DATABASE_URL" or similar gets
+        # caught.
+        from dataclasses import replace
+
+        cfg = replace(cfg, env_var_name="MY_CUSTOM_DB_URL")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_store_table_count", lambda _p, _sid: 5)
+        monkeypatch.setattr(
+            wizard, "_run_indexer", lambda **_kw: pytest.fail("indexer should not run")
+        )
+
+        outcome = wizard._stage_index(WizardContext(config=cfg))
+
+        assert outcome.next_step is not None
+        assert "--url-env MY_CUSTOM_DB_URL" in outcome.next_step
+        assert "schemabrain index" in outcome.next_step
 
     def test_failed_on_schema_version_mismatch(
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
@@ -1395,7 +1490,33 @@ class TestStageEntities:
         assert "LLM call failed" in outcome.message
         assert "max_tokens" in outcome.message
         assert outcome.next_step is not None
+        # kind=None (default) → fallback branch surfaces the
+        # max_tokens hint + the apply-command escape hatch.
         assert "max_tokens" in outcome.next_step
+
+    def test_failed_with_overloaded_kind_uses_kind_specific_next_step(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # F5: when the wrapped exception carries `kind="overloaded"`,
+        # the stage handler picks the kind-specific recovery hint
+        # ("wait 30-60s") instead of the generic max_tokens fallback.
+        cfg = _pg_config(base_config)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._LLMClientErrorAtWizard("Overloaded", kind="overloaded")
+
+        monkeypatch.setattr(wizard, "_run_entity_suggestion", _raise)
+
+        outcome = wizard._stage_entities(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert outcome.next_step is not None
+        assert "overloaded" in outcome.next_step.lower()
+        assert "30-60s" in outcome.next_step
+        # The generic max_tokens hint must NOT appear when kind is set.
+        assert "max_tokens" not in outcome.next_step
 
     def test_failed_when_pipeline_returns_zero_candidates(
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
@@ -2632,7 +2753,34 @@ class TestStageMetrics:
         assert "LLM call failed" in outcome.message
         assert "max_tokens" in outcome.message
         assert outcome.next_step is not None
+        # kind=None → fallback branch surfaces the apply-command
+        # escape hatch (metrics-specific).
         assert "metrics apply" in outcome.next_step
+
+    def test_failed_with_rate_limited_kind_uses_kind_specific_next_step(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # F5 (stage 4 mirror): kind-specific next_step for rate_limited.
+        cfg = _pg_config(base_config)
+        cfg.store_path.touch()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setattr(wizard, "_source_id_for", lambda _url: "abcd1234")
+        monkeypatch.setattr(wizard, "_peek_metric_count", lambda _p, _sid: 0)
+        monkeypatch.setattr(wizard, "_peek_entity_count", lambda _p, _sid: 5)
+
+        def _raise(**_kw: object) -> None:
+            raise wizard._LLMClientErrorAtWizard("rate limit exceeded", kind="rate_limited")
+
+        monkeypatch.setattr(wizard, "_run_metric_suggestion", _raise)
+
+        outcome = wizard._stage_metrics(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert outcome.next_step is not None
+        assert "rate-limited" in outcome.next_step
+        assert "CONCURRENCY" in outcome.next_step
+        # Generic max_tokens fallback must NOT appear.
+        assert "max_tokens" not in outcome.next_step
 
     def test_failed_when_pipeline_returns_zero_candidates(
         self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
@@ -4860,6 +5008,284 @@ class TestStageWireHost:
         assert ctx.host_install_result is None
 
 
+class TestRenderOverwriteDiffSummaryD3:
+    """D3: `_render_overwrite_diff_summary` prints headers + unified diff.
+
+    The renderer feeds the inline overwrite prompt path (F3). D3 added
+    the unified-diff block under the existing one-line header so the
+    operator sees exactly which JSON bytes are about to change before
+    the prompt fires.
+    """
+
+    def _capture_console_output(self) -> tuple[object, list[str]]:
+        """Build a real Rich Console writing to an in-memory buffer."""
+        import io
+
+        from rich.console import Console
+
+        buf = io.StringIO()
+        # force_terminal so colorization renders; no_color via env
+        # would shadow style detection. width pinned so the diff
+        # doesn't soft-wrap inside the assertion window.
+        console = Console(file=buf, force_terminal=True, width=120)
+        return console, buf
+
+    def test_diff_preview_renders_below_header_when_present(self) -> None:
+        from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
+        from schemabrain.setup.wizard import _render_overwrite_diff_summary
+
+        console, buf = self._capture_console_output()
+        diff = (
+            "--- /tmp/cfg.json (current)\n"
+            "+++ /tmp/cfg.json (after init)\n"
+            "@@ -1,3 +1,3 @@\n"
+            ' {\n-  "command": "old",\n+  "command": "new",\n }\n'
+        )
+        comparison = ClaudeDesktopEntryComparison(
+            state="differs",
+            config_path=Path("/tmp/cfg.json"),  # nosec B108
+            differing_field_names=("command",),
+            diff_preview=diff,
+        )
+        _render_overwrite_diff_summary(console, comparison)
+        out = buf.getvalue()
+        # Both the existing header line AND the diff body must
+        # appear — D3 adds the body without removing the header.
+        assert "different schemabrain entry already exists" in out
+        assert "differing fields: command" in out
+        # Diff body — at minimum, both sides of the change.
+        assert '"command": "old"' in out
+        assert '"command": "new"' in out
+
+    def test_no_diff_block_when_diff_preview_empty(self) -> None:
+        from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
+        from schemabrain.setup.wizard import _render_overwrite_diff_summary
+
+        console, buf = self._capture_console_output()
+        comparison = ClaudeDesktopEntryComparison(
+            state="differs",
+            config_path=Path("/tmp/cfg.json"),  # nosec B108
+            differing_field_names=("env",),
+            diff_preview="",
+        )
+        _render_overwrite_diff_summary(console, comparison)
+        out = buf.getvalue()
+        # Header lines still render; no diff body sneaks in.
+        assert "different schemabrain entry already exists" in out
+        # Sanity: no unified-diff marker bytes leak through.
+        assert "---" not in out
+        assert "+++" not in out
+
+    def test_json_brackets_render_intact_not_as_markup(self) -> None:
+        # Rich treats `[…]` as style markup by default; JSON arrays
+        # contain bracket pairs that would silently swallow content.
+        # The renderer must pass `markup=False` per diff line so
+        # operators see real JSON, not a Rich parse failure.
+        from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
+        from schemabrain.setup.wizard import _render_overwrite_diff_summary
+
+        console, buf = self._capture_console_output()
+        diff = (
+            "--- /tmp/cfg.json (current)\n"
+            "+++ /tmp/cfg.json (after init)\n"
+            '@@ -1,1 +1,1 @@\n-  "args": ["a", "b"]\n+  "args": ["a", "c"]\n'
+        )
+        comparison = ClaudeDesktopEntryComparison(
+            state="differs",
+            config_path=Path("/tmp/cfg.json"),  # nosec B108
+            differing_field_names=("args",),
+            diff_preview=diff,
+        )
+        _render_overwrite_diff_summary(console, comparison)
+        out = buf.getvalue()
+        # The literal `["a", "b"]` and `["a", "c"]` substrings must
+        # survive Rich's markup parser intact.
+        assert '["a", "b"]' in out
+        assert '["a", "c"]' in out
+
+
+class TestStageWireHostF3InlineOverwrite:
+    """F3: stage 6 owns the overwrite prompt (no orphan between hero + table).
+
+    Tests pin the pre-check decision tree:
+    * peek None → fall through (no prompt)
+    * peek raises InitRefusal (e.g. _resolve_runner failure) → failed StageOutcome
+    * differs_store_path_only → auto-accept (effective_assume_yes=True)
+    * differs + non-interactive → fall through (init() decides)
+    * differs + interactive + user accepts → effective_assume_yes=True
+    * differs + interactive + user declines → cancelled failed StageOutcome
+    """
+
+    def _stub_init(self, *, captured: dict[str, object], base_cfg: WizardConfig) -> object:
+        """Build a fake `init` that records its assume_yes kwarg + returns OK."""
+
+        def fake_init(**kwargs: object) -> InitResult:
+            captured.update(kwargs)
+            return InitResult(
+                host="claude-desktop",
+                snippet=_snippet_for(base_cfg),
+                state="written",
+                config_path=Path("/tmp/cfg.json"),  # nosec B108
+                backup_made=False,
+            )
+
+        return fake_init
+
+    def test_peek_none_falls_through_with_original_assume_yes(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # peek returns None (no claude-desktop config dir on this
+        # platform) — stage must skip the pre-check entirely and
+        # pass `cfg.assume_yes` (False) straight to init().
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(wizard, "peek_claude_desktop_overwrite", lambda **_kw: None)
+        monkeypatch.setattr(
+            wizard, "init", self._stub_init(captured=captured, base_cfg=base_config)
+        )
+
+        cfg = _dc_replace(base_config, host="claude-desktop", assume_yes=False)
+        outcome = wizard._stage_wire_host(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        assert captured["assume_yes"] is False
+
+    def test_peek_raises_init_refusal_propagates_as_failed_stage(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `peek_claude_desktop_overwrite` propagates `_resolve_runner`'s
+        # InitRefusal so the operator sees the guided error (runner
+        # missing on PATH) at stage 6 instead of crashing.
+        err = GuidedError(
+            kind="init_runner_missing",
+            message="neither uvx nor schemabrain on PATH",
+            why="MCP server needs a launcher",
+            fix="install uv or add schemabrain to PATH",
+            next_step=None,
+        )
+
+        def _raise(**_kw: object) -> object:
+            raise InitRefusal(err)
+
+        monkeypatch.setattr(wizard, "peek_claude_desktop_overwrite", _raise)
+
+        cfg = _dc_replace(base_config, host="claude-desktop", assume_yes=False)
+        outcome = wizard._stage_wire_host(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        assert "neither uvx nor schemabrain on PATH" in outcome.message
+
+    def test_differs_store_path_only_auto_accepts_without_prompt(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Common case: operator moved their store. No prompt should
+        # fire — `effective_assume_yes=True` is set silently.
+        from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
+
+        comparison = ClaudeDesktopEntryComparison(
+            state="differs_store_path_only",
+            config_path=Path("/tmp/cfg.json"),  # nosec B108
+            differing_field_names=("args[--store-path]",),
+            existing_store_path="/old/sb.db",
+            new_store_path="/new/sb.db",
+        )
+        prompt_calls: list[object] = []
+
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(wizard, "peek_claude_desktop_overwrite", lambda **_kw: comparison)
+        monkeypatch.setattr(
+            wizard,
+            "prompt_yes_no",
+            lambda *a, **kw: prompt_calls.append((a, kw)) or False,
+        )
+        monkeypatch.setattr(
+            wizard, "init", self._stub_init(captured=captured, base_cfg=base_config)
+        )
+
+        cfg = _dc_replace(base_config, host="claude-desktop", assume_yes=False)
+        outcome = wizard._stage_wire_host(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        # Critical: init() was called with assume_yes=True (auto-accept).
+        assert captured["assume_yes"] is True
+        # Critical: no prompt fired — store-path-only is silent.
+        assert prompt_calls == []
+
+    def test_differs_non_interactive_falls_through_without_prompt(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Non-interactive (CI / piped stderr) + differs → no prompt
+        # fires. Stage falls through to init() which will raise
+        # InitRefusal (pre-F3 behavior preserved for non-TTY runs).
+        from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
+
+        comparison = ClaudeDesktopEntryComparison(
+            state="differs",
+            config_path=Path("/tmp/cfg.json"),  # nosec B108
+            differing_field_names=("env",),
+        )
+        prompt_calls: list[object] = []
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(wizard, "peek_claude_desktop_overwrite", lambda **_kw: comparison)
+        monkeypatch.setattr("schemabrain._ui.stderr_is_interactive_tty", lambda: False)
+        monkeypatch.setattr(
+            wizard,
+            "prompt_yes_no",
+            lambda *a, **kw: prompt_calls.append((a, kw)) or False,
+        )
+        monkeypatch.setattr(
+            wizard, "init", self._stub_init(captured=captured, base_cfg=base_config)
+        )
+
+        cfg = _dc_replace(base_config, host="claude-desktop", assume_yes=False)
+        outcome = wizard._stage_wire_host(WizardContext(config=cfg))
+
+        assert outcome.status == "done"
+        # init() called with original assume_yes=False — non-interactive
+        # mode never auto-accepts a real diff.
+        assert captured["assume_yes"] is False
+        assert prompt_calls == []
+
+    def test_differs_interactive_decline_returns_cancelled_failed_outcome(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Interactive + differs + user says no → failed StageOutcome
+        # with `user_cancelled=True` so `_cmd_init` maps to exit 0
+        # (graceful cancel, not error). Round-1 fold H3 replaced
+        # the message-prefix-coupling shape with this typed field.
+        from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
+
+        comparison = ClaudeDesktopEntryComparison(
+            state="differs",
+            config_path=Path("/tmp/cfg.json"),  # nosec B108
+            differing_field_names=("env",),
+        )
+        init_calls: list[object] = []
+        monkeypatch.setattr(wizard, "peek_claude_desktop_overwrite", lambda **_kw: comparison)
+        monkeypatch.setattr("schemabrain._ui.stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setattr(wizard, "prompt_yes_no", lambda *_a, **_kw: False)
+        monkeypatch.setattr(
+            wizard,
+            "init",
+            lambda **kw: (
+                init_calls.append(kw)  # type: ignore[func-returns-value]
+                or (_ for _ in ()).throw(
+                    AssertionError("init must not be called when user declined")
+                )
+            ),
+        )
+
+        cfg = _dc_replace(base_config, host="claude-desktop", assume_yes=False)
+        outcome = wizard._stage_wire_host(WizardContext(config=cfg))
+
+        assert outcome.status == "failed"
+        # H3: the structured field is the contract; the message is
+        # now free to evolve without breaking the exit-code mapping.
+        assert outcome.user_cancelled is True
+        assert "not overwritten" in outcome.message
+        # init() was NOT called — decline short-circuits the stage.
+        assert init_calls == []
+
+
 # ----- _stage_next_step ----------------------------------------------------
 
 
@@ -4972,3 +5398,61 @@ def test_run_wizard_passes_context_to_handlers(base_config: WizardConfig) -> Non
 
     assert len(seen_contexts) == 2
     assert seen_contexts[0] is seen_contexts[1]
+
+
+# ----- _llm_failure_next_step (F5 helper) ----------------------------------
+
+
+class TestLlmFailureNextStep:
+    """Pins per-kind copy of `_llm_failure_next_step` (F5).
+
+    The helper drives both stage 3 (`_stage_entities`) and stage 4
+    (`_stage_metrics`) failed-StageOutcome `next_step`. Unit tests
+    here catch a copy regression at the helper layer rather than
+    waiting for the stage-handler integration test to fail.
+    """
+
+    def test_overloaded_kind_mentions_wait_window(self) -> None:
+        out = wizard._llm_failure_next_step(
+            "overloaded", apply_command="schemabrain entities apply"
+        )
+        assert "overloaded" in out.lower()
+        assert "30-60s" in out
+        assert "status.anthropic.com" in out
+
+    def test_rate_limited_kind_recommends_concurrency_env_var(self) -> None:
+        out = wizard._llm_failure_next_step(
+            "rate_limited", apply_command="schemabrain metrics apply"
+        )
+        assert "rate-limited" in out
+        assert "CONCURRENCY" in out
+
+    def test_connection_kind_mentions_network(self) -> None:
+        out = wizard._llm_failure_next_step(
+            "connection", apply_command="schemabrain entities apply"
+        )
+        assert "network" in out.lower() or "proxy" in out.lower()
+
+    def test_api_error_kind_says_anthropic_returned_error(self) -> None:
+        out = wizard._llm_failure_next_step("api_error", apply_command="schemabrain entities apply")
+        assert "Anthropic returned an error" in out
+
+    def test_none_kind_falls_back_with_apply_command(self) -> None:
+        # Fallback covers non-Anthropic causes (max_tokens RuntimeError,
+        # network issues the classifier doesn't recognize, etc.). Must
+        # surface the apply-command escape hatch verbatim.
+        out = wizard._llm_failure_next_step(None, apply_command="schemabrain metrics apply")
+        assert "max_tokens" in out
+        assert "schemabrain metrics apply" in out
+
+    def test_unknown_kind_raises_value_error(self) -> None:
+        # Round-1 fold L1: a typo (or a new LlmFailureKind value
+        # forgotten in this dispatch) must fail loudly rather than
+        # silently returning the None-fallback copy. Matches the
+        # posture of `errors_render._llm_failure_titles` and
+        # `errors_render._llm_failure_retry_hint`.
+        with pytest.raises(ValueError, match="unknown kind"):
+            wizard._llm_failure_next_step(
+                "overloaad",  # type: ignore[arg-type] — testing the bad case
+                apply_command="schemabrain entities apply",
+            )

@@ -6,15 +6,15 @@ report a vulnerability, what to expect in response, and what is in scope.
 
 ## Supported Versions
 
-Schema Brain is in public alpha (`0.1.0aN` on PyPI). Only the latest
-alpha and the `main` branch receive security fixes today. When 1.0 ships,
+Schema Brain is in public beta (current line: `0.3.x`). Only the latest
+minor and the `main` branch receive security fixes today. When 1.0 ships,
 this table will list the supported minor versions.
 
 | Version          | Supported          |
 | ---------------- | ------------------ |
 | `main` (HEAD)    | :white_check_mark: |
-| Latest `0.1.0aN` | :white_check_mark: |
-| Older alphas     | :x:                |
+| Latest `0.3.x`   | :white_check_mark: |
+| `0.2.x` and older| :x:                |
 
 ## Reporting a Vulnerability
 

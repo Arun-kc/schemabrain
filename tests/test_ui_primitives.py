@@ -28,7 +28,9 @@ focuses on the primitives themselves:
 from __future__ import annotations
 
 import io
+import os
 import sys
+from pathlib import Path
 
 import pytest
 from rich.console import Console
@@ -678,6 +680,356 @@ class TestPromptForAnthropicKey:
             )
 
 
+class TestOfferPersistAnthropicKeyToEnvFile:
+    """D4: opt-in consent prompt + .env persistence + gitignore warning.
+
+    Verifies the three hard contracts from the docstring:
+
+    1. Opt-in default no — Enter without typing accepts the safe path.
+    2. Never writes silently — every write produces a visible message.
+    3. Gitignore warning fires when ``.env`` is not listed.
+    """
+
+    def test_writes_to_env_when_user_consents(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        env_path = tmp_path / ".env"
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: True)
+
+        result = offer_persist_anthropic_key_to_env_file(
+            make_console(file=io.StringIO()),
+            key_value="sk-ant-secret",
+            env_path=env_path,
+            gitignore_path=gi,
+        )
+
+        assert result is True
+        assert env_path.exists()
+        assert "ANTHROPIC_API_KEY=sk-ant-secret" in env_path.read_text()
+
+    def test_skips_write_when_user_declines(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The opt-in default no contract: if the user presses Enter
+        # (or types n), the key MUST NOT land on disk. The whole
+        # point of D4 is to never write a secret without explicit
+        # consent.
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        env_path = tmp_path / ".env"
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: False)
+
+        result = offer_persist_anthropic_key_to_env_file(
+            make_console(file=io.StringIO()),
+            key_value="sk-ant-secret",
+            env_path=env_path,
+            gitignore_path=gi,
+        )
+
+        assert result is False
+        assert not env_path.exists()
+
+    def test_confirm_default_is_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The Confirm.ask call MUST pass `default=False` so a
+        # blank-Enter declines the save. A `default=True` would mean
+        # an operator who just wanted to dismiss the prompt
+        # accidentally writes the secret to disk.
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        captured: dict[str, object] = {}
+
+        def fake_confirm(*args: object, **kwargs: object) -> bool:
+            captured.update(kwargs)
+            return False
+
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", fake_confirm)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=io.StringIO()),
+            key_value="sk-ant-secret",
+            env_path=tmp_path / ".env",
+            gitignore_path=gi,
+        )
+
+        assert captured.get("default") is False
+
+    def test_warns_when_env_not_in_gitignore(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        buf = io.StringIO()
+        # No .gitignore at all — warning must surface.
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: False)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=buf, force_terminal=False, width=120),
+            key_value="sk-ant-secret",
+            env_path=tmp_path / ".env",
+            gitignore_path=tmp_path / ".gitignore",
+        )
+
+        out = buf.getvalue()
+        # Operator must see the leak-risk line before the prompt fires.
+        # Round-2 fold MED: when .gitignore is missing entirely, the
+        # warning wording changed from "NOT listed in .gitignore"
+        # (literally wrong) to "no .gitignore found" (honest).
+        assert ".env" in out
+        assert ".gitignore" in out
+        assert "no .gitignore found" in out
+
+    def test_no_warning_when_env_is_in_gitignore(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        buf = io.StringIO()
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: False)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=buf, force_terminal=False, width=120),
+            key_value="sk-ant-secret",
+            env_path=tmp_path / ".env",
+            gitignore_path=gi,
+        )
+
+        out = buf.getvalue()
+        # No leak warning — the operator's repo is already configured
+        # to ignore .env. (The prompt itself still renders.)
+        assert "NOT" not in out
+
+    def test_seeds_env_from_template_when_env_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # D4-fix: when `.env` doesn't exist but `.env.example` does,
+        # the persist flow seeds .env from the template FIRST so
+        # the new file inherits the template's comments + placeholder
+        # rows for other keys. Without the seed, the new .env had
+        # only the one key — surprising for operators who expect
+        # .env to be the full project config dump.
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        env_path = tmp_path / ".env"
+        template = tmp_path / ".env.example"
+        template.write_text(
+            "# Postgres URL\nDATABASE_URL=\n\n# API key\nANTHROPIC_API_KEY=\n",
+            encoding="utf-8",
+        )
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: True)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=io.StringIO()),
+            key_value="sk-ant-secret",
+            env_path=env_path,
+            gitignore_path=gi,
+        )
+
+        body = env_path.read_text(encoding="utf-8")
+        # Template comments + other placeholder rows survived.
+        assert "# Postgres URL" in body
+        assert "DATABASE_URL=" in body
+        assert "# API key" in body
+        # The API key line was replaced in place — not appended at end.
+        assert "ANTHROPIC_API_KEY=sk-ant-secret" in body
+        # Exactly one ANTHROPIC_API_KEY entry (in-place replace, no duplicate).
+        assert body.count("ANTHROPIC_API_KEY=") == 1
+
+    def test_no_template_seed_when_env_already_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # If .env already exists, the persist flow MUST NOT clobber
+        # it with the template — the operator's existing entries
+        # are load-bearing.
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("CUSTOM_VAR=keep_me\n", encoding="utf-8")
+        template = tmp_path / ".env.example"
+        template.write_text("TEMPLATE_VAR=should_not_appear\n", encoding="utf-8")
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: True)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=io.StringIO()),
+            key_value="sk-ant-secret",
+            env_path=env_path,
+            gitignore_path=gi,
+        )
+
+        body = env_path.read_text(encoding="utf-8")
+        # Existing entry preserved.
+        assert "CUSTOM_VAR=keep_me" in body
+        # Template's vars NEVER pulled in (would overwrite operator's work).
+        assert "TEMPLATE_VAR" not in body
+        # Key was appended, not seeded from template.
+        assert "ANTHROPIC_API_KEY=sk-ant-secret" in body
+
+    def test_template_seed_writes_at_0o600_not_0o644(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Round-2 fold CRITICAL (python-reviewer): pre-fold,
+        # `shutil.copy(template, env)` preserved the template's
+        # `0o644` mode bits; the subsequent `persist_key_to_env_file`
+        # read that mode back in and preserved it — the API key
+        # landed group/world-readable. The fix `env_path.chmod(0o600)`
+        # immediately after the copy now enforces owner-only.
+        if os.name != "posix":
+            pytest.skip("chmod bits not honored the same way on Windows")
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        env_path = tmp_path / ".env"
+        template = tmp_path / ".env.example"
+        template.write_text(
+            "DATABASE_URL=\nANTHROPIC_API_KEY=\n",
+            encoding="utf-8",
+        )
+        template.chmod(0o644)  # the world-readable mode this test guards against
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: True)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=io.StringIO()),
+            key_value="sk-ant-secret",
+            env_path=env_path,
+            gitignore_path=gi,
+        )
+
+        mode = env_path.stat().st_mode & 0o777
+        # No group/world bits. Owner-only.
+        assert mode & 0o077 == 0, (
+            f"API key written at mode {oct(mode)} — group/world can read the secret"
+        )
+
+    def test_warning_distinguishes_missing_gitignore_from_unlisted_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Round-2 fold MED (silent-failure-hunter): pre-fold, the
+        # warning text said ".env is NOT listed in .gitignore" even
+        # when no .gitignore existed at all — alarmist and literally
+        # wrong. Fix branches the wording.
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        buf = io.StringIO()
+        gi_missing = tmp_path / ".gitignore"  # does NOT exist
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: False)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=buf, force_terminal=False, width=120),
+            key_value="sk-ant-secret",
+            env_path=tmp_path / ".env",
+            gitignore_path=gi_missing,
+        )
+
+        out = buf.getvalue()
+        # Honest copy when no .gitignore exists.
+        assert "no .gitignore found" in out
+        # Make sure the alarmist "NOT listed in" wording is NOT used here.
+        assert "NOT listed in" not in out
+
+    def test_no_template_seed_when_template_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No .env.example present → no seed message, just the
+        # one-key file. The seed is an enhancement, not a precondition.
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        env_path = tmp_path / ".env"
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: True)
+        buf = io.StringIO()
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=buf, force_terminal=False, width=120),
+            key_value="sk-ant-secret",
+            env_path=env_path,
+            gitignore_path=gi,
+        )
+
+        body = env_path.read_text(encoding="utf-8")
+        assert body == "ANTHROPIC_API_KEY=sk-ant-secret\n"
+        # No "seeded from" line in the user-facing output.
+        assert "seeded from" not in buf.getvalue()
+
+    def test_success_message_printed_on_persist(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The "never write silently" contract: every successful
+        # write produces a visible confirmation so the operator
+        # knows their key is on disk now.
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        buf = io.StringIO()
+        env_path = tmp_path / ".env"
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: True)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=buf, force_terminal=False, width=120),
+            key_value="sk-ant-secret",
+            env_path=env_path,
+            gitignore_path=gi,
+        )
+
+        out = buf.getvalue()
+        assert "saved to" in out
+        # The path may soft-wrap inside Rich's width budget — assert
+        # on the path after collapsing whitespace so the basename
+        # match survives mid-word wraps.
+        collapsed = "".join(out.split())
+        assert env_path.name in collapsed
+
+
 class TestPrintLlmStagePreamble:
     """Tests for ``print_llm_stage_preamble`` — the cost-preview
     line that prints inside the wizard's entity / metric suggestion
@@ -748,3 +1100,287 @@ class TestPrintLlmStagePreamble:
             cap_usd=0.5,
         )
         assert GLYPH_PENDING in buf.getvalue()
+
+
+class TestLiveLlmStageProgress:
+    """D1: ``live_llm_stage_progress`` upgrades the static preamble
+    to a Rich ``Live`` display with auto-updating elapsed timer.
+
+    The Live re-renders every 0.5s during the body's blocking LLM
+    call so operators on a ~30s round-trip get continuous
+    "still working" feedback instead of an opaque spinner.
+
+    Non-TTY callers (CI / piped stderr) degrade to the static
+    preamble line — no Live frames, but the cost framing still
+    reaches the log so artifact scrapers see what the call was.
+    """
+
+    def test_non_tty_renders_static_preamble_only(self) -> None:
+        # Non-TTY: print the preamble line + yield, no Live, no
+        # timer. The preamble carries the load-bearing facts
+        # (action + model + cost + cap) so a log scraper sees what
+        # the call was even without per-frame updates.
+        from schemabrain._ui import live_llm_stage_progress, make_console
+
+        buf = io.StringIO()
+        console = make_console(file=buf, force_terminal=False, width=120)
+        with live_llm_stage_progress(
+            console,
+            action="identify business entities (7 tables)",
+            model="claude-sonnet-4-6",
+            cost_estimate_usd=0.01,
+            cap_usd=1.0,
+        ):
+            pass
+
+        out = buf.getvalue()
+        assert "claude-sonnet-4-6" in out
+        assert "identify business entities (7 tables)" in out
+        assert "$0.01" in out
+        assert "$1.00" in out
+        # No "elapsed" line on non-TTY — that's the TTY-only timer.
+        assert "elapsed" not in out
+
+    def test_tty_renders_elapsed_timer_line(self) -> None:
+        # TTY path: Live's `_PreambleWithTimer.__rich__` renders the
+        # preamble PLUS the "elapsed Xs" line. First frame fires on
+        # `Live.__enter__` before the yield, so we always see at
+        # least "elapsed 0s" even with an instant body.
+        from schemabrain._ui import live_llm_stage_progress
+
+        buf = io.StringIO()
+        # `color_system=None` strips ANSI so substring assertions
+        # match the visible characters.
+        console = Console(
+            file=buf,
+            force_terminal=True,
+            width=120,
+            color_system=None,
+            legacy_windows=False,
+        )
+        with live_llm_stage_progress(
+            console,
+            action="identify business entities (7 tables)",
+            model="claude-sonnet-4-6",
+            cost_estimate_usd=0.01,
+            cap_usd=1.0,
+        ):
+            pass
+
+        out = buf.getvalue()
+        assert "identify business entities (7 tables)" in out
+        assert "claude-sonnet-4-6" in out
+        assert "elapsed" in out
+        assert "0s" in out
+
+    def test_exception_in_body_propagates(self) -> None:
+        # Critical: the `yield` is NOT inside an `except Exception`
+        # clause. A body-raised exception must propagate cleanly to
+        # the caller's handler. F1 had a wide-try bug that this
+        # contract regression-tests against.
+        from schemabrain._ui import live_llm_stage_progress
+
+        buf = io.StringIO()
+        console = Console(
+            file=buf,
+            force_terminal=True,
+            width=120,
+            color_system=None,
+            legacy_windows=False,
+        )
+
+        class _SpecificError(RuntimeError):
+            pass
+
+        with (
+            pytest.raises(_SpecificError, match="boom"),
+            live_llm_stage_progress(
+                console,
+                action="x",
+                model="m",
+                cost_estimate_usd=0.01,
+                cap_usd=1.0,
+            ),
+        ):
+            raise _SpecificError("boom")
+
+    def test_non_tty_pauses_active_spinner_only_for_preamble_print(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Non-TTY: only the preamble print needs the spinner
+        # paused (so the static line isn't overwritten by a
+        # carriage-return spinner frame). Body doesn't need
+        # the pause because there's no Live to conflict with.
+        # The spinner restarts BEFORE the body runs — minimizes
+        # the visual interruption on log scrapers.
+        from schemabrain._ui import (
+            live_llm_stage_progress,
+            make_console,
+            register_active_spinner,
+        )
+
+        events: list[str] = []
+
+        class _RecordingStatus:
+            def start(self) -> None:
+                events.append("start")
+
+            def stop(self) -> None:
+                events.append("stop")
+
+        buf = io.StringIO()
+        console = make_console(file=buf, force_terminal=False, width=120)
+
+        with (
+            register_active_spinner(_RecordingStatus()),
+            live_llm_stage_progress(
+                console,
+                action="x",
+                model="m",
+                cost_estimate_usd=0.01,
+                cap_usd=1.0,
+            ),
+        ):
+            events.append("body")
+
+        # Non-TTY contract: short-lived pause around the print.
+        assert events == ["stop", "start", "body"]
+
+    def test_tty_pauses_active_spinner_for_the_body(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # TTY: the inner Live conflicts with the outer Status
+        # (Rich rejects nested live displays with `LiveError`).
+        # Pause spans the entire body — Live is active from
+        # before-yield to after-yield, and the outer Status
+        # must stay stopped that whole time.
+        from schemabrain._ui import (
+            live_llm_stage_progress,
+            register_active_spinner,
+        )
+
+        events: list[str] = []
+
+        class _RecordingStatus:
+            def start(self) -> None:
+                events.append("start")
+
+            def stop(self) -> None:
+                events.append("stop")
+
+        buf = io.StringIO()
+        console = Console(
+            file=buf,
+            force_terminal=True,
+            width=120,
+            color_system=None,
+            legacy_windows=False,
+        )
+
+        with (
+            register_active_spinner(_RecordingStatus()),
+            live_llm_stage_progress(
+                console,
+                action="x",
+                model="m",
+                cost_estimate_usd=0.01,
+                cap_usd=1.0,
+            ),
+        ):
+            events.append("body")
+
+        # TTY contract: pause spans the body so Live can render
+        # without nesting-conflict with the outer Status.
+        assert events == ["stop", "body", "start"]
+
+
+class TestPromptYesNo:
+    """F3: ``prompt_yes_no`` is the shared yes/no helper used by the wizard's
+    inline stage-6 overwrite prompt. Mirrors `prompt_for_url` shape: pauses
+    the active spinner around the blocking prompt so spinner frames don't
+    overwrite the user's response line.
+    """
+
+    def test_returns_true_when_confirm_ask_returns_true(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain._ui import make_console, prompt_yes_no
+
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: True)
+        assert prompt_yes_no(make_console(file=io.StringIO()), "overwrite?", default=False) is True
+
+    def test_returns_false_when_confirm_ask_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain._ui import make_console, prompt_yes_no
+
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: False)
+        assert prompt_yes_no(make_console(file=io.StringIO()), "overwrite?", default=False) is False
+
+    def test_passes_default_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import make_console, prompt_yes_no
+
+        captured: dict[str, object] = {}
+
+        def fake_ask(*args: object, **kwargs: object) -> bool:
+            captured.update(kwargs)
+            return False
+
+        monkeypatch.setattr("rich.prompt.Confirm.ask", fake_ask)
+        prompt_yes_no(make_console(file=io.StringIO()), "overwrite?", default=True)
+        assert captured.get("default") is True
+
+    def test_pauses_active_spinner_around_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import (
+            make_console,
+            prompt_yes_no,
+            register_active_spinner,
+        )
+
+        events: list[str] = []
+
+        class _RecordingStatus:
+            def start(self) -> None:
+                events.append("start")
+
+            def stop(self) -> None:
+                events.append("stop")
+
+        def fake_ask(*args: object, **kwargs: object) -> bool:
+            events.append("ask")
+            return False
+
+        monkeypatch.setattr("rich.prompt.Confirm.ask", fake_ask)
+        with register_active_spinner(_RecordingStatus()):
+            prompt_yes_no(make_console(file=io.StringIO()), "q?", default=False)
+        # Spinner must stop BEFORE Confirm.ask blocks on stdin, then
+        # restart after — same contract as prompt_for_url.
+        assert events == ["stop", "ask", "start"]
+
+
+class TestStderrIsInteractiveTty:
+    """F3: ``stderr_is_interactive_tty`` is the single source of truth for
+    "can we safely prompt?" — shared by cli and wizard so tests can
+    monkeypatch one symbol and reach both code paths.
+    """
+
+    def test_true_when_both_stdin_and_stderr_are_ttys(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from schemabrain._ui import stderr_is_interactive_tty
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+        assert stderr_is_interactive_tty() is True
+
+    def test_false_when_stdin_is_not_tty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import stderr_is_interactive_tty
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+        assert stderr_is_interactive_tty() is False
+
+    def test_false_when_stderr_is_not_tty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from schemabrain._ui import stderr_is_interactive_tty
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("sys.stderr.isatty", lambda: False)
+        assert stderr_is_interactive_tty() is False

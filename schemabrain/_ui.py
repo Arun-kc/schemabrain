@@ -43,8 +43,12 @@ and inside CI captures.
 from __future__ import annotations
 
 import contextlib
+import shutil
+import sys
 import threading
+import time
 from collections.abc import Iterator
+from pathlib import Path
 from typing import IO, Final, Protocol
 
 from rich.console import Console
@@ -377,8 +381,6 @@ def short_path(path: str | None) -> str:
     """
     if path is None:
         return ""
-    from pathlib import Path
-
     try:
         home = Path.home()
     except (OSError, RuntimeError):
@@ -636,9 +638,174 @@ def prompt_for_anthropic_key(
     return stripped or None
 
 
+def offer_persist_anthropic_key_to_env_file(
+    console: Console,
+    *,
+    key_value: str,
+    env_path: Path,
+    gitignore_path: Path,
+) -> bool:
+    """Ask whether to save a freshly-pasted API key to ``.env`` and persist on yes.
+
+    Called by ``_resolve_anthropic_key_source`` immediately after
+    ``prompt_for_anthropic_key`` returns a non-empty key, so the
+    operator who just pasted a key once doesn't have to paste it
+    again every time they re-run the wizard or a suggest command.
+
+    Three contracts (D4):
+
+    1. **Opt-in default no.** The Confirm prompt's default is False —
+       Enter without typing accepts the safe path (don't persist).
+       The key never lands on disk without an explicit ``y``.
+    2. **Never write silently.** Both the prompt itself AND the
+       written-confirmation message print to the console. If the
+       prompt would not be visible (non-TTY), the helper returns
+       False without writing anything.
+    3. **Gitignore warning.** When ``env_path`` is not listed in
+       ``gitignore_path``, prints a one-line yellow warning above
+       the prompt so the operator sees the leak risk BEFORE saying
+       yes. Does not block — the operator decides.
+
+    Returns True iff the key was actually persisted to disk. The
+    caller does not need to act on the return; the helper handles
+    all user-facing messaging (success line, warning, decline path).
+
+    Template seeding (D4-fix): when ``env_path`` does NOT yet exist
+    AND a sibling ``.env.example`` template is present, the helper
+    copies the template to ``env_path`` BEFORE writing the key. This
+    preserves the template's comments + placeholder rows for other
+    keys (``DATABASE_URL=``, etc) so the new ``.env`` looks like a
+    proper project config dump, not just a one-key file. The user's
+    next step is filling in the other placeholders — they can see
+    what to fill in instead of having to dig up the template.
+    """
+    from rich.prompt import Confirm
+
+    from schemabrain.setup.env_file import (
+        is_path_in_gitignore,
+        persist_key_to_env_file,
+    )
+
+    with pause_active_spinner():
+        if not is_path_in_gitignore(target=env_path, gitignore=gitignore_path):
+            # Yellow warning so the operator can't miss the leak risk
+            # before saying yes. We deliberately do NOT auto-add the
+            # entry to .gitignore — that's the operator's repo to
+            # manage; we don't want to mutate their git state during
+            # a key-paste flow. Round-2 fold MED (silent-failure-hunter):
+            # branch the wording on whether `.gitignore` exists at all.
+            # The "not listed in .gitignore" copy is literally wrong
+            # for a fresh repo with no `.gitignore` and reads as
+            # alarmist; the "no .gitignore found" wording is honest
+            # and actionable.
+            if gitignore_path.exists():
+                warning_body = (
+                    f"{env_path.name} is NOT listed in {gitignore_path.name} — "
+                    f"saving here will commit the key if you `git add` this file."
+                )
+            else:
+                warning_body = (
+                    f"no {gitignore_path.name} found — consider adding "
+                    f"{env_path.name} to {gitignore_path.name} before saving "
+                    f"so the key doesn't get committed."
+                )
+            console.print(f"  [yellow]{GLYPH_WARN} {warning_body}[/]")
+        consent = Confirm.ask(
+            f"  [cyan]Save ANTHROPIC_API_KEY to {env_path.name} for next time?[/]",
+            default=False,
+            console=console,
+        )
+        if not consent:
+            return False
+        # D4-fix: seed from .env.example when creating a fresh .env
+        # so the new file inherits the template's comments + the
+        # placeholder rows for other keys. Pure file-copy — the
+        # subsequent persist_key_to_env_file call then in-place
+        # replaces the empty `ANTHROPIC_API_KEY=` line.
+        template_path = env_path.parent / (env_path.name + ".example")
+        seeded_from_template = False
+        if not env_path.exists() and template_path.exists():
+            # Round-2 fold CRITICAL (python-reviewer): `shutil.copy`
+            # preserves the source mode. `.env.example` is typically
+            # `0o644` (committed to the repo, world-readable). Without
+            # the explicit `chmod` below, the freshly-seeded `.env`
+            # inherits `0o644`, and the subsequent
+            # `persist_key_to_env_file` reads that mode back in and
+            # preserves it — the API key lands group/world-readable.
+            # Round-2 fold MED (silent-failure-hunter): if the copy
+            # fails mid-write (quota exhausted, NFS timeout, ENOSPC),
+            # clean up the partial file so the next run's loader
+            # doesn't pick up garbage bytes.
+            try:
+                shutil.copy(template_path, env_path)
+                env_path.chmod(0o600)
+            except OSError:
+                env_path.unlink(missing_ok=True)
+                raise
+            seeded_from_template = True
+        persist_key_to_env_file(
+            key_name="ANTHROPIC_API_KEY",
+            key_value=key_value,
+            env_path=env_path,
+        )
+        console.print(
+            f"  [bright_black]{GLYPH_OK} saved to {env_path} — next run "
+            f"loads it automatically; never overrides an explicit export.[/]"
+        )
+        if seeded_from_template:
+            console.print(
+                f"  [bright_black]{GLYPH_PENDING} seeded from "
+                f"{template_path.name}; fill in the other placeholders "
+                f"as you need them.[/]"
+            )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # LLM cost-preview line — day-one UX overhaul "what's happening" sub-step.
 # ---------------------------------------------------------------------------
+
+
+def stderr_is_interactive_tty() -> bool:
+    """True iff init/wizard can safely prompt — both stdin AND stderr are TTYs.
+
+    Single source of truth shared by ``cli`` and ``wizard`` so tests
+    can monkeypatch one function and reach both code paths. The CLI
+    keeps its private ``_stderr_is_interactive_tty`` shim for
+    backwards compatibility with existing tests that monkeypatch it
+    directly.
+    """
+    return sys.stdin.isatty() and sys.stderr.isatty()
+
+
+def prompt_yes_no(
+    console: Console,
+    question: str,
+    *,
+    default: bool,
+) -> bool:
+    """Ask a yes/no question via ``rich.prompt.Confirm``, pausing any spinner.
+
+    Caller MUST gate on ``_stderr_is_interactive_tty()`` before
+    calling — this helper does not check TTY itself, so a non-
+    interactive run would block on stdin forever.
+
+    Wrapped in ``pause_active_spinner()`` so when called from inside
+    a wizard stage that has registered a Status spinner, the spinner
+    stops while the prompt blocks on stdin. Without the pause, the
+    spinner overwrites the prompt's response line as the user
+    types ([y/N]:).
+
+    Lifted out of ``cli._prompt_yes_no`` (F3) so the wizard's
+    stage-6 inline overwrite prompt can use the same primitive
+    without importing from ``cli``. ``cli._prompt_yes_no`` remains
+    as a thin shim for the residual CLI callsites that don't have
+    a Console handy.
+    """
+    from rich.prompt import Confirm
+
+    with pause_active_spinner():
+        return Confirm.ask(question, default=default, console=console)
 
 
 def print_llm_stage_preamble(
@@ -691,6 +858,104 @@ def print_llm_stage_preamble(
         )
 
 
+@contextlib.contextmanager
+def live_llm_stage_progress(
+    console: Console,
+    *,
+    action: str,
+    model: str,
+    cost_estimate_usd: float,
+    cap_usd: float,
+) -> Iterator[None]:
+    """Show a Rich ``Live`` cost preview + auto-updating elapsed timer.
+
+    D1 (post-PR-#79 polish): upgrades the static one-line preamble
+    that ``print_llm_stage_preamble`` ships to a live two-line
+    display that re-renders the elapsed seconds twice a second so
+    the operator can see the ~20-30s LLM round-trip is still in
+    flight (not hung).
+
+    Display shape (TTY path):
+
+    ::
+
+        ◇ Asking Claude to identify business entities (7 tables) ·
+            ~$0.01 · capped at $1.00 · claude-sonnet-4-6
+          elapsed 12s
+
+    Non-TTY (CI logs, redirected stderr): falls back to the static
+    ``print_llm_stage_preamble`` line — Live frames would just be
+    carriage-return noise in a log file. Pre-checked so callers
+    don't need to gate on ``console.is_terminal``.
+
+    Composes with ``register_active_spinner`` / ``pause_active_spinner``
+    correctly: the outer wizard stage spinner (registered by
+    ``_wizard_stage_context``) is paused via ``pause_active_spinner()``
+    BEFORE the Live starts (Rich rejects nested live displays). The
+    Live is not itself registered as the active spinner because the
+    LLM round-trip is non-interactive — no prompt fires during the
+    body that would need to pause the Live mid-call.
+
+    Critical exception-flow contract: the ``try`` around
+    ``Live.__enter__`` is narrow (defensive against Rich init
+    failures only). The ``yield`` is NOT wrapped — F1 had a bug
+    where a wide ``try``/``except Exception`` caught body-raised
+    exceptions via the yield re-raise and double-yielded into
+    contextlib's "generator didn't stop after throw()" guard.
+    Keep the yield outside any general except clause.
+    """
+    preamble_line = (
+        f"  [bright_black]{GLYPH_PENDING} Asking Claude to {action} · "
+        f"~${cost_estimate_usd:.2f} · capped at ${cap_usd:.2f} · {model}[/]"
+    )
+
+    if not console.is_terminal:
+        # Non-TTY: static preamble only. The operator (or scraper)
+        # gets one durable line in the log; no Live frames.
+        with pause_active_spinner():
+            console.print(preamble_line)
+        yield
+        return
+
+    # Lazy import: ``rich.live`` is heavier than ``rich.console``
+    # and only the TTY path needs it. Importing at module top would
+    # tax non-interactive runs that never reach this helper.
+    from rich.live import Live
+
+    started = time.monotonic()
+
+    class _PreambleWithTimer:
+        """Renderable that re-computes elapsed time on every Live refresh."""
+
+        def __rich__(self) -> str:
+            elapsed = int(time.monotonic() - started)
+            # Two-line render: preamble unchanged, timer ticks.
+            # The dim styling keeps the timer visually subordinate to
+            # the preamble (which carries the load-bearing facts:
+            # cost, cap, model).
+            return f"{preamble_line}\n  [dim]  elapsed {elapsed}s[/]"
+
+    # Pause any outer spinner BEFORE Live starts — Rich rejects
+    # nested live displays with a `LiveError`. The pause is a no-op
+    # when no spinner is registered (CLI standalone path).
+    with pause_active_spinner():
+        try:
+            live = Live(
+                _PreambleWithTimer(),
+                console=console,
+                refresh_per_second=2,
+                transient=False,
+            )
+        except Exception:  # pragma: no cover — defensive against Rich init failures
+            # Fall back to the static preamble — better than crashing
+            # the wizard for a UX nicety.
+            console.print(preamble_line)
+            yield
+            return
+        with live:
+            yield
+
+
 __all__ = [
     "GLYPH_ACTIVE",
     "GLYPH_ARROW",
@@ -705,14 +970,18 @@ __all__ = [
     "GLYPH_WARN",
     "console_render_width",
     "drift_glyph",
+    "live_llm_stage_progress",
     "make_console",
+    "offer_persist_anthropic_key_to_env_file",
     "pause_active_spinner",
     "pii_marker",
     "print_llm_stage_preamble",
     "prompt_for_anthropic_key",
     "prompt_for_url",
+    "prompt_yes_no",
     "register_active_spinner",
     "short_path",
     "status_glyph",
+    "stderr_is_interactive_tty",
     "top_rule",
 ]

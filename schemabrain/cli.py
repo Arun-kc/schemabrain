@@ -118,6 +118,11 @@ from schemabrain.errors import (
     store_path_unwritable,
     url_wrong_driver,
 )
+from schemabrain.errors_render import (
+    cause_from_llm_error,
+    classify_llm_failure,
+    render_llm_failure,
+)
 from schemabrain.eval.bundled import resolve_bundled_path
 from schemabrain.eval.golden import DEFAULT_GOLDEN_PATH, load_golden
 from schemabrain.eval.retriever import EmbeddingRetriever, KeywordRetriever, Retriever
@@ -256,6 +261,15 @@ def _resolve_max_cost(args: argparse.Namespace) -> float:
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns process exit code."""
+    # D4: load `.env` in CWD before any subcommand reads env vars.
+    # Shell exports always win — `load_env_file_into_environ` only
+    # sets keys NOT already present. Silent no-op if `.env` is
+    # absent. We don't catch exceptions because the loader itself
+    # is malformed-line-tolerant and the only failure modes are
+    # filesystem I/O issues that the operator needs to see.
+    from schemabrain.setup.env_file import load_env_file_into_environ
+
+    load_env_file_into_environ(Path.cwd() / ".env")
     try:
         return _dispatch(argv)
     except (KeyboardInterrupt, EOFError):
@@ -1983,6 +1997,12 @@ def _cmd_index(
         if anthropic is not None and isinstance(e, anthropic.AuthenticationError):
             _render_guided(anthropic_auth_failed(e))
             return 2
+        if _try_render_llm_failure(
+            e,
+            retry_command="schemabrain index",
+            fallback_command="schemabrain index --no-enrich",
+        ):
+            return 2
         raise
     elapsed = time.monotonic() - started
     _render_index_done(
@@ -3151,8 +3171,22 @@ def _cmd_entities_suggest(
         )
         return 1
 
+    # F1: wrap the LLM round-trip in a cost preamble + spinner so the
+    # operator sees what's being spent BEFORE the ~20s wait. Skipped
+    # for `--provider stub` (returns instantly; preamble's cost framing
+    # would be misleading) and auto-suppressed on non-TTY stderr.
+    if provider == "stub":
+        progress_ctx: AbstractContextManager[None] = contextlib.nullcontext()
+    else:
+        progress_ctx = _suggest_llm_progress(
+            action=f"identify business entities ({len(tables)} tables)",
+            model="claude-sonnet-4-6",
+            cost_estimate_usd=0.01,
+            cap_usd=max_cost_usd,
+        )
     try:
-        result = pipeline.propose_from_tables(tables, top_k=top_k)
+        with progress_ctx:
+            result = pipeline.propose_from_tables(tables, top_k=top_k)
     except CostCeilingExceededError as exc:
         _render_guided(
             GuidedError(
@@ -3178,6 +3212,19 @@ def _cmd_entities_suggest(
             )
         )
         return 1
+    except Exception as exc:
+        # Narrow handler: only the LLM round-trip is inside this try
+        # (table load + apply happen outside). An Anthropic SDK error
+        # surfacing here is the F5 scenario — render Shape C and exit
+        # cleanly. Anything not classified by the renderer (local
+        # programming bugs) propagates so the user sees the traceback.
+        if _try_render_llm_failure(
+            exc,
+            retry_command="schemabrain entities suggest",
+            fallback_command=None,
+        ):
+            return 2
+        raise
 
     if dry_run:
         _render_dry_run(result)
@@ -4375,8 +4422,21 @@ def _cmd_metrics_suggest(
         )
         return 1
 
+    # F1 mirror of entities suggest — preamble + spinner around the
+    # LLM call. Metrics estimate is 2x entities (more context tokens
+    # via entity list + table schemas), matching the wizard preamble.
+    if provider == "stub":
+        progress_ctx: AbstractContextManager[None] = contextlib.nullcontext()
+    else:
+        progress_ctx = _suggest_llm_progress(
+            action=f"define metrics ({len(entities)} entities, {len(tables)} tables)",
+            model="claude-sonnet-4-6",
+            cost_estimate_usd=0.02,
+            cap_usd=max_cost_usd,
+        )
     try:
-        result = pipeline.propose_from_entities(entities, tables, top_k=top_k)
+        with progress_ctx:
+            result = pipeline.propose_from_entities(entities, tables, top_k=top_k)
     except CostCeilingExceededError as exc:
         _render_guided(
             GuidedError(
@@ -4402,6 +4462,19 @@ def _cmd_metrics_suggest(
             )
         )
         return 1
+    except Exception as exc:
+        # Narrow handler: only the LLM round-trip is inside this try.
+        # F5 scenario — render Shape C and exit cleanly; anything not
+        # classified by the renderer (local programming bugs)
+        # propagates so the user sees the traceback. Mirrors the
+        # entity-suggest handler above.
+        if _try_render_llm_failure(
+            exc,
+            retry_command="schemabrain metrics suggest",
+            fallback_command=None,
+        ):
+            return 2
+        raise
 
     if dry_run:
         _render_metrics_dry_run(result)
@@ -4915,7 +4988,6 @@ def _cmd_init(
     `--print-only` is an alias for `--host manual` — when either is
     set, stage 6 never writes; the snippet renders to stdout.
     """
-    from dataclasses import replace as _dc_replace
     from typing import get_args as _get_args
 
     from schemabrain.setup.hosts import HostName
@@ -5018,38 +5090,37 @@ def _cmd_init(
         skip_llm_confirm=effective_skip_llm_confirm,
     )
 
-    interactive = _stderr_is_interactive_tty()
     host_display = _host_display_name(effective_host)
     console = _stderr_console()
     # Print the header BEFORE the wizard runs so the user sees the
-    # banner immediately and the stage-context spinner has a place to
-    # land. The header re-prints on a conflict-overwrite retry isn't
-    # an issue because the loop is a no-op on the second turn (the
-    # spinner re-runs are the visible artifact).
+    # banner immediately and the stage-context spinner has a place
+    # to land. F3 (post-PR-#79): pre-F3 this block ran inside a
+    # `while True:` loop that re-ran the entire wizard when the
+    # operator accepted an overwrite prompt — rendering the header
+    # twice and orphaning the prompt between the hero panel and
+    # the 7-stage table. The overwrite handling now lives INSIDE
+    # `_stage_wire_host` (with the prompt rendered inline during
+    # stage 6, paused-spinner-aware), so the orchestrator only
+    # needs one wizard run.
     _render_wizard_header(host_display=host_display, console=console)
-    while True:
-        result = run_default_wizard(cfg, stage_context=_wizard_stage_context)
-        # The only interactive recovery path is the entry-exists case
-        # at stage 4 — the wizard reports it as a `failed` outcome at
-        # the `wire_host` stage with a message containing "entry
-        # already exists". Other aborts surface to the renderer.
-        aborted_at = result.aborted_at
-        if (
-            interactive
-            and aborted_at is not None
-            and aborted_at.name == "wire_host"
-            and "entry already exists" in aborted_at.message.lower()
-            and not cfg.assume_yes
-        ):
-            if _prompt_yes_no(
-                "Overwrite the existing schemabrain entry?",
-                default=False,
-            ):
-                cfg = _dc_replace(cfg, assume_yes=True)
-                continue
-            console.print("[yellow]cancelled[/] no changes made.")
-            return 0
-        break
+    result = run_default_wizard(cfg, stage_context=_wizard_stage_context)
+
+    # Round-1 fold C1: user-cancelled overwrite is an informed
+    # choice, not a failure — handle it BEFORE `_render_wizard_after`
+    # so the operator does NOT see a red "Stopped at stage 6 of 7"
+    # abort panel for a deliberate cancellation. Pre-fold, the
+    # panel rendered first, then the "cancelled" line appeared
+    # below it, then exit 0 — UX-misleading (silent-failure-hunter
+    # CRITICAL).
+    #
+    # Round-1 fold H3: use the structured `user_cancelled` field
+    # on the StageOutcome instead of a message-prefix check —
+    # eliminates the cross-module string coupling that would have
+    # silently broken if either copy were edited.
+    aborted_at = result.aborted_at
+    if result.aborted and aborted_at is not None and aborted_at.user_cancelled:
+        console.print("[yellow]cancelled[/] no changes made.")
+        return 0
 
     _render_wizard_after(result, host_display=host_display, console=console)
     if result.aborted:
@@ -5551,21 +5622,28 @@ def _cmd_audit_list(
 def _stderr_is_interactive_tty() -> bool:
     """True iff init can safely prompt — both stdin AND stderr are TTYs.
 
-    Wrapped so tests can monkeypatch this one function instead of
-    patching `sys.stdin.isatty` and `sys.stderr.isatty` separately.
+    Thin shim over ``_ui.stderr_is_interactive_tty`` (F3 lift) so
+    every existing CLI callsite + test monkeypatch keeps working.
+    The wizard imports the canonical helper directly to keep the
+    test surface small.
     """
-    return sys.stdin.isatty() and sys.stderr.isatty()
+    from schemabrain._ui import stderr_is_interactive_tty
+
+    return stderr_is_interactive_tty()
 
 
 def _prompt_yes_no(question: str, *, default: bool) -> bool:
-    """Ask the user a yes/no question via rich.prompt.Confirm.
+    """Ask the user a yes/no question via the shared ``_ui.prompt_yes_no``.
 
-    Lazy-imported so the cli's import-cost path isn't affected
-    when no subcommand needs interactive input.
+    Lazy-imported so the cli's import-cost path isn't affected when
+    no subcommand needs interactive input. Thin shim over the
+    primitive in ``_ui`` so the CLI's residual callsites (those
+    without a console handy) share the same spinner-pause discipline
+    as the wizard's inline prompts.
     """
-    from rich.prompt import Confirm
+    from schemabrain._ui import prompt_yes_no
 
-    return Confirm.ask(question, default=default, console=_stderr_console())
+    return prompt_yes_no(_stderr_console(), question, default=default)
 
 
 def _redact_env_args(cmd: tuple[str, ...]) -> list[str]:
@@ -5722,6 +5800,65 @@ def _format_path_for_terminal(path: Path, *, max_width: int = 60) -> str:
 # stage 4 looking frozen for ~56s without the spinner — adding
 # `metrics` here restores symmetry with stage 3.
 _SPINNER_STAGES: frozenset[str] = frozenset({"index", "entities", "metrics"})
+
+
+@contextlib.contextmanager
+def _suggest_llm_progress(
+    *,
+    action: str,
+    model: str,
+    cost_estimate_usd: float,
+    cap_usd: float,
+) -> Iterator[None]:
+    """Show a cost preview + Rich Live elapsed timer around a standalone LLM call.
+
+    F1 + D1: wizard stages 3+4 use ``live_llm_stage_progress``
+    directly; the standalone commands (``entities suggest`` /
+    ``metrics suggest``) thread through this helper for one
+    additional gate: callers skip the whole context entirely on
+    ``provider == "stub"`` (returns instantly; cost framing would
+    lie). All other behavior — non-TTY auto-suppress, two-line
+    preamble+timer display, exception propagation — comes from
+    ``_ui.live_llm_stage_progress`` so cross-surface output stays
+    pixel-identical.
+
+    D1 (post-PR-#79 polish): replaced the F1 static-preamble +
+    ticking-spinner shape (``print_llm_stage_preamble`` +
+    ``console.status``) with the live elapsed-timer display.
+    Operators on a ~30s LLM round-trip now see the elapsed seconds
+    tick up instead of an opaque spinner — much clearer signal that
+    the call is still in flight (vs hung).
+
+    No ``--quiet`` flag is added to the suggest subparsers — TTY
+    auto-detect (via ``console.is_terminal`` in
+    ``live_llm_stage_progress``) covers the CI case, and shaving
+    parser surface area beats per-command flag proliferation.
+    Operators who want to suppress on a TTY can redirect stderr.
+    """
+    from schemabrain._ui import live_llm_stage_progress, make_console
+
+    # Narrow try: only the Rich console construction. If `make_console`
+    # itself raises (Rich init bug, broken terminfo), silently no-op
+    # — the live display is a UX nicety, not a correctness
+    # requirement. MUST NOT wrap the `yield` below: catching a
+    # body-raised exception via the yield re-raise would double-yield
+    # and trip contextlib's "generator didn't stop after throw()"
+    # guard, masking the original exception from the F5 handler
+    # downstream (the F1-era bug that this comment block preserves).
+    try:
+        console = make_console(stderr=True)
+    except Exception:  # pragma: no cover — defensive against Rich init failures
+        yield
+        return
+
+    with live_llm_stage_progress(
+        console,
+        action=action,
+        model=model,
+        cost_estimate_usd=cost_estimate_usd,
+        cap_usd=cap_usd,
+    ):
+        yield
 
 
 @contextlib.contextmanager
@@ -6127,6 +6264,16 @@ def _render_closing_block(
         target = host_display or "your MCP host"
         console.print(f"Restart {target}, then ask:")  # type: ignore[attr-defined]
     console.print("[cyan]>[/] list the entities Schema Brain knows about")  # type: ignore[attr-defined]
+    # UX audit #12: show the config path so the operator knows where
+    # the entry landed without scrolling back up to stage 6 or running
+    # `schemabrain doctor`. Surfaces only for claude-desktop where the
+    # path is a JSON file the operator can inspect / cat / open in an
+    # editor. claude-code's `claude mcp add` shell-out and manual mode
+    # have no operator-visible file to point at.
+    if host_result.state in ("written", "unchanged") and host_result.config_path is not None:
+        console.print(  # type: ignore[attr-defined]
+            f"[dim]config written: {host_result.config_path}[/]"
+        )
     console.print()  # type: ignore[attr-defined]
     _render_pending_entity_block(wizard_result, console=console)
     _render_pending_metrics_block(wizard_result, console=console)
@@ -6733,6 +6880,38 @@ def _render_guided(err: GuidedError) -> None:
     render_error(err, console=_stderr_console())
 
 
+def _try_render_llm_failure(
+    exc: BaseException,
+    *,
+    retry_command: str,
+    fallback_command: str | None,
+) -> bool:
+    """Render the Shape C LLM-failure advisory if `exc` is a known Anthropic error.
+
+    Returns True on a successful render (caller should NOT re-raise),
+    False when `exc` is not an Anthropic SDK error the renderer knows
+    about (caller should propagate so a less-specific handler or the
+    top-level traceback sees it). Centralizes the classify + render
+    pair so every CLI callsite shares one boundary.
+    """
+    kind = classify_llm_failure(exc)
+    if kind is None:
+        return False
+    # Round-1 fold M3: the `getattr(exc, "message", ...)` extraction
+    # was lifted into `cause_from_llm_error` in `errors_render.py`
+    # so the untyped access lives next to `classify_llm_failure`
+    # — single owner, single fallback chain. Long messages get
+    # visually truncated by Rich on the ✗-glyph line.
+    render_llm_failure(
+        kind=kind,
+        retry_command=retry_command,
+        fallback_command=fallback_command,
+        cause=cause_from_llm_error(exc),
+        console=_stderr_console(),
+    )
+    return True
+
+
 def _resolve_url_source(
     *,
     positional: str | None,
@@ -6910,6 +7089,26 @@ def _resolve_url_source(
     return _apply_silent_rewrite(positional)
 
 
+# Module-scoped dedup set for the whitespace-key stderr warning.
+# Keeps the warning to once per process rather than once per call
+# (which would flood the wizard's 2 LLM stages with the same line).
+# Tests reset via the public helper below.
+# Round-2 fold MED (python-reviewer): defined here, immediately
+# before its sole consumer `_resolve_anthropic_key_source`, instead
+# of 100+ lines later. Closing the read-order gap so the function
+# body's first reference to this set resolves visually within
+# scrolling distance.
+_WARNED_EMPTY_KEY_ENV_VARS: set[str] = set()
+
+
+def _reset_warned_empty_key_cache_for_tests() -> None:
+    """Test-only seam — wipes the once-per-process warned-empty-key set
+    so tests can re-trigger the warning in isolation without bleed-over.
+    Mirrors the `_reset_warned_empty_cache_for_tests` pattern in `_env.py`.
+    """
+    _WARNED_EMPTY_KEY_ENV_VARS.clear()
+
+
 def _resolve_anthropic_key_source(
     *,
     allow_interactive: bool = False,
@@ -6969,31 +7168,44 @@ def _resolve_anthropic_key_source(
             file=sys.stderr,
         )
     if allow_interactive and _stderr_is_interactive_tty():
-        from schemabrain._ui import prompt_for_anthropic_key
+        from schemabrain._ui import (
+            offer_persist_anthropic_key_to_env_file,
+            prompt_for_anthropic_key,
+        )
 
-        return prompt_for_anthropic_key(
-            _stderr_console(),
+        console = _stderr_console()
+        prompted_key = prompt_for_anthropic_key(
+            console,
             purpose=interactive_purpose,
             cost_estimate_usd=interactive_cost_estimate_usd,
             cap_usd=interactive_cap_usd,
             skip_hint=interactive_skip_hint,
         )
+        if prompted_key is not None:
+            # D4: offer to persist the freshly-pasted key so the
+            # operator doesn't have to paste it again. Opt-in
+            # default no. Failures inside the persistence flow
+            # MUST NOT block the resolver — the operator's key is
+            # in hand; .env is a convenience, not a precondition.
+            cwd = Path.cwd()
+            try:
+                offer_persist_anthropic_key_to_env_file(
+                    console,
+                    key_value=prompted_key,
+                    env_path=cwd / ".env",
+                    gitignore_path=cwd / ".gitignore",
+                )
+            except OSError as exc:
+                # Disk-write failure (read-only FS, permission denied,
+                # quota). Surface a one-line warning so the operator
+                # knows the save didn't happen, but don't error out —
+                # they still have the key for this run.
+                print(
+                    f"warning: could not persist ANTHROPIC_API_KEY to .env: {exc}",
+                    file=sys.stderr,
+                )
+        return prompted_key
     return None
-
-
-# Module-scoped dedup set for the whitespace-key stderr warning.
-# Keeps the warning to once per process rather than once per call
-# (which would flood the wizard's 2 LLM stages with the same line).
-# Tests reset via the public helper below.
-_WARNED_EMPTY_KEY_ENV_VARS: set[str] = set()
-
-
-def _reset_warned_empty_key_cache_for_tests() -> None:
-    """Test-only seam — wipes the once-per-process warned-empty-key set
-    so tests can re-trigger the warning in isolation without bleed-over.
-    Mirrors the `_reset_warned_empty_cache_for_tests` pattern in `_env.py`.
-    """
-    _WARNED_EMPTY_KEY_ENV_VARS.clear()
 
 
 def _resolve_url(url: str) -> str | None:
