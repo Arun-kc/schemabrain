@@ -6264,6 +6264,16 @@ def _render_closing_block(
         target = host_display or "your MCP host"
         console.print(f"Restart {target}, then ask:")  # type: ignore[attr-defined]
     console.print("[cyan]>[/] list the entities Schema Brain knows about")  # type: ignore[attr-defined]
+    # UX audit #12: show the config path so the operator knows where
+    # the entry landed without scrolling back up to stage 6 or running
+    # `schemabrain doctor`. Surfaces only for claude-desktop where the
+    # path is a JSON file the operator can inspect / cat / open in an
+    # editor. claude-code's `claude mcp add` shell-out and manual mode
+    # have no operator-visible file to point at.
+    if host_result.state in ("written", "unchanged") and host_result.config_path is not None:
+        console.print(  # type: ignore[attr-defined]
+            f"[dim]config written: {host_result.config_path}[/]"
+        )
     console.print()  # type: ignore[attr-defined]
     _render_pending_entity_block(wizard_result, console=console)
     _render_pending_metrics_block(wizard_result, console=console)

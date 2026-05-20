@@ -149,8 +149,8 @@ text-to-SQL execution accuracy.
 
 ## What's validated
 
-As of v0.2.0a1 (2026-05-15), against two anchors: the bundled e-commerce
-fixture (6 tables / 24 columns) and the Pagila DVD-rental sample
+As of v0.3.0 (2026-05-20), against two anchors: the bundled e-commerce
+fixture (7 tables / 30 columns) and the Pagila DVD-rental sample
 (15 tables / 87 columns after declarative-partition deduplication;
 22 / 129 raw):
 
@@ -161,8 +161,11 @@ fixture (6 tables / 24 columns) and the Pagila DVD-rental sample
 - ✅ Generates LLM descriptions via Anthropic Claude (Haiku 4.5 default,
   Sonnet 4.6 for cryptic columns)
 - ✅ Local embeddings via `fastembed` (no second API vendor)
-- ✅ All 5 MCP tools tested via Claude Desktop AND headless Anthropic SDK,
-  on both anchors
+- ✅ All 10 MCP tools tested via Claude Desktop AND headless Anthropic SDK,
+  on both anchors. The 10: `list_entities`, `describe_entity`,
+  `describe_table`, `describe_column`, `find_relevant_tables`,
+  `find_relevant_entities`, `suggest_joins`, `resolve_join`,
+  `get_example_queries`, `get_metric`
 - ✅ Adversarial questions handled honestly ("not in indexed schema" with
   explicit qualifier) — Pagila negative-question test correctly distinguished
   internal `payment_id` from external payment-processor transaction IDs
@@ -173,7 +176,7 @@ fixture (6 tables / 24 columns) and the Pagila DVD-rental sample
 - ✅ Cache-aware re-index ($0 on unchanged schemas)
 - ✅ Fresh-machine quickstart works from a stripped shell
 - ✅ Continuous integration (lint + unit + integration with 99% coverage
-  gate; 1300 tests on `main` at the v0.2.0a1 cut)
+  gate; 4238 tests on `main` at the v0.3.0 cut)
 
 Not yet validated:
 

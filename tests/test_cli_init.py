@@ -1623,6 +1623,12 @@ class TestWizardRenderer:
         captured = capsys.readouterr()
         # Automated host gets "Restart …, then ask:" copy.
         assert "Restart Claude Desktop" in captured.err
+        # UX audit #12: config path shown so the operator knows where the
+        # entry landed without scrolling back to stage 6 or running doctor.
+        assert "config written:" in captured.err
+        # Long tmp_path values soft-wrap inside Rich's width — assert on
+        # the basename which always survives the wrap as a contiguous span.
+        assert "claude_desktop_config.json" in captured.err
         # Tail + audit hints are part of the closing block.
         assert "schemabrain tail" in captured.err
         assert "schemabrain audit list" in captured.err
@@ -1661,6 +1667,10 @@ class TestWizardRenderer:
         captured = capsys.readouterr()
         assert "Restart Claude Desktop" in captured.err
         assert "The agent reads. It doesn't write." in captured.err
+        # UX audit #12: config path also surfaces on the unchanged path
+        # (operator re-ran init; they should still be able to see where
+        # the entry is so `cat config.json` works without hunting).
+        assert "config written:" in captured.err
 
     def test_closing_block_renders_manual_copy_on_printed_only(
         self, capsys: pytest.CaptureFixture[str]
@@ -1682,6 +1692,9 @@ class TestWizardRenderer:
         # Tail + audit hints + thesis tagline still apply.
         assert "schemabrain tail" in captured.err
         assert "The agent reads. It doesn't write." in captured.err
+        # UX audit #12: manual mode has no operator-visible config file —
+        # the "config written:" line must NOT render (would point at None).
+        assert "config written:" not in captured.err
 
     def test_closing_block_omitted_on_abort(self, capsys: pytest.CaptureFixture[str]) -> None:
         from schemabrain.cli import _render_wizard_result
