@@ -1788,7 +1788,12 @@ def _cmd_index(
             "--no-pii-classify to populate tags.",
             file=sys.stderr,
         )
-    url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    url = _resolve_url_source(
+        positional=positional_url,
+        url_env=url_env,
+        allow_interactive=True,
+        interactive_purpose="to index your database",
+    )
     if url is None:
         return 2
     canonical = _resolve_url(url)
@@ -1812,10 +1817,19 @@ def _cmd_index(
 
     # API key check happens BEFORE the store opens — failing fast on
     # configuration is friendlier than half-initialising the SQLite
-    # file and then aborting.
+    # file and then aborting. With `allow_interactive=True` a TTY user
+    # missing the env var sees a cost-disclosure prompt instead of the
+    # guided error; pressing Enter at the prompt falls through to the
+    # guided error so the recovery hint still lands.
     api_key: str | None = None
     if not no_enrich:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = _resolve_anthropic_key_source(
+            allow_interactive=True,
+            interactive_purpose="enrich column descriptions",
+            interactive_cost_estimate_usd=0.02,
+            interactive_cap_usd=max_cost_usd,
+            interactive_skip_hint="press Enter to abort (or re-run with --no-enrich)",
+        )
         if not api_key:
             _render_guided(
                 GuidedError(
@@ -3002,7 +3016,12 @@ def _cmd_entities_suggest(
          breached, dbt-guard refusal)
       2: structural (missing URL, missing API key, unwritable store)
     """
-    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    source_url = _resolve_url_source(
+        positional=positional_url,
+        url_env=url_env,
+        allow_interactive=True,
+        interactive_purpose="to suggest entities for",
+    )
     if source_url is None:
         return 2
     if _resolve_url(source_url) is None:  # pragma: no cover — defensive
@@ -3038,7 +3057,8 @@ def _cmd_entities_suggest(
 
     # Build the LLM client. Stub reads canned YAML from env (so the
     # multi-line response stays out of argv). Anthropic reads
-    # ANTHROPIC_API_KEY — same env source as `index`.
+    # ANTHROPIC_API_KEY via the shared resolver — same env source as
+    # `index`, with interactive prompt-on-miss when stderr is a TTY.
     llm_client: LLMClient
     if provider == "stub":
         canned = os.environ.get(_SUGGEST_STUB_RESPONSE_ENV_VAR)
@@ -3057,7 +3077,13 @@ def _cmd_entities_suggest(
             canned = "candidates: []"
         llm_client = FakeLLMClient(text_provider=lambda _s, _u: canned)
     else:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = _resolve_anthropic_key_source(
+            allow_interactive=True,
+            interactive_purpose="suggest entities",
+            interactive_cost_estimate_usd=0.01,
+            interactive_cap_usd=max_cost_usd,
+            interactive_skip_hint="press Enter to abort (or re-run with --provider stub)",
+        )
         if not api_key:
             _render_guided(
                 GuidedError(
@@ -3750,7 +3776,12 @@ def _cmd_joins_suggest(
       1: user-input class (parse error in store, FK violation)
       2: structural (missing URL, unwritable store, unwritable report)
     """
-    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    source_url = _resolve_url_source(
+        positional=positional_url,
+        url_env=url_env,
+        allow_interactive=True,
+        interactive_purpose="to mine canonical joins for",
+    )
     if source_url is None:
         return 2
     if _resolve_url(source_url) is None:  # pragma: no cover — defensive
@@ -4192,7 +4223,12 @@ def _cmd_metrics_suggest(
          ceiling breached, anchor-FK violation)
       2: structural (missing URL, missing API key, unwritable store)
     """
-    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    source_url = _resolve_url_source(
+        positional=positional_url,
+        url_env=url_env,
+        allow_interactive=True,
+        interactive_purpose="to suggest metrics for",
+    )
     if source_url is None:
         return 2
     if _resolve_url(source_url) is None:  # pragma: no cover — defensive
@@ -4225,7 +4261,8 @@ def _cmd_metrics_suggest(
 
     # Build the LLM client. Stub reads canned YAML from env (so the
     # multi-line response stays out of argv). Anthropic reads
-    # ANTHROPIC_API_KEY — same env source as `entities suggest`.
+    # ANTHROPIC_API_KEY via the shared resolver — same env source as
+    # `entities suggest`, with interactive prompt-on-miss when TTY.
     llm_client: LLMClient
     if provider == "stub":
         canned = os.environ.get(_SUGGEST_STUB_RESPONSE_ENV_VAR)
@@ -4244,7 +4281,13 @@ def _cmd_metrics_suggest(
             canned = "candidates: []"
         llm_client = FakeLLMClient(text_provider=lambda _s, _u: canned)
     else:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = _resolve_anthropic_key_source(
+            allow_interactive=True,
+            interactive_purpose="suggest metrics",
+            interactive_cost_estimate_usd=0.02,
+            interactive_cap_usd=max_cost_usd,
+            interactive_skip_hint="press Enter to abort (or re-run with --provider stub)",
+        )
         if not api_key:
             _render_guided(
                 GuidedError(
@@ -6292,7 +6335,12 @@ def _cmd_check(
     from schemabrain.check.render import render_json, render_report
     from schemabrain.core.store import SchemaVersionMismatchError
 
-    url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    url = _resolve_url_source(
+        positional=positional_url,
+        url_env=url_env,
+        allow_interactive=True,
+        interactive_purpose="to check for schema drift",
+    )
     if url is None:
         # _resolve_url_source already rendered a guided error.
         return 2
