@@ -138,9 +138,7 @@ jobs:
         run: uv sync --extra dev --extra otel --python 3.11
 
       - name: pip-audit (known-CVE deps)
-        # Strict mode: any vulnerability fails the build. No
-        # suppressions today; pytest is now >=9.0.3 so CVE-2025-71176
-        # no longer applies.
+        # Strict mode: any vulnerability fails the build.
         #
         # Audit a uv-exported requirements file rather than the
         # installed environment. The `--no-emit-project` flag
@@ -152,9 +150,20 @@ jobs:
         # against. Auditing dependencies is what we actually care
         # about; the project's own CVEs are caught at release-time
         # smoke tests, not here.
+        #
+        # Documented suppressions (revisit at every dependency bump):
+        # - PYSEC-2025-183 (pyjwt 2.12.1) — transitive dep of the
+        #   `mcp` SDK; no fix version published as of 2026-05-20.
+        #   We don't construct, sign, or verify JWTs anywhere in
+        #   schemabrain; the only path that loads pyjwt is the MCP
+        #   server's OAuth metadata endpoint, which we don't expose.
+        #   Drop this suppression when the MCP SDK ships a release
+        #   that pins a fixed pyjwt version.
         run: |
           uv export --no-emit-project --format requirements-txt --quiet > /tmp/audit-requirements.txt
-          uv run --python 3.11 pip-audit --strict --requirement /tmp/audit-requirements.txt
+          uv run --python 3.11 pip-audit --strict \
+            --requirement /tmp/audit-requirements.txt \
+            --ignore-vuln PYSEC-2025-183
 
       - name: bandit (Python SAST)
         # Reads `[tool.bandit]` from pyproject.toml so the test/scripts
