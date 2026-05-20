@@ -80,6 +80,30 @@ class TestLoadEnvFileIntoEnviron:
         assert loaded == 1
         assert os.environ["FOO"] == "bar"
 
+    def test_empty_value_lines_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # D4-fix: a template-seeded `.env` with placeholder rows
+        # like `DATABASE_URL=` (empty value) must NOT pollute
+        # os.environ with empty strings. Downstream resolvers
+        # treat `DATABASE_URL=""` as "set, use it" and would
+        # crash before the operator filled in the real value.
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "FILLED=actual_value\nDATABASE_URL=\nANOTHER_EMPTY=   \n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("FILLED", raising=False)
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.delenv("ANOTHER_EMPTY", raising=False)
+
+        loaded = load_env_file_into_environ(env_file)
+
+        assert loaded == 1
+        assert os.environ["FILLED"] == "actual_value"
+        assert "DATABASE_URL" not in os.environ
+        assert "ANOTHER_EMPTY" not in os.environ
+
     def test_malformed_lines_silently_skipped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

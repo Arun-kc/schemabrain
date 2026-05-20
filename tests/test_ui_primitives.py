@@ -821,6 +821,109 @@ class TestOfferPersistAnthropicKeyToEnvFile:
         # to ignore .env. (The prompt itself still renders.)
         assert "NOT" not in out
 
+    def test_seeds_env_from_template_when_env_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # D4-fix: when `.env` doesn't exist but `.env.example` does,
+        # the persist flow seeds .env from the template FIRST so
+        # the new file inherits the template's comments + placeholder
+        # rows for other keys. Without the seed, the new .env had
+        # only the one key — surprising for operators who expect
+        # .env to be the full project config dump.
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        env_path = tmp_path / ".env"
+        template = tmp_path / ".env.example"
+        template.write_text(
+            "# Postgres URL\nDATABASE_URL=\n\n# API key\nANTHROPIC_API_KEY=\n",
+            encoding="utf-8",
+        )
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: True)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=io.StringIO()),
+            key_value="sk-ant-secret",
+            env_path=env_path,
+            gitignore_path=gi,
+        )
+
+        body = env_path.read_text(encoding="utf-8")
+        # Template comments + other placeholder rows survived.
+        assert "# Postgres URL" in body
+        assert "DATABASE_URL=" in body
+        assert "# API key" in body
+        # The API key line was replaced in place — not appended at end.
+        assert "ANTHROPIC_API_KEY=sk-ant-secret" in body
+        # Exactly one ANTHROPIC_API_KEY entry (in-place replace, no duplicate).
+        assert body.count("ANTHROPIC_API_KEY=") == 1
+
+    def test_no_template_seed_when_env_already_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # If .env already exists, the persist flow MUST NOT clobber
+        # it with the template — the operator's existing entries
+        # are load-bearing.
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("CUSTOM_VAR=keep_me\n", encoding="utf-8")
+        template = tmp_path / ".env.example"
+        template.write_text("TEMPLATE_VAR=should_not_appear\n", encoding="utf-8")
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: True)
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=io.StringIO()),
+            key_value="sk-ant-secret",
+            env_path=env_path,
+            gitignore_path=gi,
+        )
+
+        body = env_path.read_text(encoding="utf-8")
+        # Existing entry preserved.
+        assert "CUSTOM_VAR=keep_me" in body
+        # Template's vars NEVER pulled in (would overwrite operator's work).
+        assert "TEMPLATE_VAR" not in body
+        # Key was appended, not seeded from template.
+        assert "ANTHROPIC_API_KEY=sk-ant-secret" in body
+
+    def test_no_template_seed_when_template_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No .env.example present → no seed message, just the
+        # one-key file. The seed is an enhancement, not a precondition.
+        from schemabrain._ui import (
+            make_console,
+            offer_persist_anthropic_key_to_env_file,
+        )
+
+        env_path = tmp_path / ".env"
+        gi = tmp_path / ".gitignore"
+        gi.write_text(".env\n", encoding="utf-8")
+        monkeypatch.setattr("rich.prompt.Confirm.ask", lambda *a, **kw: True)
+        buf = io.StringIO()
+
+        offer_persist_anthropic_key_to_env_file(
+            make_console(file=buf, force_terminal=False, width=120),
+            key_value="sk-ant-secret",
+            env_path=env_path,
+            gitignore_path=gi,
+        )
+
+        body = env_path.read_text(encoding="utf-8")
+        assert body == "ANTHROPIC_API_KEY=sk-ant-secret\n"
+        # No "seeded from" line in the user-facing output.
+        assert "seeded from" not in buf.getvalue()
+
     def test_success_message_printed_on_persist(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

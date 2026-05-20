@@ -667,7 +667,18 @@ def offer_persist_anthropic_key_to_env_file(
     Returns True iff the key was actually persisted to disk. The
     caller does not need to act on the return; the helper handles
     all user-facing messaging (success line, warning, decline path).
+
+    Template seeding (D4-fix): when ``env_path`` does NOT yet exist
+    AND a sibling ``.env.example`` template is present, the helper
+    copies the template to ``env_path`` BEFORE writing the key. This
+    preserves the template's comments + placeholder rows for other
+    keys (``DATABASE_URL=``, etc) so the new ``.env`` looks like a
+    proper project config dump, not just a one-key file. The user's
+    next step is filling in the other placeholders — they can see
+    what to fill in instead of having to dig up the template.
     """
+    import shutil
+
     from rich.prompt import Confirm
 
     from schemabrain.setup.env_file import (
@@ -694,6 +705,16 @@ def offer_persist_anthropic_key_to_env_file(
         )
         if not consent:
             return False
+        # D4-fix: seed from .env.example when creating a fresh .env
+        # so the new file inherits the template's comments + the
+        # placeholder rows for other keys. Pure file-copy — the
+        # subsequent persist_key_to_env_file call then in-place
+        # replaces the empty `ANTHROPIC_API_KEY=` line.
+        template_path = env_path.parent / (env_path.name + ".example")
+        seeded_from_template = False
+        if not env_path.exists() and template_path.exists():
+            shutil.copy(template_path, env_path)
+            seeded_from_template = True
         persist_key_to_env_file(
             key_name="ANTHROPIC_API_KEY",
             key_value=key_value,
@@ -703,6 +724,12 @@ def offer_persist_anthropic_key_to_env_file(
             f"  [bright_black]{GLYPH_OK} saved to {env_path} — next run "
             f"loads it automatically; never overrides an explicit export.[/]"
         )
+        if seeded_from_template:
+            console.print(
+                f"  [bright_black]{GLYPH_PENDING} seeded from "
+                f"{template_path.name}; fill in the other placeholders "
+                f"as you need them.[/]"
+            )
     return True
 
 

@@ -61,6 +61,13 @@ def load_env_file_into_environ(path: Path) -> int:
     silently skipped — the loader is a best-effort convenience, not
     a validator. Operators who want hard parse errors run their
     shell directly against the file.
+
+    Empty-value lines (``KEY=`` with nothing after the equals) are
+    also skipped so a template-seeded ``.env`` with placeholder rows
+    like ``DATABASE_URL=`` does NOT pollute the environment with
+    empty strings — downstream resolvers treat ``DATABASE_URL=""``
+    as "set, use it" and would crash before the operator filled in
+    the real value.
     """
     if not path.exists():
         return 0
@@ -74,6 +81,8 @@ def load_env_file_into_environ(path: Path) -> int:
             continue
         key = match.group(1)
         value = _unquote_value(match.group(2))
+        if not value.strip():
+            continue
         if key in os.environ:
             continue
         os.environ[key] = value
