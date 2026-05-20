@@ -3426,81 +3426,39 @@ class TestCmdIndexLlmFailureShape:
 
 
 class TestSuggestLlmProgressHelper:
-    """F1: `_suggest_llm_progress` is the wizard-parity preamble + spinner helper.
+    """F1 + D1: `_suggest_llm_progress` wraps `_ui.live_llm_stage_progress`.
 
     Used by `_cmd_entities_suggest` and `_cmd_metrics_suggest` to
-    surface a cost preview + ticking spinner around the ~20s LLM
-    round-trip (pre-F1 these commands were silent the whole time
-    and read as "frozen"). Joins suggest is excluded by design —
+    surface a cost preview + auto-updating elapsed timer around the
+    ~20-30s LLM round-trip. Joins suggest is excluded by design —
     sub-second deterministic operation.
 
-    Helper auto-suppresses on non-TTY stderr (CI safety) and never
-    fires when the caller passes `--provider stub` (the stub
-    returns instantly; cost framing would be misleading).
+    D1 (post-PR-#79 polish): replaced the F1 ``Status``-spinner shape
+    with a Rich ``Live`` display that re-renders the elapsed seconds
+    every 0.5s. Non-TTY runs degrade to the static preamble line
+    (durable in log files; no carriage-return noise). Tests here
+    pin the CLI-side wrapper's contract; the rendering primitives
+    (auto-refresh, two-line shape, exception flow) are covered by
+    `tests/test_ui_primitives.py::TestLiveLlmStageProgress`.
     """
 
-    def test_no_op_when_stderr_is_not_tty(
+    def test_non_tty_prints_static_preamble(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # Non-TTY (CI logs, redirected output) → skip preamble + spinner
-        # so log scrapers don't get carriage-return noise.
+        # Non-TTY (CI logs, redirected output): D1 falls back to the
+        # static preamble line (no Live, no timer) so log scrapers
+        # still see what the call was. Pre-D1, the F1 helper
+        # silently no-op'd in non-TTY — losing the cost framing
+        # from CI artifact logs. D1 prefers durability.
+        import io
+
+        from rich.console import Console
+
         from schemabrain.cli import _suggest_llm_progress
 
-        class _NonTtyConsole:
-            is_terminal = False
-
-            def status(self, *_a: object, **_kw: object) -> None:  # pragma: no cover
-                raise AssertionError("status should not fire on non-TTY")
-
-            def print(self, *_a: object, **_kw: object) -> None:  # pragma: no cover
-                raise AssertionError("print should not fire on non-TTY")
-
-        monkeypatch.setattr("schemabrain._ui.make_console", lambda **_kw: _NonTtyConsole())
-
-        with _suggest_llm_progress(
-            action="identify business entities",
-            model="claude-sonnet-4-6",
-            cost_estimate_usd=0.01,
-            cap_usd=1.0,
-        ):
-            pass
-
-        # Nothing should have reached stderr.
-        assert capsys.readouterr().err == ""
-
-    def test_tty_path_prints_preamble_and_starts_spinner(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # On a TTY, preamble line goes out + a status spinner is
-        # entered/exited cleanly.
-        from schemabrain.cli import _suggest_llm_progress
-
-        captured: dict[str, object] = {"prints": [], "entered": False, "exited": False}
-
-        class _RecordingStatus:
-            def __enter__(self) -> "_RecordingStatus":
-                captured["entered"] = True
-                return self
-
-            def __exit__(self, *_exc: object) -> None:
-                captured["exited"] = True
-
-            def start(self) -> None: ...
-
-            def stop(self) -> None: ...
-
-        class _TtyConsole:
-            is_terminal = True
-
-            def print(self, *args: object, **_kw: object) -> None:
-                captured["prints"].append(args[0] if args else None)
-
-            def status(self, text: str, *, spinner: str) -> _RecordingStatus:
-                captured["spinner_text"] = text
-                captured["spinner"] = spinner
-                return _RecordingStatus()
-
-        monkeypatch.setattr("schemabrain._ui.make_console", lambda **_kw: _TtyConsole())
+        buf = io.StringIO()
+        non_tty_console = Console(file=buf, force_terminal=False, width=120)
+        monkeypatch.setattr("schemabrain._ui.make_console", lambda **_kw: non_tty_console)
 
         with _suggest_llm_progress(
             action="identify business entities (7 tables)",
@@ -3510,14 +3468,82 @@ class TestSuggestLlmProgressHelper:
         ):
             pass
 
-        # Preamble line printed before the spinner started.
-        assert captured["entered"] is True
-        assert captured["exited"] is True
-        assert captured["spinner"] == "dots"
-        assert "waiting on Claude" in str(captured["spinner_text"])
-        # The preamble carries the wizard-parity bits (model + cost + cap).
-        rendered = " ".join(str(p) for p in captured["prints"])
+        # Static preamble reached the buffer; no carriage-return frames.
+        rendered = buf.getvalue()
         assert "claude-sonnet-4-6" in rendered
-        assert "identify business entities" in rendered
+        assert "identify business entities (7 tables)" in rendered
         assert "$0.01" in rendered
         assert "$1.00" in rendered
+        # No live-display frame markers — "elapsed Xs" only shows on
+        # the TTY path where the Live timer renders.
+        assert "elapsed" not in rendered
+
+    def test_tty_path_renders_preamble_and_elapsed_timer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # TTY path: Live renders the preamble AND a ticking elapsed
+        # timer. Use a real Rich Console with force_terminal=True so
+        # Live's auto-refresh path actually runs.
+        import io
+
+        from rich.console import Console
+
+        from schemabrain.cli import _suggest_llm_progress
+
+        buf = io.StringIO()
+        tty_console = Console(
+            file=buf, force_terminal=True, width=120, color_system=None, legacy_windows=False
+        )
+        monkeypatch.setattr("schemabrain._ui.make_console", lambda **_kw: tty_console)
+
+        with _suggest_llm_progress(
+            action="identify business entities (7 tables)",
+            model="claude-sonnet-4-6",
+            cost_estimate_usd=0.01,
+            cap_usd=1.0,
+        ):
+            # Short body — the elapsed timer's first render fires
+            # on Live.__enter__ before yield, so we always see at
+            # least "elapsed 0s".
+            pass
+
+        rendered = buf.getvalue()
+        assert "identify business entities (7 tables)" in rendered
+        assert "claude-sonnet-4-6" in rendered
+        # Elapsed-time line: D1's headline feature. Timer label
+        # rendered as "elapsed Xs" via the `_PreambleWithTimer`
+        # renderable in `live_llm_stage_progress`.
+        assert "elapsed" in rendered
+
+    def test_exception_in_body_propagates_through_live(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Critical exception-flow contract (F1-era bug): the `yield`
+        # is NOT inside any `except Exception` clause, so a body-
+        # raised exception propagates cleanly to the outer caller
+        # instead of being swallowed by a generator double-yield.
+        import io
+
+        from rich.console import Console
+
+        from schemabrain.cli import _suggest_llm_progress
+
+        buf = io.StringIO()
+        tty_console = Console(
+            file=buf, force_terminal=True, width=120, color_system=None, legacy_windows=False
+        )
+        monkeypatch.setattr("schemabrain._ui.make_console", lambda **_kw: tty_console)
+
+        class _SpecificError(RuntimeError):
+            pass
+
+        with (
+            pytest.raises(_SpecificError, match="LLM call failed"),
+            _suggest_llm_progress(
+                action="identify",
+                model="m",
+                cost_estimate_usd=0.01,
+                cap_usd=1.0,
+            ),
+        ):
+            raise _SpecificError("LLM call failed")

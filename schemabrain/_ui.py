@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
+import time
 from collections.abc import Iterator
 from typing import IO, Final, Protocol
 
@@ -735,6 +736,104 @@ def print_llm_stage_preamble(
         )
 
 
+@contextlib.contextmanager
+def live_llm_stage_progress(
+    console: Console,
+    *,
+    action: str,
+    model: str,
+    cost_estimate_usd: float,
+    cap_usd: float,
+) -> Iterator[None]:
+    """Show a Rich ``Live`` cost preview + auto-updating elapsed timer.
+
+    D1 (post-PR-#79 polish): upgrades the static one-line preamble
+    that ``print_llm_stage_preamble`` ships to a live two-line
+    display that re-renders the elapsed seconds twice a second so
+    the operator can see the ~20-30s LLM round-trip is still in
+    flight (not hung).
+
+    Display shape (TTY path):
+
+    ::
+
+        ◇ Asking Claude to identify business entities (7 tables) ·
+            ~$0.01 · capped at $1.00 · claude-sonnet-4-6
+          elapsed 12s
+
+    Non-TTY (CI logs, redirected stderr): falls back to the static
+    ``print_llm_stage_preamble`` line — Live frames would just be
+    carriage-return noise in a log file. Pre-checked so callers
+    don't need to gate on ``console.is_terminal``.
+
+    Composes with ``register_active_spinner`` / ``pause_active_spinner``
+    correctly: the outer wizard stage spinner (registered by
+    ``_wizard_stage_context``) is paused via ``pause_active_spinner()``
+    BEFORE the Live starts (Rich rejects nested live displays). The
+    Live is not itself registered as the active spinner because the
+    LLM round-trip is non-interactive — no prompt fires during the
+    body that would need to pause the Live mid-call.
+
+    Critical exception-flow contract: the ``try`` around
+    ``Live.__enter__`` is narrow (defensive against Rich init
+    failures only). The ``yield`` is NOT wrapped — F1 had a bug
+    where a wide ``try``/``except Exception`` caught body-raised
+    exceptions via the yield re-raise and double-yielded into
+    contextlib's "generator didn't stop after throw()" guard.
+    Keep the yield outside any general except clause.
+    """
+    preamble_line = (
+        f"  [bright_black]{GLYPH_PENDING} Asking Claude to {action} · "
+        f"~${cost_estimate_usd:.2f} · capped at ${cap_usd:.2f} · {model}[/]"
+    )
+
+    if not console.is_terminal:
+        # Non-TTY: static preamble only. The operator (or scraper)
+        # gets one durable line in the log; no Live frames.
+        with pause_active_spinner():
+            console.print(preamble_line)
+        yield
+        return
+
+    # Lazy import: ``rich.live`` is heavier than ``rich.console``
+    # and only the TTY path needs it. Importing at module top would
+    # tax non-interactive runs that never reach this helper.
+    from rich.live import Live
+
+    started = time.monotonic()
+
+    class _PreambleWithTimer:
+        """Renderable that re-computes elapsed time on every Live refresh."""
+
+        def __rich__(self) -> str:
+            elapsed = int(time.monotonic() - started)
+            # Two-line render: preamble unchanged, timer ticks.
+            # The dim styling keeps the timer visually subordinate to
+            # the preamble (which carries the load-bearing facts:
+            # cost, cap, model).
+            return f"{preamble_line}\n  [dim]  elapsed {elapsed}s[/]"
+
+    # Pause any outer spinner BEFORE Live starts — Rich rejects
+    # nested live displays with a `LiveError`. The pause is a no-op
+    # when no spinner is registered (CLI standalone path).
+    with pause_active_spinner():
+        try:
+            live = Live(
+                _PreambleWithTimer(),
+                console=console,
+                refresh_per_second=2,
+                transient=False,
+            )
+        except Exception:  # pragma: no cover — defensive against Rich init failures
+            # Fall back to the static preamble — better than crashing
+            # the wizard for a UX nicety.
+            console.print(preamble_line)
+            yield
+            return
+        with live:
+            yield
+
+
 __all__ = [
     "GLYPH_ACTIVE",
     "GLYPH_ARROW",
@@ -749,6 +848,7 @@ __all__ = [
     "GLYPH_WARN",
     "console_render_width",
     "drift_glyph",
+    "live_llm_stage_progress",
     "make_console",
     "pause_active_spinner",
     "pii_marker",

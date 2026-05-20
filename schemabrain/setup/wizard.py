@@ -1398,7 +1398,7 @@ def _run_entity_suggestion(
     """
     from sqlite3 import IntegrityError
 
-    from schemabrain._ui import make_console, print_llm_stage_preamble
+    from schemabrain._ui import live_llm_stage_progress, make_console
     from schemabrain.core.store import DbtOwnedEntityError, SQLiteStore
     from schemabrain.enrichment.anthropic_client import anthropic_sonnet_46_client
     from schemabrain.entities.suggest import (
@@ -1424,13 +1424,16 @@ def _run_entity_suggestion(
         if not tables:
             raise _EmptySchemaAtWizard()
 
-        # Cost-preview line: tells the user what's about to be spent
-        # BEFORE the ~30s LLM call goes out. Without this, the wizard
-        # spinner reads as "stuck" — the user has no visibility into
-        # what's happening or how much it'll cost. Pairs with the
-        # cost disclosure in `prompt_for_anthropic_key` (same shape,
-        # same numbers).
-        print_llm_stage_preamble(
+        # D1 (post-PR-#79 polish): wrap the LLM round-trip in a Rich
+        # ``Live`` display that shows the cost preview AND an
+        # auto-updating elapsed timer. Pre-D1, the wizard printed a
+        # one-line static preamble (PR-1 c6c899e) then went silent
+        # for the ~30s LLM call — operators couldn't tell whether the
+        # call was still in flight or hung. The Live timer ticks
+        # every 0.5s so the operator gets continuous feedback.
+        # Non-TTY (CI / piped stderr) falls back to the static
+        # preamble shape automatically.
+        progress = live_llm_stage_progress(
             make_console(stderr=True),
             action=f"identify business entities ({len(tables)} tables)",
             model="claude-sonnet-4-6",
@@ -1439,7 +1442,8 @@ def _run_entity_suggestion(
         )
 
         try:
-            result = pipeline.propose_from_tables(tables)
+            with progress:
+                result = pipeline.propose_from_tables(tables)
         except CostCeilingExceededError as exc:
             raise _CostCeilingExceededAtWizard(str(exc)) from exc
         except SuggestionParseError as exc:
@@ -1983,7 +1987,7 @@ def _run_metric_suggestion(
     """
     from sqlite3 import IntegrityError
 
-    from schemabrain._ui import make_console, print_llm_stage_preamble
+    from schemabrain._ui import live_llm_stage_progress, make_console
     from schemabrain.core.store import DbtOwnedMetricError, SQLiteStore
     from schemabrain.enrichment.anthropic_client import anthropic_sonnet_46_client
     from schemabrain.entities.suggest import (
@@ -2023,12 +2027,12 @@ def _run_metric_suggestion(
         if not tables:
             raise _EmptySchemaAtWizard()
 
-        # Cost-preview line — same shape as the entities stage so the
-        # operator sees the spend ceiling before the ~30s LLM call.
-        # Metrics suggestion is typically a bit more expensive than
-        # entities (more context tokens — entity list + table schemas
-        # — so the estimate is 2x the entities default).
-        print_llm_stage_preamble(
+        # D1 (post-PR-#79 polish): wrap in Rich Live with elapsed
+        # timer — same shape as the entities stage. Metrics
+        # suggestion is typically a bit more expensive than entities
+        # (more context tokens — entity list + table schemas — so the
+        # estimate is 2x the entities default).
+        progress = live_llm_stage_progress(
             make_console(stderr=True),
             action=f"define metrics ({len(entities)} entities, {len(tables)} tables)",
             model="claude-sonnet-4-6",
@@ -2037,7 +2041,8 @@ def _run_metric_suggestion(
         )
 
         try:
-            result = pipeline.propose_from_entities(entities, tables)
+            with progress:
+                result = pipeline.propose_from_entities(entities, tables)
         except CostCeilingExceededError as exc:
             raise _CostCeilingExceededAtWizard(str(exc)) from exc
         except (SuggestionParseError, MetricSuggestionParseError) as exc:

@@ -5801,63 +5801,54 @@ def _suggest_llm_progress(
     cost_estimate_usd: float,
     cap_usd: float,
 ) -> Iterator[None]:
-    """Show a cost preamble + ticking spinner around a standalone-suggest LLM call.
+    """Show a cost preview + Rich Live elapsed timer around a standalone LLM call.
 
-    F1: wizard stages 3+4 already print the cost preview line via
-    ``print_llm_stage_preamble``; the matching standalone commands
-    (``entities suggest`` / ``metrics suggest``) were silent for the
-    full ~20s LLM round-trip and read as "frozen". This helper
-    brings the wizard's preamble shape to the CLI surface plus a
-    spinner so the operator can see the request is in flight.
+    F1 + D1: wizard stages 3+4 use ``live_llm_stage_progress``
+    directly; the standalone commands (``entities suggest`` /
+    ``metrics suggest``) thread through this helper for one
+    additional gate: callers skip the whole context entirely on
+    ``provider == "stub"`` (returns instantly; cost framing would
+    lie). All other behavior — non-TTY auto-suppress, two-line
+    preamble+timer display, exception propagation — comes from
+    ``_ui.live_llm_stage_progress`` so cross-surface output stays
+    pixel-identical.
 
-    Auto-suppresses on non-TTY stderr (CI logs, redirected output) —
-    matches ``_wizard_stage_context``'s discipline so carriage-return
-    spinner frames don't pollute log files. Callers are expected to
-    skip this entirely when ``provider == "stub"`` because the stub
-    returns instantly and the cost framing ("~$0.01 · claude-sonnet-4-6")
-    would be misleading.
+    D1 (post-PR-#79 polish): replaced the F1 static-preamble +
+    ticking-spinner shape (``print_llm_stage_preamble`` +
+    ``console.status``) with the live elapsed-timer display.
+    Operators on a ~30s LLM round-trip now see the elapsed seconds
+    tick up instead of an opaque spinner — much clearer signal that
+    the call is still in flight (vs hung).
 
     No ``--quiet`` flag is added to the suggest subparsers — TTY
-    auto-detect covers the CI case (the only real "I don't want
-    spinner output" need), and shaving the parser surface area is
-    preferable to per-command flag proliferation. Operators who
-    want to suppress on a TTY can redirect stderr (``2>/dev/null``).
+    auto-detect (via ``console.is_terminal`` in
+    ``live_llm_stage_progress``) covers the CI case, and shaving
+    parser surface area beats per-command flag proliferation.
+    Operators who want to suppress on a TTY can redirect stderr.
     """
-    from schemabrain._ui import (
-        make_console,
-        print_llm_stage_preamble,
-        register_active_spinner,
-    )
+    from schemabrain._ui import live_llm_stage_progress, make_console
 
     # Narrow try: only the Rich console construction. If `make_console`
     # itself raises (Rich init bug, broken terminfo), silently no-op
-    # — the spinner is a UX nicety, not a correctness requirement.
-    # MUST NOT wrap the `yield` below: catching a body-raised exception
-    # via the yield re-raise would double-yield and trip contextlib's
-    # "generator didn't stop after throw()" guard, masking the original
-    # exception from the F5 handler downstream.
+    # — the live display is a UX nicety, not a correctness
+    # requirement. MUST NOT wrap the `yield` below: catching a
+    # body-raised exception via the yield re-raise would double-yield
+    # and trip contextlib's "generator didn't stop after throw()"
+    # guard, masking the original exception from the F5 handler
+    # downstream (the F1-era bug that this comment block preserves).
     try:
         console = make_console(stderr=True)
     except Exception:  # pragma: no cover — defensive against Rich init failures
         yield
         return
 
-    if not console.is_terminal:
-        yield
-        return
-
-    print_llm_stage_preamble(
+    with live_llm_stage_progress(
         console,
         action=action,
         model=model,
         cost_estimate_usd=cost_estimate_usd,
         cap_usd=cap_usd,
-    )
-    # Spinner label kept short — the cost-preview line above already
-    # carried the verbose framing. ``dots`` matches the spinner used
-    # by ``_wizard_stage_context`` for cross-surface consistency.
-    status = console.status("[cyan]waiting on Claude…[/]", spinner="dots")
-    with status, register_active_spinner(status):
+    ):
         yield
 
 

@@ -750,6 +750,196 @@ class TestPrintLlmStagePreamble:
         assert GLYPH_PENDING in buf.getvalue()
 
 
+class TestLiveLlmStageProgress:
+    """D1: ``live_llm_stage_progress`` upgrades the static preamble
+    to a Rich ``Live`` display with auto-updating elapsed timer.
+
+    The Live re-renders every 0.5s during the body's blocking LLM
+    call so operators on a ~30s round-trip get continuous
+    "still working" feedback instead of an opaque spinner.
+
+    Non-TTY callers (CI / piped stderr) degrade to the static
+    preamble line — no Live frames, but the cost framing still
+    reaches the log so artifact scrapers see what the call was.
+    """
+
+    def test_non_tty_renders_static_preamble_only(self) -> None:
+        # Non-TTY: print the preamble line + yield, no Live, no
+        # timer. The preamble carries the load-bearing facts
+        # (action + model + cost + cap) so a log scraper sees what
+        # the call was even without per-frame updates.
+        from schemabrain._ui import live_llm_stage_progress, make_console
+
+        buf = io.StringIO()
+        console = make_console(file=buf, force_terminal=False, width=120)
+        with live_llm_stage_progress(
+            console,
+            action="identify business entities (7 tables)",
+            model="claude-sonnet-4-6",
+            cost_estimate_usd=0.01,
+            cap_usd=1.0,
+        ):
+            pass
+
+        out = buf.getvalue()
+        assert "claude-sonnet-4-6" in out
+        assert "identify business entities (7 tables)" in out
+        assert "$0.01" in out
+        assert "$1.00" in out
+        # No "elapsed" line on non-TTY — that's the TTY-only timer.
+        assert "elapsed" not in out
+
+    def test_tty_renders_elapsed_timer_line(self) -> None:
+        # TTY path: Live's `_PreambleWithTimer.__rich__` renders the
+        # preamble PLUS the "elapsed Xs" line. First frame fires on
+        # `Live.__enter__` before the yield, so we always see at
+        # least "elapsed 0s" even with an instant body.
+        from schemabrain._ui import live_llm_stage_progress
+
+        buf = io.StringIO()
+        # `color_system=None` strips ANSI so substring assertions
+        # match the visible characters.
+        console = Console(
+            file=buf,
+            force_terminal=True,
+            width=120,
+            color_system=None,
+            legacy_windows=False,
+        )
+        with live_llm_stage_progress(
+            console,
+            action="identify business entities (7 tables)",
+            model="claude-sonnet-4-6",
+            cost_estimate_usd=0.01,
+            cap_usd=1.0,
+        ):
+            pass
+
+        out = buf.getvalue()
+        assert "identify business entities (7 tables)" in out
+        assert "claude-sonnet-4-6" in out
+        assert "elapsed" in out
+        assert "0s" in out
+
+    def test_exception_in_body_propagates(self) -> None:
+        # Critical: the `yield` is NOT inside an `except Exception`
+        # clause. A body-raised exception must propagate cleanly to
+        # the caller's handler. F1 had a wide-try bug that this
+        # contract regression-tests against.
+        from schemabrain._ui import live_llm_stage_progress
+
+        buf = io.StringIO()
+        console = Console(
+            file=buf,
+            force_terminal=True,
+            width=120,
+            color_system=None,
+            legacy_windows=False,
+        )
+
+        class _SpecificError(RuntimeError):
+            pass
+
+        with (
+            pytest.raises(_SpecificError, match="boom"),
+            live_llm_stage_progress(
+                console,
+                action="x",
+                model="m",
+                cost_estimate_usd=0.01,
+                cap_usd=1.0,
+            ),
+        ):
+            raise _SpecificError("boom")
+
+    def test_non_tty_pauses_active_spinner_only_for_preamble_print(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Non-TTY: only the preamble print needs the spinner
+        # paused (so the static line isn't overwritten by a
+        # carriage-return spinner frame). Body doesn't need
+        # the pause because there's no Live to conflict with.
+        # The spinner restarts BEFORE the body runs — minimizes
+        # the visual interruption on log scrapers.
+        from schemabrain._ui import (
+            live_llm_stage_progress,
+            make_console,
+            register_active_spinner,
+        )
+
+        events: list[str] = []
+
+        class _RecordingStatus:
+            def start(self) -> None:
+                events.append("start")
+
+            def stop(self) -> None:
+                events.append("stop")
+
+        buf = io.StringIO()
+        console = make_console(file=buf, force_terminal=False, width=120)
+
+        with (
+            register_active_spinner(_RecordingStatus()),
+            live_llm_stage_progress(
+                console,
+                action="x",
+                model="m",
+                cost_estimate_usd=0.01,
+                cap_usd=1.0,
+            ),
+        ):
+            events.append("body")
+
+        # Non-TTY contract: short-lived pause around the print.
+        assert events == ["stop", "start", "body"]
+
+    def test_tty_pauses_active_spinner_for_the_body(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # TTY: the inner Live conflicts with the outer Status
+        # (Rich rejects nested live displays with `LiveError`).
+        # Pause spans the entire body — Live is active from
+        # before-yield to after-yield, and the outer Status
+        # must stay stopped that whole time.
+        from schemabrain._ui import (
+            live_llm_stage_progress,
+            register_active_spinner,
+        )
+
+        events: list[str] = []
+
+        class _RecordingStatus:
+            def start(self) -> None:
+                events.append("start")
+
+            def stop(self) -> None:
+                events.append("stop")
+
+        buf = io.StringIO()
+        console = Console(
+            file=buf,
+            force_terminal=True,
+            width=120,
+            color_system=None,
+            legacy_windows=False,
+        )
+
+        with (
+            register_active_spinner(_RecordingStatus()),
+            live_llm_stage_progress(
+                console,
+                action="x",
+                model="m",
+                cost_estimate_usd=0.01,
+                cap_usd=1.0,
+            ),
+        ):
+            events.append("body")
+
+        # TTY contract: pause spans the body so Live can render
+        # without nesting-conflict with the outer Status.
+        assert events == ["stop", "body", "start"]
+
+
 class TestPromptYesNo:
     """F3: ``prompt_yes_no`` is the shared yes/no helper used by the wizard's
     inline stage-6 overwrite prompt. Mirrors `prompt_for_url` shape: pauses
