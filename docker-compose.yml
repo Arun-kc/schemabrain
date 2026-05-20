@@ -73,9 +73,9 @@ services:
       -f /fixtures/ecommerce.sql
 
   schemabrain:
-    # Build from the repo Dockerfile by default — swap to
-    # `image: ghcr.io/arun-kc/schemabrain:latest` to pull the published
-    # multi-arch image instead. Both shapes work today.
+    # Build from the repo Dockerfile. A pre-built multi-arch image
+    # on a public registry is on the v0.3.x roadmap; until then the
+    # local build is the supported path.
     build:
       context: .
       dockerfile: Dockerfile

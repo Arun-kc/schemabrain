@@ -85,9 +85,9 @@ if TYPE_CHECKING:
     # at module top (used as a return type from
     # `peek_claude_desktop_overwrite` and as an annotation on the
     # `_render_overwrite_diff_summary` signature). No duplicate
-    # `TYPE_CHECKING` import here — Round-1 fold M1 removed it
-    # because the duplicate misleads readers into thinking the
-    # runtime import is missing or conditional.
+    # `TYPE_CHECKING` import here — the duplicate would mislead
+    # readers into thinking the runtime import is missing or
+    # conditional.
 
 # ----- public types ---------------------------------------------------------
 
@@ -133,9 +133,9 @@ class StageOutcome:
     to exit code 0 — a user-cancelled overwrite is not a failure,
     it's an informed choice.
 
-    Replaces the F3 message-prefix-coupling shape (`message.startswith(
-    "cancelled by user")`) which silently broke whenever the
-    copy was edited (Round-1 fold H3, silent-failure-hunter HIGH).
+    Replaces an earlier message-prefix-coupling shape
+    (``message.startswith("cancelled by user")``) which silently
+    broke whenever the prompt copy was edited.
     """
 
     def __post_init__(self) -> None:
@@ -1270,13 +1270,13 @@ def _llm_failure_next_step(
     classifier returns ``None`` for (RuntimeError, not an SDK-typed
     error).
     """
-    # Round-1 fold L1: handle the documented `kind is None` fallback
-    # FIRST, then dispatch on the four known kinds. Pre-fold, an
+    # Handle the documented `kind is None` fallback FIRST, then
+    # dispatch on the four known kinds. With a permissive shape, an
     # unknown kind (typo or a new `LlmFailureKind` value forgotten
-    # here) silently fell into the None branch and returned the
-    # max_tokens-style copy — the only dispatch across the three
-    # parallel per-kind functions that didn't loudly fail on a
-    # typo (`_llm_failure_titles` and `_llm_failure_retry_hint` in
+    # here) would silently fall into the None branch and return the
+    # max_tokens-style copy — making this the only dispatch across
+    # the three parallel per-kind functions that didn't loudly fail
+    # on a typo (`_llm_failure_titles` and `_llm_failure_retry_hint` in
     # `errors_render.py` raise on unknown kinds; this one didn't).
     if kind is None:
         return (
@@ -2445,13 +2445,12 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
     """
     cfg = ctx.config
     effective_assume_yes = cfg.assume_yes
-    # Round-1 fold H1: capture the pre-write comparison in a local
-    # so `_wire_host_message` can render the `(replaced /old → /new)`
-    # trailer. Pre-fold, `_get_overwrite_comparison` re-peeked AFTER
-    # `init()` had already written the new entry — the second peek
-    # always saw `state="unchanged"`, making the replacement message
-    # dead code in production (caught convergently by python-reviewer
-    # AND silent-failure-hunter).
+    # Capture the pre-write comparison in a local so
+    # `_wire_host_message` can render the `(replaced /old → /new)`
+    # trailer. An earlier shape re-peeked AFTER `init()` had already
+    # written the new entry — the second peek always saw
+    # `state="unchanged"`, making the replacement message dead code
+    # in production.
     overwrite_comparison: ClaudeDesktopEntryComparison | None = None
 
     if cfg.host == "claude-desktop" and not cfg.assume_yes:
@@ -2483,12 +2482,11 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
                 # `_ui.stderr_is_interactive_tty` once and reach this
                 # call site without a separate `wizard.…` patch.
                 if _ui.stderr_is_interactive_tty():
-                    # Round-1 fold M2: access `make_console` through
-                    # the module to match the `_ui.stderr_is_interactive_tty()`
+                    # Access `make_console` through the module to
+                    # match the `_ui.stderr_is_interactive_tty()`
                     # call above — keeps both call sites
                     # monkeypatchable via one symbol (`_ui.<name>`)
-                    # and avoids the latent binding asymmetry
-                    # python-reviewer flagged.
+                    # and avoids a latent binding asymmetry.
                     console = _ui.make_console(stderr=True)
                     _render_overwrite_diff_summary(console, comparison)
                     accepted = prompt_yes_no(
@@ -2497,11 +2495,11 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
                         default=False,
                     )
                     if not accepted:
-                        # Round-1 fold H3: signal user-cancellation
-                        # via the structured `user_cancelled=True`
-                        # field instead of a message-prefix check
-                        # in `_cmd_init`. Pre-fold, a copy edit
-                        # to this string would have silently broken
+                        # Signal user-cancellation via the structured
+                        # `user_cancelled=True` field instead of a
+                        # message-prefix check in `_cmd_init`. With
+                        # the prefix-coupling shape, a copy edit to
+                        # this string would silently break
                         # the exit-0 contract; the typed field
                         # eliminates the cross-module string coupling.
                         return StageOutcome(

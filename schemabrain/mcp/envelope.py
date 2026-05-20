@@ -222,8 +222,9 @@ class ToolError(BaseModel):
     or status='refused' (v1.1).
 
     `kind` is one of the fourteen registered kinds (charter v1.1: 7
-    from v1.0 + 3 refusal kinds + 4 canonical-join kinds added at v1
-    wk-13). `message` is a single human-readable sentence. `recovery`
+    from v1.0 + 3 refusal kinds + 4 canonical-join kinds added in a
+    later release). `message` is a single human-readable sentence.
+    `recovery`
     carries the agent's next-move hint — never empty in practice, though
     `Recovery()` with no fields is structurally valid for kinds where no
     recovery exists.

@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS public.product_categories (
     PRIMARY KEY (product_id, category_id)
 );
 
--- `addresses` exists to demonstrate the wk-13 multi-canonical-per-pair
+-- `addresses` exists to demonstrate the multi-canonical-per-pair
 -- case in the bundled fixture: `orders` carries TWO FKs to addresses
 -- (billing + shipping), which produce two distinct canonical joins
 -- with the same `(order, address)` entity pair, disambiguated by name.

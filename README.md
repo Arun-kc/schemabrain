@@ -6,16 +6,16 @@
 
 > **The agent never writes SQL. Schema Brain does, from definitions you control.**
 
-Schema intelligence for AI agents on Postgres. Today: validated SQL from your schema. Tomorrow: a SQL-boundary safety layer that refuses, rewrites, and audits before queries execute.
+A pluggable semantic + SQL firewall for AI agents on Postgres. Your agent only ever sees ten read-only MCP tools — entity lookup, validated metrics, canonical-join resolution, PII-aware refusal — and Schema Brain compiles and runs the parameterized SQL on its side. Every call lands in a tamper-evident audit log.
 
-- **One command from `pip install` to wired agent** — `schemabrain init` walks source → index → entities → metrics → canonical joins → host config in seven stages. Auto-detects a dbt project and routes through the importer when one is present.
+- **One command from `pip install` to wired agent** — bare `schemabrain init` prompts for your database URL (or spins up a Docker demo Postgres if you don't have one handy) and walks the 7-stage activation wizard end-to-end. Auto-detects a dbt project and routes through the importer when one is present.
 - **Validated metrics, not invented SQL** — entities, metrics, and canonical joins compile to parameterized SQL the agent never sees.
-- **Watch what the agent does** — `schemabrain tail` streams every tool call live; every call is also logged to a tamper-evident audit table.
+- **Pluggable into any agent loop** — Claude Desktop, Claude Code, Cursor, or your own Anthropic / OpenAI / LangGraph loop over MCP stdio. 230-LOC drop-in proof at [`examples/anthropic_demo.py`](examples/anthropic_demo.py).
+- **Watch what the agent does** — `schemabrain tail` streams every tool call live; every call lands in an append-only `mcp_audit` table with a sha256 chain.
 
 ```bash
 pip install schemabrain
-export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"
-schemabrain init --url-env DATABASE_URL --store-path ./schemabrain.db
+schemabrain init
 # then ask your MCP host: "list the entities Schema Brain knows about"
 ```
 
@@ -54,13 +54,13 @@ Meanwhile in the operator's terminal, `schemabrain tail` streamed every tool cal
 
 ```
 14:32:08.221  describe_table  qualified_name='public.users'
-              → columns=12 tokens=380 in 11ms
+              → columns=4 tokens=130 in 11ms
 14:32:08.224  describe_table  qualified_name='public.products'
-              → columns=7 tokens=180 in 9ms
+              → columns=5 tokens=160 in 9ms
 14:32:08.227  describe_table  qualified_name='public.order_items'
-              → columns=5 tokens=140 in 10ms
+              → columns=5 tokens=150 in 10ms
 14:32:08.231  describe_table  qualified_name='public.product_categories'
-              → columns=3 tokens=90 in 8ms
+              → columns=2 tokens=70 in 8ms
 ```
 
 Every call is auditable, replayable, and PII-aware. See [Observe the agent](#observe-the-agent) for the full surface.
@@ -81,7 +81,7 @@ Five minutes from `pip install` to a working Claude Desktop integration.
 
 ```bash
 pip install schemabrain
-schemabrain --version    # → 0.3.0
+schemabrain --version
 ```
 
 Or from source if you want to hack on it:
@@ -110,7 +110,7 @@ docker exec -i sb-pg psql -U postgres -d postgres \
 
 You should see 7 `CREATE TABLE` lines scroll past. For your own database, skip this step and use your real connection URL.
 
-> **A note on the URL format.** Schema Brain uses SQLAlchemy connection strings, which require the `postgresql+psycopg://` driver prefix — not the bare `postgresql://` that pgAdmin and most tools show. Convert by adding `+psycopg` after `postgresql`. Example: `postgresql+psycopg://user:pass@host:5432/dbname`.
+> **A note on URL formats.** Schema Brain accepts standard Postgres connection URLs — bare `postgresql://`, `postgres://`, or the explicit `postgresql+psycopg://` driver form. The bare scheme is silently normalised internally to use psycopg v3, so paste whatever pgAdmin / `docker inspect` / your secret manager hands you.
 
 ### 3. Run the activation wizard
 
@@ -131,11 +131,11 @@ Schema Brain init — activation wizard
   [2/7] Index schema
         ✓ 7 tables, 30 columns indexed
   [3/7] Curate entities
-        ✓ 3 entities suggested + applied (cost: $0.02)
+        ✓ 6 entities suggested + applied (cost: $0.01)
   [4/7] Curate metrics
-        ✓ 2 metrics suggested + applied (cost: $0.01)
+        ✓ 10 metrics suggested + applied (cost: $0.03)
   [5/7] Curate joins
-        ✓ 1 canonical join created (FK-mined, no LLM)
+        ✓ 5 canonical joins created (FK-mined, no LLM)
   [6/7] Wire host
         ✓ wrote schemabrain entry to ~/Library/Application Support/Claude/claude_desktop_config.json
   [7/7] Next
@@ -254,9 +254,28 @@ Related entities:
 
 This is the operator's counterpart to the agent-facing MCP tools — anything `describe_entity` returns to Claude, `inspect` shows you locally. Use it whenever you want to verify what's curated before pointing an agent at it.
 
+### 7. Plug into your own agent loop (optional)
+
+Schema Brain isn't tied to Claude Desktop. The MCP server speaks standard MCP stdio, so any host that speaks MCP can drive it:
+
+- **Claude Desktop / Claude Code / Cursor** — `init` already wrote the right config for the host you selected. For Claude Code, run `init --host claude-code` instead of editing JSON; for Continue, Windsurf, Zed, or any arbitrary host, pass `--print-only` and paste the snippet into your host's MCP config yourself.
+- **Your own Anthropic SDK agent** — [`examples/anthropic_demo.py`](examples/anthropic_demo.py) is a 230-LOC drop-in that wires Claude Haiku to `schemabrain serve` over MCP stdio. Run it against your indexed store to see exactly which tools the agent calls and how it answers:
+
+  ```bash
+  export ANTHROPIC_API_KEY=sk-ant-...
+  python examples/anthropic_demo.py \
+      --url-env DATABASE_URL \
+      --store-path ./schemabrain.db \
+      --question "Which tables describe customer orders?"
+  ```
+
+- **LangGraph / LlamaIndex / AutoGen / OpenAI Agents SDK** — adapt the demo's loop; the underlying MCP stdio server is the same.
+
+An end-to-end walkthrough that exercises entities, metrics, AND canonical joins (with the bundled fixture) is at [`examples/ecommerce/`](examples/ecommerce/).
+
 ### Inspect the MCP surface (optional)
 
-To see exactly what shape the tools expose to an agent — every argument, every JSON schema, every response envelope — without booting Claude Desktop, use the [official MCP Inspector](https://github.com/modelcontextprotocol/inspector):
+To see exactly what shape the tools expose to an agent — every argument, every JSON schema, every response envelope — without booting any agent at all, use the [official MCP Inspector](https://github.com/modelcontextprotocol/inspector):
 
 ```bash
 npx @modelcontextprotocol/inspector \
@@ -264,8 +283,6 @@ npx @modelcontextprotocol/inspector \
 ```
 
 A browser tab opens with every registered tool, its description, the input JSON schema, and a live call-and-response panel. Requires Node.js 18+. Full walkthrough in [docs/setup.md](docs/setup.md#inspecting-tool-shapes-with-the-official-mcp-inspector).
-
-For the headless Anthropic-SDK path, see [`examples/anthropic_demo.py`](examples/anthropic_demo.py). An end-to-end walkthrough that exercises entities, metrics, AND canonical joins is at [`examples/ecommerce/`](examples/ecommerce/).
 
 ---
 
@@ -533,6 +550,8 @@ If you don't want a host Postgres install at all, the repo ships a `docker-compo
 docker compose up
 ```
 
+> **Note on ports.** The compose stack binds Postgres to host port **5433** (not 5432) so it never clashes with a developer-local Postgres already running on 5432. The Quickstart §2 standalone `docker run` recipe uses 5432 because it assumes a clean host. Pick whichever fits your setup; the MCP wiring below talks to the container over the internal Docker network (`postgres:5432`), so the host-side port mapping doesn't matter for the Claude Desktop integration.
+
 Point an MCP host at the indexed store via `docker run`:
 
 ```jsonc
@@ -554,7 +573,7 @@ Point an MCP host at the indexed store via `docker run`:
 }
 ```
 
-Multi-platform images (`linux/amd64` + `linux/arm64`) are published on every release to `ghcr.io/arun-kc/schemabrain` — swap the local build for the published tag in `docker-compose.yml` to skip the build step.
+The `docker compose up` recipe builds Schema Brain from the repo's `Dockerfile`, so a checkout is all you need. A pre-built multi-platform image (`linux/amd64` + `linux/arm64`) on a public registry is on the v0.3.x roadmap so you can skip the build step.
 
 ---
 

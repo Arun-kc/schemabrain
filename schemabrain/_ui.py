@@ -692,12 +692,11 @@ def offer_persist_anthropic_key_to_env_file(
             # before saying yes. We deliberately do NOT auto-add the
             # entry to .gitignore — that's the operator's repo to
             # manage; we don't want to mutate their git state during
-            # a key-paste flow. Round-2 fold MED (silent-failure-hunter):
-            # branch the wording on whether `.gitignore` exists at all.
-            # The "not listed in .gitignore" copy is literally wrong
-            # for a fresh repo with no `.gitignore` and reads as
-            # alarmist; the "no .gitignore found" wording is honest
-            # and actionable.
+            # a key-paste flow. The wording branches on whether
+            # `.gitignore` exists at all — the "not listed in
+            # .gitignore" copy is literally wrong for a fresh repo
+            # with no `.gitignore` and reads as alarmist; the "no
+            # .gitignore found" wording is honest and actionable.
             if gitignore_path.exists():
                 warning_body = (
                     f"{env_path.name} is NOT listed in {gitignore_path.name} — "
@@ -725,17 +724,16 @@ def offer_persist_anthropic_key_to_env_file(
         template_path = env_path.parent / (env_path.name + ".example")
         seeded_from_template = False
         if not env_path.exists() and template_path.exists():
-            # Round-2 fold CRITICAL (python-reviewer): `shutil.copy`
-            # preserves the source mode. `.env.example` is typically
-            # `0o644` (committed to the repo, world-readable). Without
-            # the explicit `chmod` below, the freshly-seeded `.env`
-            # inherits `0o644`, and the subsequent
-            # `persist_key_to_env_file` reads that mode back in and
-            # preserves it — the API key lands group/world-readable.
-            # Round-2 fold MED (silent-failure-hunter): if the copy
-            # fails mid-write (quota exhausted, NFS timeout, ENOSPC),
-            # clean up the partial file so the next run's loader
-            # doesn't pick up garbage bytes.
+            # `shutil.copy` preserves the source mode. `.env.example`
+            # is typically `0o644` (committed to the repo, world-
+            # readable). Without the explicit `chmod` below, the
+            # freshly-seeded `.env` inherits `0o644`, and the
+            # subsequent `persist_key_to_env_file` reads that mode
+            # back in and preserves it — the API key would land
+            # group/world-readable. If the copy fails mid-write
+            # (quota exhausted, NFS timeout, ENOSPC), clean up the
+            # partial file so the next run's loader doesn't pick up
+            # garbage bytes.
             try:
                 shutil.copy(template_path, env_path)
                 env_path.chmod(0o600)
@@ -835,8 +833,7 @@ def print_llm_stage_preamble(
     operator never reads the cost preview — undermining the whole
     point of the line. The spinner-pause registry uses a thread-
     local handle, not a Console reference, so it pauses regardless
-    of which Console the spinner is attached to. Round-2 reviewer
-    fold (silent-failure-hunter MEDIUM-1).
+    of which Console the spinner is attached to.
 
     ``cost_estimate_usd`` is the per-call estimate (typically
     $0.01 entities, $0.02 metrics). ``cap_usd`` is the actual

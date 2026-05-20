@@ -161,8 +161,92 @@ In priority order:
 
 4. **Defer N1/N2/N3.** Document the xml workaround in CHANGELOG / docs/setup.md once B1 is fixed.
 
-## Tag decision
+## Tag decision (morning of 2026-05-18, pre-PR-#55/#56)
 
 **Recommend: fix B1 (xml profiler crash) in a quick v0.3.0 → v0.3.1 patch before tagging.** A v0.3.0 PyPI release that crashes on common legacy Postgres surfaces is the kind of bug that gets flagged in the first 100 issues and damages first-impression trust. The fix is small enough to land in one PR. After that, tag v0.3.0 with the xml fix included.
 
 S5 (wk-15 reference) can ride along in the same patch. PII classifier improvements should be a separate dedicated PR.
+
+---
+
+# Re-smoke verification — same day, after PR #55 + PR #56 merged
+
+**Wheel under test:** `schemabrain-0.3.0-py3-none-any.whl` built from `main @ 6b4d471` (sha256 `2906881dca0a61df1db8048b16cfbc7b486f9808dec0eaf55e5ecae990f7cb6d`).
+**Database:** Postgres 16.11 (alpine) on `localhost:5434`, fresh container.
+
+The original smoke surfaced 1 BLOCKER + 5 SHOULD-FIX + 3 NICE-TO-HAVE. PR #55 (B1 + S5) and PR #56 (S1–S4) shipped the same day. This section captures the re-walk against the same 5 targets to confirm the fixes hold and nothing else regressed.
+
+## Status of prior findings
+
+| ID | Status | Verified on |
+|----|--------|-------------|
+| B1 | **FIXED** (PR #55) | AW-like fixture with 4 base-table xml columns indexed in 1.2 s, exit 0, no `DROP COLUMN` workaround |
+| S1 | **FIXED** (PR #56) | PII mockup `catalog_item`: `product_name`/`brand_name`/`category_name`/`language_name` → all `public` |
+| S2 | **FIXED** (PR #56) | Pagila `customer.address_id` → `public` (was `pii (contact)`); PII mockup `payment_record.address_id` → `public`; `health_record.patient_id` → `pii (health)` (FK-safe survives); `auth_session.session_id` → `pii (credential, online_identifier)` (both FK-safe) |
+| S3 | **FIXED** (PR #56) | PII mockup `user_record.date_of_birth` + AW-like `humanresources.employee.birthdate` → both `pii (demographic_protected)` |
+| S4 | **FIXED** (PR #56) | `drivers_license` → `government_id`; `face_embedding` → `biometric`; `age` → `demographic_protected`; `patient_id` + `insurance_id` → `health` |
+| S5 | **FIXED** (PR #55) | Northwind self-ref join refused with: `self-joins are not supported (got source_entity == target_entity == 'employee'). Workaround: model each side as a separate entity (e.g.` `manager` `and` `direct_report` `for an employee reports-to graph), then define the canonical join on the FK column from one side.` No `wk-15` reference |
+
+All 6 prior findings confirmed shipped.
+
+## Per-target verification
+
+### 1. Pagila — PASS (15 tables, 87 columns, 3.7 s index)
+- ✓ Partition dedup still works (22 → 15).
+- ✓ Composite PK from partition key surfaces correctly (`payment_id` + `payment_date` both `pk`).
+- ✓ Cross-source sentinel still renders correctly.
+- ✓ Drift detection: dropped `payment.amount`, `check` reports `measure_column_missing public.payment.amount`, exit 1.
+- ✓ **S2 confirmed on real schema:** `customer.address_id INTEGER` → `public` (was `pii (contact)`). Real PII (`first_name`/`last_name`/`email`) still correctly tagged `pii (contact)`.
+- ✓ Related-entities orientation flip verified (outgoing from `payment`, incoming from `customer`).
+
+### 2. Northwind — PASS (14 tables, 92 columns, 1.6 s index)
+- ✓ Composite-PK junction tables still accept single-column identity.
+- ✓ **S5 confirmed FIXED:** self-ref refusal message is clean + actionable.
+
+### 3. Synthetic PII mockup — PASS (5 tables, 66 columns, 1.2 s index)
+
+All 12 PIICategory values correctly classified on live Postgres reflection. PK exemption verified (`health_record.id BIGINT pk` stays `public`). Documented over-tags reproducible (`patient_satisfaction_score` → `health`, `ip_address` → `contact + online_identifier`) — intentional breadth-over-precision.
+
+### 4. AdventureWorks-like synthetic — PASS (5 schemas, 7 tables, 68 columns, 4 xml columns, 1.2 s index, exit 0)
+
+> **Fixture note:** the full AdventureWorks-for-Postgres is a 250 MB+ download with CSV bundles. For the purpose of re-verifying that the v0.3.0 build no longer crashes on `xml` columns (PR #55 B1), this re-walk used a smaller synthetic fixture that reproduces the same regression signal: multi-schema layout, `xml`-typed base-table columns, cross-schema FKs, and a `DOMAIN` type. The morning smoke already confirmed the full AW path works after the manual `DROP COLUMN xml` workaround; the only thing left to confirm was that the workaround is no longer needed.
+
+- ✓ **B1 confirmed FIXED.** 4 base-table xml columns (`person.person.additionalcontactinfo`, `person.person.demographics`, `humanresources.jobcandidate.resume`, `sales.salesorderheader.territoryxml`) indexed cleanly. Pre-PR-#55, the same shape produced a 60-line `psycopg.errors.UndefinedFunction: could not identify an equality operator for type xml`.
+- ✓ Cross-schema entity + join applied; `check` reports 3 healthy entities + 1 healthy join.
+- ✓ **S3 confirmed on AW shape:** `humanresources.employee.birthdate DATE` → `pii (demographic_protected)`.
+- ⚠️ **N2 still present:** `DOMAIN` types still render as the literal word "DOMAIN" (`salariedflag` / `currentflag`). Not gating.
+- ℹ️ **xml columns render as `NULL` in inspect** (`additionalcontactinfo NULL nullable public`). SQLAlchemy reflects `xml` as `NullType`, which stringifies to `"NULL"` — the same shape PR #55's `_NO_EQUALITY_TYPES` catch-all skip relies on. Not a crash; cosmetic display gap only. New N5 below.
+
+### 5. Reserved-keyword stress — PASS (1 table, 6 columns)
+- ✓ Table name `order`, column names `user`/`select`/`from`, embedded space, embedded `%` + parens — all render correctly.
+- ✓ PII classifier still tags `percent (%) of revenue` → `pii (financial)` via "revenue" keyword.
+- ✓ PR #32 + PR #42 fixes hold.
+
+## New findings from the re-smoke (NICE-TO-HAVE; none gating)
+
+### N4 (new). Entity YAML rejects the quoted form `public."order"` for reserved-keyword tables.
+
+```
+error: parsing entity_order.yaml: binding.single_table:
+       qualified_table must be 'schema.table' form (got 'public."order"')
+```
+
+The unquoted form `public.order` works and matches what `inspect` displays. But a user reaching for the idiomatic Postgres quoted form first hits a misleading error. Single-touch fix in `schemabrain/entities/yaml_grammar.py` — widen the error to mention that reserved-keyword tables don't need quoting in this grammar (Schema Brain handles SQL-level quoting automatically).
+
+Defer to v0.3.1.
+
+### N5 (new — display-only). `xml` columns render as `NULL` in inspect.
+
+Cosmetic. See AW-like target above. Single-touch fix in the inspect renderer or upstream where `NullType` is observed. Defer to v0.3.1 alongside N2.
+
+## Updated tag decision (evening of 2026-05-18, post-PR-#55/#56)
+
+**SHIP v0.3.0 to PyPI now.** No SHOULD-FIX remains. The five NICE-TO-HAVE items (N1 `--exclude-schemas`, N2 `DOMAIN` rendering, N3 fastembed cold-start, N4 quoted-form error message, N5 xml display name) can bundle into a v0.3.1 polish PR — none of them block the tag.
+
+Recommended announcement framing: "0.3.0 — the alpha that survives legacy Postgres surfaces (xml columns, reserved keywords, partitioned tables, multi-schema, composite PKs, embedded special chars in column names) and tags 12 PII categories accurately under HIPAA Safe Harbor + GDPR-compatible defaults."
+
+## Re-smoke artifacts
+
+Disposable; under `/tmp/sb_smoke_2026_05_22/` (per-target subdirs `target_pagila/`, `target_northwind/`, `target_pii_mockup/`, `target_adventureworks/`, `target_reserved_keyword/`, plus wheel + downloaded fixtures). Postgres container `sb-smoke-pg-2026-05-22` on `localhost:5434` is also disposable — `docker rm -f sb-smoke-pg-2026-05-22 && docker volume prune && rm -rf /tmp/sb_smoke_2026_05_22` cleans everything.
+
+> The `2026-05-22` directory name is a misnomer left over from a date-pick mistake during this re-smoke — the work happened on 2026-05-18, same day as PR #55 + PR #56. The path is disposable and will be deleted; the report is consolidated here in the original same-day file.

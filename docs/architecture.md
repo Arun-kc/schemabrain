@@ -94,7 +94,7 @@ Per `index` run, with the default Haiku 4.5 + local embeddings:
 
 | Schema size | Cost | Time | Source |
 |---|---|---|---|
-| 6 tables / 24 columns (bundled fixture) | $0.0074 | 38 sec | measured |
+| 7 tables / 30 columns (bundled fixture) | ~$0.01 | ~40 sec | measured |
 | 15 tables / 87 columns (Pagila, partition children deduplicated) | $0.0299 | 105 sec | measured |
 | ~50 tables / ~300 columns | $0.10–0.15 | 5–8 min | extrapolated |
 | ~200 tables / ~1500 columns | $0.45–0.55 | 30–40 min | extrapolated |

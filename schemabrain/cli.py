@@ -273,15 +273,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _dispatch(argv)
     except (KeyboardInterrupt, EOFError):
-        # Round-2 reviewer fold (silent-failure CRITICAL-2): catch
-        # KeyboardInterrupt + EOFError at the entry point so every
-        # subcommand gets the same clean exit-130 + "aborted." on
-        # stderr, regardless of which interactive prompt or which
+        # Catch KeyboardInterrupt + EOFError at the entry point so
+        # every subcommand gets the same clean exit-130 + "aborted."
+        # on stderr, regardless of which interactive prompt or which
         # wizard stage the user was sitting in when they hit Ctrl-C
         # (or when stdin dropped). Without this, a Ctrl-C mid-wizard
-        # produced a raw Python traceback while the same Ctrl-C at
-        # stage 0 produced a clean abort — inconsistency that made
-        # the UX feel broken. The catch is at main() rather than per-
+        # would produce a raw Python traceback while the same Ctrl-C
+        # at stage 0 produced a clean abort — inconsistency that
+        # makes the UX feel broken. The catch is at main() rather
+        # than per-
         # subcommand because the wizard's spinner-bearing context
         # managers handle their own cleanup via __exit__; main()'s
         # job is just to translate the signal into a clean exit code.
@@ -2658,15 +2658,16 @@ def _cmd_serve(
         )
         return 2
     except sqlite3.DatabaseError as exc:
-        # Convergent reviewer finding (Round-2 fold): the audit-writer
-        # init at line ~2541 already names `sqlite3.DatabaseError` as
-        # a "want the same response" case, but the store-open path
-        # one level up missed it. A corrupted store file (hard
-        # shutdown mid-write, OS-level filesystem damage, truncated
-        # WAL) surfaces as DatabaseError, not OSError, and would
-        # bubble up as the same kind of raw traceback the
-        # SchemaVersionMismatchError fix above was written to prevent.
-        # Emit the same shape of guided block so the operator's
+        # The audit-writer init at line ~2541 already names
+        # `sqlite3.DatabaseError` as a "want the same response" case,
+        # but the store-open path one level up needs the same
+        # handling. A corrupted store file (hard shutdown mid-write,
+        # OS-level filesystem damage, truncated WAL) surfaces as
+        # DatabaseError, not OSError, and would otherwise bubble up
+        # as the same kind of raw traceback the
+        # SchemaVersionMismatchError fix above was written to
+        # prevent. Emit the same shape of guided block so the
+        # operator's
         # recovery path is consistent.
         _render_guided(
             GuidedError(
@@ -5012,14 +5013,14 @@ def _cmd_init(
 
     # Stage 0 — the day-one UX overhaul's demo-vs-own-DB fork prompt.
     # Runs ONLY when no URL was supplied via CLI flag or env AND
-    # stderr is a TTY AND --yes was NOT passed. Round-3 live-test
-    # fix: previously `--yes` did not skip stage 0 — a CI run with
-    # `--yes` plus an env var would still hit the fork prompt, and
-    # the demo-default `[2]` would silently override the env var's
-    # URL with the pinned demo URL (the worst kind of CI bug: works
-    # interactively, fails differently in automation). Treating
-    # `--yes` as "fully non-interactive — no prompts, ever" matches
-    # the rest of the wizard's `--yes` contract.
+    # stderr is a TTY AND --yes was NOT passed. `--yes` must skip
+    # stage 0 — otherwise a CI run with `--yes` plus an env var
+    # would still hit the fork prompt, and the demo-default `[2]`
+    # would silently override the env var's URL with the pinned
+    # demo URL (the worst kind of CI bug: works interactively,
+    # fails differently in automation). Treating `--yes` as "fully
+    # non-interactive — no prompts, ever" matches the rest of the
+    # wizard's `--yes` contract.
     source_url: str | None = None
     no_source_provided = positional_url is None and url_env is None
     if no_source_provided and _stderr_is_interactive_tty() and not assume_yes:
@@ -5034,10 +5035,10 @@ def _cmd_init(
             # redirects input, pytest test harness). Both produce
             # exit 130 + "aborted." on stderr so the user / CI sees
             # the same shape rather than a Python traceback from
-            # rich.prompt.Prompt.ask. Round-2 reviewer fold caught
-            # the EOFError case — only KeyboardInterrupt was wrapped
-            # before, which left the SSH-drop / non-TTY-mid-prompt
-            # paths producing raw tracebacks.
+            # rich.prompt.Prompt.ask. EOFError is included because
+            # wrapping only KeyboardInterrupt would leave the SSH-
+            # drop / non-TTY-mid-prompt paths producing raw
+            # tracebacks.
             print("\naborted.", file=sys.stderr)
             return 130
     if source_url is None:
@@ -5048,13 +5049,10 @@ def _cmd_init(
     # Apply the silent `+psycopg` rewrite to the resolved URL before
     # handing it to the wizard. Without this, a user who took the
     # stage-0 demo path (DEMO_DATABASE_URL is a bare `postgresql://`)
-    # OR typed a bare `postgresql://` in the own-DB prompt would
-    # hit stage 1's `create_engine` with the raw scheme, triggering
-    # a confusing `ModuleNotFoundError: psycopg2` instead of the
-    # silent rewrite that commit 2 added for the 5 post-init
-    # commands. Round-2 reviewer fold — python-reviewer +
-    # silent-failure-hunter both caught this as CRITICAL / HIGH-1
-    # (convergent finding).
+    # OR typed a bare `postgresql://` in the own-DB prompt would hit
+    # stage 1's `create_engine` with the raw scheme, triggering a
+    # confusing `ModuleNotFoundError: psycopg2` instead of the silent
+    # rewrite the post-init commands already apply.
     #
     # Deliberately NOT using `_resolve_url` here because the init
     # wizard supports non-Postgres sources (sqlite:// for dbt-only
@@ -5105,18 +5103,17 @@ def _cmd_init(
     _render_wizard_header(host_display=host_display, console=console)
     result = run_default_wizard(cfg, stage_context=_wizard_stage_context)
 
-    # Round-1 fold C1: user-cancelled overwrite is an informed
-    # choice, not a failure — handle it BEFORE `_render_wizard_after`
-    # so the operator does NOT see a red "Stopped at stage 6 of 7"
-    # abort panel for a deliberate cancellation. Pre-fold, the
-    # panel rendered first, then the "cancelled" line appeared
-    # below it, then exit 0 — UX-misleading (silent-failure-hunter
-    # CRITICAL).
+    # A user-cancelled overwrite is an informed choice, not a
+    # failure — handle it BEFORE `_render_wizard_after` so the
+    # operator does NOT see a red "Stopped at stage 6 of 7" abort
+    # panel for a deliberate cancellation. (Earlier versions
+    # rendered the panel first, then the "cancelled" line appeared
+    # below it, then exit 0 — UX-misleading.)
     #
-    # Round-1 fold H3: use the structured `user_cancelled` field
-    # on the StageOutcome instead of a message-prefix check —
-    # eliminates the cross-module string coupling that would have
-    # silently broken if either copy were edited.
+    # Use the structured `user_cancelled` field on StageOutcome
+    # instead of a message-prefix check — eliminates the cross-
+    # module string coupling that would silently break if either
+    # copy were edited.
     aborted_at = result.aborted_at
     if result.aborted and aborted_at is not None and aborted_at.user_cancelled:
         console.print("[yellow]cancelled[/] no changes made.")
@@ -5149,9 +5146,9 @@ def _resolve_tail_events_path(*, events_path: str | None, store_path: str | None
     4. Module-level `_DEFAULT_EVENTS_PATH`.
 
     Pure function so the priority order is testable without spinning
-    a real reader. Round-2 fold: use `is not None` rather than truthy
-    checks so an explicit empty-string from a future caller doesn't
-    silently fall through to env-var resolution.
+    a real reader. Uses `is not None` rather than truthy checks so
+    an explicit empty-string from a future caller doesn't silently
+    fall through to env-var resolution.
     """
     import os as _os
     from pathlib import Path as _Path
@@ -5193,11 +5190,11 @@ def _cmd_tail(
 
     resolved_path = _resolve_tail_events_path(events_path=events_path, store_path=store_path)
     path = _Path(resolved_path).expanduser()
-    # Round-2 fold: if the operator passed `--store-path` expecting
-    # tail to find events alongside the store, but neither
-    # `--events-path` / `$SCHEMABRAIN_EVENTS_PATH` were set AND no
-    # sibling `events.jsonl` exists, the resolver silently falls back
-    # to `~/.schemabrain/events.jsonl`. That fallback is rarely what
+    # If the operator passed `--store-path` expecting tail to find
+    # events alongside the store, but neither `--events-path` /
+    # `$SCHEMABRAIN_EVENTS_PATH` were set AND no sibling
+    # `events.jsonl` exists, the resolver silently falls back to
+    # `~/.schemabrain/events.jsonl`. That fallback is rarely what
     # the operator intended; surface a one-line note so they know
     # which file we ended up reading. Suppressed when an explicit
     # flag/env was used (the operator already picked the path).
@@ -6897,11 +6894,11 @@ def _try_render_llm_failure(
     kind = classify_llm_failure(exc)
     if kind is None:
         return False
-    # Round-1 fold M3: the `getattr(exc, "message", ...)` extraction
-    # was lifted into `cause_from_llm_error` in `errors_render.py`
-    # so the untyped access lives next to `classify_llm_failure`
-    # — single owner, single fallback chain. Long messages get
-    # visually truncated by Rich on the ✗-glyph line.
+    # The `getattr(exc, "message", ...)` extraction lives in
+    # `cause_from_llm_error` (`errors_render.py`) so the untyped
+    # access lives next to `classify_llm_failure` — single owner,
+    # single fallback chain. Long messages get visually truncated
+    # by Rich on the ✗-glyph line.
     render_llm_failure(
         kind=kind,
         retry_command=retry_command,
@@ -6922,9 +6919,10 @@ def _resolve_url_source(
     """Resolve a connection URL from either a positional arg or a named env var.
 
     Returns the URL string (with bare `postgresql://` / `postgres://`
-    silently rewritten to `postgresql+psycopg://` for free — see Round-3
-    fix below) on success, or `None` after rendering a guided error to
-    stderr. Emits a single-line deprecation warning to stderr when
+    silently rewritten to `postgresql+psycopg://` for free — see the
+    `_apply_silent_rewrite` helper below) on success, or `None` after
+    rendering a guided error to stderr. Emits a single-line
+    deprecation warning to stderr when
     `positional` is used AND contains an embedded password, nudging the
     user toward `--url-env`. Env-var resolution is always silent — env
     is the safe path we're nudging users toward.
@@ -6936,17 +6934,16 @@ def _resolve_url_source(
         would defeat the point — the warning would itself become a leak
         on a shared terminal or screen-recording)
 
-    Round-3 live-test fix: applies ``silent_rewrite_to_psycopg`` to
-    every returned URL, BEFORE the caller sees it. Previously the
-    rewrite lived only inside ``_resolve_url``, which all callers
-    invoke for validation — but 14 of the 17 callsites discard
+    Applies ``silent_rewrite_to_psycopg`` to every returned URL,
+    BEFORE the caller sees it. The rewrite lives at this boundary
+    (not inside ``_resolve_url``) because 14 of 17 callsites discard
     `_resolve_url`'s return value (`if _resolve_url(url) is None:
-    return 2`) and continue using the raw URL from
-    ``_resolve_url_source``. Result: bare `postgresql://` URLs
-    silently slipped past validation and reached ``PostgresDataSource``
-    with the raw scheme, triggering ``ModuleNotFoundError: psycopg2``.
-    Applying the rewrite at the source-resolution boundary fixes the
-    bug for all 17 callsites without requiring each to be touched.
+    return 2`) and continue using the raw URL — so bare
+    `postgresql://` URLs would silently slip past validation and
+    reach ``PostgresDataSource`` with the raw scheme, triggering
+    ``ModuleNotFoundError: psycopg2``. Applying the rewrite at the
+    source-resolution boundary fixes it for all 17 callsites without
+    requiring each to be touched.
 
     Interactive escape hatch (``allow_interactive=True``): when neither
     `positional` nor `url_env` is provided AND stderr is a TTY, prompt
@@ -6968,8 +6965,8 @@ def _resolve_url_source(
         """Apply the bare-scheme rewrite at every exit point.
 
         Centralised so a future contributor adding a new return path
-        cannot accidentally skip the rewrite (the Round-3 bug). Returns
-        the URL unchanged when the scheme isn't eligible.
+        cannot accidentally skip the rewrite. Returns the URL
+        unchanged when the scheme isn't eligible.
 
         Tolerates malformed URLs (e.g. unclosed IPv6 brackets that
         make ``urlparse`` raise ``ValueError``) by returning the
@@ -7092,12 +7089,10 @@ def _resolve_url_source(
 # Module-scoped dedup set for the whitespace-key stderr warning.
 # Keeps the warning to once per process rather than once per call
 # (which would flood the wizard's 2 LLM stages with the same line).
-# Tests reset via the public helper below.
-# Round-2 fold MED (python-reviewer): defined here, immediately
-# before its sole consumer `_resolve_anthropic_key_source`, instead
-# of 100+ lines later. Closing the read-order gap so the function
-# body's first reference to this set resolves visually within
-# scrolling distance.
+# Tests reset via the public helper below. Defined here, immediately
+# before its sole consumer `_resolve_anthropic_key_source`, so the
+# function body's first reference to this set resolves visually
+# within scrolling distance.
 _WARNED_EMPTY_KEY_ENV_VARS: set[str] = set()
 
 
@@ -7146,15 +7141,15 @@ def _resolve_anthropic_key_source(
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if api_key is not None and api_key.strip():
         return api_key.strip()
-    # Round-2 reviewer fold (silent-failure HIGH-2): when env var is
-    # set but whitespace-only, emit a one-line stderr warning so the
-    # operator knows their export is malformed, not just absent.
-    # Without this, a `export ANTHROPIC_API_KEY=" "` from a secret
-    # manager with a trailing newline produces the same "missing"
-    # error path as a genuinely unset var — wasting debug time on
-    # the wrong problem. Warning is one-shot per process via the
-    # presence check at module scope (would dedupe across multiple
-    # resolver calls within the same `_cmd_init` if it grew them).
+    # When the env var is set but whitespace-only, emit a one-line
+    # stderr warning so the operator knows their export is
+    # malformed, not just absent. Without this, an
+    # `export ANTHROPIC_API_KEY=" "` from a secret manager with a
+    # trailing newline produces the same "missing" error path as a
+    # genuinely unset var — wasting debug time on the wrong problem.
+    # The warning is one-shot per process via the presence check at
+    # module scope (would dedupe across multiple resolver calls
+    # within the same `_cmd_init` if it grew them).
     if (
         api_key is not None
         and not api_key.strip()
