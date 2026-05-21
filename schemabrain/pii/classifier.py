@@ -373,6 +373,60 @@ _NON_PII_NAME_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
+# Table-level extension of the S1 denylist. The S1 fix above suppresses
+# the name rule for `<noun>_name` shapes — but bare `name` columns on
+# tables NAMED after a denylist noun (e.g. `products.name`,
+# `categories.name`) were still slipping through and getting tagged as
+# `contact`. The Layer-B smoke from 2026-05-21 caught this: a query
+# grouped by `product.name` came back with `pii_categories=['contact']`,
+# even though no contact info was touched anywhere in the SQL.
+#
+# We accept both singular and plural forms because real schemas use
+# both (`product` vs `products`, `category` vs `categories`). English
+# pluralisation rules are messy enough that explicit enumeration is
+# clearer than a singularisation helper. Add new entries here when
+# new failure modes surface — same posture as `_NON_PII_NAME_PREFIXES`.
+_NON_PII_NAME_TABLE_NAMES: Final[frozenset[str]] = frozenset(
+    {prefix for prefix in _NON_PII_NAME_PREFIXES}
+    | {
+        # Plural forms — English `-s` / `-es` / `-ies` endings.
+        "products",
+        "brands",
+        "categories",
+        "languages",
+        "currencies",
+        "tags",
+        "events",
+        "features",
+        "settings",
+        "fields",
+        "columns",
+        "tables",
+        "databases",
+        "services",
+        "processes",
+        "tasks",
+        "jobs",
+        "files",
+        "directories",
+        "folders",
+        "buckets",
+        "devices",
+        "apps",
+        "modules",
+        "plugins",
+        "reports",
+        "dashboards",
+        "widgets",
+        "channels",
+        "topics",
+        "queues",
+        "hosts",
+        "clusters",
+    }
+)
+
+
 # ----- S2: integer-FK guard ----------------------------------------
 # Categories where the FK itself remains PII even as an integer
 # reference. Examples:
@@ -462,6 +516,7 @@ def classify_column(
     column_name: str,
     column_type: str | None = None,
     is_primary_key: bool = False,
+    table_name: str | None = None,
     shape_patterns: tuple[str, ...] = (),  # reserved for future heuristics
 ) -> tuple[Sensitivity, frozenset[PIICategory]]:
     """Classify a single column by name (and optionally declared type).
@@ -472,8 +527,13 @@ def classify_column(
         subject to two refinements:
 
           * S1 guard — when `column_name` is a `<noun>_name` shape in
-            the non-PII-noun denylist, the bare-name / `<x>_name`
-            contact rule is skipped. Other rule matches still fire.
+            the non-PII-noun denylist OR when `column_name == "name"`
+            AND `table_name` is in the non-PII table-name denylist,
+            the bare-name / `<x>_name` contact rule is skipped. Other
+            rule matches still fire. The table-level extension was
+            added in PR-6h.4 after the 2026-05-21 Layer-B smoke
+            surfaced `products.name` and `categories.name` getting
+            tagged `contact` despite zero contact information.
 
           * S2 guard — when `column_type` is integer-like AND
             `column_name` matches the `<token>_id` FK shape AND
@@ -485,9 +545,10 @@ def classify_column(
             a reference to a row elsewhere — its tag content should
             stay intact.
 
-    `column_type` and `is_primary_key` are optional; passing the
-    defaults (`None`, `False`) skips the S2 guard's type+PK
-    refinements (safe direction — categories are kept, the over-tag
+    `column_type`, `is_primary_key`, and `table_name` are optional;
+    passing the defaults (`None`, `False`, `None`) skips the S2
+    guard's type+PK refinements and the S1 guard's table-context
+    extension (safe direction — categories are kept, the over-tag
     posture is preserved). Callers that have the source-of-truth
     column metadata (the indexer) should pass them through.
 
@@ -498,6 +559,17 @@ def classify_column(
     # can be skipped in the loop. Set membership check via fullmatch
     # so suffix collisions don't slip through.
     skip_name_rule = _NON_PII_NAME_RE.fullmatch(column_name) is not None
+    # S1 table-context extension: bare `name` on a non-PII-table
+    # (products / categories / brands / etc.) also skips the name
+    # rule. Without this, `products.name` returns `contact` despite
+    # being a SKU label, not a person's name.
+    if (
+        not skip_name_rule
+        and table_name is not None
+        and column_name.lower() == "name"
+        and table_name.lower() in _NON_PII_NAME_TABLE_NAMES
+    ):
+        skip_name_rule = True
 
     matched: set[PIICategory] = set()
     for pattern, cats in _RULES:
