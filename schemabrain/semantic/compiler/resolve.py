@@ -334,6 +334,9 @@ def _build_join_graph(edges: list[CanonicalJoin]) -> _JoinGraph:
     return graph
 
 
+_StructuralPath = tuple[tuple[str, str], ...]
+
+
 def _find_canonical_chain(
     *,
     graph: _JoinGraph,
@@ -343,146 +346,223 @@ def _find_canonical_chain(
 ) -> tuple[list[tuple[str, _ChainEdge]], frozenset[str]]:
     """BFS from `anchor` to `target` over the canonical-join graph.
 
+    Two-pass design:
+
+      Pass 1 — structural BFS over entity pairs. Parallel canonical
+        joins between the same entity pair (billing vs shipping address
+        on `order → address`) are collapsed into a single edge. This
+        pass identifies structural ambiguity (e.g. diamond paths via
+        distinct intermediate entities) without conflating it with
+        single-edge ambiguity inside an otherwise-unique chain. Tangent
+        parallel canonicals — parallel canonicals on a hop that doesn't
+        lie on any structural path from anchor to target — are inert:
+        they don't block resolution, because the resolver doesn't need
+        to traverse that edge to reach the target.
+
+      Pass 2 — canonical-join resolution per hop on the unique
+        structural path that survives via= filtering. Parallel
+        canonicals on a hop the chain actually traverses, without `via`
+        disambiguation, surface `AmbiguousJoinError` (preserving the v1
+        single-hop contract for the on-chain case).
+
     Returns `(chain, consumed_via)` where `chain` is the ordered list
-    of (predecessor_entity, ChainEdge) tuples — for a 1-hop chain a
-    single tuple, for a 2-hop chain two tuples, etc. — and
-    `consumed_via` is the subset of the input `via` set whose names
-    constrained an actual hop in the resolved chain. The return-value
-    contract (rather than mutating a closure-captured set) ensures
-    consumed names are only observable on the success path: if BFS
-    raises, no partial-chain names leak back into the caller's
-    request-level tracking set.
+    of (predecessor_entity, ChainEdge) tuples and `consumed_via` is the
+    subset of the input `via` set whose names constrained an actual
+    hop in the resolved chain. The return-value contract (rather than
+    mutating a closure-captured set) ensures consumed names are only
+    observable on the success path: if BFS raises, no partial-chain
+    names leak back into the caller's request-level tracking set.
 
     Refusal behavior:
-      - No path from anchor to target → `UnreachableEntityError`.
-      - 2+ shortest paths with no `via` constraint → `AmbiguousPathError`.
-      - 2+ shortest paths and `via` constrains exactly one → returns
-        that path with the matching names in `consumed_via`.
-      - Single-edge ambiguity (parallel canonical joins between the
-        same entity pair) on a hop with no `via` → `AmbiguousJoinError`
-        (preserves the existing single-hop contract for the v1 case).
+      - No structural path from anchor to target → `UnreachableEntityError`.
+      - 2+ structural paths and via= doesn't narrow to one → `AmbiguousPathError`.
+      - Via= excludes every structural path → `UnknownViaJoinError`.
+      - 1 structural path with parallel canonicals on a hop and via=
+        doesn't pick exactly one of them → `AmbiguousJoinError`.
     """
     if anchor not in graph and target not in graph:
         # Graph has no edges at all OR neither endpoint touches the
         # graph. Either way: no path exists.
         raise UnreachableEntityError(anchor_entity=anchor, target_entity=target)
 
-    # Names within `via` that constrained a hop in this BFS. Built
-    # locally and returned to the caller — never mutated through a
-    # closure capture.
-    local_consumed_via: set[str] = set()
+    # Pass 1 — structural BFS over entity pairs.
+    structural_paths = _structural_shortest_paths(graph=graph, anchor=anchor, target=target)
+    if not structural_paths:
+        raise UnreachableEntityError(anchor_entity=anchor, target_entity=target)
 
-    # BFS expansion: at each layer, expand all live frontier nodes one
-    # hop, collecting all reachable predecessor→hop edges. We track
-    # paths (not just reachability) because path-level ambiguity has to
-    # surface candidate paths, not just "ambiguous".
-    # A "path" is represented as a tuple of (predecessor, ChainEdge)
-    # tuples. The frontier is a list of (current_entity, path_so_far).
-    frontier: list[tuple[str, tuple[tuple[str, _ChainEdge], ...]]] = [(anchor, ())]
-    visited: set[str] = {anchor}
-    found_paths: list[tuple[tuple[str, _ChainEdge], ...]] = []
-    # Safety cap. The canonical-join graph is small (handfuls of
-    # entities in practice; even Salesforce-scale orgs cap in the
-    # hundreds), but a corrupted store could in theory present a
-    # densely connected adversarial graph. Cap matches the
-    # `suggest_joins` MCP tool default.
+    feasible_paths = _filter_structural_paths_by_via(paths=structural_paths, graph=graph, via=via)
+    if not feasible_paths:
+        # Via excluded every structural path. The set of canonical-join
+        # names the agent SHOULD have picked from is the union across
+        # all candidate structural paths.
+        available = tuple(
+            sorted(
+                {
+                    join.name
+                    for path in structural_paths
+                    for join in _canonicals_on_structural_path(path, graph)
+                }
+            )
+        )
+        raise UnknownViaJoinError(
+            anchor_entity=anchor,
+            target_entity=target,
+            requested_via=tuple(sorted(via)),
+            available_join_names=available,
+        )
+    if len(feasible_paths) > 1:
+        candidate_paths = tuple(
+            _render_structural_path_as_canonical_sequence(path, graph) for path in feasible_paths
+        )
+        raise AmbiguousPathError(
+            anchor_entity=anchor,
+            target_entity=target,
+            candidate_paths=candidate_paths,
+        )
+
+    # Pass 2 — resolve canonical join per hop on the unique structural
+    # path. Parallel canonicals on a traversed hop without via=
+    # disambiguation surface `AmbiguousJoinError` here (rather than
+    # eagerly during pass 1, which is what mis-fired on tangent
+    # parallels before this rewrite).
+    chain: list[tuple[str, _ChainEdge]] = []
+    consumed_via: set[str] = set()
+    chosen_path = feasible_paths[0]
+    for predecessor, neighbor in chosen_path:
+        candidates = [(j, op) for (n, j, op) in graph.get(predecessor, []) if n == neighbor]
+        if len(candidates) == 1:
+            chosen_join, chosen_pairs = candidates[0]
+            # Even on unique-canonical hops, record consumption: the
+            # via= name may have been the lever that narrowed pass 1
+            # structural ambiguity, in which case it constrained THIS
+            # path even though pass 2 had no parallel-canonical choice.
+            if chosen_join.name in via:
+                consumed_via.add(chosen_join.name)
+        else:
+            matching = [(j, op) for (j, op) in candidates if j.name in via]
+            if len(matching) == 0:
+                raise AmbiguousJoinError(
+                    anchor_entity=predecessor,
+                    target_entity=neighbor,
+                    candidate_join_names=tuple(sorted(j.name for (j, _op) in candidates)),
+                )
+            if len(matching) > 1:
+                # via= matched 2+ parallels at this hop — caller is
+                # ambiguous in their own constraint. Surface as
+                # AmbiguousJoinError so the recovery shape stays
+                # single-edge-shaped.
+                raise AmbiguousJoinError(
+                    anchor_entity=predecessor,
+                    target_entity=neighbor,
+                    candidate_join_names=tuple(sorted(j.name for (j, _op) in matching)),
+                )
+            chosen_join, chosen_pairs = matching[0]
+            consumed_via.add(chosen_join.name)
+        edge = _ChainEdge(
+            join=chosen_join,
+            target_entity_in_chain=neighbor,
+            on_pairs_in_chain_direction=chosen_pairs,
+        )
+        chain.append((predecessor, edge))
+    return chain, frozenset(consumed_via)
+
+
+def _structural_shortest_paths(
+    *, graph: _JoinGraph, anchor: str, target: str
+) -> list[_StructuralPath]:
+    """BFS over entity pairs (collapsing parallel canonicals between
+    the same pair into a single edge). Returns all shortest structural
+    paths from `anchor` to `target`. Empty list if no path within the
+    hop cap.
+
+    Safety cap matches the `suggest_joins` MCP tool default of 6 — a
+    corrupted store could in theory present a densely connected
+    adversarial graph; the cap bounds work even if it does.
+    """
     max_hops = 6
+    frontier: list[tuple[str, _StructuralPath]] = [(anchor, ())]
+    visited: set[str] = {anchor}
+    found_paths: list[_StructuralPath] = []
     for _hop in range(max_hops):
         if not frontier:
             break
-        next_frontier: list[tuple[str, tuple[tuple[str, _ChainEdge], ...]]] = []
+        next_frontier: list[tuple[str, _StructuralPath]] = []
         # Newly-visited at this layer; promote to `visited` only after
         # the layer completes, so multiple shortest paths to the same
-        # node CAN coexist at the same depth and trigger ambiguity.
+        # node CAN coexist at the same depth (diamond ambiguity).
         layer_visited: set[str] = set()
         for entity, path in frontier:
-            neighbors = graph.get(entity, [])
-            # Single-edge parallel-join check: a canonical-join graph
-            # may have multiple stored joins between the same entity
-            # pair (billing vs shipping address). Detect this BEFORE
-            # expansion and refuse with the existing single-hop
-            # contract — unless `via=` selects one.
-            grouped: dict[str, list[tuple[CanonicalJoin, tuple[JoinColumnPair, ...]]]] = {}
-            for neighbor, edge_join, oriented_pairs in neighbors:
-                grouped.setdefault(neighbor, []).append((edge_join, oriented_pairs))
-            for neighbor, candidates in grouped.items():
+            # Collapse parallel canonicals on each (entity, neighbor)
+            # pair into a single entity-pair edge for this pass.
+            neighbor_entities = {n for (n, _j, _op) in graph.get(entity, [])}
+            for neighbor in sorted(neighbor_entities):
                 if neighbor in visited:
                     continue
-                if len(candidates) > 1:
-                    matching = [(j, op) for (j, op) in candidates if j.name in via]
-                    if len(matching) == 0:
-                        raise AmbiguousJoinError(
-                            anchor_entity=entity,
-                            target_entity=neighbor,
-                            candidate_join_names=tuple(sorted(j.name for (j, _op) in candidates)),
-                        )
-                    if len(matching) > 1:
-                        # `via` selected 2+ parallels — caller is
-                        # ambiguous in their own constraint. Surface
-                        # as AmbiguousJoinError so the recovery shape
-                        # stays single-edge-shaped.
-                        raise AmbiguousJoinError(
-                            anchor_entity=entity,
-                            target_entity=neighbor,
-                            candidate_join_names=tuple(sorted(j.name for (j, _op) in matching)),
-                        )
-                    chosen_join, chosen_pairs = matching[0]
-                    local_consumed_via.add(chosen_join.name)
-                else:
-                    chosen_join, chosen_pairs = candidates[0]
-                edge = _ChainEdge(
-                    join=chosen_join,
-                    target_entity_in_chain=neighbor,
-                    on_pairs_in_chain_direction=chosen_pairs,
-                )
-                new_path = (*path, (entity, edge))
+                new_path = (*path, (entity, neighbor))
                 if neighbor == target:
                     found_paths.append(new_path)
                     continue
                 layer_visited.add(neighbor)
                 next_frontier.append((neighbor, new_path))
         if found_paths:
-            # Apply via= filter to multi-hop path-level ambiguity.
-            filtered = _filter_paths_by_via(found_paths, via)
-            if not filtered:
-                # via constraint excluded all shortest paths.
-                # Treat as the user supplying an unknown via against
-                # the candidate set — the broader path-level
-                # disambiguator-failed shape.
-                available = tuple(
-                    sorted({edge.join.name for path in found_paths for (_pred, edge) in path})
-                )
-                raise UnknownViaJoinError(
-                    anchor_entity=anchor,
-                    target_entity=target,
-                    requested_via=tuple(sorted(via)),
-                    available_join_names=available,
-                )
-            if len(filtered) > 1:
-                raise AmbiguousPathError(
-                    anchor_entity=anchor,
-                    target_entity=target,
-                    candidate_paths=tuple(
-                        tuple(edge.join.name for (_pred, edge) in path) for path in filtered
-                    ),
-                )
-            chosen_path = filtered[0]
-            for _pred, edge in chosen_path:
-                if edge.join.name in via:
-                    local_consumed_via.add(edge.join.name)
-            return list(chosen_path), frozenset(local_consumed_via)
+            return found_paths
         visited.update(layer_visited)
         frontier = next_frontier
-    raise UnreachableEntityError(anchor_entity=anchor, target_entity=target)
+    return found_paths
 
 
-def _filter_paths_by_via(
-    paths: list[tuple[tuple[str, _ChainEdge], ...]],
+def _canonicals_on_structural_path(path: _StructuralPath, graph: _JoinGraph) -> list[CanonicalJoin]:
+    """All canonical joins lying on any hop of `path`. Used for via=
+    feasibility checking and `UnknownViaJoinError.available_join_names`.
+    """
+    out: list[CanonicalJoin] = []
+    for predecessor, neighbor in path:
+        for n, join, _op in graph.get(predecessor, []):
+            if n == neighbor:
+                out.append(join)
+    return out
+
+
+def _filter_structural_paths_by_via(
+    *,
+    paths: list[_StructuralPath],
+    graph: _JoinGraph,
     via: frozenset[str],
-) -> list[tuple[tuple[str, _ChainEdge], ...]]:
+) -> list[_StructuralPath]:
+    """A structural path is via-feasible iff every via= name appears
+    on at least one canonical join lying on the path. A via= name
+    that names a real canonical join but doesn't lie on any candidate
+    path filters every path out — that case raises
+    `UnknownViaJoinError` upstream.
+    """
     if not via:
         return paths
-    return [path for path in paths if via.issubset({edge.join.name for (_pred, edge) in path})]
+    return [
+        path
+        for path in paths
+        if via.issubset({j.name for j in _canonicals_on_structural_path(path, graph)})
+    ]
+
+
+def _render_structural_path_as_canonical_sequence(
+    path: _StructuralPath, graph: _JoinGraph
+) -> tuple[str, ...]:
+    """Render a structural path as a canonical-join-name sequence for
+    `AmbiguousPathError.candidate_paths`. Each hop picks the first
+    canonical-join name alphabetically — deterministic so tests can
+    assert on the output. In the typical case (a hop has exactly one
+    canonical), the choice is trivial; the alphabetical rule only
+    matters when a structural path passes through a hop with parallel
+    canonicals AND another structural path also reaches the target,
+    which is an unusual schema shape but rendered deterministically.
+    """
+    names: list[str] = []
+    for predecessor, neighbor in path:
+        canonicals_on_hop = sorted(
+            j.name for (n, j, _op) in graph.get(predecessor, []) if n == neighbor
+        )
+        names.append(canonicals_on_hop[0])
+    return tuple(names)
 
 
 # ----- helpers (unchanged from v1) -------------------------------------------
