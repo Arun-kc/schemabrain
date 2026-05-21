@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **README: promote `examples/anthropic_demo.py` above the Quickstart
+  as the 5th firewall property.** The 230-LOC drop-in proof was buried
+  inside `## After the wizard > Plug into your own agent loop`; now
+  sits at the end of `## The firewall` with the same shape as the
+  four SQL-boundary properties (one-line claim + the actual command
+  + inline forward link). The after-wizard bullet for the Anthropic
+  SDK path is reduced to a one-line pointer so the same proof doesn't
+  appear twice. No code change.
+
 ## [0.3.0] - 2026-05-20
 
 **Highlights** — Schema Brain v0.3.0 is the first release where the
