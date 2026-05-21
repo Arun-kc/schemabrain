@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560" width="900" role="img" aria-label="schemabrain architecture: agent talks to schemabrain over MCP stdio; schemabrain emits parameterized SQL to Postgres; the schemabrain boundary is the trust boundary.">
+  <rect width="900" height="560" fill="#FAFAF7"></rect>
+
+  
+  <rect x="280" y="60" width="340" height="460" fill="#3DCD8B" fill-opacity="0.04"></rect>
+
+  
+  
+  <g transform="translate(276 78) scale(0.5)">
+    <defs>
+      <clipPath id="cb-l"><path d="M22 12 C 22 8, 30 6, 32 10 C 36 6, 44 8, 44 14 C 50 12, 56 18, 52 24 C 58 28, 56 36, 50 38 C 54 44, 48 52, 40 50 C 38 56, 28 56, 26 52 C 18 54, 12 48, 14 42 C 8 40, 6 32, 12 30 C 8 24, 12 16, 18 18 C 18 14, 20 12, 22 12 Z"></path></clipPath>
+    </defs>
+    <g clip-path="url(#cb-l)">
+      <rect x="32" y="0" width="32" height="64" fill="#3DCD8B"></rect>
+    </g>
+    <path d="M22 12 C 22 8, 30 6, 32 10 C 36 6, 44 8, 44 14 C 50 12, 56 18, 52 24 C 58 28, 56 36, 50 38 C 54 44, 48 52, 40 50 C 38 56, 28 56, 26 52 C 18 54, 12 48, 14 42 C 8 40, 6 32, 12 30 C 8 24, 12 16, 18 18 C 18 14, 20 12, 22 12 Z" stroke="#0C0C0C" stroke-width="2.2" stroke-linejoin="round" fill="none"></path>
+    <line x1="32" y1="10" x2="32" y2="52" stroke="#0C0C0C" stroke-width="1.6" stroke-linecap="round"></line>
+    <path d="M14 22 C 20 19, 26 22, 30 21" stroke="#0C0C0C" stroke-width="1.4" stroke-linecap="round" fill="none"></path>
+    <path d="M12 32 C 18 28, 26 33, 30 31" stroke="#0C0C0C" stroke-width="1.4" stroke-linecap="round" fill="none"></path>
+    <path d="M14 42 C 20 39, 26 43, 30 41" stroke="#0C0C0C" stroke-width="1.4" stroke-linecap="round" fill="none"></path>
+    <g clip-path="url(#cb-l)">
+      <circle cx="36" cy="22" r="1.4" fill="#FAFAF7"></circle>
+      <line x1="38.5" y1="22" x2="50" y2="22" stroke="#FAFAF7" stroke-width="1.6" stroke-linecap="round"></line>
+      <circle cx="36" cy="32" r="1.4" fill="#FAFAF7"></circle>
+      <line x1="38.5" y1="32" x2="52" y2="32" stroke="#FAFAF7" stroke-width="1.6" stroke-linecap="round"></line>
+      <circle cx="36" cy="42" r="1.4" fill="#FAFAF7"></circle>
+      <line x1="38.5" y1="42" x2="50" y2="42" stroke="#FAFAF7" stroke-width="1.6" stroke-linecap="round"></line>
+    </g>
+  </g>
+  <text x="324" y="98" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="700" fill="#0C0C0C" letter-spacing="-0.01em">schemabrain</text>
+  <text x="606" y="98" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" fill="#0C0C0C" fill-opacity="0.45" letter-spacing="0.12em">TRUST BOUNDARY</text>
+
+  
+  
+    <rect x="300" y="138" width="300" height="138" fill="none" stroke="#0C0C0C" stroke-width="2"></rect>
+    
+    <text x="314" y="162" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700" fill="#0C0C0C">10 read-only MCP tools</text>
+    <text x="314" y="186" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#0C0C0C" fill-opacity="0.85">
+      <tspan x="314" dy="0">list_entities · describe_entity ·</tspan>
+      <tspan x="314" dy="17">find_relevant_* · resolve_join ·</tspan>
+      <tspan x="314" dy="17">get_metric · describe_table ·</tspan>
+      <tspan x="314" dy="17">describe_column · suggest_joins ·</tspan>
+      <tspan x="314" dy="17">get_example_queries</tspan>
+    </text>
+  
+    <line x1="450" y1="280" x2="450" y2="294" stroke="#0C0C0C" stroke-width="2"></line>
+    <path d="M450 298 L446 292 L454 292 Z" fill="#0C0C0C"></path>
+
+  
+  
+    <rect x="300" y="298" width="300" height="60" fill="none" stroke="#0C0C0C" stroke-width="2"></rect>
+    
+    <text x="314" y="320" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700" fill="#0C0C0C">Semantic layer</text>
+    <text x="314" y="342" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#0C0C0C" fill-opacity="0.85">entities · metrics · canonical joins</text>
+  
+    <line x1="450" y1="362" x2="450" y2="376" stroke="#0C0C0C" stroke-width="2"></line>
+    <path d="M450 380 L446 374 L454 374 Z" fill="#0C0C0C"></path>
+
+  
+  
+    <rect x="300" y="380" width="300" height="44" fill="none" stroke="#0C0C0C" stroke-width="2"></rect>
+    
+    <text x="314" y="408" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700" fill="#0C0C0C">SQL emitter <tspan font-weight="400" fill-opacity="0.7">(parameterized only)</tspan></text>
+  
+    <line x1="450" y1="428" x2="450" y2="442" stroke="#0C0C0C" stroke-width="2"></line>
+    <path d="M450 446 L446 440 L454 440 Z" fill="#0C0C0C"></path>
+
+  
+  
+    <rect x="300" y="446" width="300" height="60" fill="none" stroke="#3DCD8B" stroke-width="2"></rect>
+    
+    <text x="314" y="468" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700" fill="#0C0C0C">Audit log</text>
+    <text x="314" y="490" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#0C0C0C" fill-opacity="0.85">sha256-chained · append-only</text>
+
+  
+  <rect x="280" y="60" width="340" height="460" fill="none" stroke="#3DCD8B" stroke-width="4"></rect>
+
+  
+  <rect x="15" y="250" width="100" height="80" fill="none" stroke="#0C0C0C" stroke-width="2"></rect>
+  <text x="65" y="286" text-anchor="middle" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="700" fill="#0C0C0C">Agent</text>
+  <text x="65" y="304" text-anchor="middle" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#0C0C0C" fill-opacity="0.6">LLM-driven</text>
+
+  
+  <rect x="785" y="250" width="100" height="80" fill="none" stroke="#0C0C0C" stroke-width="2"></rect>
+  <text x="835" y="286" text-anchor="middle" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="700" fill="#0C0C0C">Postgres</text>
+  <text x="835" y="304" text-anchor="middle" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#0C0C0C" fill-opacity="0.6">read-only</text>
+
+  
+  <line x1="119" y1="290" x2="276" y2="290" stroke="#3DCD8B" stroke-width="2"></line>
+  <path d="M278 290 L270 285 L270 295 Z" fill="#3DCD8B"></path>
+
+  <text x="198.5" y="252" text-anchor="middle" font-family="Inter, -apple-system, BlinkMacSystemFont, &#39;Segoe UI&#39;, Roboto, sans-serif" font-size="11" fill="#0C0C0C" fill-opacity="0.7">
+    <tspan x="198.5" dy="0" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-weight="600" fill-opacity="0.85">MCP stdio</tspan>
+    <tspan x="198.5" dy="14">read-only tools only</tspan>
+    <tspan x="198.5" dy="13">agent never sees raw SQL</tspan>
+  </text>
+
+  
+  <line x1="622" y1="290" x2="779" y2="290" stroke="#3DCD8B" stroke-width="2"></line>
+  <path d="M781 290 L773 285 L773 295 Z" fill="#3DCD8B"></path>
+
+  <text x="701.5" y="252" text-anchor="middle" font-family="Inter, -apple-system, BlinkMacSystemFont, &#39;Segoe UI&#39;, Roboto, sans-serif" font-size="11" fill="#0C0C0C" fill-opacity="0.7">
+    <tspan x="701.5" dy="0" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-weight="600" fill-opacity="0.85">parameterized SQL</tspan>
+    <tspan x="701.5" dy="14">read-only session</tspan>
+    <tspan x="701.5" dy="13">enforced at source</tspan>
+  </text>
+
+  
+  <line x1="620" y1="130" x2="700" y2="148" stroke="#0C0C0C" stroke-width="1" stroke-opacity="0.4"></line>
+  <circle cx="620" cy="130" r="2" fill="#3DCD8B"></circle>
+  <text x="708" y="146" font-family="Inter, -apple-system, BlinkMacSystemFont, &#39;Segoe UI&#39;, Roboto, sans-serif" font-size="11" fill="#0C0C0C" fill-opacity="0.7">
+    <tspan x="708" dy="0" font-weight="700" fill-opacity="0.9">trust boundary</tspan>
+    <tspan x="708" dy="14">every call is audited</tspan>
+    <tspan x="708" dy="14">before it crosses</tspan>
+  </text>
+</svg>
