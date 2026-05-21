@@ -48,6 +48,7 @@ def list_metrics_impl(
             entity=m.entity,
             aggregation=m.measure.agg,
             measure_column=m.measure.column,
+            measure_expression=m.measure.expression,
             time_dimension=m.time_dimension,
             time_grains=m.time_grains,
             origin=m.origin,

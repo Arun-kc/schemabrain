@@ -8,10 +8,17 @@ The grammar is a flat mapping with a small fixed schema:
     entity: order                         # required, identifier-shaped
     measure:                              # required
       agg: sum                            # required, closed-grammar AggFunction
-      column: total_amount                # required, identifier-shaped
+      column: total_amount                # XOR with `expression`; identifier-shaped
+      expression: unit_price * quantity   # XOR with `column`; whitelist arithmetic
     time_dimension: order.created_at      # optional; entity.column form
     time_grains: [day, week, month]       # required iff time_dimension set
     origin: manual                        # optional, defaults "manual"
+
+Exactly one of `measure.column` or `measure.expression` is required.
+The bare-column form is the v1 shape; the expression form is the v2
+composite-arithmetic shape (parsed via the strict whitelist in
+`semantic.compiler.measure_expression` — see that module for the
+allowed operators/literals).
 
 Parse errors raise `MetricYamlError` (a `ValueError` subclass) with a
 message that names the offending field and shows the value when
@@ -63,8 +70,12 @@ _ALLOWED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
 )
 _REQUIRED_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"version", "name", "entity", "measure"})
 
-_ALLOWED_MEASURE_KEYS: frozenset[str] = frozenset({"agg", "column"})
-_REQUIRED_MEASURE_KEYS: frozenset[str] = frozenset({"agg", "column"})
+_ALLOWED_MEASURE_KEYS: frozenset[str] = frozenset({"agg", "column", "expression"})
+# `agg` is required; exactly one of `column` / `expression` must be
+# present (XOR). The XOR check is done in `_parse_measure` after the
+# allowed-key check, so an "unknown measure key" error has precedence
+# over an "exactly one of" error.
+_REQUIRED_MEASURE_KEYS: frozenset[str] = frozenset({"agg"})
 
 _SUPPORTED_VERSION: int = 1
 
@@ -236,15 +247,44 @@ def _parse_measure(raw: Any) -> MetricMeasure:
     if agg_raw not in _VALID_AGGS:
         raise MetricYamlError(f"measure.agg must be one of {sorted(_VALID_AGGS)} (got {agg_raw!r})")
 
-    column_raw = raw["column"]
-    if not isinstance(column_raw, str):
+    has_column = "column" in raw
+    has_expression = "expression" in raw
+    # XOR: surface the wrong-shape mistake here with a clear message
+    # naming both fields, before the dataclass's `__post_init__` would
+    # produce a less helpful "exactly one of column or expression" wrap.
+    if has_column == has_expression:
+        if has_column:
+            raise MetricYamlError(
+                "measure must set exactly one of `column` or `expression`, not both"
+            )
         raise MetricYamlError(
-            f"measure.column must be a string (got {type(column_raw).__name__}: {column_raw!r})"
+            "measure must set one of `column` (bare-column measure) or "
+            "`expression` (composite arithmetic over multiple columns)"
         )
+
+    column_raw: str | None = None
+    expression_raw: str | None = None
+    if has_column:
+        column_raw = raw["column"]
+        if not isinstance(column_raw, str):
+            raise MetricYamlError(
+                f"measure.column must be a string (got {type(column_raw).__name__}: {column_raw!r})"
+            )
+    else:
+        expression_raw = raw["expression"]
+        if not isinstance(expression_raw, str):
+            raise MetricYamlError(
+                f"measure.expression must be a string (got "
+                f"{type(expression_raw).__name__}: {expression_raw!r})"
+            )
 
     try:
         # The Literal narrowing on `agg` is via the runtime check above.
-        return MetricMeasure(agg=agg_raw, column=column_raw)  # type: ignore[arg-type]
+        return MetricMeasure(
+            agg=agg_raw,  # type: ignore[arg-type]
+            column=column_raw,
+            expression=expression_raw,
+        )
     except ValueError as exc:
         raise MetricYamlError(f"measure: {exc}") from exc
 

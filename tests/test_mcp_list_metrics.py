@@ -168,6 +168,45 @@ class TestImplHappyPath:
         assert m.time_grains == ()
         assert m.aggregation == "count"
 
+    def test_bare_column_metric_carries_column_and_null_expression(
+        self, tmp_path: Path
+    ) -> None:
+        with SQLiteStore(tmp_path / "s.db") as store:
+            store.write_table(_orders_table(), source_connection_id="sid")
+            store.write_entity(_order_entity(), source_connection_id="sid")
+            store.write_metric(_temporal_metric(), source_connection_id="sid")
+            result = list_metrics_impl(store=store, source_connection_id="sid")
+        m = result[0]
+        assert m.measure_column == "total_cents"
+        assert m.measure_expression is None
+
+    def test_composite_metric_carries_expression_and_null_column(
+        self, tmp_path: Path
+    ) -> None:
+        from schemabrain.core.metric import Metric, MetricMeasure
+
+        with SQLiteStore(tmp_path / "s.db") as store:
+            store.write_table(_orders_table(), source_connection_id="sid")
+            store.write_entity(_order_entity(), source_connection_id="sid")
+            store.write_metric(
+                Metric(
+                    name="line_revenue",
+                    description="",
+                    entity="order",
+                    measure=MetricMeasure(
+                        agg="sum", expression="unit_price * quantity"
+                    ),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id="sid",
+            )
+            result = list_metrics_impl(store=store, source_connection_id="sid")
+        # Two metrics now; find the composite one.
+        composite = next(m for m in result if m.name == "line_revenue")
+        assert composite.measure_column is None
+        assert composite.measure_expression == "unit_price * quantity"
+
     def test_multiple_metrics_alphabetical(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "s.db") as store:
             store.write_table(_orders_table(), source_connection_id="sid")
