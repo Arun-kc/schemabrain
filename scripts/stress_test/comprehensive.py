@@ -24,9 +24,10 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import sqlalchemy
 
@@ -129,24 +130,30 @@ def _check_top_row(r: dict[str, Any], expected_key: str, expected_value: Any) ->
 def discovery_scenarios() -> list[Scenario]:
     return [
         Scenario(
-            "DISCOVERY", "list_entities returns all 6",
-            "list_entities", {},
+            "DISCOVERY",
+            "list_entities returns all 6",
+            "list_entities",
+            {},
             lambda r: (
                 status_in(r, "success") and len(_list_data(r)) == 6,
                 f"{len(_list_data(r))} entities",
             ),
         ),
         Scenario(
-            "DISCOVERY", "list_metrics returns 10",
-            "list_metrics", {},
+            "DISCOVERY",
+            "list_metrics returns 10",
+            "list_metrics",
+            {},
             lambda r: (
                 status_in(r, "success") and len(_list_data(r)) == 10,
                 f"{len(_list_data(r))} metrics",
             ),
         ),
         Scenario(
-            "DISCOVERY", "list_joins returns 5 incl. billing/shipping",
-            "list_joins", {},
+            "DISCOVERY",
+            "list_joins returns 5 incl. billing/shipping",
+            "list_joins",
+            {},
             lambda r: (
                 len(_list_data(r)) == 5
                 and any("billing" in (j.get("name") or "") for j in _list_data(r))
@@ -155,35 +162,44 @@ def discovery_scenarios() -> list[Scenario]:
             ),
         ),
         Scenario(
-            "DISCOVERY", "describe_entity user",
-            "describe_entity", {"name": "user"},
+            "DISCOVERY",
+            "describe_entity user",
+            "describe_entity",
+            {"name": "user"},
             lambda r: (
-                status_in(r, "success")
-                and len((r.get("data") or {}).get("columns") or []) >= 3,
+                status_in(r, "success") and len((r.get("data") or {}).get("columns") or []) >= 3,
                 f"{len((r.get('data') or {}).get('columns') or [])} columns",
             ),
         ),
         Scenario(
-            "DISCOVERY", "describe_entity unknown → error envelope",
-            "describe_entity", {"name": "subscription"},
+            "DISCOVERY",
+            "describe_entity unknown → error envelope",
+            "describe_entity",
+            {"name": "subscription"},
             lambda r: _check_status(r, "error"),
         ),
         Scenario(
-            "DISCOVERY", "describe_column public.users.email",
-            "describe_column", {"qualified_name": "public.users.email"},
+            "DISCOVERY",
+            "describe_column public.users.email",
+            "describe_column",
+            {"qualified_name": "public.users.email"},
             lambda r: (
                 status_in(r, "success") and (r.get("data") or {}).get("name") == "email",
                 f"name={(r.get('data') or {}).get('name')}",
             ),
         ),
         Scenario(
-            "DISCOVERY", "describe_column unknown → error envelope",
-            "describe_column", {"qualified_name": "public.users.bogus"},
+            "DISCOVERY",
+            "describe_column unknown → error envelope",
+            "describe_column",
+            {"qualified_name": "public.users.bogus"},
             lambda r: _check_status(r, "error"),
         ),
         Scenario(
-            "DISCOVERY", "describe_table users",
-            "describe_table", {"qualified_name": "public.users"},
+            "DISCOVERY",
+            "describe_table users",
+            "describe_table",
+            {"qualified_name": "public.users"},
             lambda r: (
                 status_in(r, "success") and (r.get("data") or {}).get("name") == "users",
                 f"table name={(r.get('data') or {}).get('name')}",
@@ -195,56 +211,72 @@ def discovery_scenarios() -> list[Scenario]:
 def aggregate_scenarios() -> list[Scenario]:
     return [
         Scenario(
-            "AGGREGATE", "total_revenue > $1000 (in cents)",
-            "get_metric", {"name": "total_revenue"},
+            "AGGREGATE",
+            "total_revenue > $1000 (in cents)",
+            "get_metric",
+            {"name": "total_revenue"},
             lambda r: (
-                status_in(r, "success") and int((_rows(r)[0] or {}).get("total_revenue", 0)) > 100_000,
+                status_in(r, "success")
+                and int((_rows(r)[0] or {}).get("total_revenue", 0)) > 100_000,
                 f"value={(_rows(r)[0] or {}).get('total_revenue')}",
             ),
         ),
         Scenario(
-            "AGGREGATE", "order_count == 177",
-            "get_metric", {"name": "order_count"},
+            "AGGREGATE",
+            "order_count == 177",
+            "get_metric",
+            {"name": "order_count"},
             lambda r: (
                 (_rows(r)[0] or {}).get("order_count") == 177,
                 f"value={(_rows(r)[0] or {}).get('order_count')}",
             ),
         ),
         Scenario(
-            "AGGREGATE", "distinct_ordering_users == 50",
-            "get_metric", {"name": "distinct_ordering_users"},
+            "AGGREGATE",
+            "distinct_ordering_users == 50",
+            "get_metric",
+            {"name": "distinct_ordering_users"},
             lambda r: (
                 (_rows(r)[0] or {}).get("distinct_ordering_users") == 50,
                 f"value={(_rows(r)[0] or {}).get('distinct_ordering_users')}",
             ),
         ),
         Scenario(
-            "AGGREGATE", "average_order_value returns positive number",
-            "get_metric", {"name": "average_order_value"},
+            "AGGREGATE",
+            "average_order_value returns positive number",
+            "get_metric",
+            {"name": "average_order_value"},
             lambda r: (
-                status_in(r, "success") and float((_rows(r)[0] or {}).get("average_order_value", 0)) > 0,
+                status_in(r, "success")
+                and float((_rows(r)[0] or {}).get("average_order_value", 0)) > 0,
                 f"value={(_rows(r)[0] or {}).get('average_order_value')}",
             ),
         ),
         Scenario(
-            "AGGREGATE", "product_count == 18",
-            "get_metric", {"name": "product_count"},
+            "AGGREGATE",
+            "product_count == 18",
+            "get_metric",
+            {"name": "product_count"},
             lambda r: (
                 (_rows(r)[0] or {}).get("product_count") == 18,
                 f"value={(_rows(r)[0] or {}).get('product_count')}",
             ),
         ),
         Scenario(
-            "AGGREGATE", "category_count == 6",
-            "get_metric", {"name": "category_count"},
+            "AGGREGATE",
+            "category_count == 6",
+            "get_metric",
+            {"name": "category_count"},
             lambda r: (
                 (_rows(r)[0] or {}).get("category_count") == 6,
                 f"value={(_rows(r)[0] or {}).get('category_count')}",
             ),
         ),
         Scenario(
-            "AGGREGATE", "registered_user_count == 80",
-            "get_metric", {"name": "registered_user_count"},
+            "AGGREGATE",
+            "registered_user_count == 80",
+            "get_metric",
+            {"name": "registered_user_count"},
             lambda r: (
                 (_rows(r)[0] or {}).get("registered_user_count") == 80,
                 f"value={(_rows(r)[0] or {}).get('registered_user_count')}",
@@ -256,8 +288,10 @@ def aggregate_scenarios() -> list[Scenario]:
 def ranking_scenarios() -> list[Scenario]:
     return [
         Scenario(
-            "RANKING", "top 5 customers by items — Alice (75) on top",
-            "get_metric", {
+            "RANKING",
+            "top 5 customers by items — Alice (75) on top",
+            "get_metric",
+            {
                 "name": "total_quantity_ordered",
                 "group_by": ["user.email"],
                 "order_by": [{"column": "total_quantity_ordered", "direction": "desc"}],
@@ -266,8 +300,10 @@ def ranking_scenarios() -> list[Scenario]:
             lambda r: _check_top_row(r, "group_col_0", "alice@example.com"),
         ),
         Scenario(
-            "RANKING", "top 10 by items returns 10 rows",
-            "get_metric", {
+            "RANKING",
+            "top 10 by items returns 10 rows",
+            "get_metric",
+            {
                 "name": "total_quantity_ordered",
                 "group_by": ["user.email"],
                 "order_by": [{"column": "total_quantity_ordered", "direction": "desc"}],
@@ -276,8 +312,10 @@ def ranking_scenarios() -> list[Scenario]:
             lambda r: (_row_count(r) == 10, f"{_row_count(r)} rows"),
         ),
         Scenario(
-            "RANKING", "bottom 3 customers by items (asc) — minimum buyers",
-            "get_metric", {
+            "RANKING",
+            "bottom 3 customers by items (asc) — minimum buyers",
+            "get_metric",
+            {
                 "name": "total_quantity_ordered",
                 "group_by": ["user.email"],
                 "order_by": [{"column": "total_quantity_ordered", "direction": "asc"}],
@@ -289,8 +327,10 @@ def ranking_scenarios() -> list[Scenario]:
             ),
         ),
         Scenario(
-            "RANKING", "top 5 by order count — Alice/Cara/etc.",
-            "get_metric", {
+            "RANKING",
+            "top 5 by order count — Alice/Cara/etc.",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["user.email"],
                 "order_by": [{"column": "order_count", "direction": "desc"}],
@@ -302,8 +342,10 @@ def ranking_scenarios() -> list[Scenario]:
             ),
         ),
         Scenario(
-            "RANKING", "top 5 with explicit tie-break on email",
-            "get_metric", {
+            "RANKING",
+            "top 5 with explicit tie-break on email",
+            "get_metric",
+            {
                 "name": "total_quantity_ordered",
                 "group_by": ["user.email"],
                 "order_by": [
@@ -315,21 +357,26 @@ def ranking_scenarios() -> list[Scenario]:
             lambda r: (_row_count(r) == 5, f"{_row_count(r)} rows"),
         ),
         Scenario(
-            "RANKING", "order_by group_col only — sorted alphabetically",
-            "get_metric", {
+            "RANKING",
+            "order_by group_col only — sorted alphabetically",
+            "get_metric",
+            {
                 "name": "total_quantity_ordered",
                 "group_by": ["user.email"],
                 "order_by": [{"column": "user.email", "direction": "asc"}],
                 "limit": 3,
             },
             lambda r: (
-                _row_count(r) == 3 and _rows(r)[0].get("group_col_0", "") <= _rows(r)[1].get("group_col_0", "zz"),
+                _row_count(r) == 3
+                and _rows(r)[0].get("group_col_0", "") <= _rows(r)[1].get("group_col_0", "zz"),
                 f"first row email={_rows(r)[0].get('group_col_0') if _rows(r) else None}",
             ),
         ),
         Scenario(
-            "RANKING", "no limit + order_by works",
-            "get_metric", {
+            "RANKING",
+            "no limit + order_by works",
+            "get_metric",
+            {
                 "name": "total_quantity_ordered",
                 "group_by": ["user.email"],
                 "order_by": [{"column": "total_quantity_ordered", "direction": "desc"}],
@@ -345,8 +392,10 @@ def ranking_scenarios() -> list[Scenario]:
 def join_scenarios() -> list[Scenario]:
     return [
         Scenario(
-            "JOIN", "multi-hop order_item → order → user",
-            "get_metric", {
+            "JOIN",
+            "multi-hop order_item → order → user",
+            "get_metric",
+            {
                 "name": "total_quantity_ordered",
                 "group_by": ["user.email"],
                 "order_by": [{"column": "total_quantity_ordered", "direction": "desc"}],
@@ -355,8 +404,10 @@ def join_scenarios() -> list[Scenario]:
             lambda r: _check_top_row(r, "group_col_0", "alice@example.com"),
         ),
         Scenario(
-            "JOIN", "single-hop order → user",
-            "get_metric", {
+            "JOIN",
+            "single-hop order → user",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["user.email"],
                 "order_by": [{"column": "order_count", "direction": "desc"}],
@@ -365,38 +416,52 @@ def join_scenarios() -> list[Scenario]:
             lambda r: _check_top_row(r, "group_col_0", "alice@example.com"),
         ),
         Scenario(
-            "JOIN", "billing disambiguation via=orders_billing_address_id",
-            "get_metric", {
+            "JOIN",
+            "billing disambiguation via=orders_billing_address_id",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["address.city"],
                 "via": ["orders_billing_address_id"],
                 "order_by": [{"column": "order_count", "direction": "desc"}],
                 "limit": 5,
             },
-            lambda r: (status_in(r, "success", "degraded") and _row_count(r) > 0, f"rows={_row_count(r)}"),
+            lambda r: (
+                status_in(r, "success", "degraded") and _row_count(r) > 0,
+                f"rows={_row_count(r)}",
+            ),
         ),
         Scenario(
-            "JOIN", "shipping disambiguation via=orders_shipping_address_id",
-            "get_metric", {
+            "JOIN",
+            "shipping disambiguation via=orders_shipping_address_id",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["address.country"],
                 "via": ["orders_shipping_address_id"],
                 "order_by": [{"column": "order_count", "direction": "desc"}],
                 "limit": 5,
             },
-            lambda r: (status_in(r, "success", "degraded") and _row_count(r) > 0, f"rows={_row_count(r)}"),
+            lambda r: (
+                status_in(r, "success", "degraded") and _row_count(r) > 0,
+                f"rows={_row_count(r)}",
+            ),
         ),
         Scenario(
-            "JOIN", "ambiguous join without via — error",
-            "get_metric", {
+            "JOIN",
+            "ambiguous join without via — error",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["address.country"],
             },
             lambda r: _check_error(r, "ambiguous_join"),
         ),
         Scenario(
-            "JOIN", "via=unknown_join_name → unknown_via_join",
-            "get_metric", {
+            "JOIN",
+            "via=unknown_join_name → unknown_via_join",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["address.country"],
                 "via": ["orders_invalid_join"],
@@ -404,8 +469,10 @@ def join_scenarios() -> list[Scenario]:
             lambda r: _check_error(r, "unknown_via_join"),
         ),
         Scenario(
-            "JOIN", "unreachable entity (no canonical join)",
-            "get_metric", {
+            "JOIN",
+            "unreachable entity (no canonical join)",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["category.name"],
             },
@@ -418,54 +485,69 @@ def column_validation_scenarios() -> list[Scenario]:
     """PR-6h.3's compile-time column-existence check."""
     return [
         Scenario(
-            "COLUMN_VAL", "group_by bogus column → unknown_group_by_column",
-            "get_metric", {
+            "COLUMN_VAL",
+            "group_by bogus column → unknown_group_by_column",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["user.bogus_column"],
             },
             lambda r: _check_error(r, "unknown_group_by_column"),
         ),
         Scenario(
-            "COLUMN_VAL", "filter bogus column → unknown_filter_column",
-            "get_metric", {
+            "COLUMN_VAL",
+            "filter bogus column → unknown_filter_column",
+            "get_metric",
+            {
                 "name": "order_count",
                 "filters": [{"column": "user.bogus_column", "op": "eq", "value": "x"}],
             },
             lambda r: _check_error(r, "unknown_filter_column"),
         ),
         Scenario(
-            "COLUMN_VAL", "group_by typo'd column on anchor entity",
-            "get_metric", {
+            "COLUMN_VAL",
+            "group_by typo'd column on anchor entity",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["order.placd_at"],  # typo: placd vs placed
             },
             lambda r: _check_error(r, "unknown_group_by_column"),
         ),
         Scenario(
-            "COLUMN_VAL", "group_by typo on joined entity",
-            "get_metric", {
+            "COLUMN_VAL",
+            "group_by typo on joined entity",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["user.emial"],  # typo: emial vs email
             },
             lambda r: _check_error(r, "unknown_group_by_column"),
         ),
         Scenario(
-            "COLUMN_VAL", "filter on known column resolves fine",
-            "get_metric", {
+            "COLUMN_VAL",
+            "filter on known column resolves fine",
+            "get_metric",
+            {
                 "name": "order_count",
                 "filters": [{"column": "order.status", "op": "eq", "value": "fulfilled"}],
             },
             lambda r: (status_in(r, "success", "degraded"), f"status={r.get('status')}"),
         ),
         Scenario(
-            "COLUMN_VAL", "unknown_group_by_column carries allowed_columns",
-            "get_metric", {
+            "COLUMN_VAL",
+            "unknown_group_by_column carries allowed_columns",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["user.bogus_xyz"],
             },
             lambda r: (
                 _err_kind(r) == "unknown_group_by_column"
-                and "email" in (((r.get("error") or {}).get("recovery") or {}).get("suggested_args") or {}).get("allowed_columns", []),
+                and "email"
+                in (((r.get("error") or {}).get("recovery") or {}).get("suggested_args") or {}).get(
+                    "allowed_columns", []
+                ),
                 f"recovery={((r.get('error') or {}).get('recovery'))}",
             ),
         ),
@@ -475,8 +557,10 @@ def column_validation_scenarios() -> list[Scenario]:
 def filter_scenarios() -> list[Scenario]:
     return [
         Scenario(
-            "FILTER", "filter eq on anchor.status",
-            "get_metric", {
+            "FILTER",
+            "filter eq on anchor.status",
+            "get_metric",
+            {
                 "name": "order_count",
                 "filters": [{"column": "order.status", "op": "eq", "value": "fulfilled"}],
             },
@@ -488,8 +572,10 @@ def filter_scenarios() -> list[Scenario]:
             ),
         ),
         Scenario(
-            "FILTER", "filter on joined entity (user.email)",
-            "get_metric", {
+            "FILTER",
+            "filter on joined entity (user.email)",
+            "get_metric",
+            {
                 "name": "order_count",
                 "filters": [{"column": "user.email", "op": "eq", "value": "alice@example.com"}],
             },
@@ -499,10 +585,14 @@ def filter_scenarios() -> list[Scenario]:
             ),
         ),
         Scenario(
-            "FILTER", "filter IN op",
-            "get_metric", {
+            "FILTER",
+            "filter IN op",
+            "get_metric",
+            {
                 "name": "order_count",
-                "filters": [{"column": "order.status", "op": "in", "value": ["fulfilled", "shipped"]}],
+                "filters": [
+                    {"column": "order.status", "op": "in", "value": ["fulfilled", "shipped"]}
+                ],
             },
             lambda r: (
                 status_in(r, "success", "degraded")
@@ -511,8 +601,10 @@ def filter_scenarios() -> list[Scenario]:
             ),
         ),
         Scenario(
-            "FILTER", "filter not_null on placed_at",
-            "get_metric", {
+            "FILTER",
+            "filter not_null on placed_at",
+            "get_metric",
+            {
                 "name": "order_count",
                 "filters": [{"column": "order.placed_at", "op": "not_null"}],
             },
@@ -522,16 +614,20 @@ def filter_scenarios() -> list[Scenario]:
             ),
         ),
         Scenario(
-            "FILTER", "filter unary op with value → malformed_name",
-            "get_metric", {
+            "FILTER",
+            "filter unary op with value → malformed_name",
+            "get_metric",
+            {
                 "name": "order_count",
                 "filters": [{"column": "order.placed_at", "op": "is_null", "value": "now"}],
             },
             lambda r: _check_error(r, "malformed_name"),
         ),
         Scenario(
-            "FILTER", "filter list op with scalar → malformed_name",
-            "get_metric", {
+            "FILTER",
+            "filter list op with scalar → malformed_name",
+            "get_metric",
+            {
                 "name": "order_count",
                 "filters": [{"column": "order.status", "op": "in", "value": "fulfilled"}],
             },
@@ -543,22 +639,29 @@ def filter_scenarios() -> list[Scenario]:
 def degradation_scenarios() -> list[Scenario]:
     return [
         Scenario(
-            "DEGRADE", "limit + group_by without order_by → missing_order_by_with_limit OR fan_out_join",
-            "get_metric", {
+            "DEGRADE",
+            "limit + group_by without order_by → missing_order_by_with_limit OR fan_out_join",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["user.email"],
                 "limit": 5,
             },
             lambda r: (
-                status_in(r, "degraded") and r.get("degradation_reason") in (
-                    "missing_order_by_with_limit", "fan_out_join",
+                status_in(r, "degraded")
+                and r.get("degradation_reason")
+                in (
+                    "missing_order_by_with_limit",
+                    "fan_out_join",
                 ),
                 f"status={r.get('status')} reason={r.get('degradation_reason')}",
             ),
         ),
         Scenario(
-            "DEGRADE", "fan-out from order → order_item join",
-            "get_metric", {
+            "DEGRADE",
+            "fan-out from order → order_item join",
+            "get_metric",
+            {
                 "name": "total_quantity_ordered",
                 "group_by": ["user.email"],
                 "order_by": [{"column": "total_quantity_ordered", "direction": "desc"}],
@@ -572,8 +675,10 @@ def degradation_scenarios() -> list[Scenario]:
             ),
         ),
         Scenario(
-            "DEGRADE", "order_by present → no missing_order_by degradation",
-            "get_metric", {
+            "DEGRADE",
+            "order_by present → no missing_order_by degradation",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["user.email"],
                 "order_by": [{"column": "order_count", "direction": "desc"}],
@@ -585,8 +690,10 @@ def degradation_scenarios() -> list[Scenario]:
             ),
         ),
         Scenario(
-            "DEGRADE", "no group_by + limit → no missing_order_by degradation",
-            "get_metric", {"name": "order_count", "limit": 5},
+            "DEGRADE",
+            "no group_by + limit → no missing_order_by degradation",
+            "get_metric",
+            {"name": "order_count", "limit": 5},
             lambda r: (
                 r.get("degradation_reason") != "missing_order_by_with_limit",
                 f"degradation_reason={r.get('degradation_reason')}",
@@ -598,36 +705,48 @@ def degradation_scenarios() -> list[Scenario]:
 def error_scenarios() -> list[Scenario]:
     return [
         Scenario(
-            "ERROR", "unknown_metric",
-            "get_metric", {"name": "monthly_recurring_revenue"},
+            "ERROR",
+            "unknown_metric",
+            "get_metric",
+            {"name": "monthly_recurring_revenue"},
             lambda r: _check_error(r, "unknown_metric"),
         ),
         Scenario(
-            "ERROR", "unknown entity in group_by",
-            "get_metric", {"name": "order_count", "group_by": ["subscription.tier"]},
+            "ERROR",
+            "unknown entity in group_by",
+            "get_metric",
+            {"name": "order_count", "group_by": ["subscription.tier"]},
             lambda r: _check_error(r, "unknown_name"),
         ),
         Scenario(
-            "ERROR", "malformed column ref (no dot)",
-            "get_metric", {"name": "order_count", "group_by": ["userid"]},
+            "ERROR",
+            "malformed column ref (no dot)",
+            "get_metric",
+            {"name": "order_count", "group_by": ["userid"]},
             lambda r: _check_error(r, "malformed_name"),
         ),
         Scenario(
-            "ERROR", "order_by referencing unselected column",
-            "get_metric", {
+            "ERROR",
+            "order_by referencing unselected column",
+            "get_metric",
+            {
                 "name": "order_count",
                 "order_by": [{"column": "user.email", "direction": "desc"}],
             },
             lambda r: _check_error(r, "unknown_order_by_column"),
         ),
         Scenario(
-            "ERROR", "invalid time_grain string",
-            "get_metric", {"name": "total_revenue", "time_grain": "biweekly"},
+            "ERROR",
+            "invalid time_grain string",
+            "get_metric",
+            {"name": "total_revenue", "time_grain": "biweekly"},
             lambda r: _check_error(r, "invalid_time_grain"),
         ),
         Scenario(
-            "ERROR", "time_grain on metric without time_dimension",
-            "get_metric", {"name": "category_count", "time_grain": "day"},
+            "ERROR",
+            "time_grain on metric without time_dimension",
+            "get_metric",
+            {"name": "category_count", "time_grain": "day"},
             lambda r: _check_error(r, "invalid_time_grain"),
         ),
     ]
@@ -636,8 +755,10 @@ def error_scenarios() -> list[Scenario]:
 def time_grain_scenarios() -> list[Scenario]:
     return [
         Scenario(
-            "TIME", "total_revenue by month",
-            "get_metric", {
+            "TIME",
+            "total_revenue by month",
+            "get_metric",
+            {
                 "name": "total_revenue",
                 "time_grain": "month",
                 "order_by": [{"column": "total_revenue", "direction": "desc"}],
@@ -649,8 +770,10 @@ def time_grain_scenarios() -> list[Scenario]:
             ),
         ),
         Scenario(
-            "TIME", "order_count by week",
-            "get_metric", {
+            "TIME",
+            "order_count by week",
+            "get_metric",
+            {
                 "name": "order_count",
                 "time_grain": "week",
                 "limit": 60,
@@ -661,8 +784,10 @@ def time_grain_scenarios() -> list[Scenario]:
             ),
         ),
         Scenario(
-            "TIME", "total_revenue by day",
-            "get_metric", {
+            "TIME",
+            "total_revenue by day",
+            "get_metric",
+            {
                 "name": "total_revenue",
                 "time_grain": "day",
                 "limit": 30,
@@ -678,8 +803,10 @@ def time_grain_scenarios() -> list[Scenario]:
 def pii_scenarios() -> list[Scenario]:
     return [
         Scenario(
-            "PII", "group_by user.email → response carries pii_categories",
-            "get_metric", {
+            "PII",
+            "group_by user.email → response carries pii_categories",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["user.email"],
                 "order_by": [{"column": "order_count", "direction": "desc"}],
@@ -691,8 +818,10 @@ def pii_scenarios() -> list[Scenario]:
             ),
         ),
         Scenario(
-            "PII", "group_by user.full_name → response carries contact pii",
-            "get_metric", {
+            "PII",
+            "group_by user.full_name → response carries contact pii",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["user.full_name"],
                 "order_by": [{"column": "order_count", "direction": "desc"}],
@@ -704,8 +833,10 @@ def pii_scenarios() -> list[Scenario]:
             ),
         ),
         Scenario(
-            "PII", "no PII fields → empty pii_categories",
-            "get_metric", {"name": "category_count"},
+            "PII",
+            "no PII fields → empty pii_categories",
+            "get_metric",
+            {"name": "category_count"},
             lambda r: (
                 (r.get("data") or {}).get("pii_categories", []) == [],
                 f"pii_categories={(r.get('data') or {}).get('pii_categories')}",
@@ -717,8 +848,10 @@ def pii_scenarios() -> list[Scenario]:
 def volume_scenarios() -> list[Scenario]:
     return [
         Scenario(
-            "VOLUME", "large limit returns all 50 distinct buyers",
-            "get_metric", {
+            "VOLUME",
+            "large limit returns all 50 distinct buyers",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["user.email"],
                 "order_by": [{"column": "order_count", "direction": "desc"}],
@@ -730,8 +863,10 @@ def volume_scenarios() -> list[Scenario]:
             ),
         ),
         Scenario(
-            "VOLUME", "Alice at position 0 deterministically",
-            "get_metric", {
+            "VOLUME",
+            "Alice at position 0 deterministically",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["user.email"],
                 "order_by": [{"column": "order_count", "direction": "desc"}],
@@ -743,8 +878,10 @@ def volume_scenarios() -> list[Scenario]:
             ),
         ),
         Scenario(
-            "VOLUME", "duplicate order_by entries deduped",
-            "get_metric", {
+            "VOLUME",
+            "duplicate order_by entries deduped",
+            "get_metric",
+            {
                 "name": "order_count",
                 "group_by": ["user.email"],
                 "order_by": [
@@ -770,7 +907,9 @@ async def run_one(server, scenario: Scenario) -> Result:
     try:
         _content, structured = await server.call_tool(scenario.tool, scenario.args)
     except Exception as exc:
-        return Result(scenario.category, scenario.name, "UNEXPECTED", str(exc), error=type(exc).__name__)
+        return Result(
+            scenario.category, scenario.name, "UNEXPECTED", str(exc), error=type(exc).__name__
+        )
     ok, reason = scenario.check(structured)
     return Result(
         scenario.category,
@@ -843,8 +982,10 @@ async def main() -> int:
         for cat, counts in sorted(by_cat.items()):
             total = sum(counts.values())
             pass_count = counts.get("PASS", 0)
-            print(f"  {cat:12s}  {pass_count:>2}/{total:<2} PASS  "
-                  f"({counts.get('FAIL', 0)} FAIL, {counts.get('UNEXPECTED', 0)} UNEXPECTED)")
+            print(
+                f"  {cat:12s}  {pass_count:>2}/{total:<2} PASS  "
+                f"({counts.get('FAIL', 0)} FAIL, {counts.get('UNEXPECTED', 0)} UNEXPECTED)"
+            )
         total = len(results)
         passed = sum(1 for r in results if r.status == "PASS")
         failed = sum(1 for r in results if r.status == "FAIL")
