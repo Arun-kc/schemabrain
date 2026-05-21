@@ -42,6 +42,7 @@ from schemabrain.semantic.compiler.plan import (
     UnknownColumnError,
     UnknownFilterColumnError,
     UnknownGroupByColumnError,
+    UnknownMeasureColumnError,
     UnknownMetricError,
     UnknownOrderByColumnError,
     UnknownViaJoinError,
@@ -199,8 +200,8 @@ def resolve_metric_plan(
     def _validate_column_on_table(
         *, entity: str, column: str, qualified_table: str, kind: str
     ) -> None:
-        # `kind` is "group_by" or "filter" — picks the right error
-        # class so the MCP envelope distinguishes between the two
+        # `kind` is "group_by" / "filter" / "measure" — picks the right
+        # error class so the MCP envelope distinguishes between the
         # surfaces. ORDER BY has its own alias-based validation in
         # the order_by resolution block below.
         allowed = _columns_on(qualified_table)
@@ -219,7 +220,13 @@ def resolve_metric_plan(
                 column=column,
                 allowed_columns=sorted_allowed,
             )
-        # No other `kind` value reaches `_resolve` today — keep the
+        if kind == "measure":
+            raise UnknownMeasureColumnError(
+                entity=entity,
+                column=column,
+                allowed_columns=sorted_allowed,
+            )
+        # No other `kind` value reaches the validator today — keep the
         # branch tight so a future surface is forced to declare its
         # error class explicitly instead of inheriting whichever class
         # happened to be last in the if-chain.
@@ -323,6 +330,23 @@ def resolve_metric_plan(
             column=column,
             qualified_table=join.target_table,
             alias=join.target_alias,
+        )
+
+    # Validate every column the metric's measure references against the
+    # anchor table's column list. Closes a silent-failure path that
+    # existed even for v1 bare-column measures: a typo in
+    # `MetricMeasure.column` used to surface only at Postgres execution
+    # time as `UndefinedColumn`, wrapped as `internal_error`. With
+    # composite expressions referencing multiple operands, the surface
+    # widens — every operand needs the same check. `measure_columns`
+    # returns the set of all column names referenced regardless of
+    # which shape (bare / composite) populated the dataclass.
+    for measure_column in sorted(metric.measure.measure_columns):
+        _validate_column_on_table(
+            entity=metric.entity,
+            column=measure_column,
+            qualified_table=anchor_table,
+            kind="measure",
         )
 
     # Resolve group_by columns, deduplicating by (entity, column) so

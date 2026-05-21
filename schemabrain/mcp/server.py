@@ -116,6 +116,7 @@ from schemabrain.semantic.compiler import (
     UnknownColumnError,
     UnknownFilterColumnError,
     UnknownGroupByColumnError,
+    UnknownMeasureColumnError,
     UnknownMetricError,
     UnknownOrderByColumnError,
     UnknownViaJoinError,
@@ -1416,6 +1417,26 @@ def build_server(
                 error=ToolError(
                     kind="unknown_filter_column",
                     message=str(exc),
+                    recovery=Recovery(
+                        suggested_tool="describe_entity",
+                        suggested_args={
+                            "name": exc.entity,
+                            "allowed_columns": exc.allowed_columns,
+                        },
+                    ),
+                ),
+            )
+        except UnknownMeasureColumnError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="unknown_measure_column",
+                    message=str(exc),
+                    # `describe_entity` is the right next step — the
+                    # measure column lives on the metric's anchor entity,
+                    # and `allowed_columns` carries the actual column set
+                    # to retry against (or to use as a hint that the
+                    # metric definition itself needs fixing).
                     recovery=Recovery(
                         suggested_tool="describe_entity",
                         suggested_args={

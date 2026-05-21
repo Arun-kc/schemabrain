@@ -584,6 +584,40 @@ class TestEnvelopeMapping:
         assert recovery["suggested_tool"] == "describe_entity"
         assert recovery["suggested_args"]["name"] == "order"
 
+    def test_unknown_measure_column_maps_to_unknown_measure_column(
+        self, store_with_seed: SQLiteStore
+    ) -> None:
+        """A metric whose `measure.column` doesn't exist on the anchor
+        table surfaces as `unknown_measure_column` at compile time,
+        not as `internal_error` from Postgres. Recovery hints
+        `describe_entity` so the operator (or agent) can list the
+        actual columns and fix the metric definition.
+        """
+        from schemabrain.core.metric import Metric, MetricMeasure
+
+        # Overwrite the seeded `total_revenue` with one that references
+        # a column not present on `order`.
+        store_with_seed.write_metric(
+            Metric(
+                name="total_revenue",
+                description="",
+                entity="order",
+                measure=MetricMeasure(agg="sum", column="bogus_amount"),
+                time_dimension=None,
+                time_grains=(),
+            ),
+            source_connection_id=SOURCE,
+        )
+        executor = _StubExecutor()
+        app = _build(store_with_seed, executor)
+        _content, structured = _call(app, {"name": "total_revenue"})
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "unknown_measure_column"
+        recovery = structured["error"]["recovery"]
+        assert recovery["suggested_tool"] == "describe_entity"
+        assert recovery["suggested_args"]["name"] == "order"
+        assert "bogus_amount" not in recovery["suggested_args"]["allowed_columns"]
+
     def test_invalid_time_grain_maps_to_invalid_time_grain(
         self, store_with_seed: SQLiteStore
     ) -> None:

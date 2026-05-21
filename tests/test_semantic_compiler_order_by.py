@@ -47,6 +47,7 @@ from schemabrain.semantic.compiler import (
     ResolvedOrderBy,
     UnknownFilterColumnError,
     UnknownGroupByColumnError,
+    UnknownMeasureColumnError,
     UnknownOrderByColumnError,
     emit_sql,
     resolve_metric_plan,
@@ -434,6 +435,68 @@ def test_unknown_group_by_column_error_pickles() -> None:
     assert revived.allowed_columns == err.allowed_columns
 
 
+class TestUnknownMeasureColumn:
+    """Compile-time validation of every column the measure references
+    against the anchor entity's table. Covers BOTH the v1 bare-column
+    path and the v2 composite-expression path — a typo in either shape
+    surfaces here as a clean envelope instead of an `internal_error`
+    masking Postgres's UndefinedColumn."""
+
+    def test_unknown_bare_measure_column_raises(self, tmp_path: Path) -> None:
+        from schemabrain.core.metric import Metric, MetricMeasure
+
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop(store)
+            # Overwrite the seeded `total_items_sold` metric with one
+            # that references a column that doesn't exist on `order_item`.
+            store.write_metric(
+                Metric(
+                    name="total_items_sold",
+                    description="",
+                    entity="order_item",
+                    measure=MetricMeasure(agg="sum", column="bogus_column"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            with pytest.raises(UnknownMeasureColumnError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                )
+        assert exc_info.value.entity == "order_item"
+        assert exc_info.value.column == "bogus_column"
+
+    def test_unknown_composite_operand_raises(self, tmp_path: Path) -> None:
+        from schemabrain.core.metric import Metric, MetricMeasure
+
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop(store)
+            # Composite expression with one valid operand + one typo.
+            # `quantity` is on `order_item`; `bogus_field` is not.
+            store.write_metric(
+                Metric(
+                    name="total_items_sold",
+                    description="",
+                    entity="order_item",
+                    measure=MetricMeasure(agg="sum", expression="quantity * bogus_field"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            with pytest.raises(UnknownMeasureColumnError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                )
+        assert exc_info.value.entity == "order_item"
+        assert exc_info.value.column == "bogus_field"
+
+
 def test_unknown_filter_column_error_pickles() -> None:
     import pickle
 
@@ -443,6 +506,20 @@ def test_unknown_filter_column_error_pickles() -> None:
         allowed_columns=("id", "placed_at", "user_id"),
     )
     revived: UnknownFilterColumnError = pickle.loads(pickle.dumps(err))
+    assert revived.entity == err.entity
+    assert revived.column == err.column
+    assert revived.allowed_columns == err.allowed_columns
+
+
+def test_unknown_measure_column_error_pickles() -> None:
+    import pickle
+
+    err = UnknownMeasureColumnError(
+        entity="order_item",
+        column="bogus",
+        allowed_columns=("id", "order_id", "quantity", "unit_price"),
+    )
+    revived: UnknownMeasureColumnError = pickle.loads(pickle.dumps(err))
     assert revived.entity == err.entity
     assert revived.column == err.column
     assert revived.allowed_columns == err.allowed_columns
