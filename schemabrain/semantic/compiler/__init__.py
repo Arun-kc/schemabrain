@@ -24,6 +24,7 @@ stays as the canonical safe-SQL emitter.
 from schemabrain.semantic.compiler.emit import emit_sql
 from schemabrain.semantic.compiler.plan import (
     AmbiguousJoinError,
+    AmbiguousPathError,
     GrainMismatchError,
     InvalidTimeGrainError,
     MalformedColumnError,
@@ -37,12 +38,14 @@ from schemabrain.semantic.compiler.plan import (
     ResolvedPredicate,
     UnknownColumnError,
     UnknownMetricError,
+    UnknownViaJoinError,
     UnreachableEntityError,
 )
 from schemabrain.semantic.compiler.resolve import resolve_metric_plan
 
 __all__ = [
     "AmbiguousJoinError",
+    "AmbiguousPathError",
     "GrainMismatchError",
     "InvalidTimeGrainError",
     "MalformedColumnError",
@@ -56,6 +59,7 @@ __all__ = [
     "ResolvedPredicate",
     "UnknownColumnError",
     "UnknownMetricError",
+    "UnknownViaJoinError",
     "UnreachableEntityError",
     "emit_sql",
     "resolve_metric_plan",

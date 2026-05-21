@@ -158,7 +158,11 @@ class TestToolRegistry:
             "suggest_joins",
             "get_example_queries",
             "list_entities",
+            "list_metrics",
+            "list_joins",
             "describe_entity",
+            "resolve_join",
+            "get_metric",
         }
         for tool in asyncio.run(server_with_one_table.list_tools()):
             other_names = all_tool_names - {tool.name}

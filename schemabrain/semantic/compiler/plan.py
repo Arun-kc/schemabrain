@@ -114,10 +114,9 @@ class AmbiguousJoinError(MetricCompilerError):
     2+ canonical joins between them (e.g. billing vs shipping address).
 
     Carries the candidate join names so the MCP layer can include them
-    in the `recovery` envelope. At v1 the agent has no way to pass a
-    specific join through `get_metric` — the recovery hint is
-    informational only (the user must narrow the join graph or define
-    a more specific metric). v2 expression layer adds the disambiguator.
+    in the `recovery` envelope. The agent can pass `via=(join_name,)`
+    through `get_metric` to disambiguate (one element per ambiguous
+    hop in the chain — for single-hop ambiguity it's a single name).
     """
 
     anchor_entity: str
@@ -128,14 +127,100 @@ class AmbiguousJoinError(MetricCompilerError):
         super().__init__(
             f"multiple canonical joins exist between {self.anchor_entity!r} "
             f"and {self.target_entity!r}: {list(self.candidate_join_names)}. "
-            f"`get_metric` cannot disambiguate at v1; narrow the canonical-join "
-            f"set or author a more specific metric."
+            f"Pass `via=({self.candidate_join_names[0]!r},)` (or another name "
+            f"from this list) to disambiguate."
         )
 
     def __reduce__(self) -> tuple[type, tuple[str, str, tuple[str, ...]]]:
         return (
             self.__class__,
             (self.anchor_entity, self.target_entity, self.candidate_join_names),
+        )
+
+
+@dataclass(frozen=True)
+class AmbiguousPathError(MetricCompilerError):
+    """Raised when 2+ shortest canonical-join paths exist from the
+    metric's anchor to a group_by/filter target entity.
+
+    Distinct from `AmbiguousJoinError`: ambiguity is at the PATH level
+    (e.g. `order_item → order → billing_address → user`
+    vs. `order_item → order → shipping_address → user`), not at a
+    single edge between an entity pair.
+
+    `candidate_paths` is a tuple of tuples — each inner tuple is the
+    ordered canonical-join names for one candidate path. The agent
+    disambiguates by passing `via=(join_name, ...)` on `get_metric`;
+    each element constrains a hop the chain MUST traverse.
+    """
+
+    anchor_entity: str
+    target_entity: str
+    candidate_paths: tuple[tuple[str, ...], ...]
+
+    def __post_init__(self) -> None:
+        # Render up to the first 4 paths in the message to bound echo
+        # under a prompt-injection scenario where the join graph is
+        # synthesised to balloon the candidate set.
+        shown = list(self.candidate_paths[:4])
+        more = f" (+{len(self.candidate_paths) - 4} more)" if len(self.candidate_paths) > 4 else ""
+        # Render the suggestion as an inline tuple literal so the
+        # agent's copy-paste retry stays valid against the
+        # `via: tuple[str, ...]` contract — anything that nested a list
+        # inside a tuple (`via=(['n1','n2'],)`) would TypeError when
+        # the resolver iterates `via`.
+        first_path_literal = tuple(shown[0]) if shown else ()
+        super().__init__(
+            f"multiple canonical-join paths exist from {self.anchor_entity!r} "
+            f"to {self.target_entity!r}: {shown}{more}. "
+            f"Pass `via={first_path_literal!r}` (or another path's "
+            f"names) on `get_metric` to disambiguate."
+        )
+
+    def __reduce__(
+        self,
+    ) -> tuple[type, tuple[str, str, tuple[tuple[str, ...], ...]]]:
+        return (
+            self.__class__,
+            (self.anchor_entity, self.target_entity, self.candidate_paths),
+        )
+
+
+@dataclass(frozen=True)
+class UnknownViaJoinError(MetricCompilerError):
+    """Raised when `via=` references a canonical-join name that isn't
+    defined for this source, or is defined but doesn't appear on any
+    candidate path from anchor to target.
+
+    Distinct from `AmbiguousPathError` (multiple valid paths) and
+    `UnreachableEntityError` (no path exists at all): the path graph
+    is well-formed but the via constraint can't be satisfied.
+    """
+
+    anchor_entity: str
+    target_entity: str
+    requested_via: tuple[str, ...]
+    available_join_names: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        super().__init__(
+            f"`via={list(self.requested_via)}` does not match any "
+            f"canonical-join path from {self.anchor_entity!r} to "
+            f"{self.target_entity!r}. Available joins on candidate "
+            f"paths: {list(self.available_join_names)}"
+        )
+
+    def __reduce__(
+        self,
+    ) -> tuple[type, tuple[str, str, tuple[str, ...], tuple[str, ...]]]:
+        return (
+            self.__class__,
+            (
+                self.anchor_entity,
+                self.target_entity,
+                self.requested_via,
+                self.available_join_names,
+            ),
         )
 
 
@@ -287,14 +372,20 @@ class ResolvedJoin:
     """One canonical join resolved against the request.
 
     Carries enough to emit a `JOIN ... ON ...` clause WITHOUT a
-    second store round-trip at emit time. `target_alias` is the SQL
-    alias to use for the joined table; `on_pairs` is the equi-join
-    predicate set (length >= 1 by the `CanonicalJoin` invariant).
-    `cardinality` is the persisted value (None means worst-case
-    many_to_many treatment for fan-out detection).
+    second store round-trip at emit time. `source_alias` is the SQL
+    alias on the LEFT side of the ON clause — the metric anchor for
+    direct joins, or the previous hop's entity for multi-hop chains.
+    `target_alias` is the alias on the RIGHT side (the joined table).
+    `on_pairs` is the equi-join predicate set (length >= 1 by the
+    `CanonicalJoin` invariant); for joins traversed in the reverse
+    of their stored direction, `on_pairs` carries SWAPPED columns
+    so emit can use them verbatim. `cardinality` is the persisted
+    value (None means worst-case many_to_many treatment for fan-out
+    detection).
     """
 
     canonical_name: str
+    source_alias: str
     target_entity: str
     target_table: str
     target_alias: str
@@ -319,9 +410,12 @@ class MetricPlan:
     time_bucket: TimeGrain | None
     filter_predicates: tuple[ResolvedPredicate, ...]
     limit: int
-    # Canonical joins traversed, in alphabetical order by name. The
-    # emit layer iterates this list to produce JOIN clauses; the
-    # audit layer reads it for provenance (just the names).
+    # Canonical joins traversed, in TOPOLOGICAL chain order — the
+    # emitter relies on this ordering: each JOIN clause references
+    # the previous hop's alias on the left side, so reordering would
+    # produce SQL that references undefined aliases. The audit layer
+    # reads this list for provenance (just the names, see
+    # `required_join_names`).
     joins: tuple[ResolvedJoin, ...] = field(default=())
 
     @property

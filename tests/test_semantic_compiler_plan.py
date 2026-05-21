@@ -77,6 +77,7 @@ class TestResolvedJoin:
     def test_is_frozen(self) -> None:
         join = ResolvedJoin(
             canonical_name="customer_orders",
+            source_alias="order",
             target_entity="customer",
             target_table="public.users",
             target_alias="customer",
@@ -117,6 +118,7 @@ class TestMetricPlan:
             joins=(
                 ResolvedJoin(
                     canonical_name="customer_orders",
+                    source_alias="order",
                     target_entity="customer",
                     target_table="public.users",
                     target_alias="customer",
@@ -125,6 +127,7 @@ class TestMetricPlan:
                 ),
                 ResolvedJoin(
                     canonical_name="order_product",
+                    source_alias="order",
                     target_entity="product",
                     target_table="public.products",
                     target_alias="product",
@@ -147,6 +150,7 @@ class TestMetricPlan:
             joins=(
                 ResolvedJoin(
                     canonical_name="customer_orders",
+                    source_alias="order",
                     target_entity="customer",
                     target_table="public.users",
                     target_alias="customer",
@@ -155,6 +159,7 @@ class TestMetricPlan:
                 ),
                 ResolvedJoin(
                     canonical_name="order_items",
+                    source_alias="order",
                     target_entity="order_item",
                     target_table="public.order_items",
                     target_alias="order_item",
@@ -163,6 +168,7 @@ class TestMetricPlan:
                 ),
                 ResolvedJoin(
                     canonical_name="ambiguous_cardinality",
+                    source_alias="order",
                     target_entity="other",
                     target_table="public.other",
                     target_alias="other",

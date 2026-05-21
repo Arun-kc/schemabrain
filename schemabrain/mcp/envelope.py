@@ -92,6 +92,8 @@ ErrorKind = Literal[
     # metric surface:
     "unknown_metric",
     "unreachable_entity",
+    "ambiguous_path",
+    "unknown_via_join",
     "invalid_time_grain",
     "grain_mismatch",
     # MCP dispatch surface — used INTERNALLY by the strict-args

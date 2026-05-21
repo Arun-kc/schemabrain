@@ -1,26 +1,34 @@
 """Metric request resolver.
 
-Turns `(metric_name, group_by, filters, time_grain, limit)` into a
-`MetricPlan` by looking up the metric, its anchor entity, and any
-canonical joins it touches. Raises structured `MetricCompilerError`
-subclasses when the request can't be satisfied — the MCP tool layer
-maps each subclass to a charter envelope `kind`.
+Turns `(metric_name, group_by, filters, time_grain, limit, via)` into a
+`MetricPlan` by looking up the metric, its anchor entity, and the
+chain of canonical joins needed to reach each referenced entity.
+Raises structured `MetricCompilerError` subclasses when the request
+can't be satisfied — the MCP tool layer maps each subclass to a
+charter envelope `kind`.
 
-At v1 the resolver handles ONE-HOP joins only — multi-hop is a v2
-query-planner concern. Any group_by or filter column on an entity that
-isn't 1-hop reachable from the metric's anchor raises
-`UnreachableEntityError`.
+Multi-hop reachability: the resolver BFSes the canonical-join graph
+(treating each canonical join as an undirected edge between its
+`source_entity` and `target_entity`) for the shortest path from the
+metric's anchor to each referenced entity. Intermediate hops on the
+path become additional `ResolvedJoin` entries in the plan, in
+topological chain order. Path-level ambiguity (two paths of equal
+length) refuses with `AmbiguousPathError`; the agent disambiguates
+via `via=(join_name,)`.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from typing import Any
 
+from schemabrain.core.join import CanonicalJoin, JoinColumnPair
 from schemabrain.core.metric import Metric, TimeGrain
 from schemabrain.core.store_protocol import Store
 from schemabrain.semantic.compiler.plan import (
     AmbiguousJoinError,
+    AmbiguousPathError,
     InvalidTimeGrainError,
     MalformedColumnError,
     MetricPlan,
@@ -31,6 +39,7 @@ from schemabrain.semantic.compiler.plan import (
     ResolvedPredicate,
     UnknownColumnError,
     UnknownMetricError,
+    UnknownViaJoinError,
     UnreachableEntityError,
 )
 
@@ -61,6 +70,7 @@ def resolve_metric_plan(
     filters: tuple[RequestedFilter, ...] = (),
     time_grain: TimeGrain | None = None,
     limit: int = 1000,
+    via: tuple[str, ...] = (),
 ) -> MetricPlan:
     """Compile a metric request into a `MetricPlan`.
 
@@ -74,6 +84,12 @@ def resolve_metric_plan(
 
     `group_by` items are deduplicated by `(entity, column)` so the
     same column twice doesn't duplicate JOINs in the emitted SQL.
+
+    `via` is a tuple of canonical-join names the caller wants the
+    chain to pass through. Used to disambiguate `AmbiguousPathError`
+    or `AmbiguousJoinError`. Each name MUST be a canonical join that
+    appears on a candidate path from anchor to a referenced entity;
+    otherwise `UnknownViaJoinError` is raised.
     """
     metric = store.get_metric(metric_name, source_connection_id=source_connection_id)
     if metric is None:
@@ -97,12 +113,35 @@ def resolve_metric_plan(
     anchor_alias = _alias_for(metric.entity)
     anchor_table = _lookup_anchor_table(store, metric.entity, source_connection_id)
 
-    # Per-entity resolution cache: `target_entity → ResolvedJoin`. The
-    # first reference to a non-anchor entity does the canonical-join
-    # lookup + builds the ResolvedJoin; subsequent references reuse it
-    # so a group_by and a filter on the same joined entity share one
-    # JOIN clause and one alias.
+    # Lazy-load the canonical-join graph: built once on first reference
+    # to a non-anchor entity, reused for every subsequent BFS in this
+    # request. For requests that only reference the anchor (no group_by,
+    # filters on anchor only) we skip the store roundtrip entirely.
+    graph: _JoinGraph | None = None
+
+    # Cache of `target_entity → ResolvedJoin` for every entity reached
+    # so far in this request, INCLUDING intermediate hops. A second
+    # group_by referencing the same intermediate (e.g. group_by
+    # ["user.email", "address.country"] both transit `order`) reuses
+    # the same JOIN — one alias, one ON clause.
     resolved_joins: dict[str, ResolvedJoin] = {}
+
+    via_set = frozenset(via)
+    # `consumed_via` accumulates which via names actually constrained
+    # a hop in some chain. Each `_find_canonical_chain` returns its
+    # consumed names alongside the chain; the caller merges into this
+    # request-level set ONLY on success, so partial-chain consumed
+    # names from a chain that later raised don't pollute the shared
+    # set (defends a future retry/catch refactor from silently
+    # suppressing real `UnknownViaJoinError` raises).
+    consumed_via: set[str] = set()
+
+    def _ensure_graph() -> _JoinGraph:
+        nonlocal graph
+        if graph is None:
+            edges = store.list_canonical_joins(source_connection_id=source_connection_id)
+            graph = _build_join_graph(edges)
+        return graph
 
     def _resolve(column_ref: str, kind: str) -> ResolvedColumn:
         # `kind` is "group_by" or "filter" — surfaces in the
@@ -130,46 +169,58 @@ def resolve_metric_plan(
                 qualified_table=join.target_table,
                 alias=join.target_alias,
             )
-        # First time we've seen this entity in the request — resolve
-        # the canonical join from anchor.
-        joins = store.resolve_canonical_joins(
-            metric.entity,
-            entity_name,
-            source_connection_id=source_connection_id,
-        )
-        if not joins:
-            target_table = _lookup_optional_table(store, entity_name, source_connection_id)
-            if target_table is None:
-                raise UnknownColumnError(
-                    f"{kind} column {column_ref!r} references entity "
-                    f"{entity_name!r} which is not defined for this source"
-                )
-            raise UnreachableEntityError(
-                anchor_entity=metric.entity,
-                target_entity=entity_name,
+        # First time we've seen this entity in the request — BFS the
+        # canonical-join graph from anchor to here. Intermediate hops
+        # already in `resolved_joins` are reused; only new hops produce
+        # new ResolvedJoin entries.
+        g = _ensure_graph()
+        target_table_check = _lookup_optional_table(store, entity_name, source_connection_id)
+        if target_table_check is None:
+            raise UnknownColumnError(
+                f"{kind} column {column_ref!r} references entity "
+                f"{entity_name!r} which is not defined for this source"
             )
-        if len(joins) > 1:
-            raise AmbiguousJoinError(
-                anchor_entity=metric.entity,
-                target_entity=entity_name,
-                candidate_join_names=tuple(j.name for j in joins),
-            )
-        canonical_join = joins[0]
-        target_table = _lookup_anchor_table(store, entity_name, source_connection_id)
-        resolved = ResolvedJoin(
-            canonical_name=canonical_join.name,
-            target_entity=entity_name,
-            target_table=target_table,
-            target_alias=_alias_for(entity_name),
-            on_pairs=canonical_join.on,
-            cardinality=canonical_join.cardinality,
+        chain, chain_consumed_via = _find_canonical_chain(
+            graph=g,
+            anchor=metric.entity,
+            target=entity_name,
+            via=via_set,
         )
-        resolved_joins[entity_name] = resolved
+        # Chain resolved successfully — merge its consumed names into
+        # the request-level set. If the BFS raised, this point is never
+        # reached, so partial-chain consumed names don't pollute the
+        # shared set.
+        consumed_via.update(chain_consumed_via)
+        # `chain` is the ordered list of (predecessor_entity, edge)
+        # tuples. For each hop, either reuse a cached ResolvedJoin or
+        # build a fresh one anchored on the predecessor's alias.
+        for predecessor, edge in chain:
+            if edge.target_entity_in_chain in resolved_joins:
+                continue
+            target_table = _lookup_anchor_table(
+                store, edge.target_entity_in_chain, source_connection_id
+            )
+            source_alias = (
+                anchor_alias
+                if predecessor == metric.entity
+                else resolved_joins[predecessor].target_alias
+            )
+            resolved_joins[edge.target_entity_in_chain] = ResolvedJoin(
+                canonical_name=edge.join.name,
+                source_alias=source_alias,
+                target_entity=edge.target_entity_in_chain,
+                target_table=target_table,
+                target_alias=_alias_for(edge.target_entity_in_chain),
+                on_pairs=edge.on_pairs_in_chain_direction,
+                cardinality=edge.join.cardinality,
+            )
+        # Final ResolvedJoin for the requested entity is now cached.
+        join = resolved_joins[entity_name]
         return ResolvedColumn(
             entity=entity_name,
             column=column,
-            qualified_table=target_table,
-            alias=resolved.target_alias,
+            qualified_table=join.target_table,
+            alias=join.target_alias,
         )
 
     # Resolve group_by columns, deduplicating by (entity, column) so
@@ -195,9 +246,17 @@ def resolve_metric_plan(
             )
         )
 
-    # Sort joins by canonical name so emit + provenance are
-    # deterministic regardless of resolution order.
-    sorted_joins = tuple(sorted(resolved_joins.values(), key=lambda j: j.canonical_name))
+    # `consumed_via` tracking exists for future symmetry with a v2
+    # multi-target retry contract; today, `_find_canonical_chain`'s
+    # `issubset` filter rejects any chain whose path doesn't contain
+    # every via name, so any successful resolution already guarantees
+    # every via name was consumed. No end-of-call orphan check needed.
+
+    # `joins` is emitted in topological chain order. Insertion order
+    # of `resolved_joins` is already topological because `_resolve`
+    # walks the BFS path from anchor outward, inserting each hop only
+    # if not already present.
+    ordered_joins = tuple(resolved_joins.values())
 
     return MetricPlan(
         metric=metric,
@@ -207,11 +266,226 @@ def resolve_metric_plan(
         time_bucket=time_grain,
         filter_predicates=tuple(filter_predicates),
         limit=limit,
-        joins=sorted_joins,
+        joins=ordered_joins,
     )
 
 
-# ----- helpers ---------------------------------------------------------------
+# ----- canonical-join graph + BFS --------------------------------------------
+
+
+class _ChainEdge:
+    """One hop along a resolved chain.
+
+    Carries the canonical join (provenance) plus the on-pair
+    orientation for THIS hop's chain direction. When BFS traverses a
+    canonical join in the reverse of its stored direction, the
+    on_pairs are SWAPPED at edge-construction time so emit can use
+    them verbatim — the emitter does not need to know about direction.
+    """
+
+    __slots__ = ("join", "on_pairs_in_chain_direction", "target_entity_in_chain")
+
+    def __init__(
+        self,
+        join: CanonicalJoin,
+        target_entity_in_chain: str,
+        on_pairs_in_chain_direction: tuple[JoinColumnPair, ...],
+    ) -> None:
+        self.join = join
+        self.target_entity_in_chain = target_entity_in_chain
+        self.on_pairs_in_chain_direction = on_pairs_in_chain_direction
+
+
+# A directed-from-traversal-perspective adjacency map: at each entity
+# node, the list of (neighbor_entity, canonical_join, on_pairs_oriented)
+# triples representing every way to leave that node along a canonical
+# join. Each stored canonical join contributes TWO entries (one per
+# endpoint) since BFS over canonical joins is undirected.
+_JoinGraph = dict[str, list[tuple[str, CanonicalJoin, tuple[JoinColumnPair, ...]]]]
+
+
+def _build_join_graph(edges: list[CanonicalJoin]) -> _JoinGraph:
+    graph: _JoinGraph = {}
+    for join in edges:
+        # Stored orientation: source_entity → target_entity along on_pairs.
+        graph.setdefault(join.source_entity, []).append((join.target_entity, join, tuple(join.on)))
+        # Reverse orientation: traversing from target_entity, the
+        # on-pair columns flip so emit can produce
+        # `{neighbor_alias}.{source_column} = {origin_alias}.{target_column}`
+        # using the same emit logic verbatim. `dataclasses.replace`
+        # ensures any future fields added to `JoinColumnPair` (e.g.
+        # cast_type, nullable_override) carry over to the reverse-
+        # direction edge automatically instead of being silently
+        # dropped by a positional constructor.
+        swapped = tuple(
+            dataclasses.replace(
+                p,
+                source_column=p.target_column,
+                target_column=p.source_column,
+            )
+            for p in join.on
+        )
+        graph.setdefault(join.target_entity, []).append((join.source_entity, join, swapped))
+    # Deterministic neighbor order so BFS path ties resolve identically
+    # across runs — sort by canonical-join name within each adjacency
+    # list.
+    for neighbors in graph.values():
+        neighbors.sort(key=lambda entry: entry[1].name)
+    return graph
+
+
+def _find_canonical_chain(
+    *,
+    graph: _JoinGraph,
+    anchor: str,
+    target: str,
+    via: frozenset[str],
+) -> tuple[list[tuple[str, _ChainEdge]], frozenset[str]]:
+    """BFS from `anchor` to `target` over the canonical-join graph.
+
+    Returns `(chain, consumed_via)` where `chain` is the ordered list
+    of (predecessor_entity, ChainEdge) tuples — for a 1-hop chain a
+    single tuple, for a 2-hop chain two tuples, etc. — and
+    `consumed_via` is the subset of the input `via` set whose names
+    constrained an actual hop in the resolved chain. The return-value
+    contract (rather than mutating a closure-captured set) ensures
+    consumed names are only observable on the success path: if BFS
+    raises, no partial-chain names leak back into the caller's
+    request-level tracking set.
+
+    Refusal behavior:
+      - No path from anchor to target → `UnreachableEntityError`.
+      - 2+ shortest paths with no `via` constraint → `AmbiguousPathError`.
+      - 2+ shortest paths and `via` constrains exactly one → returns
+        that path with the matching names in `consumed_via`.
+      - Single-edge ambiguity (parallel canonical joins between the
+        same entity pair) on a hop with no `via` → `AmbiguousJoinError`
+        (preserves the existing single-hop contract for the v1 case).
+    """
+    if anchor not in graph and target not in graph:
+        # Graph has no edges at all OR neither endpoint touches the
+        # graph. Either way: no path exists.
+        raise UnreachableEntityError(anchor_entity=anchor, target_entity=target)
+
+    # Names within `via` that constrained a hop in this BFS. Built
+    # locally and returned to the caller — never mutated through a
+    # closure capture.
+    local_consumed_via: set[str] = set()
+
+    # BFS expansion: at each layer, expand all live frontier nodes one
+    # hop, collecting all reachable predecessor→hop edges. We track
+    # paths (not just reachability) because path-level ambiguity has to
+    # surface candidate paths, not just "ambiguous".
+    # A "path" is represented as a tuple of (predecessor, ChainEdge)
+    # tuples. The frontier is a list of (current_entity, path_so_far).
+    frontier: list[tuple[str, tuple[tuple[str, _ChainEdge], ...]]] = [(anchor, ())]
+    visited: set[str] = {anchor}
+    found_paths: list[tuple[tuple[str, _ChainEdge], ...]] = []
+    # Safety cap. The canonical-join graph is small (handfuls of
+    # entities in practice; even Salesforce-scale orgs cap in the
+    # hundreds), but a corrupted store could in theory present a
+    # densely connected adversarial graph. Cap matches the
+    # `suggest_joins` MCP tool default.
+    max_hops = 6
+    for _hop in range(max_hops):
+        if not frontier:
+            break
+        next_frontier: list[tuple[str, tuple[tuple[str, _ChainEdge], ...]]] = []
+        # Newly-visited at this layer; promote to `visited` only after
+        # the layer completes, so multiple shortest paths to the same
+        # node CAN coexist at the same depth and trigger ambiguity.
+        layer_visited: set[str] = set()
+        for entity, path in frontier:
+            neighbors = graph.get(entity, [])
+            # Single-edge parallel-join check: a canonical-join graph
+            # may have multiple stored joins between the same entity
+            # pair (billing vs shipping address). Detect this BEFORE
+            # expansion and refuse with the existing single-hop
+            # contract — unless `via=` selects one.
+            grouped: dict[str, list[tuple[CanonicalJoin, tuple[JoinColumnPair, ...]]]] = {}
+            for neighbor, edge_join, oriented_pairs in neighbors:
+                grouped.setdefault(neighbor, []).append((edge_join, oriented_pairs))
+            for neighbor, candidates in grouped.items():
+                if neighbor in visited:
+                    continue
+                if len(candidates) > 1:
+                    matching = [(j, op) for (j, op) in candidates if j.name in via]
+                    if len(matching) == 0:
+                        raise AmbiguousJoinError(
+                            anchor_entity=entity,
+                            target_entity=neighbor,
+                            candidate_join_names=tuple(sorted(j.name for (j, _op) in candidates)),
+                        )
+                    if len(matching) > 1:
+                        # `via` selected 2+ parallels — caller is
+                        # ambiguous in their own constraint. Surface
+                        # as AmbiguousJoinError so the recovery shape
+                        # stays single-edge-shaped.
+                        raise AmbiguousJoinError(
+                            anchor_entity=entity,
+                            target_entity=neighbor,
+                            candidate_join_names=tuple(sorted(j.name for (j, _op) in matching)),
+                        )
+                    chosen_join, chosen_pairs = matching[0]
+                    local_consumed_via.add(chosen_join.name)
+                else:
+                    chosen_join, chosen_pairs = candidates[0]
+                edge = _ChainEdge(
+                    join=chosen_join,
+                    target_entity_in_chain=neighbor,
+                    on_pairs_in_chain_direction=chosen_pairs,
+                )
+                new_path = (*path, (entity, edge))
+                if neighbor == target:
+                    found_paths.append(new_path)
+                    continue
+                layer_visited.add(neighbor)
+                next_frontier.append((neighbor, new_path))
+        if found_paths:
+            # Apply via= filter to multi-hop path-level ambiguity.
+            filtered = _filter_paths_by_via(found_paths, via)
+            if not filtered:
+                # via constraint excluded all shortest paths.
+                # Treat as the user supplying an unknown via against
+                # the candidate set — the broader path-level
+                # disambiguator-failed shape.
+                available = tuple(
+                    sorted({edge.join.name for path in found_paths for (_pred, edge) in path})
+                )
+                raise UnknownViaJoinError(
+                    anchor_entity=anchor,
+                    target_entity=target,
+                    requested_via=tuple(sorted(via)),
+                    available_join_names=available,
+                )
+            if len(filtered) > 1:
+                raise AmbiguousPathError(
+                    anchor_entity=anchor,
+                    target_entity=target,
+                    candidate_paths=tuple(
+                        tuple(edge.join.name for (_pred, edge) in path) for path in filtered
+                    ),
+                )
+            chosen_path = filtered[0]
+            for _pred, edge in chosen_path:
+                if edge.join.name in via:
+                    local_consumed_via.add(edge.join.name)
+            return list(chosen_path), frozenset(local_consumed_via)
+        visited.update(layer_visited)
+        frontier = next_frontier
+    raise UnreachableEntityError(anchor_entity=anchor, target_entity=target)
+
+
+def _filter_paths_by_via(
+    paths: list[tuple[tuple[str, _ChainEdge], ...]],
+    via: frozenset[str],
+) -> list[tuple[tuple[str, _ChainEdge], ...]]:
+    if not via:
+        return paths
+    return [path for path in paths if via.issubset({edge.join.name for (_pred, edge) in path})]
+
+
+# ----- helpers (unchanged from v1) -------------------------------------------
 
 
 def _check_time_grain(metric: Metric, time_grain: TimeGrain | None) -> None:

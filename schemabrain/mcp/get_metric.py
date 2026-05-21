@@ -17,6 +17,8 @@ Error mapping (compiler-side → envelope kind):
   - `UnknownColumnError`           → `unknown_name`
   - `UnreachableEntityError`       → `unreachable_entity`
   - `AmbiguousJoinError`           → `ambiguous_join`
+  - `AmbiguousPathError`           → `ambiguous_path`
+  - `UnknownViaJoinError`          → `unknown_via_join`
   - `InvalidTimeGrainError`        → `invalid_time_grain`
   - `PiiBlockedError` (reserved)   → `pii_blocked`
 
@@ -72,6 +74,7 @@ def get_metric_impl(
     filters: tuple[MetricFilterArg, ...] = (),
     time_grain: str | None = None,
     limit: int = 1000,
+    via: tuple[str, ...] = (),
     pii_block: frozenset[PIICategory] = frozenset(),
 ) -> MetricResult:
     """Resolve, emit, execute. Returns a `MetricResult` on success.
@@ -126,6 +129,7 @@ def get_metric_impl(
         filters=compiler_filters,
         time_grain=narrowed_grain,
         limit=limit,
+        via=via,
     )
 
     # Tag propagation. Collect every column the metric will touch
@@ -214,6 +218,24 @@ def _resolve_pii_categories(
         by_table.setdefault(resolved.qualified_table, set()).add(resolved.column)
     for predicate in plan.filter_predicates:
         by_table.setdefault(predicate.column.qualified_table, set()).add(predicate.column.column)
+
+    # Include canonical-join ON-clause columns. Multi-hop chains touch
+    # FK columns on every intermediate hop even when no group_by or
+    # filter explicitly references those columns. Without this loop,
+    # a PII-tagged FK used only in a JOIN predicate (e.g.
+    # `email = email` between two tables) would silently bypass
+    # `--pii-block` enforcement — contradicting the "every column
+    # touched by the SQL is tagged" invariant the agent envelope
+    # claims. `plan.joins` is in topological chain order so each hop's
+    # `source_alias` already has a known qualified table by the time
+    # we reach it.
+    alias_to_table: dict[str, str] = {plan.anchor_alias: plan.anchor_table}
+    for resolved_join in plan.joins:
+        source_table = alias_to_table.get(resolved_join.source_alias, plan.anchor_table)
+        for pair in resolved_join.on_pairs:
+            by_table.setdefault(source_table, set()).add(pair.source_column)
+            by_table.setdefault(resolved_join.target_table, set()).add(pair.target_column)
+        alias_to_table[resolved_join.target_alias] = resolved_join.target_table
 
     per_column: list[tuple[Sensitivity, frozenset[PIICategory]]] = []
     total_hits = 0

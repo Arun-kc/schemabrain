@@ -34,6 +34,10 @@ from schemabrain.semantic.compiler import (
     emit_sql,
     resolve_metric_plan,
 )
+from schemabrain.semantic.compiler.plan import (
+    MetricPlan,
+    ResolvedJoin,
+)
 
 SOURCE = "src_a"
 
@@ -562,3 +566,46 @@ class TestParameterisationInvariant:
         # The integer value itself must NOT appear in the SQL text.
         assert "12345" not in sql
         assert params["p_filter_0"] == 12345
+
+
+# ----- Round-2 fold: topological-order invariant defense -------------------
+
+
+class TestTopologicalOrderDefense:
+    """Round-2 fold (silent-failure-hunter F6): `MetricPlan.joins` is
+    contracted to be in topological chain order. If a future refactor
+    or a programmatic caller violates that, the emitter would silently
+    produce SQL that references an alias before it's introduced — a
+    runtime database error several layers away from the bug. The
+    emitter now asserts each join's source_alias is already known.
+    """
+
+    def test_emit_raises_on_non_topological_plan(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_total_revenue(store)
+            # Construct a deliberately non-topological MetricPlan: a
+            # ResolvedJoin whose source_alias is "not_yet_introduced"
+            # but no prior join introduces that alias.
+            anchor_metric = store.get_metric("total_revenue", source_connection_id=SOURCE)
+            assert anchor_metric is not None
+            bogus_join = ResolvedJoin(
+                canonical_name="forward_reference",
+                source_alias="not_yet_introduced",
+                target_entity="ghost",
+                target_table="public.ghost",
+                target_alias="ghost",
+                on_pairs=(JoinColumnPair(source_column="ghost_id", target_column="id"),),
+                cardinality="many_to_one",
+            )
+            plan = MetricPlan(
+                metric=anchor_metric,
+                anchor_table="public.orders",
+                anchor_alias="order",
+                group_by_columns=(),
+                time_bucket=None,
+                filter_predicates=(),
+                limit=1000,
+                joins=(bogus_join,),
+            )
+            with pytest.raises(RuntimeError, match="not topologically ordered"):
+                emit_sql(plan)

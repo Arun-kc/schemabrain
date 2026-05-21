@@ -147,11 +147,37 @@ def emit_sql(plan: MetricPlan) -> tuple[str, dict[str, Any]]:
     # `"schema.table"`. We split on the dot (entity validation
     # guarantees exactly one) and quote each half.
     from_clause = f"FROM {_quote_qualified_table(plan.anchor_table)} AS {quoted_anchor_alias}"
+    # Defense-in-depth on the topological-order invariant.
+    # `plan.joins` is contracted to be topologically ordered by the
+    # resolver. If a future refactor (or a malformed plan from a
+    # programmatic caller) violates that contract, the JOIN emission
+    # below would silently produce SQL that references an alias before
+    # it is defined — and the database would reject it with a confusing
+    # "table not found" error several layers away from the bug. Track
+    # the set of aliases already introduced (anchor + previously emitted
+    # joins) and assert each join's `source_alias` is already known
+    # before emitting it.
+    known_aliases: set[str] = {plan.anchor_alias}
     join_clauses: list[str] = []
     for resolved_join in plan.joins:
+        if resolved_join.source_alias not in known_aliases:
+            raise RuntimeError(
+                f"MetricPlan.joins is not topologically ordered: "
+                f"join {resolved_join.canonical_name!r} references source "
+                f"alias {resolved_join.source_alias!r} which has not yet "
+                f"been introduced. Known aliases at this point: "
+                f"{sorted(known_aliases)}. This is a compiler-invariant "
+                f"violation, not an agent-input error."
+            )
+        # Multi-hop chains: each JOIN's left-side alias is the previous
+        # hop's alias (carried on `resolved_join.source_alias`), not the
+        # metric anchor. The resolver also pre-orients `on_pairs` so
+        # `source_column` always refers to the LEFT side, regardless of
+        # which direction the canonical join was traversed.
+        quoted_source_alias = f'"{resolved_join.source_alias}"'
         quoted_target_alias = f'"{resolved_join.target_alias}"'
         on_clause = " AND ".join(
-            f'{quoted_anchor_alias}."{pair.source_column}" = '
+            f'{quoted_source_alias}."{pair.source_column}" = '
             f'{quoted_target_alias}."{pair.target_column}"'
             for pair in resolved_join.on_pairs
         )
@@ -160,6 +186,7 @@ def emit_sql(plan: MetricPlan) -> tuple[str, dict[str, Any]]:
             f"AS {quoted_target_alias} "
             f"ON {on_clause}"
         )
+        known_aliases.add(resolved_join.target_alias)
 
     # WHERE predicates.
     where_parts: list[str] = []
