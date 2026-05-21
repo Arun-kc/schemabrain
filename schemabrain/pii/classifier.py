@@ -34,9 +34,8 @@ character (including `_`, `-`, `.`, start, end) terminates the keyword.
 
 ## Two refinements on top of the raw regex pass
 
-The 2026-05-18 production-DB smoke (`docs/internal/manual_smoke_2026_05_18.md`)
-exposed two systematic false-positive shapes that pure column-name
-regex cannot disambiguate:
+Two systematic false-positive shapes that pure column-name regex
+cannot disambiguate:
 
   - `<noun>_name` in non-PII contexts (e.g. `product_name` in a catalog
     table) matched the bare `name` rule and tagged catalog columns as

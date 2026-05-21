@@ -291,9 +291,7 @@ trio per release.
   not a tier name — the rename makes its scope honest now that the
   general ``status_glyph(status_name)`` primitive ships alongside.
   Sole consumer (``check/render.py``) updated in the same commit;
-  no other in-repo callsites existed. Surfaced by the PR #71
-  3-agent reviewer rotation (code-reviewer MED #4); deferred to
-  this PR so PR #71 stayed foundation-only.
+  no other in-repo callsites existed.
 
 - **Four new `SCHEMABRAIN_*` env-var overrides for tier-1 config
   knobs surfaced by the 2026-05-19 config-flexibility audit.**
@@ -420,8 +418,7 @@ trio per release.
   the bare string has no scheme. Both commands now route through the
   existing `_resolve_url` helper which intercepts the `ValueError`
   and emits a guided `url_invalid` block with exit code 2.
-  Discovered via the 2026-05-19 ecommerce-fixture smoke. Regression
-  test in `tests/test_smoke_2026_05_19_fixes.py::TestB2_*`.
+  Regression test in `tests/test_smoke_2026_05_19_fixes.py::TestB2_*`.
 - **Bundled `ecommerce.sql` fixture now seeds orders / order_items /
   product_categories rows.** Pre-fix, the fixture seeded only users
   / addresses / products / categories — `orders` and `order_items`

@@ -126,11 +126,11 @@ class StoreSummary:
     build; the scoped build leaves it as a single-element tuple
     matching the supplied filter, or empty when filter is `None` and
     the store is empty. The renderer uses `len > 1` to surface a
-    multi-source warning banner — smoke 2026-05-19 surfaced an
-    operator whose pre-existing store had 6 entities under an older
-    source-id scheme and 6 fresh entities under the new scheme, with
-    no visual signal that 12 rendered names were 6 logical entities
-    duplicated.
+    multi-source warning banner so that stores spanning multiple
+    `source_connection_id` schemes (e.g. an older and a re-indexed
+    fresh source) render with a visible signal — preventing the
+    silent footgun where the same logical entity appears twice
+    under different source-ids.
 
     When the summary is cross-source, `entity_names` / `metric_names`
     / `join_names` are DEDUPED by name — the operator-facing answer
@@ -209,8 +209,7 @@ def build_summary(*, store: Store, source_connection_id: str | None) -> StoreSum
         # collision across sources symmetrically.
         deduped_tables = {f"{schema}.{name}" for schema, name in qualified_tables}
         table_count = len(deduped_tables)
-        # `list_distinct_source_connection_ids` is the new Store
-        # protocol method (PR fix smoke 2026-05-19); spans tables +
+        # `list_distinct_source_connection_ids` spans tables +
         # entities + metrics + canonical_joins so an old store with
         # data in only one of those tables still surfaces.
         source_ids = tuple(store.list_distinct_source_connection_ids())

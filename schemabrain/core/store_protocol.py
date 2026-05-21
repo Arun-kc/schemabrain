@@ -84,10 +84,10 @@ class Store(Protocol):
         `canonical_joins` — any row in any of those tables counts as
         "the store has data for this source". Used by `inspect`'s
         summary view to detect orphan data from a previous schemabrain
-        version (smoke 2026-05-19 surfaced an operator with two
-        source-id partitions in the same store and no way to tell
-        from the rendered output). Returns an empty list for a fresh
-        store with no rows yet.
+        version — i.e. when two `source_connection_id` partitions
+        coexist in the same store and the rendered output would
+        otherwise silently double-count. Returns an empty list for a
+        fresh store with no rows yet.
         """
         ...
 
