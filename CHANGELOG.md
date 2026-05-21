@@ -732,8 +732,8 @@ trio per release.
   audit row + tail render. Closes the demo-vision Act 3 gap.
 
 ### Fixed
-- **PII classifier — four bug shapes surfaced by the 2026-05-18
-  production-DB smoke** (`docs/internal/manual_smoke_2026_05_18.md`).
+- **PII classifier — four bug shapes surfaced by a 2026-05-18
+  internal production-DB smoke.**
   - **S1** `<noun>_name` columns in non-PII tables no longer classify
     as `pii (contact)`. A denylist of thing-noun prefixes
     (`product`, `brand`, `category`, `language`, etc.) suppresses the
@@ -895,11 +895,6 @@ trio per release.
   - `0004-observability-event-bus.md` — the JSONL event bus as
     three-consumer substrate (tail / audit / OTel), with the OTel
     emission decisions locked.
-- `docs/internal/manual_smoke_2026_05_18.md` captures the pre-tag
-  manual production-DB smoke that surfaced the two `### Fixed` items
-  above. Walks the v0.3.0 wheel against Pagila + Northwind +
-  AdventureWorks + synthetic PII mockup + reserved-keyword synthetic
-  through the full new-user journey. Reference for future smoke runs.
 
 ## [0.2.0a1] - 2026-05-15
 
