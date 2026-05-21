@@ -475,6 +475,35 @@ class TestEnvelopeMapping:
             "order_shipping_address",
         )
 
+    def test_unknown_order_by_column_maps_to_unknown_order_by_column(
+        self, store_with_seed: SQLiteStore
+    ) -> None:
+        """PR-6h.2 Gap #6 — agent passes `order_by=` with a column
+        reference that isn't the metric name or a group_by column.
+        Compiler raises `UnknownOrderByColumnError`; MCP layer maps to
+        `unknown_order_by_column` envelope kind with `allowed_columns`
+        in the recovery payload.
+        """
+        executor = _StubExecutor()
+        app = _build(store_with_seed, executor)
+        _content, structured = _call(
+            app,
+            {
+                "name": "total_revenue",
+                "group_by": ["order.placed_at"],
+                "order_by": [{"column": "order.user_id", "direction": "desc"}],
+            },
+        )
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "unknown_order_by_column"
+        recovery = structured["error"]["recovery"]
+        assert recovery["suggested_tool"] == "get_metric"
+        # Allowed columns are surfaced to the agent so the retry is
+        # mechanical — pick any of these and resubmit.
+        allowed = recovery["suggested_args"]["allowed_columns"]
+        assert "total_revenue" in allowed
+        assert "order.placed_at" in allowed
+
     def test_invalid_time_grain_maps_to_invalid_time_grain(
         self, store_with_seed: SQLiteStore
     ) -> None:

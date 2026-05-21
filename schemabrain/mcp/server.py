@@ -70,6 +70,7 @@ from schemabrain.mcp.shapes import (
     JoinNameMismatchError,
     JoinSummary,
     MetricFilterArg,
+    MetricOrderByArg,
     MetricResult,
     MetricSummary,
     NoCanonicalJoinError,
@@ -113,6 +114,7 @@ from schemabrain.semantic.compiler import (
     PiiBlockedError,
     UnknownColumnError,
     UnknownMetricError,
+    UnknownOrderByColumnError,
     UnknownViaJoinError,
     UnreachableEntityError,
 )
@@ -1213,6 +1215,29 @@ def build_server(
                 ),
             ),
         ] = (),
+        order_by: Annotated[
+            tuple[MetricOrderByArg, ...],
+            Field(
+                description=(
+                    "ORDER BY clauses applied to the result. Each entry's "
+                    "`column` must be EITHER the metric's `name` (the "
+                    "measure aggregate's SELECT alias) OR one of the "
+                    "`group_by` columns in `entity.column` form. Anything "
+                    "else refuses with `unknown_order_by_column`. "
+                    "`direction` is `asc` (default) or `desc`. Pass this "
+                    'when you want deterministic ranking (e.g. "top 5 '
+                    'users by total_items_sold" → '
+                    "`order_by=[{column:'total_items_sold', direction:"
+                    "'desc'}]`). The compiler auto-appends a tie-breaking "
+                    "secondary key (first group_by column ASC) so equal "
+                    "measure values produce identical row order across "
+                    "runs. Empty tuple = no ORDER BY (database-default "
+                    "row order; the envelope surfaces "
+                    "`missing_order_by_with_limit` as a degradation "
+                    "reason if `limit` is set + `group_by` is non-empty)."
+                ),
+            ),
+        ] = (),
     ) -> ToolResponse[MetricResult]:
         if metric_executor is None:
             return ToolResponse(
@@ -1238,6 +1263,7 @@ def build_server(
                 time_grain=time_grain,
                 limit=limit,
                 via=via,
+                order_by=order_by,
                 pii_block=pii_block,
             )
         except PiiBlockedError as exc:
@@ -1339,6 +1365,22 @@ def build_server(
                     message=str(exc),
                     recovery=Recovery(
                         suggested_tool="list_joins",
+                    ),
+                ),
+            )
+        except UnknownOrderByColumnError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="unknown_order_by_column",
+                    message=str(exc),
+                    recovery=Recovery(
+                        suggested_tool="get_metric",
+                        # Hand the agent the exact allowed-column set
+                        # from the error payload so the retry is
+                        # mechanical — pick any of these as the column
+                        # ref. No need to call list_metrics again.
+                        suggested_args={"allowed_columns": exc.allowed_columns},
                     ),
                 ),
             )

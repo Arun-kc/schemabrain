@@ -39,13 +39,14 @@ from schemabrain.core.metric import _VALID_GRAINS, TimeGrain
 from schemabrain.core.store_protocol import Store
 from schemabrain.mcp._helpers import _with_token_estimate
 from schemabrain.mcp.metric_executor import MetricExecutor
-from schemabrain.mcp.shapes import MetricFilterArg, MetricResult
+from schemabrain.mcp.shapes import MetricFilterArg, MetricOrderByArg, MetricResult
 from schemabrain.pii import PIICategory, Sensitivity, propagate
 from schemabrain.semantic.compiler import (
     InvalidTimeGrainError,
     MalformedColumnError,
     PiiBlockedError,
     RequestedFilter,
+    RequestedOrderBy,
     emit_sql,
     resolve_metric_plan,
 )
@@ -75,6 +76,7 @@ def get_metric_impl(
     time_grain: str | None = None,
     limit: int = 1000,
     via: tuple[str, ...] = (),
+    order_by: tuple[MetricOrderByArg, ...] = (),
     pii_block: frozenset[PIICategory] = frozenset(),
 ) -> MetricResult:
     """Resolve, emit, execute. Returns a `MetricResult` on success.
@@ -120,6 +122,9 @@ def get_metric_impl(
     compiler_filters = tuple(
         RequestedFilter(column=f.column, op=f.op, value=f.value) for f in filters
     )
+    compiler_order_by = tuple(
+        RequestedOrderBy(column=o.column, direction=o.direction) for o in order_by
+    )
 
     plan = resolve_metric_plan(
         store=store,
@@ -130,6 +135,7 @@ def get_metric_impl(
         time_grain=narrowed_grain,
         limit=limit,
         via=via,
+        order_by=compiler_order_by,
     )
 
     # Tag propagation. Collect every column the metric will touch

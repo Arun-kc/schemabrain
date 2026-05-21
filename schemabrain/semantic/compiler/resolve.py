@@ -34,11 +34,14 @@ from schemabrain.semantic.compiler.plan import (
     MetricPlan,
     Operator,
     RequestedFilter,
+    RequestedOrderBy,
     ResolvedColumn,
     ResolvedJoin,
+    ResolvedOrderBy,
     ResolvedPredicate,
     UnknownColumnError,
     UnknownMetricError,
+    UnknownOrderByColumnError,
     UnknownViaJoinError,
     UnreachableEntityError,
 )
@@ -71,6 +74,7 @@ def resolve_metric_plan(
     time_grain: TimeGrain | None = None,
     limit: int = 1000,
     via: tuple[str, ...] = (),
+    order_by: tuple[RequestedOrderBy, ...] = (),
 ) -> MetricPlan:
     """Compile a metric request into a `MetricPlan`.
 
@@ -90,6 +94,20 @@ def resolve_metric_plan(
     or `AmbiguousJoinError`. Each name MUST be a canonical join that
     appears on a candidate path from anchor to a referenced entity;
     otherwise `UnknownViaJoinError` is raised.
+
+    `order_by` lists ORDER BY clauses the caller wants emitted.
+    Each entry's `column` must be either the metric's `name` (the
+    SELECT-aliased measure) OR one of the `group_by` columns;
+    anything else raises `UnknownOrderByColumnError`. When at least
+    one ORDER BY clause is set AND `group_by` is non-empty, the
+    resolver auto-appends a deterministic tie-breaker (first
+    group-by column ASC, flagged via `auto_appended_tie_break=True`)
+    so identical measure values produce identical row order across
+    runs. Without `order_by`, no ORDER BY is emitted and the row
+    order is database-determined (a caller passing `limit=N` with no
+    `order_by` against a multi-row group_by gets a non-deterministic
+    slice; the MCP layer surfaces this as a `missing_order_by_with_limit`
+    degradation reason).
     """
     metric = store.get_metric(metric_name, source_connection_id=source_connection_id)
     if metric is None:
@@ -258,15 +276,73 @@ def resolve_metric_plan(
     # if not already present.
     ordered_joins = tuple(resolved_joins.values())
 
+    # Resolve ORDER BY clauses. The allowed SELECT-alias set is the
+    # metric's name (the measure aggregate's alias) plus a `group_col_N`
+    # alias for each resolved group_by column. We map each caller-
+    # supplied reference to its alias here so the emitter can output
+    # `ORDER BY <alias> <DIRECTION>` directly (no second column-resolution
+    # pass at emit time). The alias mapping is also what enables the
+    # tie-break logic below.
+    group_by_columns_ordered = tuple(group_by_resolved.values())
+    alias_by_request: dict[str, str] = {metric.name: metric.name}
+    for index, group_col in enumerate(group_by_columns_ordered):
+        alias_by_request[f"{group_col.entity}.{group_col.column}"] = f"group_col_{index}"
+
+    order_by_resolved: list[ResolvedOrderBy] = []
+    seen_aliases: set[str] = set()
+    for requested in order_by:
+        alias = alias_by_request.get(requested.column)
+        if alias is None:
+            raise UnknownOrderByColumnError(
+                requested_column=requested.column,
+                allowed_columns=tuple(alias_by_request.keys()),
+            )
+        if alias in seen_aliases:
+            # Caller asked to order by the same alias twice. The second
+            # clause is silently dropped — duplicate ORDER BY entries
+            # have no SQL effect anyway, and refusing here would be
+            # noisier than the duplicate deserves. Track this as a
+            # potential future degradation_reason if it surfaces as
+            # confusing.
+            continue
+        seen_aliases.add(alias)
+        order_by_resolved.append(
+            ResolvedOrderBy(
+                expression=alias,
+                direction=requested.direction,
+                auto_appended_tie_break=False,
+            )
+        )
+    # Tie-break: when caller asked for ORDER BY AND group_by has at
+    # least one column not already in seen_aliases, append the first
+    # unseen group_col alias as ASC. This guarantees deterministic row
+    # order across runs without changing the result set. Skipping the
+    # tie-break when no group_by exists (single-row aggregate) or when
+    # caller didn't ask for ORDER BY at all (caller is explicitly OK
+    # with database-default order) preserves the no-surprise contract.
+    if order_by_resolved and group_by_columns_ordered:
+        for tiebreak_index in range(len(group_by_columns_ordered)):
+            tiebreak_alias = f"group_col_{tiebreak_index}"
+            if tiebreak_alias not in seen_aliases:
+                order_by_resolved.append(
+                    ResolvedOrderBy(
+                        expression=tiebreak_alias,
+                        direction="asc",
+                        auto_appended_tie_break=True,
+                    )
+                )
+                break
+
     return MetricPlan(
         metric=metric,
         anchor_table=anchor_table,
         anchor_alias=anchor_alias,
-        group_by_columns=tuple(group_by_resolved.values()),
+        group_by_columns=group_by_columns_ordered,
         time_bucket=time_grain,
         filter_predicates=tuple(filter_predicates),
         limit=limit,
         joins=ordered_joins,
+        order_by_clauses=tuple(order_by_resolved),
     )
 
 
