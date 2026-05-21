@@ -17,6 +17,8 @@ Error mapping (compiler-side → envelope kind):
   - `UnknownColumnError`           → `unknown_name`
   - `UnreachableEntityError`       → `unreachable_entity`
   - `AmbiguousJoinError`           → `ambiguous_join`
+  - `AmbiguousPathError`           → `ambiguous_path`
+  - `UnknownViaJoinError`          → `unknown_via_join`
   - `InvalidTimeGrainError`        → `invalid_time_grain`
   - `PiiBlockedError` (reserved)   → `pii_blocked`
 
@@ -72,6 +74,7 @@ def get_metric_impl(
     filters: tuple[MetricFilterArg, ...] = (),
     time_grain: str | None = None,
     limit: int = 1000,
+    via: tuple[str, ...] = (),
     pii_block: frozenset[PIICategory] = frozenset(),
 ) -> MetricResult:
     """Resolve, emit, execute. Returns a `MetricResult` on success.
@@ -126,6 +129,7 @@ def get_metric_impl(
         filters=compiler_filters,
         time_grain=narrowed_grain,
         limit=limit,
+        via=via,
     )
 
     # Tag propagation. Collect every column the metric will touch

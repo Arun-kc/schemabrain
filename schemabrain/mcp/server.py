@@ -105,11 +105,15 @@ from schemabrain.semantic.compiler import (
     AmbiguousJoinError as CompilerAmbiguousJoinError,
 )
 from schemabrain.semantic.compiler import (
+    AmbiguousPathError as CompilerAmbiguousPathError,
+)
+from schemabrain.semantic.compiler import (
     InvalidTimeGrainError,
     MalformedColumnError,
     PiiBlockedError,
     UnknownColumnError,
     UnknownMetricError,
+    UnknownViaJoinError,
     UnreachableEntityError,
 )
 
@@ -127,13 +131,20 @@ _SERVER_INSTRUCTIONS = (
     "FK-graph paths between tables, `get_example_queries` for real SQL "
     "patterns from query logs. Semantic-layer tools: "
     "`find_relevant_entities` to discover entities by semantic query, "
-    "`list_entities` to survey defined entities, `describe_entity` for "
-    "one entity's full column shape with PII sensitivity, `resolve_join` "
-    "to return the canonical SQL JOIN between two entities (with "
-    "ambiguity refusal when multiple canonical joins exist), `get_metric` "
-    "to compute a validated aggregation against an entity. Every tool "
-    "returns a `ToolResponse` envelope (status / data / error / "
-    "confidence / follow_up_hints) per the agent-UX charter v1.1."
+    "`list_entities` to survey defined entities, `list_metrics` to "
+    "survey defined metrics — start here for any aggregation question "
+    "('how many', 'total', 'average', 'most', 'top') so you can pick "
+    "the right metric before computing, `list_joins` to survey defined "
+    "canonical joins, `describe_entity` for one entity's full column "
+    "shape with PII sensitivity, `resolve_join` to return the "
+    "canonical SQL JOIN between two entities (with ambiguity refusal "
+    "when multiple canonical joins exist), `get_metric` to compute a "
+    "validated aggregation against an entity — automatically chains "
+    "multi-hop canonical joins (e.g. `order_item → order → user`) so "
+    "you can `group_by` an entity that's reachable via any chain of "
+    "joins, not just one hop. Every tool returns a `ToolResponse` "
+    "envelope (status / data / error / confidence / follow_up_hints) "
+    "per the agent-UX charter v1.1."
 )
 
 _logger = logging.getLogger(__name__)
@@ -1112,14 +1123,14 @@ def build_server(
 
     @app.tool(
         description=(
-            "Use this when you have a defined metric name and want its "
+            "Use this when you have a metric name and want its computed "
             "value sliced/filtered against the live database — returns "
-            "rows plus the parameterised SQL the compiler emitted. Use "
-            "`list_entities` instead when you don't yet know what's "
-            "defined. Don't use when you want to run arbitrary SQL — "
-            "`get_metric` only computes pre-declared metrics. Common "
-            "compositions: chain `resolve_join` → `get_metric` to "
-            "confirm cross-entity group_by reachability first."
+            "rows plus parameterised SQL. The compiler chains multi-hop "
+            "canonical joins automatically: a metric anchored on "
+            "`order_item` can group_by `user.email` via "
+            "`order_item → order → user`. Use `list_metrics` instead "
+            "when you don't know the metric name. On ambiguity refusal, "
+            "pass `via=(join_name,)` to pin the chain."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -1143,7 +1154,11 @@ def build_server(
                     "Tuple of `entity.column` references to slice by "
                     "(e.g. `('product_category.name',)`). Each entity "
                     "must be reachable from the metric's anchor via a "
-                    "canonical join. Empty tuple = no slicing."
+                    "chain of one or more canonical joins. Multi-hop "
+                    "chains (e.g. `order_item → order → user`) resolve "
+                    "automatically; if 2+ paths exist, the call refuses "
+                    "with `ambiguous_path` and the agent disambiguates "
+                    "via the `via` arg. Empty tuple = no slicing."
                 ),
             ),
         ] = (),
@@ -1180,6 +1195,24 @@ def build_server(
                 ),
             ),
         ] = 1000,
+        via: Annotated[
+            tuple[str, ...],
+            Field(
+                description=(
+                    "Canonical-join names the chain MUST traverse, used "
+                    "to disambiguate `ambiguous_path` (multiple paths "
+                    "between anchor and a group_by entity) or "
+                    "`ambiguous_join` (parallel canonical joins on a "
+                    "single hop). Pass one or more join names returned "
+                    "by `list_joins` or by the prior error's "
+                    "`candidate_paths` / `candidate_join_names`. Each "
+                    "name must appear on a valid chain; otherwise the "
+                    "call refuses with `unknown_via_join`. Defaults to "
+                    "empty (no constraint) — only set when an ambiguity "
+                    "error tells you to."
+                ),
+            ),
+        ] = (),
     ) -> ToolResponse[MetricResult]:
         if metric_executor is None:
             return ToolResponse(
@@ -1204,6 +1237,7 @@ def build_server(
                 filters=filters,
                 time_grain=time_grain,
                 limit=limit,
+                via=via,
                 pii_block=pii_block,
             )
         except PiiBlockedError as exc:
@@ -1265,12 +1299,46 @@ def build_server(
                     kind="ambiguous_join",
                     message=str(exc),
                     recovery=Recovery(
-                        suggested_tool="resolve_join",
+                        suggested_tool="get_metric",
+                        # Hint at calling get_metric again with the via
+                        # arg constrained to one of the parallel joins.
+                        # Picking candidate_join_names[0] is informational
+                        # only — the agent should choose based on the
+                        # semantic difference between the parallels
+                        # (e.g. billing vs shipping).
                         suggested_args={
-                            "entity_a": exc.anchor_entity,
-                            "entity_b": exc.target_entity,
-                            "name": exc.candidate_join_names[0],
+                            "via": (exc.candidate_join_names[0],),
                         },
+                    ),
+                ),
+            )
+        except CompilerAmbiguousPathError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="ambiguous_path",
+                    message=str(exc),
+                    recovery=Recovery(
+                        suggested_tool="get_metric",
+                        # Suggest the first candidate path's full
+                        # canonical-join chain as a starting via. The
+                        # agent picks among candidate_paths based on
+                        # which path semantically matches the user's
+                        # question.
+                        suggested_args={
+                            "via": (exc.candidate_paths[0] if exc.candidate_paths else ()),
+                        },
+                    ),
+                ),
+            )
+        except UnknownViaJoinError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="unknown_via_join",
+                    message=str(exc),
+                    recovery=Recovery(
+                        suggested_tool="list_joins",
                     ),
                 ),
             )

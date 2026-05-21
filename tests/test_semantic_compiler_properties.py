@@ -390,21 +390,33 @@ def test_resolver_determinism(
 @given(
     group_by=st.lists(st.sampled_from(_GROUP_BY_OPTIONS), max_size=4).map(tuple),
 )
-def test_joins_sorted_by_canonical_name(
+def test_joins_follow_first_mention_order(
     shared_store: SQLiteStore,
     group_by: tuple[str, ...],
 ) -> None:
-    """`MetricPlan.joins` is always sorted alphabetically by canonical
-    name, regardless of group_by ordering. The emitter depends on
-    this for deterministic JOIN clause ordering."""
+    """`MetricPlan.joins` is emitted in topological chain order — for
+    this single-hop fixture (each entity reachable from anchor in one
+    hop), that maps to "first-mention order" in `group_by`. The
+    emitter relies on topological ordering so each JOIN can reference
+    the previous hop's alias on the left side; the previous v1
+    contract (alphabetical sort) no longer holds since PR-6h.1's
+    multi-hop work."""
     plan = resolve_metric_plan(
         store=shared_store,
         source_connection_id=SOURCE,
         metric_name="total_revenue",
         group_by=group_by,
     )
-    names = [j.canonical_name for j in plan.joins]
-    assert names == sorted(names)
+    # Reconstruct the expected first-mention order of non-anchor entities.
+    expected_entity_order: list[str] = []
+    for column_ref in group_by:
+        entity = column_ref.split(".", 1)[0]
+        if entity == "order":
+            continue  # anchor, no join needed
+        if entity not in expected_entity_order:
+            expected_entity_order.append(entity)
+    actual_entity_order = [j.target_entity for j in plan.joins]
+    assert actual_entity_order == expected_entity_order
 
 
 @settings(

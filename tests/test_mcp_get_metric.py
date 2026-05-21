@@ -463,9 +463,14 @@ class TestEnvelopeMapping:
         assert structured["status"] == "error"
         assert structured["error"]["kind"] == "ambiguous_join"
         recovery = structured["error"]["recovery"]
-        assert recovery["suggested_tool"] == "resolve_join"
-        # The first candidate name surfaces in the recovery args.
-        assert recovery["suggested_args"]["name"] in (
+        # PR-6h.1: ambiguity recovery now suggests retrying `get_metric`
+        # with `via=(join_name,)` rather than bouncing out to
+        # `resolve_join`. Keeps the agent in-loop on a single tool.
+        assert recovery["suggested_tool"] == "get_metric"
+        # The first candidate name surfaces in suggested_args["via"].
+        via = recovery["suggested_args"]["via"]
+        assert len(via) == 1
+        assert via[0] in (
             "order_billing_address",
             "order_shipping_address",
         )

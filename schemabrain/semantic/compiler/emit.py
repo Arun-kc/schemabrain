@@ -149,9 +149,15 @@ def emit_sql(plan: MetricPlan) -> tuple[str, dict[str, Any]]:
     from_clause = f"FROM {_quote_qualified_table(plan.anchor_table)} AS {quoted_anchor_alias}"
     join_clauses: list[str] = []
     for resolved_join in plan.joins:
+        # Multi-hop chains: each JOIN's left-side alias is the previous
+        # hop's alias (carried on `resolved_join.source_alias`), not the
+        # metric anchor. The resolver also pre-orients `on_pairs` so
+        # `source_column` always refers to the LEFT side, regardless of
+        # which direction the canonical join was traversed.
+        quoted_source_alias = f'"{resolved_join.source_alias}"'
         quoted_target_alias = f'"{resolved_join.target_alias}"'
         on_clause = " AND ".join(
-            f'{quoted_anchor_alias}."{pair.source_column}" = '
+            f'{quoted_source_alias}."{pair.source_column}" = '
             f'{quoted_target_alias}."{pair.target_column}"'
             for pair in resolved_join.on_pairs
         )
