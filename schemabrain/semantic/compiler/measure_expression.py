@@ -35,6 +35,7 @@ sorted column set (for PII propagation + column validation).
 from __future__ import annotations
 
 import ast
+import math
 import re
 from dataclasses import dataclass
 
@@ -107,6 +108,18 @@ def parse_measure_expression(expression: str) -> ParsedMeasureExpression:
     `MalformedMeasureExpressionError` with a structured reason. The
     emitter relies on this contract: it never sees a node type it
     can't render.
+
+    Two invariants enforced beyond the node-type whitelist:
+      - Numeric literals must be finite (no `inf` / `-inf` / `nan`).
+        Python's parser silently overflows `1e500` to `float('inf')`;
+        without this guard `repr(inf)` would render the bare token
+        `inf` into the emitted SQL, which Postgres can't interpret as
+        a numeric and would surface as `internal_error` at execute time.
+      - The expression must reference at least one column. A literal-
+        only expression like `100` or `1 + 2` is semantically incoherent
+        as a measure (would compile to `agg(100)` returning a constant
+        per group) and is most likely a typo — reject it here so the
+        operator gets a clear error rather than constant-value results.
     """
     if not expression or not expression.strip():
         raise MalformedMeasureExpressionError(expression, "expression is empty")
@@ -117,6 +130,12 @@ def parse_measure_expression(expression: str) -> ParsedMeasureExpression:
 
     columns: set[str] = set()
     _walk(tree.body, expression, columns)
+    if not columns:
+        raise MalformedMeasureExpressionError(
+            expression,
+            "expression must reference at least one column "
+            "(numeric-literal-only expressions are not a meaningful measure)",
+        )
     return ParsedMeasureExpression(
         expression=expression,
         ast_node=tree.body,
@@ -145,6 +164,19 @@ def _walk(node: ast.expr, source: str, columns: set[str]) -> None:
                 source, f"boolean literal {value!r} is not allowed"
             )
         if isinstance(value, (int, float)):
+            # `ast.parse` silently overflows large float literals to
+            # `float('inf')` and similar arithmetic yields `nan`. The
+            # renderer would emit `repr(inf)` / `repr(nan)` as the bare
+            # tokens `inf` / `nan` into the SQL stream, which Postgres
+            # can't parse as a numeric literal. Reject here so the
+            # operator gets a clean `MalformedMeasureExpressionError`
+            # instead of an execute-time `internal_error`.
+            if isinstance(value, float) and not math.isfinite(value):
+                raise MalformedMeasureExpressionError(
+                    source,
+                    f"non-finite float literal {value!r} is not allowed "
+                    f"(numeric literals must be finite)",
+                )
             return
         raise MalformedMeasureExpressionError(
             source, f"literal must be numeric (got {type(value).__name__}: {value!r})"

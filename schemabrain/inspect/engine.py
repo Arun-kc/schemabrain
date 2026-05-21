@@ -91,12 +91,19 @@ class AnchoredMetric:
     so the renderer can format aggregations safely; widening to `str`
     here would silently allow an unvalidated value through if a future
     caller bypassed `MetricMeasure`'s validation.
+
+    Exactly one of `column` and `expression` is populated, mirroring the
+    XOR invariant on `MetricMeasure`. Bare-column measures carry
+    `column` (single identifier); composite-expression measures carry
+    `expression` (the raw whitelisted arithmetic source). The renderer
+    branches on which is set to format the measure shape for display.
     """
 
     name: str
     description: str
     agg: AggFunction
-    column: str
+    column: str | None
+    expression: str | None
     time_dimension: str | None
     time_grains: tuple[str, ...]
 
@@ -371,6 +378,7 @@ def _resolve_anchored_metrics(
             description=m.description,
             agg=m.measure.agg,
             column=m.measure.column,
+            expression=m.measure.expression,
             time_dimension=m.time_dimension,
             time_grains=tuple(m.time_grains),
         )

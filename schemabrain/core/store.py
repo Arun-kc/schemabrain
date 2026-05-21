@@ -41,6 +41,7 @@ from schemabrain.core.example_query import ExampleQuery
 from schemabrain.core.join import CanonicalJoin, JoinColumnPair
 from schemabrain.core.metric import (
     DbtOwnedMetricError,
+    MalformedMetricRowError,
     Metric,
     MetricMeasure,
 )
@@ -54,6 +55,7 @@ from schemabrain.pii.categories import ColumnPiiTag
 __all__ = [
     "DbtOwnedEntityError",
     "DbtOwnedMetricError",
+    "MalformedMetricRowError",
     "SQLiteStore",
     "SchemaVersionMismatchError",
 ]
@@ -638,6 +640,13 @@ def _row_to_metric(row: sqlite3.Row) -> Metric:
     re-runs all invariants (identifier shape, paired-emptiness on the
     time fields, canonical grain order, enum membership) — a corrupt
     row surfaces here, not in an MCP-tool caller several layers up.
+
+    Any `ValueError` raised by `MetricMeasure` or `Metric` construction
+    (typically because the row's `measure_expression` was written via
+    direct SQL with content that fails the whitelist parser) is
+    re-raised as `MalformedMetricRowError` so callers can distinguish
+    "row is corrupt" from generic runtime errors, and so the metric
+    name is preserved in the error message for operator diagnostics.
     """
     stored_grains = row["time_grains"]
     time_grains = tuple(stored_grains.split(",")) if stored_grains else ()
@@ -649,19 +658,22 @@ def _row_to_metric(row: sqlite3.Row) -> Metric:
     # future direct-SQL escape hatch.
     measure_column = row["measure_column"]
     measure_expression = row["measure_expression"]
-    return Metric(
-        name=row["name"],
-        description=row["description"],
-        entity=row["entity"],
-        measure=MetricMeasure(
-            agg=row["measure_agg"],
-            column=measure_column,
-            expression=measure_expression,
-        ),
-        time_dimension=row["time_dimension"],
-        time_grains=time_grains,  # type: ignore[arg-type]
-        origin=row["origin"],
-    )
+    try:
+        return Metric(
+            name=row["name"],
+            description=row["description"],
+            entity=row["entity"],
+            measure=MetricMeasure(
+                agg=row["measure_agg"],
+                column=measure_column,
+                expression=measure_expression,
+            ),
+            time_dimension=row["time_dimension"],
+            time_grains=time_grains,  # type: ignore[arg-type]
+            origin=row["origin"],
+        )
+    except ValueError as exc:
+        raise MalformedMetricRowError(name=row["name"], reason=str(exc)) from exc
 
 
 def _pack_vector(vector: tuple[float, ...]) -> bytes:
@@ -2089,6 +2101,13 @@ class SQLiteStore:
         `(name, source_connection_id)` so cross-source results are
         deterministic. The CLI `metrics list` command depends on the
         alphabetical order for stable output across runs.
+
+        Corrupted rows surface as `MalformedMetricRowError` from
+        `_row_to_metric`. The CLI's `metrics list` command translates
+        that into a structured `exit 2 corrupt store` response so the
+        operator is unambiguously informed; agents using the MCP
+        surface see the wrapped error message rather than a bare
+        `internal_error`.
         """
         conn = self._require_conn()
         if source_connection_id is None:

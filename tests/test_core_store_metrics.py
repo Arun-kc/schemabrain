@@ -29,7 +29,12 @@ from pathlib import Path
 import pytest
 
 from schemabrain.core.entity import Entity, SingleTableBinding
-from schemabrain.core.metric import DbtOwnedMetricError, Metric, MetricMeasure
+from schemabrain.core.metric import (
+    DbtOwnedMetricError,
+    MalformedMetricRowError,
+    Metric,
+    MetricMeasure,
+)
 from schemabrain.core.models import Column, Table
 from schemabrain.core.store import SQLiteStore
 
@@ -513,3 +518,76 @@ class TestListMetrics:
             )
             metrics = store.list_metrics(source_connection_id=SOURCE_A)
         assert [m.name for m in metrics] == ["alpha_metric", "zeta_metric"]
+
+
+class TestMalformedMetricRowResilience:
+    """Direct-SQL writes can land a metric row that passes the SQLite
+    CHECK constraints but fails the Python-side whitelist parser at read
+    time. `list_metrics` must keep listing valid rows; `get_metric`
+    must surface a structured error naming the offending row."""
+
+    def _write_corrupt_expression_row(
+        self, store: SQLiteStore, *, name: str, expression: str
+    ) -> None:
+        # The dataclass's `__post_init__` would normally reject an
+        # expression like `abs(amount)`. Bypass via direct SQL to
+        # simulate a row that already lives in the store from a
+        # previous build, a manual edit, or a future schema mismatch.
+        conn = store._require_conn()
+        now = 1700000000
+        with conn:
+            conn.execute(
+                "INSERT INTO metrics ("
+                "source_connection_id, name, description, "
+                "entity, measure_agg, measure_column, measure_expression, "
+                "time_dimension, time_grains, origin, "
+                "created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    SOURCE_A,
+                    name,
+                    "",
+                    "order",
+                    "sum",
+                    None,
+                    expression,
+                    None,
+                    "",
+                    "manual",
+                    now,
+                    now,
+                ),
+            )
+
+    def test_get_metric_raises_malformed_metric_row_error_for_corrupt_row(
+        self, tmp_path: Path
+    ) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_order_entity(store)
+            self._write_corrupt_expression_row(
+                store, name="broken_metric", expression="abs(amount)"
+            )
+            # `get_metric` on the corrupt row's exact name surfaces the
+            # structured error — silently returning None would be worse.
+            with pytest.raises(MalformedMetricRowError) as exc_info:
+                store.get_metric("broken_metric", source_connection_id=SOURCE_A)
+        assert exc_info.value.name == "broken_metric"
+        assert "malformed measure expression" in exc_info.value.reason
+
+
+def test_malformed_metric_row_error_pickles_round_trip() -> None:
+    import pickle
+
+    err = MalformedMetricRowError(name="bad_metric", reason="literal must be numeric")
+    revived: MalformedMetricRowError = pickle.loads(pickle.dumps(err))
+    assert revived.name == err.name
+    assert revived.reason == err.reason
+    assert str(revived) == str(err)
+
+
+def test_malformed_metric_row_error_constructible_positionally() -> None:
+    # Dataclass-default __init__ accepts positional args, mirroring the
+    # peer compiler-error classes. The pickle round-trip relies on this.
+    err = MalformedMetricRowError("bad_metric", "literal must be numeric")
+    assert err.name == "bad_metric"
+    assert err.reason == "literal must be numeric"

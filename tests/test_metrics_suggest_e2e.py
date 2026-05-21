@@ -746,6 +746,54 @@ candidates:
         assert "name: row_count" in out
         assert "count" in out
 
+    def test_composite_expression_candidate_renders_expression_not_column(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An LLM-suggested composite-expression candidate must render
+        as `measure: {agg: ..., expression: ...}` in the YAML body, NOT
+        as `measure: {agg: ..., column: ...}`. Round-tripping via
+        `parse_metric_yaml` validates the emitted YAML is grammar-valid
+        in the other direction.
+        """
+        store_path = tmp_path / "store.db"
+        _seed_store_with_ecommerce(store_path)
+
+        composite_stub = """\
+candidates:
+  - name: line_revenue
+    description: Revenue per line item.
+    entity: order
+    measure: {agg: sum, expression: unit_price_cents * quantity}
+    confidence: high
+"""
+        monkeypatch.setenv("SCHEMABRAIN_STUB_RESPONSE", composite_stub)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        exit_code = main(
+            [
+                "metrics",
+                "suggest",
+                "--source",
+                _TEST_URL,
+                "--store-path",
+                str(store_path),
+                "--dry-run",
+                "--provider",
+                "stub",
+            ]
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "name: line_revenue" in out
+        # The composite branch emits `expression:`, NOT `column:`.
+        assert "expression: unit_price_cents * quantity" in out
+        # A `column:` line for the measure must NOT appear (the bare-
+        # column branch is the wrong one for this candidate).
+        assert "column:" not in out
+
 
 class TestLlmFailureShape:
     """F5: Anthropic SDK errors from `metrics suggest` render Shape C, not a traceback.

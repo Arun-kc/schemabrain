@@ -138,6 +138,45 @@ class TestParseRejectedExpressions:
         with pytest.raises(MalformedMeasureExpressionError):
             parse_measure_expression("row$amount * qty")
 
+    def test_infinity_float_literal_rejected(self) -> None:
+        # `1e500` overflows Python's float at parse time and becomes
+        # `ast.Constant(value=inf)`. Without this guard, `repr(inf)`
+        # would render the bare token `inf` into the emitted SQL,
+        # which Postgres parses as an unknown identifier — surfacing
+        # as `internal_error` at execute time rather than a clean
+        # refusal at parse time.
+        with pytest.raises(MalformedMeasureExpressionError, match="non-finite"):
+            parse_measure_expression("price * 1e500")
+
+    def test_nan_float_literal_rejected(self) -> None:
+        # `inf - inf` evaluates to NaN under IEEE 754. Same rejection
+        # path as `inf` — `repr(nan)` would yield the bare token `nan`
+        # which Postgres can't interpret as a numeric.
+        with pytest.raises(MalformedMeasureExpressionError, match="non-finite"):
+            parse_measure_expression("price + 1e500 - 1e500")
+
+    def test_negative_infinity_float_literal_rejected(self) -> None:
+        with pytest.raises(MalformedMeasureExpressionError, match="non-finite"):
+            parse_measure_expression("price - 1e500")
+
+    def test_literal_only_expression_rejected(self) -> None:
+        # An expression with zero column references is semantically
+        # incoherent as a measure (would compile to `sum(100)` returning
+        # a constant per group). Reject at parse time so a typo like
+        # `expression: "100"` instead of `column: "amount"` doesn't
+        # ship as a silent constant-value metric.
+        with pytest.raises(MalformedMeasureExpressionError, match="at least one column"):
+            parse_measure_expression("100")
+
+    def test_numeric_arithmetic_only_expression_rejected(self) -> None:
+        # Same as above — `100 + 50` references zero columns.
+        with pytest.raises(MalformedMeasureExpressionError, match="at least one column"):
+            parse_measure_expression("100 + 50")
+
+    def test_negated_literal_only_expression_rejected(self) -> None:
+        with pytest.raises(MalformedMeasureExpressionError, match="at least one column"):
+            parse_measure_expression("-100")
+
 
 # ----- renderer -------------------------------------------------------------
 

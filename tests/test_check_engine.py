@@ -333,6 +333,48 @@ class TestMetricDrift:
         assert drift.drift_kind == "measure_column_missing"
         assert "total_cents" in drift.detail
 
+    def test_composite_expression_missing_operand_column_surfaces_as_drift(
+        self, store: SQLiteStore
+    ) -> None:
+        # Composite-expression measures reference multiple operand
+        # columns. If any operand column disappears from the live
+        # table, the metric should drift — same shape as the bare-
+        # column case, one drift row per metric (not one per missing
+        # operand). The first alphabetically-sorted missing column
+        # becomes the drift detail so the surface stays deterministic.
+        _seed_orders_table_row(store)
+        _seed_order_entity(store)
+        store.write_metric(
+            Metric(
+                name="line_revenue",
+                description="",
+                entity="order",
+                measure=MetricMeasure(agg="sum", expression="unit_price_cents * quantity"),
+                time_dimension=None,
+                time_grains=(),
+            ),
+            source_connection_id=SOURCE_ID,
+        )
+        # Live table still has `quantity` but `unit_price_cents` is
+        # gone. Drift should name `unit_price_cents` (first
+        # alphabetically) as the missing column.
+        source = FakeDataSource(
+            {
+                ("public", "orders"): _table(
+                    "public",
+                    "orders",
+                    [("id", True), ("placed_at", False), ("quantity", False)],
+                ),
+            }
+        )
+        report = check_drift(store=store, source=source, source_connection_id=SOURCE_ID)
+        drift = next(d for d in report.drifts if d.def_kind == "metric")
+        assert drift.drift_kind == "measure_column_missing"
+        assert "unit_price_cents" in drift.detail
+        # The fix hint must point at `measure.expression`, not
+        # `measure.column`, for composite metrics.
+        assert "measure.expression" in drift.fix_hint
+
     def test_time_dimension_column_missing(self, store: SQLiteStore) -> None:
         _seed_orders_table_row(store)
         _seed_order_entity(store)

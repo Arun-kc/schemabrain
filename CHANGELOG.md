@@ -59,6 +59,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SDK path is reduced to a one-line pointer so the same proof doesn't
   appear twice. No code change.
 
+### Fixed
+- **Measure-expression parser rejects non-finite float literals.**
+  `ast.parse("1e500", mode="eval")` silently overflows to
+  `ast.Constant(value=inf)`; without a guard the renderer's
+  `repr(inf)` would have written the bare token `inf` into the SQL
+  stream, which Postgres can't interpret as a numeric — surfacing as
+  `internal_error` at execute time instead of a clean
+  `MalformedMeasureExpressionError` at parse time. Same fix covers
+  `nan` (via `1e500 - 1e500`).
+- **Measure-expression parser rejects literal-only expressions.**
+  An expression like `100` or `1 + 2` passed validation but would
+  compile to `agg(100) AS "m"` — a constant per group. Reject at
+  parse time so a typo like `expression: "100"` (instead of
+  `column: "amount"`) surfaces immediately rather than as
+  constant-value results.
+- **`MetricMeasure.column is None`** is now handled at every consumer
+  site: `check/engine.py` (drift detection iterates `measure_columns`
+  so composite-expression operand drops show up as `measure_column_missing`
+  drifts with the right fix-hint), `inspect/engine.py` + `inspect/render.py`
+  (composite metrics render as `sum(unit_price * quantity)` instead of
+  `sum(None)`), and three `cli.py` paths (`metrics list`, `metrics audit`,
+  and the YAML body `metrics suggest --apply` writes so composite
+  candidates round-trip through the grammar parser).
+- **LLM-suggest path accepts composite-expression candidates.**
+  `_MEASURE_ALLOWED_KEYS` now includes `expression`; `_parse_measure`
+  enforces the column/expression XOR with dedicated error messages
+  matching the YAML grammar. System prompt updated with both the
+  output schema and a worked example showing when to reach for the
+  composite shape (line-item revenue on `order_item`).
+- **`MalformedMetricRowError`** preserves the offending metric name
+  when a store row's `measure_expression` (written via direct SQL
+  bypassing the dataclass invariants) fails the whitelist parser.
+  Previously the wrapped `ValueError` was caught by the MCP server's
+  defensive `except Exception` and reduced to a bare `internal_error`
+  envelope with no diagnostic; the new exception preserves
+  `name` + `reason` as structured fields, the server includes the
+  metric name in the envelope message, and the CLI's existing
+  `metrics list` exit-2 corrupt-store contract remains intact.
+
 ## [0.3.0] - 2026-05-20
 
 **Highlights** — Schema Brain v0.3.0 is the first release where the

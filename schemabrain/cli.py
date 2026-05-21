@@ -4294,10 +4294,18 @@ def _cmd_metrics_list(
     for metric in metrics:
         grains = ",".join(metric.time_grains) if metric.time_grains else "(non-temporal)"
         time_dim = metric.time_dimension or "—"
+        # `measure.column` and `measure.expression` are mutually
+        # exclusive — render whichever is populated so composite
+        # metrics show their expression instead of `sum(None)`.
+        measure_body = (
+            metric.measure.column
+            if metric.measure.column is not None
+            else metric.measure.expression
+        )
         print(
             f"{metric.name}  "
             f"entity={metric.entity}  "
-            f"{metric.measure.agg}({metric.measure.column})  "
+            f"{metric.measure.agg}({measure_body})  "
             f"time_dim={time_dim}  "
             f"grains={grains}  "
             f"origin={metric.origin}"
@@ -4354,7 +4362,10 @@ def _cmd_metrics_audit(
             print()
             for finding in findings:
                 m = finding.metric
-                print(f"  {m.name}  entity={m.entity}  {m.measure.agg}({m.measure.column})")
+                measure_body = (
+                    m.measure.column if m.measure.column is not None else m.measure.expression
+                )
+                print(f"  {m.name}  entity={m.entity}  {m.measure.agg}({measure_body})")
                 print(f"    matched phrase: {finding.matched_phrase!r}")
                 print(
                     f"    origin: {m.origin}"
@@ -4702,7 +4713,16 @@ def _format_metric_yaml_body(candidate: MetricCandidate) -> str:
     if metric.description:
         body["description"] = metric.description
     body["entity"] = metric.entity
-    body["measure"] = {"agg": metric.measure.agg, "column": metric.measure.column}
+    # `measure.column` and `measure.expression` are mutually exclusive
+    # (XOR enforced by the dataclass). Emit only the populated field so
+    # the rendered YAML round-trips cleanly through the grammar parser,
+    # which itself enforces XOR at read time.
+    measure_body: dict[str, object] = {"agg": metric.measure.agg}
+    if metric.measure.column is not None:
+        measure_body["column"] = metric.measure.column
+    else:
+        measure_body["expression"] = metric.measure.expression
+    body["measure"] = measure_body
     if metric.time_dimension is not None:
         body["time_dimension"] = metric.time_dimension
         body["time_grains"] = list(metric.time_grains)
