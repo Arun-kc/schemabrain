@@ -106,6 +106,29 @@ ErrorKind = Literal[
     "invalid_argument",
 ]
 
+# Closed-grammar reasons for `status="degraded"` envelopes. Parallel
+# to `ErrorKind` but for the partial-success path: the tool ran and
+# returned `data`, but with a structured caveat the agent should
+# surface to the user (or branch on programmatically). Today's set
+# covers the two reasons surfaced by the 2026-05-21 smoke; new kinds
+# are added by appending here AND wiring the producer at the
+# degradation point. Closed grammar so agents can switch on the value
+# without parsing free-form text.
+DegradationReason = Literal[
+    # `MetricPlan.fan_out_join_names` is non-empty: at least one
+    # `one_to_many` / `many_to_many` (or unspecified-cardinality)
+    # canonical join lies on the chain, so row counts in `data.rows`
+    # may be inflated by the cross-product. Agent should treat
+    # aggregates with caution and consider passing `count_distinct`
+    # over an identity column instead of `count` / `sum`.
+    "fan_out_join",
+    # `limit` is set + `group_by` is non-empty + `order_by` is empty:
+    # the LIMIT N slice is non-deterministic across runs. Agent should
+    # pass `order_by=` to specify what "top N" means before relying on
+    # the row order.
+    "missing_order_by_with_limit",
+]
+
 # The subset of ErrorKinds that semantically support v1.1 Recovery
 # additions (`suggested_rewrite` / `widening_hint`). A `ToolError` with
 # `kind` outside this set may not carry either v1.1 Recovery field;
@@ -301,6 +324,14 @@ class ToolResponse(BaseModel, Generic[T]):
     # transparently — call sites that pass `follow_up_hints=[...]`
     # don't need to change.
     follow_up_hints: tuple[str, ...] | None = None
+    # Structured reason for `status="degraded"`. Closed Literal so the
+    # agent can switch on the value programmatically. `None` outside
+    # the `degraded` status; validated by the invariant model
+    # validator. Today's reasons: `fan_out_join`,
+    # `missing_order_by_with_limit`. Adding new reasons requires
+    # extending the `DegradationReason` Literal above AND wiring the
+    # producer at the degradation point.
+    degradation_reason: DegradationReason | None = None
     charter_version: str = CHARTER_VERSION
 
     @model_validator(mode="after")
@@ -316,6 +347,15 @@ class ToolResponse(BaseModel, Generic[T]):
             raise ValueError(f"status={self.status!r} forbids non-None `error`")
         if self.status == "success" and self.data is None:
             raise ValueError("status='success' requires `data` to be populated")
+        # `degradation_reason` is only meaningful when status='degraded'.
+        # Permitting it on success / empty would let producers silently
+        # signal an issue without using the degraded status — keep the
+        # contract one-way (degraded ↔ reason; everything else: None).
+        if self.status != "degraded" and self.degradation_reason is not None:
+            raise ValueError(
+                f"status={self.status!r} forbids `degradation_reason`; "
+                f"the field is only meaningful for status='degraded'"
+            )
         return self
 
 
@@ -323,6 +363,7 @@ __all__ = [
     "CHARTER_VERSION",
     "REFUSAL_KINDS",
     "Confidence",
+    "DegradationReason",
     "ErrorKind",
     "Provenance",
     "ProvenanceSource",

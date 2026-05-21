@@ -552,6 +552,70 @@ class TestEnvelopeMapping:
         )
         assert structured["status"] == "degraded"
         assert structured["data"]["fan_out_join_names"] == ["customer_orders"]
+        # PR-6h.2 Gap #2: degradation reason surfaced as a closed Literal
+        # so agents can switch on the value without parsing text.
+        assert structured["degradation_reason"] == "fan_out_join"
+
+    def test_missing_order_by_with_limit_maps_to_degraded(
+        self, store_with_seed: SQLiteStore
+    ) -> None:
+        """PR-6h.2 Gap #2 + Gap #6: when the caller asks for `group_by`
+        but no `order_by`, the LIMIT N slice is non-deterministic. The
+        envelope surfaces `degradation_reason='missing_order_by_with_limit'`
+        so the agent knows to add `order_by=` before relying on row order.
+        """
+        executor = _StubExecutor(rows=[{"total_revenue": 100}])
+        app = _build(store_with_seed, executor)
+        _content, structured = _call(
+            app,
+            {
+                "name": "total_revenue",
+                "group_by": ["order.placed_at"],
+            },
+        )
+        assert structured["status"] == "degraded"
+        assert structured["degradation_reason"] == "missing_order_by_with_limit"
+
+    def test_order_by_clears_missing_order_by_degradation(
+        self, store_with_seed: SQLiteStore
+    ) -> None:
+        """When the caller DOES pass `order_by`, the missing-order-by
+        degradation is cleared and the envelope surfaces `success` (or
+        `degraded` for a different reason like fan_out — but not for
+        the order-by gap).
+        """
+        executor = _StubExecutor(rows=[{"total_revenue": 100}])
+        app = _build(store_with_seed, executor)
+        _content, structured = _call(
+            app,
+            {
+                "name": "total_revenue",
+                "group_by": ["order.placed_at"],
+                "order_by": [{"column": "total_revenue", "direction": "desc"}],
+            },
+        )
+        # store_with_seed doesn't have fan-out, so status should be
+        # 'success' with no degradation reason.
+        assert structured["status"] == "success"
+        assert structured["degradation_reason"] is None
+
+    def test_no_group_by_no_missing_order_by_degradation(
+        self, store_with_seed: SQLiteStore
+    ) -> None:
+        """Single-row aggregate (no group_by) — `LIMIT N` is meaningless,
+        no degradation for missing order_by even though limit is set.
+        """
+        executor = _StubExecutor(rows=[{"total_revenue": 999}])
+        app = _build(store_with_seed, executor)
+        _content, structured = _call(
+            app,
+            {
+                "name": "total_revenue",
+                "limit": 1,
+            },
+        )
+        assert structured["status"] == "success"
+        assert structured["degradation_reason"] is None
 
     def test_no_executor_returns_internal_error(self, store_with_seed: SQLiteStore) -> None:
         # Build without an executor — get_metric is registered but

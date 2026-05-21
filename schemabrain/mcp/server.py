@@ -43,6 +43,7 @@ from schemabrain.mcp.describe_column import describe_column_impl
 from schemabrain.mcp.describe_entity import describe_entity_impl
 from schemabrain.mcp.describe_table import describe_table_impl
 from schemabrain.mcp.envelope import (
+    DegradationReason,
     Provenance,
     Recovery,
     ToolError,
@@ -1397,16 +1398,31 @@ def build_server(
             return _wrap_internal_error(exc)
         except Exception as exc:  # pragma: no cover — defensive
             return _wrap_internal_error(exc)
-        # Fan-out joins surfaced via `degraded` status (the agent gets
-        # rows but knows aggregation may be inflated). No fan-out
-        # joins = standard `success`.
+        # Degradation precedence: fan_out_join takes priority over
+        # missing_order_by_with_limit because fan-out is a correctness
+        # concern (rows may be inflated) while missing-order-by is a
+        # determinism concern (rows may be ordered randomly). Both are
+        # signals worth surfacing, but if forced to pick one
+        # `degradation_reason` we surface the more load-bearing one.
+        # The PR-6.5 polish bundle considers structured multi-reason
+        # support; for v1 a single enum keeps the contract tight.
+        degradation: DegradationReason | None = None
         if result.fan_out_join_names:
+            degradation = "fan_out_join"
+        elif group_by and not order_by:
+            # `limit` is always set (defaults to 1000, hard cap 10_000)
+            # — so any non-empty group_by without order_by produces a
+            # potentially non-deterministic slice. Surface it even when
+            # the caller used the default limit.
+            degradation = "missing_order_by_with_limit"
+        if degradation is not None:
             return ToolResponse[MetricResult](
                 status="degraded",
                 data=result,
                 confidence="MEDIUM",
                 provenance=Provenance(source="schema"),
                 follow_up_hints=["describe_entity"],
+                degradation_reason=degradation,
             )
         return ToolResponse[MetricResult](
             status="success",
