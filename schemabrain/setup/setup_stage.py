@@ -48,7 +48,6 @@ from __future__ import annotations
 import shutil
 import subprocess
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from schemabrain._ui import (
@@ -61,6 +60,7 @@ from schemabrain._ui import (
     pause_active_spinner,
     prompt_for_url,
 )
+from schemabrain.eval.bundled import resolve_bundled_path
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -69,6 +69,7 @@ __all__ = [
     "DEMO_CONTAINER_NAME",
     "DEMO_DATABASE_URL",
     "DEMO_DOCKER_RUN_COMMAND",
+    "DEMO_FIXTURE_BUNDLED_NAME",
     "DEMO_FIXTURE_LOAD_COMMAND",
     "DEMO_FIXTURE_RELATIVE_PATH",
     "detect_docker",
@@ -81,10 +82,17 @@ __all__ = [
 # duplicating the literal.
 DEMO_CONTAINER_NAME = "sb-demo-pg"
 
-# D2: fixture path is repo-relative. The fixture-load helper joins
-# this against the current working directory; tests can monkeypatch
-# `Path.cwd` to point at a synthetic repo.
+# D2: fixture path used to be repo-relative (`schemabrain/eval/fixtures/
+# ecommerce.sql` joined against `Path.cwd()`), which broke for every
+# `pip install schemabrain` user because the fixture lived inside the
+# wheel, not at `$(pwd)/schemabrain/...`. The 2026-05-21 manual smoke
+# surfaced the bug live. The constant is now resolved at call time via
+# `schemabrain.eval.bundled.resolve_bundled_path("ecommerce.sql")` —
+# same helper that backs `schemabrain fixture-path`. The constant
+# remains for callers (tests, copy-paste recipe rendering) that just
+# want the bundled basename.
 DEMO_FIXTURE_RELATIVE_PATH = "schemabrain/eval/fixtures/ecommerce.sql"
+DEMO_FIXTURE_BUNDLED_NAME = "ecommerce.sql"
 
 
 # The demo URL the wizard returns when the user picks the demo path.
@@ -112,11 +120,14 @@ DEMO_DOCKER_RUN_COMMAND = (
 
 # The fixture-load command the wizard shows after Postgres is up.
 # Uses `psql` via a one-off docker container so the user doesn't need
-# `psql` installed locally — matches the SQLAlchemy-load deferral
-# (PR-2 will do the load in-process, eliminating this command).
+# `psql` installed locally. The fixture path is resolved at run time
+# via the `schemabrain fixture-path` CLI — `$(pwd)/schemabrain/...`
+# only worked when the user was inside a cloned repo, but the
+# documented install path is `pip install schemabrain` where the
+# fixture lives inside the wheel.
 DEMO_FIXTURE_LOAD_COMMAND = (
     "docker run --rm --network host "
-    "-v $(pwd)/schemabrain/eval/fixtures/ecommerce.sql:/f.sql:ro "
+    "-v $(schemabrain fixture-path ecommerce.sql):/f.sql:ro "
     "-e PGPASSWORD=local postgres:16-alpine "
     "psql -h localhost -p 5433 -U postgres -d postgres -f /f.sql"
 )
@@ -379,23 +390,27 @@ def _docker_load_fixture(*, console: Console) -> bool:
 
     Mirrors the shape of the pre-D2 manual command (uses
     ``--network host`` to reach 127.0.0.1:5433 from inside the
-    container). The fixture path is resolved against the current
-    working directory — same as the operator-visible recipe — so
-    running ``schemabrain init`` from the repo root works.
+    container). The fixture path is resolved through
+    ``schemabrain.eval.bundled.resolve_bundled_path`` — same helper
+    that backs the ``schemabrain fixture-path`` CLI — so the path
+    works whether the package is pip-installed or run from a cloned
+    repo.
 
     Returns False (with a printed explanation) when:
-    - the fixture file doesn't exist (operator ran init from outside
-      the repo — the manual recipe also wouldn't work in that case)
+    - ``resolve_bundled_path`` can't find the bundled fixture (means
+      the wheel is broken — a loud failure beats silently falling
+      back to the manual recipe)
     - the docker subprocess fails (most commonly: Postgres rejected
       the connection mid-load; less commonly: psql couldn't read the
       mounted file)
     """
-    fixture_path = Path.cwd() / DEMO_FIXTURE_RELATIVE_PATH
-    if not fixture_path.exists():
+    try:
+        fixture_path = resolve_bundled_path(DEMO_FIXTURE_BUNDLED_NAME)
+    except (FileNotFoundError, ValueError) as exc:
         console.print(
-            f"  [yellow]{GLYPH_WARN} Fixture not found at "
-            f"[cyan]{fixture_path}[/] — run [cyan]schemabrain init[/] "
-            "from the repo root, or load fixtures manually.[/]"
+            f"  [yellow]{GLYPH_WARN} Couldn't resolve bundled ecommerce "
+            f"fixture: {exc}. The installed wheel may be incomplete — "
+            "re-run [cyan]pip install --force-reinstall schemabrain[/].[/]"
         )
         return False
 

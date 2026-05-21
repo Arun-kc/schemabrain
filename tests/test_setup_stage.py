@@ -613,15 +613,27 @@ class TestWaitForPostgresReady:
 class TestDockerLoadFixture:
     """D2: `_docker_load_fixture` — psql shell-out + fixture-path check."""
 
-    def test_returns_false_when_fixture_file_missing(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    def test_returns_false_when_bundled_fixture_unresolvable(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Operator ran init from outside the repo. Helper must
-        # surface a helpful message instead of issuing a docker
-        # subprocess that would fail with a less helpful error.
+        # `resolve_bundled_path` fails when the wheel is broken (or
+        # someone monkeypatched the bundled-dirs out of existence).
+        # The helper must print a helpful message — pointing at
+        # `pip install --force-reinstall` — and refuse to fire a
+        # docker subprocess that would error with a less helpful
+        # signal. PR-6h: replaced the CWD-relative path check with
+        # `resolve_bundled_path`, so the failure surface flipped
+        # from "file not found at $CWD" to "no bundled fixture
+        # named X".
         from schemabrain.setup import setup_stage
 
-        monkeypatch.setattr("pathlib.Path.cwd", lambda: tmp_path)  # type: ignore[arg-type,return-value]
+        monkeypatch.setattr(
+            setup_stage,
+            "resolve_bundled_path",
+            lambda name: (_ for _ in ()).throw(
+                FileNotFoundError(f"no bundled fixture named {name!r}; available: []")
+            ),
+        )
         # Guard: no real subprocess should fire.
         monkeypatch.setattr(
             setup_stage,
@@ -638,8 +650,9 @@ class TestDockerLoadFixture:
             )
             is False
         )
-        assert "Fixture not found" in buf.getvalue()
-        assert "from the repo root" in buf.getvalue()
+        output = buf.getvalue()
+        assert "Couldn't resolve bundled ecommerce fixture" in output
+        assert "force-reinstall" in output
 
     def test_returns_true_when_psql_subprocess_exits_zero(
         self, monkeypatch: pytest.MonkeyPatch
