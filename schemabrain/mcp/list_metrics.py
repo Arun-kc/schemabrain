@@ -11,9 +11,10 @@ metric to feed to `get_metric` (name + aggregation + time grains)
 without paying the full Metric serialisation cost.
 
 Closes the day-one discovery gap surfaced by the 2026-05-21 manual
-smoke: ten metrics live in the store, the agent had no way to
-enumerate them. Tool descriptions used to direct the agent to
-`schemabrain metrics list` from the CLI — agents have no terminal.
+smoke: ten metrics lived in the store, the agent had no path to
+enumerate them. The previous `get_metric` description routed agents
+to a CLI subcommand for discovery — agents have no terminal, so
+every ad-hoc question dead-ended.
 """
 
 from __future__ import annotations

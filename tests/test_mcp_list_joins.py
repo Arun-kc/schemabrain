@@ -247,9 +247,13 @@ class TestEnvelopeEmpty:
         assert envelope.status == "empty"
         assert envelope.error is None
         assert envelope.data == []
-        # Empty envelope points the agent at `suggest_joins` so it
-        # can survey FK candidates that could become canonical joins.
-        assert "suggest_joins" in (envelope.follow_up_hints or ())
+        # Empty envelope points the agent at `find_relevant_tables`
+        # (start from physical schema) rather than `suggest_joins` —
+        # when stage 5 of the wizard already ran and produced zero
+        # FK candidates, redirecting back to `suggest_joins` would be
+        # a loop. Reasoning about join paths from physical tables is
+        # the right next step.
+        assert "find_relevant_tables" in (envelope.follow_up_hints or ())
 
 
 class TestEnvelopeSuccess:
@@ -281,3 +285,28 @@ class TestEnvelopeSuccess:
         assert envelope.data[0]["source_entity"] == "order"
         assert envelope.data[0]["target_entity"] == "user"
         assert envelope.data[0]["name"] == "orders_user_id"
+
+
+class TestEnvelopeStoreFailure:
+    """Round-2 fold (Reality Checker): the `_wrap_internal_error`
+    branch in `list_joins` was uncovered post-commit. A store that
+    raises should surface as a structurally-valid `error` envelope,
+    not propagate the exception as a raw traceback.
+    """
+
+    def test_store_raise_returns_error_envelope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server, store = _build_test_server(tmp_path)
+        try:
+
+            def _boom(*_a, **_kw):
+                raise RuntimeError("store unavailable")
+
+            monkeypatch.setattr(store, "list_canonical_joins", _boom)
+            _content, structured = asyncio.run(server.call_tool("list_joins", {}))
+            envelope = ToolResponse.model_validate(structured)
+        finally:
+            store.close()
+        assert envelope.status == "error"
+        assert envelope.error is not None

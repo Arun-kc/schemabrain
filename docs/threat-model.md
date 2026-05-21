@@ -19,7 +19,7 @@ contain adversarial input.
 
 ## Asset 1: MCP tool surface
 
-The MCP server exposes 10 tools over stdio. Each tool reads from the local
+The MCP server exposes 12 tools over stdio. Each tool reads from the local
 SQLite store, the Postgres source, or both. The attack surface includes the
 tool arguments an agent passes, the connection string the operator configured,
 and the audit log that records every call.

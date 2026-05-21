@@ -71,7 +71,6 @@ __all__ = [
     "DEMO_DOCKER_RUN_COMMAND",
     "DEMO_FIXTURE_BUNDLED_NAME",
     "DEMO_FIXTURE_LOAD_COMMAND",
-    "DEMO_FIXTURE_RELATIVE_PATH",
     "detect_docker",
     "prompt_for_init_setup",
 ]
@@ -82,16 +81,12 @@ __all__ = [
 # duplicating the literal.
 DEMO_CONTAINER_NAME = "sb-demo-pg"
 
-# D2: fixture path used to be repo-relative (`schemabrain/eval/fixtures/
-# ecommerce.sql` joined against `Path.cwd()`), which broke for every
-# `pip install schemabrain` user because the fixture lived inside the
-# wheel, not at `$(pwd)/schemabrain/...`. The 2026-05-21 manual smoke
-# surfaced the bug live. The constant is now resolved at call time via
-# `schemabrain.eval.bundled.resolve_bundled_path("ecommerce.sql")` —
-# same helper that backs `schemabrain fixture-path`. The constant
-# remains for callers (tests, copy-paste recipe rendering) that just
-# want the bundled basename.
-DEMO_FIXTURE_RELATIVE_PATH = "schemabrain/eval/fixtures/ecommerce.sql"
+# Bundled basename for the ecommerce fixture. Resolved to an absolute
+# path at call time via `schemabrain.eval.bundled.resolve_bundled_path`
+# — the same helper that backs `schemabrain fixture-path`. The 2026-05-21
+# manual smoke surfaced the prior bug: a repo-relative path joined against
+# `Path.cwd()` broke for every `pip install schemabrain` user because the
+# fixture lives inside the wheel, not at `$(pwd)/schemabrain/...`.
 DEMO_FIXTURE_BUNDLED_NAME = "ecommerce.sql"
 
 
@@ -124,10 +119,11 @@ DEMO_DOCKER_RUN_COMMAND = (
 # via the `schemabrain fixture-path` CLI — `$(pwd)/schemabrain/...`
 # only worked when the user was inside a cloned repo, but the
 # documented install path is `pip install schemabrain` where the
-# fixture lives inside the wheel.
+# fixture lives inside the wheel. Constructed with an f-string so the
+# bundled basename has a single source of truth.
 DEMO_FIXTURE_LOAD_COMMAND = (
     "docker run --rm --network host "
-    "-v $(schemabrain fixture-path ecommerce.sql):/f.sql:ro "
+    f"-v $(schemabrain fixture-path {DEMO_FIXTURE_BUNDLED_NAME}):/f.sql:ro "
     "-e PGPASSWORD=local postgres:16-alpine "
     "psql -h localhost -p 5433 -U postgres -d postgres -f /f.sql"
 )
@@ -406,11 +402,16 @@ def _docker_load_fixture(*, console: Console) -> bool:
     """
     try:
         fixture_path = resolve_bundled_path(DEMO_FIXTURE_BUNDLED_NAME)
-    except (FileNotFoundError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
+        # OSError covers FileNotFoundError (wheel missing the asset) and
+        # PermissionError (NFS, snap-confined Docker, macOS quarantine
+        # flags on extracted wheel files). Both surface to the user with
+        # the same recovery — the underlying message tells them which.
         console.print(
             f"  [yellow]{GLYPH_WARN} Couldn't resolve bundled ecommerce "
-            f"fixture: {exc}. The installed wheel may be incomplete — "
-            "re-run [cyan]pip install --force-reinstall schemabrain[/].[/]"
+            f"fixture: {exc}. The installed wheel may be incomplete or "
+            "unreadable — re-run "
+            "[cyan]pip install --force-reinstall schemabrain[/].[/]"
         )
         return False
 
@@ -574,8 +575,12 @@ def _handle_demo_path(*, console: Console) -> str | None:
     console.print()
     console.print(
         "  [bright_black]Both commands take ~30s on first run "
-        "(image pull). Press Enter when both have finished.[/]"
+        "(image pull). If [cyan]schemabrain[/] is not on PATH in the "
+        "shell you paste this into (e.g. virtual environment not "
+        "activated), the fixture path expansion will be empty and "
+        "psql will load an empty file — activate the venv first.[/]"
     )
+    console.print("  [bright_black]Press Enter when both have finished.[/]")
 
     with pause_active_spinner():
         Prompt.ask(

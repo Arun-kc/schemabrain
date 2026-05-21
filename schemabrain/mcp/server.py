@@ -874,21 +874,24 @@ def build_server(
             data=summaries,
             confidence="HIGH",
             provenance=Provenance(source="schema"),
-            follow_up_hints=["get_metric"],
+            # `describe_entity` is the natural drill — `MetricSummary`
+            # exposes `measure_column` as an opaque identifier; the
+            # agent needs the anchor entity's full column shape to
+            # verify what the column contains before calling
+            # `get_metric` with a `group_by` that references it.
+            follow_up_hints=["get_metric", "describe_entity"],
         )
 
     @app.tool(
         description=(
             "Use this when the user asks what canonical joins are "
-            "defined (e.g. 'what joins do we have?', 'how are these "
-            "entities connected?'). Returns every confirmed canonical "
-            "join with the entity pair it connects and provenance. "
-            "Use `resolve_join` instead when you have two entity "
-            "names and want the SQL skeleton; pass `name=` to "
-            "`resolve_join` when 2+ canonical joins exist between "
-            "the same entity pair. Use `suggest_joins` instead when "
-            "you only have physical table names without a canonical "
-            "mapping yet."
+            "defined (e.g. 'how are these entities connected?'). "
+            "Returns each confirmed join with the entity pair it "
+            "connects and provenance. Use `resolve_join` instead "
+            "when you have a known pair and want the SQL skeleton "
+            "(pass `name=` for 2+ joins on the pair). Use "
+            "`suggest_joins` instead when only physical-table names "
+            "are available."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -904,14 +907,18 @@ def build_server(
         if not summaries:
             # Mirror `list_entities` + `list_metrics`: indexed store
             # with no canonical joins yet is `empty`, not `success`
-            # with `[]`. The follow-up hint points the agent at
-            # `suggest_joins` so it can survey FK candidates that
-            # could become canonical joins.
+            # with `[]`. The follow-up hint points at
+            # `find_relevant_tables` (start from physical schema)
+            # rather than `suggest_joins` — when stage 5 of the
+            # wizard ran and produced zero candidates, redirecting
+            # back to `suggest_joins` would be a loop. The agent
+            # should reason about join paths from the physical
+            # schema instead.
             return ToolResponse[list[JoinSummary]](
                 status="empty",
                 data=[],
                 confidence=None,
-                follow_up_hints=["suggest_joins"],
+                follow_up_hints=["find_relevant_tables"],
             )
         return ToolResponse[list[JoinSummary]](
             status="success",

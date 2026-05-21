@@ -255,3 +255,66 @@ class TestEnvelopeSuccess:
         assert envelope.data[0]["measure_column"] == "total_cents"
         assert envelope.data[0]["time_dimension"] == "order.placed_at"
         assert envelope.data[0]["time_grains"] == ["day", "week", "month"]
+
+    def test_envelope_non_temporal_metric_round_trips(self, tmp_path: Path) -> None:
+        """Round-2 fold (Reality Checker M1): pin the parallel-emptiness
+        invariant (`time_dimension is None` iff `time_grains == ()`)
+        at the wire boundary, not just at `Metric` construction. A
+        non-temporal metric should round-trip with `time_dimension=None`
+        and `time_grains=[]` — JSON does not distinguish tuple from list.
+        """
+        server, store = _build_test_server(tmp_path)
+        try:
+            store.write_metric(_non_temporal_metric(), source_connection_id="sid")
+            _content, structured = asyncio.run(server.call_tool("list_metrics", {}))
+            envelope = ToolResponse.model_validate(structured)
+        finally:
+            store.close()
+        assert envelope.data is not None
+        assert envelope.data[0]["aggregation"] == "count"
+        assert envelope.data[0]["measure_column"] == "id"
+        assert envelope.data[0]["time_dimension"] is None
+        assert envelope.data[0]["time_grains"] == []
+
+    def test_envelope_success_hint_includes_describe_entity(self, tmp_path: Path) -> None:
+        """Round-2 fold (silent-failure-hunter F2): the agent needs
+        `describe_entity` to interpret an opaque `measure_column`
+        before invoking `get_metric` with a related `group_by`.
+        Both `get_metric` and `describe_entity` must appear in the
+        success-path follow-up hints.
+        """
+        server, store = _build_test_server(tmp_path)
+        try:
+            store.write_metric(_temporal_metric(), source_connection_id="sid")
+            _content, structured = asyncio.run(server.call_tool("list_metrics", {}))
+            envelope = ToolResponse.model_validate(structured)
+        finally:
+            store.close()
+        hints = envelope.follow_up_hints or ()
+        assert "get_metric" in hints
+        assert "describe_entity" in hints
+
+
+class TestEnvelopeStoreFailure:
+    """Round-2 fold (Reality Checker): the `_wrap_internal_error`
+    branch in `list_metrics` was uncovered post-commit. A store that
+    raises should surface as a structurally-valid `error` envelope,
+    not propagate the exception as a raw traceback.
+    """
+
+    def test_store_raise_returns_error_envelope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server, store = _build_test_server(tmp_path)
+        try:
+
+            def _boom(*_a, **_kw):
+                raise RuntimeError("store unavailable")
+
+            monkeypatch.setattr(store, "list_metrics", _boom)
+            _content, structured = asyncio.run(server.call_tool("list_metrics", {}))
+            envelope = ToolResponse.model_validate(structured)
+        finally:
+            store.close()
+        assert envelope.status == "error"
+        assert envelope.error is not None
