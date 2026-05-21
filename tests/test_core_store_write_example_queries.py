@@ -60,33 +60,34 @@ def _eq(
     )
 
 
-class TestSchemaVersionBumpToV12:
-    """Pre-alpha contract: a store written by a v11 Schema Brain raises
+class TestSchemaVersionBumpToV13:
+    """Pre-alpha contract: a store written by a v12 Schema Brain raises
     `SchemaVersionMismatchError` on open. Per project convention only
     the current N-1 version-bump test is retained — the prior
-    `TestSchemaVersionBumpToV11` class (added at the v10→v11 bump) was
-    removed when this class was added at the v11→v12 bump
-    (column_pii_tags table for the heuristic PII classifier).
+    `TestSchemaVersionBumpToV12` class (added at the v11→v12 bump for
+    column_pii_tags) was removed when this class was added at the
+    v12→v13 bump (nullable measure_column + new measure_expression
+    column on the metrics table to support composite expressions).
     """
 
-    def test_fresh_store_has_schema_version_12(self, tmp_path: Path) -> None:
+    def test_fresh_store_has_schema_version_13(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "sb.db") as store:
             row = (
                 store._require_conn()
                 .execute("SELECT value FROM schemabrain_meta WHERE key = 'schema_version'")
                 .fetchone()
             )
-            assert row["value"] == "12"
+            assert row["value"] == "13"
 
-    def test_opening_a_v11_store_raises(self, tmp_path: Path) -> None:
+    def test_opening_a_v12_store_raises(self, tmp_path: Path) -> None:
         db_path = tmp_path / "sb.db"
         store = SQLiteStore(db_path)
         store._require_conn().execute(
-            "UPDATE schemabrain_meta SET value = '11' WHERE key = 'schema_version'"
+            "UPDATE schemabrain_meta SET value = '12' WHERE key = 'schema_version'"
         )
         store._require_conn().commit()
         store.close()
-        with pytest.raises(SchemaVersionMismatchError, match=r"11.*12|12.*11"):
+        with pytest.raises(SchemaVersionMismatchError, match=r"12.*13|13.*12"):
             SQLiteStore(db_path)
 
     def test_unique_index_exists(self, tmp_path: Path) -> None:
