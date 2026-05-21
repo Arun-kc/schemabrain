@@ -121,6 +121,41 @@ class DbtOwnedMetricError(ValueError):
 
 
 @dataclass(frozen=True)
+class MalformedMetricRowError(ValueError):
+    """Raised when a `metrics` row can't be reconstructed into a `Metric`.
+
+    A row may pass the SQLite-level CHECK constraints (e.g. the
+    `measure_column XOR measure_expression` invariant) but still fail
+    the Python-side validation in `MetricMeasure.__post_init__` —
+    typically because the row's `measure_expression` was written via
+    direct SQL with content that fails the whitelist parser. Without
+    this named class, callers would see only a generic `ValueError`
+    and the metric name would be buried inside the wrapped exception
+    chain.
+
+    The `name` field preserves the offending metric name so resilient
+    consumers (e.g. `Store.list_metrics`, which logs + skips bad rows
+    rather than failing the whole listing) can attribute the failure
+    to a specific row. Subclass of `ValueError` so broad-catch callers
+    continue to work unchanged.
+
+    Frozen-dataclass shape mirrors the compiler error classes in
+    `semantic/compiler/plan.py` — the dataclass-default `__init__`
+    accepts positional args, which lets the explicit `__reduce__` use
+    the same positional-args reconstructor pattern those classes use.
+    """
+
+    name: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        super().__init__(f"metric row {self.name!r} cannot be reconstructed: {self.reason}")
+
+    def __reduce__(self) -> tuple[type, tuple[str, str]]:
+        return (self.__class__, (self.name, self.reason))
+
+
+@dataclass(frozen=True)
 class MetricMeasure:
     """The aggregation + column-or-expression pair that defines a metric's value.
 

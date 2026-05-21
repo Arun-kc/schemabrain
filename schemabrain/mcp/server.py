@@ -36,6 +36,7 @@ from mcp.types import ContentBlock, ToolAnnotations
 from pydantic import Field
 
 from schemabrain.audit.writer import AuditWriter
+from schemabrain.core.metric import MalformedMetricRowError
 from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
 from schemabrain.mcp._helpers import _MAX_IDENT_LEN
@@ -1454,6 +1455,19 @@ def build_server(
                     message=str(exc),
                     recovery=Recovery(suggested_tool="get_metric"),
                 ),
+            )
+        except MalformedMetricRowError as exc:
+            # The row passed the store's CHECK constraints but its
+            # `measure_expression` (or another field) fails the
+            # Python-side validation — typically because someone wrote
+            # the row via direct SQL with content the whitelist parser
+            # can't accept. Surfaces as `internal_error` (the metric IS
+            # in the store, but corrupted) with the offending name in
+            # the message so operators can locate + repair it.
+            return _wrap_internal_error(
+                RuntimeError(
+                    f"metric {exc.name!r} is stored with a malformed measure: {exc.reason}"
+                )
             )
         except RuntimeError as exc:
             return _wrap_internal_error(exc)
