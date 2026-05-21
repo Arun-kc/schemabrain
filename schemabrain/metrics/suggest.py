@@ -154,6 +154,25 @@ _TOP_LEVEL_ALLOWED_KEYS: frozenset[str] = frozenset({"candidates"})
 _MEASURE_REQUIRED_KEYS: frozenset[str] = frozenset({"agg", "column"})
 _MEASURE_ALLOWED_KEYS: frozenset[str] = _MEASURE_REQUIRED_KEYS
 
+# Belt-and-suspenders defense for the metric-name-overpromises-result
+# failure mode (Gap #5 - surfaced by 2026-05-21 smoke where the LLM
+# produced `total_order_item_revenue` with measure `sum(unit_price_cents)`
+# and a description that literally admitted "unit_price_cents * quantity
+# is not directly available, but unit_price_cents summed gives a
+# price-mix signal"). The system prompt now explicitly forbids this
+# pattern, but the LLM is non-deterministic - these phrases in a
+# description are strong evidence the LLM is admitting its proposed
+# aggregation doesn't match what the metric promises. Reject at
+# parse-time so a future prompt-cache miss / model drift doesn't
+# silently re-introduce the anti-pattern. Substrings are matched
+# lowercase against the description. Add new phrases here when new
+# failure modes surface.
+_DESCRIPTION_ANTI_PATTERN_PHRASES: tuple[str, ...] = (
+    "not directly available",
+    "would require multiplication",
+    "is not available directly",
+)
+
 
 # ----- system prompt ---------------------------------------------------------
 #
@@ -211,6 +230,21 @@ Rules:
     pad. List them in canonical order day → year.
   - DO NOT propose metrics on identity columns with sum/avg (an `id`
     column's sum is meaningless); use count or count_distinct instead.
+  - DO NOT propose `sum` or `avg` on per-unit / per-line monetary
+    columns that need multiplication to be meaningful. Example: on an
+    `order_item` entity with `unit_price_cents` and `quantity`,
+    `sum(unit_price_cents)` is NOT line-item revenue — that requires
+    `unit_price_cents * quantity`, which is a column expression and
+    NOT something today's metric grammar can express. Skip the metric
+    entirely. The honest rule: a metric's `name` and `description`
+    must not promise a result the single-column aggregation cannot
+    deliver. If you find yourself writing "X * Y is not directly
+    available" or "would require multiplication" in the description,
+    DO NOT propose the metric.
+  - DO NOT propose `sum` or `avg` on percentage / rate / ratio columns
+    (e.g. `discount_percent`, `tax_rate`); sums of percentages are
+    nonsense and averages of unweighted rates are misleading. Skip
+    these columns for sum/avg; min/max may still be useful.
   - DO NOT propose more than 2 metrics per entity unless the entity is
     genuinely metric-rich (e.g., `order` may warrant 3-4: revenue,
     item-count, average-order-value, distinct-customer-count).
@@ -418,6 +452,26 @@ def _parse_candidate(raw: Any, *, index: int) -> MetricCandidate:
         has_time_grains="time_grains" in raw,
         index=index,
     )
+
+    # Description anti-pattern check: if the LLM admits in its own
+    # description that the proposed aggregation can't deliver what the
+    # name promises (e.g. "the multiplication is not directly
+    # available"), refuse the candidate. The system prompt explicitly
+    # forbids this pattern, but defense at parse-time guards against
+    # prompt-cache misses, model drift, or a future contributor
+    # weakening the prompt.
+    description_lower = description.lower()
+    for phrase in _DESCRIPTION_ANTI_PATTERN_PHRASES:
+        if phrase.lower() in description_lower:
+            raise MetricSuggestionParseError(
+                f"candidate #{index} description contains anti-pattern "
+                f"{phrase!r} indicating the metric's aggregation cannot "
+                f"deliver what its name implies (name={name!r}, "
+                f"measure={measure.agg}({measure.column})). The metric "
+                f"grammar today supports single-column aggregations only "
+                f"— if the desired metric requires a column expression, "
+                f"skip the candidate."
+            )
 
     # Construct the Metric — its __post_init__ runs identifier-shape +
     # paired-emptiness + canonical-grain-order + origin-enum checks.
