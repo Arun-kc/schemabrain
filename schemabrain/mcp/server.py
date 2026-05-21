@@ -53,6 +53,8 @@ from schemabrain.mcp.find_relevant_tables import find_relevant_tables_impl
 from schemabrain.mcp.get_example_queries import get_example_queries_impl
 from schemabrain.mcp.get_metric import get_metric_impl
 from schemabrain.mcp.list_entities import list_entities_impl
+from schemabrain.mcp.list_joins import list_joins_impl
+from schemabrain.mcp.list_metrics import list_metrics_impl
 from schemabrain.mcp.metric_executor import MetricExecutor
 from schemabrain.mcp.resolve_join import resolve_join_impl
 from schemabrain.mcp.shapes import (
@@ -66,8 +68,10 @@ from schemabrain.mcp.shapes import (
     EntitySummary,
     ExampleQueriesResult,
     JoinNameMismatchError,
+    JoinSummary,
     MetricFilterArg,
     MetricResult,
+    MetricSummary,
     NoCanonicalJoinError,
     SuggestJoinsResult,
     TableDescription,
@@ -834,6 +838,98 @@ def build_server(
 
     @app.tool(
         description=(
+            "Use this when the user asks what metrics are defined "
+            "(e.g. 'what metrics do we have?', 'what can I compute?'). "
+            "Returns every declared metric with its anchor entity, "
+            "aggregation shape, time-bucketing capabilities, and "
+            "provenance. Use `get_metric` instead when you already "
+            "have a metric name and want its computed value. Chain to "
+            "`describe_entity` for the anchor entity's full shape."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
+    @_trace("list_metrics")
+    def list_metrics() -> ToolResponse[list[MetricSummary]]:
+        try:
+            summaries = list_metrics_impl(
+                store=store,
+                source_connection_id=source_connection_id,
+            )
+        except Exception as exc:
+            return _wrap_internal_error(exc)
+        if not summaries:
+            # Mirror `list_entities`: an indexed store with entities but
+            # no metrics is `empty`, not `success` with `[]`. The
+            # follow-up hint points the agent at the right discovery
+            # next step — `list_entities` so it can ask the operator
+            # to anchor a metric on one.
+            return ToolResponse[list[MetricSummary]](
+                status="empty",
+                data=[],
+                confidence=None,
+                follow_up_hints=["list_entities"],
+            )
+        return ToolResponse[list[MetricSummary]](
+            status="success",
+            data=summaries,
+            confidence="HIGH",
+            provenance=Provenance(source="schema"),
+            # `describe_entity` is the natural drill — `MetricSummary`
+            # exposes `measure_column` as an opaque identifier; the
+            # agent needs the anchor entity's full column shape to
+            # verify what the column contains before calling
+            # `get_metric` with a `group_by` that references it.
+            follow_up_hints=["get_metric", "describe_entity"],
+        )
+
+    @app.tool(
+        description=(
+            "Use this when the user asks what canonical joins are "
+            "defined (e.g. 'how are these entities connected?'). "
+            "Returns each confirmed join with the entity pair it "
+            "connects and provenance. Use `resolve_join` instead "
+            "when you have a known pair and want the SQL skeleton "
+            "(pass `name=` for 2+ joins on the pair). Use "
+            "`suggest_joins` instead when only physical-table names "
+            "are available."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
+    @_trace("list_joins")
+    def list_joins() -> ToolResponse[list[JoinSummary]]:
+        try:
+            summaries = list_joins_impl(
+                store=store,
+                source_connection_id=source_connection_id,
+            )
+        except Exception as exc:
+            return _wrap_internal_error(exc)
+        if not summaries:
+            # Mirror `list_entities` + `list_metrics`: indexed store
+            # with no canonical joins yet is `empty`, not `success`
+            # with `[]`. The follow-up hint points at
+            # `find_relevant_tables` (start from physical schema)
+            # rather than `suggest_joins` — when stage 5 of the
+            # wizard ran and produced zero candidates, redirecting
+            # back to `suggest_joins` would be a loop. The agent
+            # should reason about join paths from the physical
+            # schema instead.
+            return ToolResponse[list[JoinSummary]](
+                status="empty",
+                data=[],
+                confidence=None,
+                follow_up_hints=["find_relevant_tables"],
+            )
+        return ToolResponse[list[JoinSummary]](
+            status="success",
+            data=summaries,
+            confidence="HIGH",
+            provenance=Provenance(source="schema"),
+            follow_up_hints=["resolve_join"],
+        )
+
+    @app.tool(
+        description=(
             "Use this when the user names a specific entity (e.g. "
             "'show me the customer entity', 'what's in the order "
             "entity'). Returns the entity's bound table, identity "
@@ -1034,9 +1130,9 @@ def build_server(
             Field(
                 description=(
                     "The metric name to compute (e.g. `total_revenue`). "
-                    "Run `schemabrain metrics list` from the CLI or "
-                    "`list_entities` + `describe_entity` for the anchor "
-                    "entity to discover what's available."
+                    "Call `list_metrics` to enumerate every declared "
+                    "metric with its anchor entity, aggregation, and "
+                    "time-bucketing capabilities."
                 ),
             ),
         ],

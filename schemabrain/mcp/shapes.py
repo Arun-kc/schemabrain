@@ -12,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from schemabrain.core.entity import Origin
 from schemabrain.core.example_query import ExampleQuerySource
+from schemabrain.core.join import JoinOrigin
+from schemabrain.core.metric import AggFunction, MetricOrigin, TimeGrain
 from schemabrain.pii.categories import PIICategory, Sensitivity
 
 
@@ -478,6 +480,29 @@ class JoinColumnPairInfo(BaseModel):
     target_column: str
 
 
+class JoinSummary(BaseModel):
+    """One canonical join in the `list_joins` response.
+
+    Lean by design: name + description + the pair of entities it
+    connects + provenance. The agent uses this to enumerate what
+    joins are available; for the SQL skeleton it calls
+    `resolve_join(entity_a, entity_b)` (or passes `name=` to
+    disambiguate when 2+ canonical joins exist between the same
+    entity pair).
+
+    Direction is preserved from the stored row — see
+    `CanonicalJoinInfo` for the same orientation convention.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    description: str
+    source_entity: str
+    target_entity: str
+    origin: JoinOrigin
+
+
 class CanonicalJoinInfo(BaseModel):
     """Return shape for `resolve_join`.
 
@@ -515,6 +540,33 @@ class CanonicalJoinInfo(BaseModel):
 # Schema Brain compiler. The Pydantic shapes here are the wire format
 # FastMCP exposes; the compiler's `RequestedFilter` dataclass is the
 # internal IR — there's a one-to-one mapping between them.
+
+
+class MetricSummary(BaseModel):
+    """One metric in the `list_metrics` response.
+
+    Lean by design: name + anchor entity + aggregation shape + time
+    bucketing capabilities + provenance. The agent uses this to pick
+    a metric to feed to `get_metric`; for the actual computation it
+    calls `get_metric(name, ...)`.
+
+    `time_dimension` and `time_grains` are paired — both set or both
+    empty. When `time_dimension` is set, the agent may pass any value
+    from `time_grains` as the `time_grain` argument to `get_metric`.
+    When unset, the metric is non-temporal and `time_grain` is not
+    accepted.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    description: str
+    entity: str
+    aggregation: AggFunction
+    measure_column: str
+    time_dimension: str | None
+    time_grains: tuple[TimeGrain, ...]
+    origin: MetricOrigin
 
 
 class MetricFilterArg(BaseModel):

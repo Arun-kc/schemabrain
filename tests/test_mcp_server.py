@@ -128,6 +128,8 @@ class TestToolRegistry:
             "suggest_joins",
             "get_example_queries",
             "list_entities",
+            "list_joins",
+            "list_metrics",
             "describe_entity",
             "resolve_join",
             "get_metric",

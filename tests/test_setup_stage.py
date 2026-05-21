@@ -613,15 +613,27 @@ class TestWaitForPostgresReady:
 class TestDockerLoadFixture:
     """D2: `_docker_load_fixture` — psql shell-out + fixture-path check."""
 
-    def test_returns_false_when_fixture_file_missing(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    def test_returns_false_when_bundled_fixture_unresolvable(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Operator ran init from outside the repo. Helper must
-        # surface a helpful message instead of issuing a docker
-        # subprocess that would fail with a less helpful error.
+        # `resolve_bundled_path` fails when the wheel is broken (or
+        # someone monkeypatched the bundled-dirs out of existence).
+        # The helper must print a helpful message — pointing at
+        # `pip install --force-reinstall` — and refuse to fire a
+        # docker subprocess that would error with a less helpful
+        # signal. PR-6h: replaced the CWD-relative path check with
+        # `resolve_bundled_path`, so the failure surface flipped
+        # from "file not found at $CWD" to "no bundled fixture
+        # named X".
         from schemabrain.setup import setup_stage
 
-        monkeypatch.setattr("pathlib.Path.cwd", lambda: tmp_path)  # type: ignore[arg-type,return-value]
+        monkeypatch.setattr(
+            setup_stage,
+            "resolve_bundled_path",
+            lambda name: (_ for _ in ()).throw(
+                FileNotFoundError(f"no bundled fixture named {name!r}; available: []")
+            ),
+        )
         # Guard: no real subprocess should fire.
         monkeypatch.setattr(
             setup_stage,
@@ -638,18 +650,26 @@ class TestDockerLoadFixture:
             )
             is False
         )
-        assert "Fixture not found" in buf.getvalue()
-        assert "from the repo root" in buf.getvalue()
+        output = buf.getvalue()
+        assert "Couldn't resolve bundled ecommerce fixture" in output
+        assert "force-reinstall" in output
 
     def test_returns_true_when_psql_subprocess_exits_zero(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
         from subprocess import CompletedProcess
 
         from schemabrain.setup import setup_stage
 
-        # Bypass the fixture-exists check by pretending any path exists.
-        monkeypatch.setattr("pathlib.Path.exists", lambda self: True)
+        # Patch `resolve_bundled_path` directly — the prior
+        # `pathlib.Path.exists` monkeypatch was a stale guard from
+        # the pre-PR-6h `Path.cwd()`-based implementation that had
+        # zero effect on the new code path (resolve_bundled_path
+        # uses `.is_file()`, not `.exists()`). Test then passed only
+        # because the real wheel happens to contain ecommerce.sql.
+        fake_fixture = tmp_path / "ecommerce.sql"
+        fake_fixture.write_text("-- stub\n")
+        monkeypatch.setattr(setup_stage, "resolve_bundled_path", lambda name: fake_fixture)
         argv_log: list[list[str]] = []
 
         def fake_safe_subprocess(argv, *, timeout_s):  # type: ignore[no-untyped-def]
@@ -675,7 +695,7 @@ class TestDockerLoadFixture:
         assert any("ecommerce.sql" in a for a in argv)
 
     def test_returns_false_when_psql_subprocess_exits_non_zero(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
         # Connection refused / fixture syntax error → non-zero exit.
         # Surface the stderr first line.
@@ -683,7 +703,11 @@ class TestDockerLoadFixture:
 
         from schemabrain.setup import setup_stage
 
-        monkeypatch.setattr("pathlib.Path.exists", lambda self: True)
+        # Same fix as the sibling success test — patch the resolver,
+        # not `Path.exists` which the new code path never calls.
+        fake_fixture = tmp_path / "ecommerce.sql"
+        fake_fixture.write_text("-- stub\n")
+        monkeypatch.setattr(setup_stage, "resolve_bundled_path", lambda name: fake_fixture)
         monkeypatch.setattr(
             setup_stage,
             "_safe_subprocess",
