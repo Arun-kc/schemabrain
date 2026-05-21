@@ -75,7 +75,7 @@ To verify Claude's SQL is mechanically correct (and that flagged caveats are the
 
 ## Quickstart
 
-Five minutes from `pip install` to a working Claude Desktop integration.
+Three steps from `pip install` to a working Claude Desktop integration. ~60s on the bundled demo.
 
 ### 1. Install
 
@@ -92,36 +92,16 @@ cd schemabrain && uv sync --extra dev
 source .venv/bin/activate
 ```
 
-### 2. Start Postgres and load the bundled fixture
+### 2. Run the activation wizard
 
 ```bash
-docker run --rm -d \
-  -p 5432:5432 \
-  -e POSTGRES_PASSWORD=local \
-  --name sb-pg \
-  postgres:16-alpine
-
-# Wait until Postgres accepts connections, then load the fixture.
-until docker exec sb-pg pg_isready -U postgres >/dev/null 2>&1; do sleep 1; done
-
-docker exec -i sb-pg psql -U postgres -d postgres \
-  < "$(schemabrain fixture-path ecommerce.sql)"
+schemabrain init
 ```
 
-You should see 7 `CREATE TABLE` lines scroll past. For your own database, skip this step and use your real connection URL.
+`init` is a seven-stage wizard that takes you from "I have a Postgres database" to "Claude Desktop can answer questions about it" in one command. On first run it prompts for what it needs:
 
-> **A note on URL formats.** Schema Brain accepts standard Postgres connection URLs — bare `postgresql://`, `postgres://`, or the explicit `postgresql+psycopg://` driver form. The bare scheme is silently normalised internally to use psycopg v3, so paste whatever pgAdmin / `docker inspect` / your secret manager hands you.
-
-### 3. Run the activation wizard
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...           # required for entity curation
-export DATABASE_URL="postgresql+psycopg://postgres:local@localhost:5432/postgres"
-
-schemabrain init --url-env DATABASE_URL --store-path ./schemabrain.db
-```
-
-`init` is a seven-stage wizard that takes you from "I have a Postgres database" to "Claude Desktop can answer questions about it" in one command:
+- **A Postgres URL** — paste your own connection string, or press **Enter** to spin up a local demo Postgres container with the bundled e-commerce fixture (Docker is invoked automatically; idempotent on re-runs).
+- **An `ANTHROPIC_API_KEY`** — optional. Skip and the wizard still wires Claude Desktop; entity curation can run later via `schemabrain entities suggest --apply`.
 
 ```
 Schema Brain init — activation wizard
@@ -149,14 +129,15 @@ Stage 3 skips gracefully — the wizard still wires the MCP host and the rest wo
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-schemabrain entities suggest --apply --url-env DATABASE_URL --store-path ./schemabrain.db
+schemabrain entities suggest --apply
 ```
 
 Or skip entity curation entirely by passing `--no-entities` to `init`.
 
 </details>
 
-**What each stage does:**
+<details>
+<summary>What each stage does</summary>
 
 - **Source check** — validates the URL is reachable + verifies the session is read-only on Postgres. Auto-detects a dbt manifest from `$DBT_PROJECT_DIR/target/manifest.json` or by walking up from the cwd for a `dbt_project.yml`. When found, stages 3 and 4 route through the dbt importer instead of the LLM.
 - **Index schema** — introspects every user-visible table, fingerprints columns, persists to `./schemabrain.db`. Free by default; pass `--enrich` to add LLM column descriptions (typically $0.10–$2.00 for a 50-table schema).
@@ -166,27 +147,22 @@ Or skip entity curation entirely by passing `--no-entities` to `init`.
 - **Wire host** — writes a `schemabrain` MCP entry into Claude Desktop's config. Other MCP servers are left untouched. Existing entries trigger an interactive prompt (or pass `--yes`).
 - **Next** — prints the question to ask first.
 
-**Stages 3, 4, and 5 are best-effort:** a failure records the issue and prints a guided next step, but doesn't abort the wizard. Stages 1, 2, 6, and 7 abort on failure.
+**Stages 3, 4, and 5 are best-effort:** a failure records the issue and prints a guided next step, but doesn't abort the wizard. Stages 1, 2, 6, and 7 abort on failure. **Re-running is safe** — identical inputs no-op every stage.
 
-**Before each LLM-driven stage** (entities + metrics), the wizard pauses with the cost cap formatted in the prompt — Enter to continue, Ctrl-C to skip just that stage. Skip the pause in scripted runs with `--skip-llm-confirm`. The full superset `--yes` skips both the LLM pause AND the host-overwrite prompt; use it in CI. The pause auto-suppresses in non-TTY environments regardless of either flag.
+</details>
 
-**dbt as the source of truth:** force a specific manifest with `--from-dbt PATH` to route stages 3 and 4 through the dbt importer. Stage 5 (joins) is unaffected — dbt has no canonical-join concept. See [Import from dbt](#import-from-dbt) for the full surface.
+<details>
+<summary>Advanced wizard flags</summary>
 
-**Re-running is safe.** Identical inputs → no-op for each stage.
+- **CI / scripted runs:** pass `--yes` to skip all interactive prompts (URL prompt, LLM cost-cap pauses, host-overwrite confirmation).
+- **Cost-cap pauses:** before each LLM-driven stage the wizard pauses with the cost cap formatted in the prompt. Skip only the pauses with `--skip-llm-confirm`; the pause auto-suppresses in non-TTY environments regardless.
+- **dbt as the source of truth:** force a specific manifest with `--from-dbt PATH`. See [Import from dbt](#import-from-dbt) for the full surface.
+- **For Claude Code:** add `--host claude-code` to shell out to `claude mcp add` instead of editing JSON directly.
+- **For Cursor / Continue / Windsurf / anything else:** pass `--print-only` to print the MCP snippet without writing — paste into your host's config yourself.
 
-**For Claude Code:** add `--host claude-code` to shell out to `claude mcp add` instead of editing JSON directly.
+</details>
 
-**For Cursor / Continue / Windsurf / anything else:** pass `--print-only` to print the MCP snippet without writing — paste into your host's config yourself.
-
-### 4. Confirm it's wired
-
-```bash
-schemabrain doctor --url-env DATABASE_URL --store-path ./schemabrain.db
-```
-
-Up to 11 checks across host config, local store, and source connectivity (the full set runs for Claude Desktop on macOS/Windows with a Postgres source URL — other host/OS combinations skip the inapplicable checks). Exit 0 means everything's good. Pass `--json` for CI/monitoring output.
-
-### 5. Restart your MCP host and ask the test question
+### 3. Restart Claude Desktop and ask
 
 1. Quit Claude Desktop fully — **Cmd+Q**, not just close the window. The MCP config is only read on cold start.
 2. Relaunch.
@@ -194,14 +170,20 @@ Up to 11 checks across host config, local store, and source connectivity (the fu
 
    > list the entities Schema Brain knows about
 
-If Claude calls `list_entities` and reports `user`, `order`, etc., you're done. If it says "I don't have access to any tool called Schema Brain," see the next section.
+If Claude calls `list_entities` and reports `user`, `order`, etc., you're done. If it says "I don't have access to any tool called Schema Brain," see [If something went wrong](#if-something-went-wrong).
 
-### 6. See what got indexed
+---
 
-The agent is now talking to Schema Brain. Before moving on, see what it knows — same view the agent has, no LLM call, no source connection:
+## After the wizard
+
+The agent is now talking to Schema Brain. Three things worth knowing.
+
+### See what got indexed
+
+See what the agent has — same view it has, no LLM call, no source connection:
 
 ```bash
-schemabrain inspect --store-path ./schemabrain.db
+schemabrain inspect
 ```
 
 ```
@@ -233,7 +215,7 @@ Drill into one: `schemabrain inspect <name>`
 Drill into one entity for the full detail view — columns, PII tags, and the joins that reach it:
 
 ```bash
-schemabrain inspect user --store-path ./schemabrain.db
+schemabrain inspect user
 ```
 
 ```
@@ -252,9 +234,9 @@ Related entities:
       user.id = order.user_id
 ```
 
-This is the operator's counterpart to the agent-facing MCP tools — anything `describe_entity` returns to Claude, `inspect` shows you locally. Use it whenever you want to verify what's curated before pointing an agent at it.
+This is the operator's counterpart to the agent-facing MCP tools — anything `describe_entity` returns to Claude, `inspect` shows you locally.
 
-### 7. Plug into your own agent loop (optional)
+### Plug into your own agent loop
 
 Schema Brain isn't tied to Claude Desktop. The MCP server speaks standard MCP stdio, so any host that speaks MCP can drive it:
 
@@ -273,7 +255,7 @@ Schema Brain isn't tied to Claude Desktop. The MCP server speaks standard MCP st
 
 An end-to-end walkthrough that exercises entities, metrics, AND canonical joins (with the bundled fixture) is at [`examples/ecommerce/`](examples/ecommerce/).
 
-### Inspect the MCP surface (optional)
+### Inspect the MCP tool surface
 
 To see exactly what shape the tools expose to an agent — every argument, every JSON schema, every response envelope — without booting any agent at all, use the [official MCP Inspector](https://github.com/modelcontextprotocol/inspector):
 
@@ -290,7 +272,7 @@ A browser tab opens with every registered tool, its description, the input JSON 
 
 **`pip install schemabrain` gave me an older version.** Check `schemabrain --version`. If it's not 0.3.0, your pip cache may be stale. Run `pip install --upgrade schemabrain` or — to install from source while you wait for the latest release on PyPI — `git clone` the repo and `uv sync --extra dev`.
 
-**`init` reports `source unreachable`.** Three common causes: (a) Postgres isn't ready yet (re-run after `pg_isready` succeeds); (b) wrong driver prefix — must be `postgresql+psycopg://`, not `postgresql://`; (c) wrong port — check `docker ps`.
+**`init` reports `source unreachable`.** Postgres may not be ready yet on first run — wait a few seconds and re-run `schemabrain init`. For your own database, verify host, port, and credentials. Connection URLs in any form are accepted (`postgresql://`, `postgres://`, `postgresql+psycopg://`).
 
 **The first `init` or `schemabrain index` hangs for ~60 seconds.** Normal. The first index downloads the ONNX embedding model (~67 MB) and makes one LLM call per column. It happens once. Subsequent runs are fast.
 
@@ -499,7 +481,7 @@ The operator-side commands — see what Schema Brain knows, catch drift before i
 
 ### Inspect what's indexed
 
-Covered in [Quickstart §6](#6-see-what-got-indexed) — `schemabrain inspect` is the operator browser for everything in the local store. Summary form lists entities, metrics, and joins; pass an entity name as a positional argument to drill into columns, PII tags, and reachable joins.
+Covered in [After the wizard — See what got indexed](#see-what-got-indexed) — `schemabrain inspect` is the operator browser for everything in the local store. Summary form lists entities, metrics, and joins; pass an entity name as a positional argument to drill into columns, PII tags, and reachable joins.
 
 Exit codes: `0` rendered, `1` drilled name not found, `2` operational refusal.
 
