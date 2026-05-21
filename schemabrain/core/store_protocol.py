@@ -506,6 +506,22 @@ class Store(Protocol):
         """
         ...
 
+    def delete_metric(self, name: str, *, source_connection_id: str) -> bool:
+        """Idempotent: delete the metric row for `(source_connection_id, name)`.
+
+        Returns `True` if a row was deleted, `False` if no row existed.
+        Same dbt-owned guard shape as `write_metric` — a metric with
+        `origin='dbt_import'` is refused (raises `DbtOwnedMetricError`)
+        because manual deletion of a dbt-managed row would silently
+        drift from the upstream dbt repo on the next import.
+
+        Used by `schemabrain metrics audit --fix` to remove
+        LLM-suggested metrics whose descriptions admit the metric does
+        not actually compute what its name implies (the
+        `total_order_item_revenue` footgun pattern from PR-6h.2).
+        """
+        ...
+
     # ----- PII tags -------------------------------------------------
     #
     # Per-column PII classification produced by the heuristic

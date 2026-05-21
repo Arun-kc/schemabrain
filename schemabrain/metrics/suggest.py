@@ -167,11 +167,16 @@ _MEASURE_ALLOWED_KEYS: frozenset[str] = _MEASURE_REQUIRED_KEYS
 # silently re-introduce the anti-pattern. Substrings are matched
 # lowercase against the description. Add new phrases here when new
 # failure modes surface.
-_DESCRIPTION_ANTI_PATTERN_PHRASES: tuple[str, ...] = (
+DESCRIPTION_ANTI_PATTERN_PHRASES: tuple[str, ...] = (
     "not directly available",
     "would require multiplication",
     "is not available directly",
 )
+# Backward-compat alias for the original private name. The audit module
+# (PR-6h.3 fold) needs the same phrase list, so the public name lives
+# at module level; the underscored alias preserves any callers that
+# hand-rolled an import.
+_DESCRIPTION_ANTI_PATTERN_PHRASES = DESCRIPTION_ANTI_PATTERN_PHRASES
 
 
 # ----- system prompt ---------------------------------------------------------
