@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from typing import Any
+from typing import Any, Literal
 
 from schemabrain.core.join import CanonicalJoin, JoinColumnPair
 from schemabrain.core.metric import Metric, TimeGrain
@@ -48,6 +48,14 @@ from schemabrain.semantic.compiler.plan import (
     UnknownViaJoinError,
     UnreachableEntityError,
 )
+
+# Closed grammar of column-validation surfaces. Annotating
+# `_validate_column_on_table(kind=...)` and `_resolve(kind=...)` as
+# this Literal lets the type checker reject a future caller that
+# passes (say) `"order_by"` without first wiring the right error class
+# into the branch ladder. Runtime correctness is also defended by the
+# explicit `if`/`if`/`if` ladder + final `RuntimeError`.
+ColumnValidationKind = Literal["group_by", "filter", "measure"]
 
 # Same `<entity>.<column>` shape used by `Metric.time_dimension` —
 # exactly one dot, both sides identifier-shaped. The compiler accepts
@@ -198,7 +206,11 @@ def resolve_metric_plan(
         return names
 
     def _validate_column_on_table(
-        *, entity: str, column: str, qualified_table: str, kind: str
+        *,
+        entity: str,
+        column: str,
+        qualified_table: str,
+        kind: ColumnValidationKind,
     ) -> None:
         # `kind` is "group_by" / "filter" / "measure" — picks the right
         # error class so the MCP envelope distinguishes between the
@@ -234,7 +246,7 @@ def resolve_metric_plan(
             f"unreachable: _validate_column_on_table called with kind={kind!r}"
         )
 
-    def _resolve(column_ref: str, kind: str) -> ResolvedColumn:
+    def _resolve(column_ref: str, kind: ColumnValidationKind) -> ResolvedColumn:
         # `kind` is "group_by" or "filter" — surfaces in the
         # MalformedColumnError message so the user knows which
         # argument is at fault.
