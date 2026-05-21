@@ -484,6 +484,39 @@ class TestPathAmbiguity:
         assert "nonexistent_join" in exc_info.value.requested_via
         assert exc_info.value.anchor_entity == "order_item"
 
+    def test_unknown_via_error_orphan_sentinel_renders_distinct_message(
+        self,
+    ) -> None:
+        """Round-2 fold (HIGH convergent): `UnknownViaJoinError` with
+        `target_entity=""` is the sentinel for "orphan via at request
+        end-of-call" — distinct from the in-BFS case where the via
+        excluded all candidate paths for a known target. The two cases
+        must render distinguishable messages so the agent and the
+        audit row can branch. The previous shape stuffed an arbitrary
+        canonical-join name into `target_entity`, conflating the two
+        cases and misleading any downstream retry path.
+        """
+        # Targeted case — has a known target.
+        targeted = UnknownViaJoinError(
+            anchor_entity="order_item",
+            target_entity="user",
+            requested_via=("nonexistent",),
+            available_join_names=("order_items_order_id",),
+        )
+        assert "to 'user'" in str(targeted)
+
+        # Orphan case — target_entity="" sentinel.
+        orphan = UnknownViaJoinError(
+            anchor_entity="order_item",
+            target_entity="",
+            requested_via=("orphan_name",),
+            available_join_names=("order_items_order_id",),
+        )
+        msg = str(orphan)
+        assert "to ''" not in msg  # NOT the targeted-shape rendering
+        assert "orphan across every resolved" in msg
+        assert "anchor 'order_item'" in msg
+
 
 # ----- single-edge parallel inside multi-hop --------------------------------
 

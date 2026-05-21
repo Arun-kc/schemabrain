@@ -19,6 +19,7 @@ ambiguity (two paths of equal length) refuses with
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from typing import Any
 
@@ -126,6 +127,13 @@ def resolve_metric_plan(
     resolved_joins: dict[str, ResolvedJoin] = {}
 
     via_set = frozenset(via)
+    # `consumed_via` accumulates which via names actually constrained
+    # a hop in some chain. Round-2 fold (HIGH convergent): previously
+    # the set was a closure-captured shared mutable; `_find_canonical_chain`
+    # mutated it directly even when a chain partially resolved before
+    # an unrelated raise. The current contract is per-call: each
+    # `_find_canonical_chain` returns its consumed names alongside the
+    # chain, and the caller merges into the shared set ONLY on success.
     consumed_via: set[str] = set()
 
     def _ensure_graph() -> _JoinGraph:
@@ -172,13 +180,17 @@ def resolve_metric_plan(
                 f"{kind} column {column_ref!r} references entity "
                 f"{entity_name!r} which is not defined for this source"
             )
-        chain = _find_canonical_chain(
+        chain, chain_consumed_via = _find_canonical_chain(
             graph=g,
             anchor=metric.entity,
             target=entity_name,
             via=via_set,
-            consumed_via=consumed_via,
         )
+        # Chain resolved successfully — merge its consumed names into
+        # the request-level set. If the BFS raised, this point is never
+        # reached, so partial-chain consumed names don't pollute the
+        # shared set.
+        consumed_via.update(chain_consumed_via)
         # `chain` is the ordered list of (predecessor_entity, edge)
         # tuples. For each hop, either reuse a cached ResolvedJoin or
         # build a fresh one anchored on the predecessor's alias.
@@ -242,9 +254,15 @@ def resolve_metric_plan(
     unused_via = via_set - consumed_via
     if unused_via:
         all_join_names = tuple(sorted({rj.canonical_name for rj in resolved_joins.values()}))
+        # Round-2 fold (HIGH convergent): target_entity used to receive
+        # a JOIN name from `next(iter(unused_via))`, misleading agents
+        # reading the error to call `resolve_join(entity_b=<join_name>)`.
+        # Pass empty-string sentinel — the orphan-via raise has no
+        # specific target entity (the via was unmatched globally
+        # across every resolved group_by/filter chain).
         raise UnknownViaJoinError(
             anchor_entity=metric.entity,
-            target_entity=next(iter(unused_via)),  # caller-facing hint
+            target_entity="",
             requested_via=tuple(sorted(via)),
             available_join_names=all_join_names,
         )
@@ -310,8 +328,18 @@ def _build_join_graph(edges: list[CanonicalJoin]) -> _JoinGraph:
         # on-pair columns flip so emit can produce
         # `{neighbor_alias}.{source_column} = {origin_alias}.{target_column}`
         # using the same emit logic verbatim.
+        #
+        # Round-2 fold (silent-failure-hunter F4): use `dataclasses.replace`
+        # so any future fields added to `JoinColumnPair` (e.g. cast_type,
+        # nullable_override) carry over to the reverse-direction edge
+        # automatically instead of being silently dropped by a positional
+        # constructor.
         swapped = tuple(
-            JoinColumnPair(source_column=p.target_column, target_column=p.source_column)
+            dataclasses.replace(
+                p,
+                source_column=p.target_column,
+                target_column=p.source_column,
+            )
             for p in join.on
         )
         graph.setdefault(join.target_entity, []).append((join.source_entity, join, swapped))
@@ -329,20 +357,27 @@ def _find_canonical_chain(
     anchor: str,
     target: str,
     via: frozenset[str],
-    consumed_via: set[str],
-) -> list[tuple[str, _ChainEdge]]:
+) -> tuple[list[tuple[str, _ChainEdge]], frozenset[str]]:
     """BFS from `anchor` to `target` over the canonical-join graph.
 
-    Returns the chain as an ordered list of (predecessor_entity,
-    ChainEdge) tuples — for a 1-hop chain that's a single tuple, for
-    a 2-hop chain it's two tuples, etc.
+    Returns `(chain, consumed_via)` where `chain` is the ordered list
+    of (predecessor_entity, ChainEdge) tuples — for a 1-hop chain a
+    single tuple, for a 2-hop chain two tuples, etc. — and
+    `consumed_via` is the subset of the input `via` set whose names
+    constrained an actual hop in the resolved chain.
+
+    Round-2 fold (HIGH convergent): previous shape mutated a
+    closure-captured `consumed_via: set[str]`, which polluted the
+    request-level set with names from partially-resolved chains that
+    raised mid-BFS. The current shape returns consumed names only on
+    successful resolution; the caller merges into a request-level
+    set only on the success path.
 
     Refusal behavior:
       - No path from anchor to target → `UnreachableEntityError`.
       - 2+ shortest paths with no `via` constraint → `AmbiguousPathError`.
-      - 2+ shortest paths and `via` constrains exactly one →
-        return that path; the names from `via` that matched are added
-        to `consumed_via`.
+      - 2+ shortest paths and `via` constrains exactly one → returns
+        that path with the matching names in `consumed_via`.
       - Single-edge ambiguity (parallel canonical joins between the
         same entity pair) on a hop with no `via` → `AmbiguousJoinError`
         (preserves the existing single-hop contract for the v1 case).
@@ -351,6 +386,11 @@ def _find_canonical_chain(
         # Graph has no edges at all OR neither endpoint touches the
         # graph. Either way: no path exists.
         raise UnreachableEntityError(anchor_entity=anchor, target_entity=target)
+
+    # Names within `via` that constrained a hop in this BFS. Built
+    # locally and returned to the caller — never mutated through a
+    # closure capture.
+    local_consumed_via: set[str] = set()
 
     # BFS expansion: at each layer, expand all live frontier nodes one
     # hop, collecting all reachable predecessor→hop edges. We track
@@ -407,7 +447,7 @@ def _find_canonical_chain(
                             candidate_join_names=tuple(sorted(j.name for (j, _op) in matching)),
                         )
                     chosen_join, chosen_pairs = matching[0]
-                    consumed_via.add(chosen_join.name)
+                    local_consumed_via.add(chosen_join.name)
                 else:
                     chosen_join, chosen_pairs = candidates[0]
                 edge = _ChainEdge(
@@ -449,8 +489,8 @@ def _find_canonical_chain(
             chosen_path = filtered[0]
             for _pred, edge in chosen_path:
                 if edge.join.name in via:
-                    consumed_via.add(edge.join.name)
-            return list(chosen_path)
+                    local_consumed_via.add(edge.join.name)
+            return list(chosen_path), frozenset(local_consumed_via)
         visited.update(layer_visited)
         frontier = next_frontier
     raise UnreachableEntityError(anchor_entity=anchor, target_entity=target)

@@ -164,11 +164,16 @@ class AmbiguousPathError(MetricCompilerError):
         # synthesised to balloon the candidate set.
         shown = list(self.candidate_paths[:4])
         more = f" (+{len(self.candidate_paths) - 4} more)" if len(self.candidate_paths) > 4 else ""
+        # Round-2 fold: previous shape rendered `via=(['n1','n2'],)` —
+        # a tuple containing a list, which is invalid for the v1
+        # contract `via: tuple[str, ...]`. Render an inline tuple
+        # literal so the agent's copy-paste retry is valid Python.
+        first_path_literal = tuple(shown[0]) if shown else ()
         super().__init__(
             f"multiple canonical-join paths exist from {self.anchor_entity!r} "
             f"to {self.target_entity!r}: {shown}{more}. "
-            f"Pass `via=({list(shown[0])!r},)` (or another path's names) on "
-            f"`get_metric` to disambiguate."
+            f"Pass `via={first_path_literal!r}` (or another path's "
+            f"names) on `get_metric` to disambiguate."
         )
 
     def __reduce__(
@@ -189,6 +194,15 @@ class UnknownViaJoinError(MetricCompilerError):
     Distinct from `AmbiguousPathError` (multiple valid paths) and
     `UnreachableEntityError` (no path exists at all): the path graph
     is well-formed but the via constraint can't be satisfied.
+
+    `target_entity` is the entity the resolver was trying to reach
+    when the via mismatch surfaced — empty string when the via name
+    was orphan across the whole request (the BFS for every referenced
+    entity succeeded but the via constraint went unused by all of
+    them). Round-2 fold (CRITICAL convergent): the previous shape
+    stuffed a JOIN name into `target_entity` for the orphan case,
+    misleading any agent that read the field to retry via
+    `resolve_join(entity_b=target_entity)`.
     """
 
     anchor_entity: str
@@ -197,11 +211,18 @@ class UnknownViaJoinError(MetricCompilerError):
     available_join_names: tuple[str, ...]
 
     def __post_init__(self) -> None:
+        if self.target_entity:
+            scope = f"path from {self.anchor_entity!r} to {self.target_entity!r}"
+        else:
+            scope = (
+                f"chain in this request (anchor "
+                f"{self.anchor_entity!r}); the via name was orphan "
+                f"across every resolved group_by/filter target"
+            )
         super().__init__(
-            f"`via={list(self.requested_via)}` does not match any canonical-join "
-            f"path from {self.anchor_entity!r} to {self.target_entity!r}. "
-            f"Available joins on candidate paths: "
-            f"{list(self.available_join_names)}"
+            f"`via={list(self.requested_via)}` does not match any "
+            f"canonical-join {scope}. Available joins on resolved "
+            f"chains: {list(self.available_join_names)}"
         )
 
     def __reduce__(
