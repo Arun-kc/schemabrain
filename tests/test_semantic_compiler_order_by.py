@@ -525,6 +525,49 @@ def test_unknown_measure_column_error_pickles() -> None:
     assert revived.allowed_columns == err.allowed_columns
 
 
+def test_ambiguous_path_error_pickles() -> None:
+    """The audit layer fingerprints refusal events; AmbiguousPathError's
+    `candidate_paths` field is a nested tuple, so `__reduce__` must
+    preserve the structure round-trip."""
+    import pickle
+
+    from schemabrain.semantic.compiler import AmbiguousPathError
+
+    err = AmbiguousPathError(
+        anchor_entity="order_item",
+        target_entity="user",
+        candidate_paths=(
+            ("order_items_order_id", "orders_user_id_billing"),
+            ("order_items_order_id", "orders_user_id_shipping"),
+        ),
+    )
+    revived: AmbiguousPathError = pickle.loads(pickle.dumps(err))
+    assert revived.anchor_entity == err.anchor_entity
+    assert revived.target_entity == err.target_entity
+    assert revived.candidate_paths == err.candidate_paths
+
+
+def test_unknown_via_join_error_pickles() -> None:
+    """Same audit-fingerprint contract as the other compiler errors.
+    `requested_via` and `available_join_names` are both tuples that
+    must survive the pickle round-trip."""
+    import pickle
+
+    from schemabrain.semantic.compiler import UnknownViaJoinError
+
+    err = UnknownViaJoinError(
+        anchor_entity="order",
+        target_entity="user",
+        requested_via=("ghost_join",),
+        available_join_names=("orders_user_id_billing", "orders_user_id_shipping"),
+    )
+    revived: UnknownViaJoinError = pickle.loads(pickle.dumps(err))
+    assert revived.anchor_entity == err.anchor_entity
+    assert revived.target_entity == err.target_entity
+    assert revived.requested_via == err.requested_via
+    assert revived.available_join_names == err.available_join_names
+
+
 def test_unknown_order_by_column_error_pickles() -> None:
     """Frozen-dataclass error classes must round-trip through pickle
     so a future audit layer can fingerprint refusals. Lock the

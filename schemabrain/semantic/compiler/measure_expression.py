@@ -126,11 +126,13 @@ def parse_measure_expression(expression: str) -> ParsedMeasureExpression:
 
 def _walk(node: ast.expr, source: str, columns: set[str]) -> None:
     if isinstance(node, ast.Name):
-        if not _IDENT_RE.fullmatch(node.id):
-            # Defence-in-depth: the Python parser already rejects most
-            # non-identifier shapes as `SyntaxError` upstream, but a
-            # forward-compat parser change shouldn't be allowed to
-            # silently let `1$foo` through.
+        if not _IDENT_RE.fullmatch(node.id):  # pragma: no cover — defensive
+            # Defence-in-depth: the Python parser already rejects every
+            # non-identifier shape as `SyntaxError` upstream (verified by
+            # `test_dollar_sign_in_identifier_rejected` + the syntax-error
+            # parametrize). The branch is kept so a forward-compat parser
+            # change can't silently let `1$foo` through, but it has no
+            # reachable test path today.
             raise MalformedMeasureExpressionError(source, f"invalid column identifier {node.id!r}")
         columns.add(node.id)
         return
