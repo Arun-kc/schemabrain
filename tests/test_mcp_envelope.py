@@ -649,3 +649,42 @@ class TestMinLengthGuards:
 
         with pytest.raises(ValidationError):
             WideningHint(scope_requested="pii:contact", would_unblock=False, reason="")
+
+
+# ----- degradation_reason invariant (PR-6h.2 Gap #2) -------------------------
+
+
+class TestDegradationReasonInvariant:
+    def test_degraded_status_with_reason_accepted(self) -> None:
+        from schemabrain.mcp.envelope import ToolResponse
+
+        resp = ToolResponse[dict](
+            status="degraded",
+            data={"key": "value"},
+            degradation_reason="fan_out_join",
+        )
+        assert resp.degradation_reason == "fan_out_join"
+
+    def test_success_status_with_reason_rejected(self) -> None:
+        """`degradation_reason` is only meaningful for status='degraded'.
+        Setting it on success is a producer bug — refuse at construction
+        so the failure surfaces at the right layer.
+        """
+        from schemabrain.mcp.envelope import ToolResponse
+
+        with pytest.raises(ValidationError, match="forbids `degradation_reason`"):
+            ToolResponse[dict](
+                status="success",
+                data={"key": "value"},
+                degradation_reason="fan_out_join",
+            )
+
+    def test_degraded_status_without_reason_accepted(self) -> None:
+        """`degradation_reason` is optional — older callers that
+        emit degraded without setting it continue to work (backward
+        compatible). Future PR may make it required.
+        """
+        from schemabrain.mcp.envelope import ToolResponse
+
+        resp = ToolResponse[dict](status="degraded", data={"key": "value"})
+        assert resp.degradation_reason is None

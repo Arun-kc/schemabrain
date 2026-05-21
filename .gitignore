@@ -99,3 +99,4 @@ logs/
 # Internal-only docs (PR plans, smoke notes, audits, backlogs)
 # Kept locally for engineering reference; not shipped to the public repo.
 docs/internal/
+schemabrain-prerelease.db*

@@ -43,6 +43,12 @@ Operator = Literal[
     "not_null",
 ]
 
+# Closed direction grammar for ORDER BY. Lowercase on the wire (closed
+# Literal, agent-shaped); uppercased at SQL emission. Default "asc"
+# matches Postgres default but is emitted explicitly so the SQL is
+# self-documenting and survives a future engine swap.
+OrderDirection = Literal["asc", "desc"]
+
 
 # ----- compiler errors -------------------------------------------------------
 
@@ -250,6 +256,35 @@ class InvalidTimeGrainError(MetricCompilerError):
         return (self.__class__, (self.requested_grain, self.allowed_grains))
 
 
+@dataclass(frozen=True)
+class UnknownOrderByColumnError(MetricCompilerError):
+    """Raised when an `order_by` entry references a column that is
+    neither the metric's name (the SELECT-aliased measure) nor any of
+    the `group_by` columns.
+
+    Restricting ORDER BY to SELECTed columns is an explicit safety
+    contract: it prevents smuggling an arbitrary entity column into
+    ORDER BY without putting it in `group_by` first (which would
+    change row counts and silently confuse the agent). Carries both
+    the requested reference and the allowed set so the MCP layer can
+    populate `recovery` with the allowed names.
+    """
+
+    requested_column: str
+    allowed_columns: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        super().__init__(
+            f"order_by column {self.requested_column!r} is not a "
+            f"selected column; ORDER BY may only reference the metric's "
+            f"name or one of the group_by columns. Allowed: "
+            f"{list(self.allowed_columns)}"
+        )
+
+    def __reduce__(self) -> tuple[type, tuple[str, tuple[str, ...]]]:
+        return (self.__class__, (self.requested_column, self.allowed_columns))
+
+
 class GrainMismatchError(MetricCompilerError):
     """Reserved for v2 grain-aware metric work.
 
@@ -306,6 +341,50 @@ class RequestedFilter:
     column: str
     op: Operator
     value: Any = None
+
+
+@dataclass(frozen=True)
+class RequestedOrderBy:
+    """One ORDER BY clause the caller wants emitted.
+
+    `column` is EITHER the metric's `name` (referencing the
+    SELECT-aliased measure aggregate) OR a `<entity>.<column>` form
+    that names one of the `group_by` columns. The resolver enforces
+    "only select-list columns may appear in ORDER BY" so callers can't
+    smuggle an arbitrary column into ORDER BY without putting it in
+    `group_by` first (which would change row counts).
+
+    `direction` is `asc` or `desc`; default `asc` matches SQL default
+    but is emitted explicitly for self-documentation.
+    """
+
+    column: str
+    direction: OrderDirection = "asc"
+
+
+@dataclass(frozen=True)
+class ResolvedOrderBy:
+    """Resolved ORDER BY clause ready for SQL emission.
+
+    `expression` is the bare SELECT-alias name the emitter quotes at
+    emit time (e.g. `total_items_sold` for a measure ref, `group_col_0`
+    for the first group-by column). Using SELECT aliases (not the raw
+    column references) keeps the ORDER BY clause unambiguous and matches
+    how the emitter already groups by alias.
+
+    `direction` is the resolved (still lowercase) direction; the emitter
+    uppercases at SQL-write time.
+
+    `auto_appended_tie_break` flags clauses the resolver added
+    automatically for deterministic ordering — the audit layer reads
+    this to distinguish caller-asked ordering from compiler-added
+    tie-breaks, and the MCP layer can surface the explicit clauses
+    back to the caller without leaking the tie-break.
+    """
+
+    expression: str
+    direction: OrderDirection
+    auto_appended_tie_break: bool = False
 
 
 @dataclass(frozen=True)
@@ -417,6 +496,13 @@ class MetricPlan:
     # reads this list for provenance (just the names, see
     # `required_join_names`).
     joins: tuple[ResolvedJoin, ...] = field(default=())
+
+    # ORDER BY clauses, in emission order. Includes any compiler-added
+    # tie-breaking clauses (see `ResolvedOrderBy.auto_appended_tie_break`).
+    # Empty tuple = no ORDER BY (the emitter omits the clause entirely).
+    # A field default keeps every existing test constructor working
+    # without the new kwarg.
+    order_by_clauses: tuple[ResolvedOrderBy, ...] = field(default=())
 
     @property
     def required_join_names(self) -> tuple[str, ...]:

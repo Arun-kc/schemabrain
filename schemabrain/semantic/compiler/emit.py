@@ -203,6 +203,18 @@ def emit_sql(plan: MetricPlan) -> tuple[str, dict[str, Any]]:
     if group_by_parts:
         group_by_clause = "GROUP BY " + ", ".join(group_by_parts)
 
+    # ORDER BY. The resolver constrained the allowed expressions to
+    # SELECT aliases (metric name OR `group_col_N`), each of which is
+    # safe to quote with double-quotes — they're either store-validated
+    # identifiers or compiler-generated `group_col_N` literals. Direction
+    # is a closed Literal so uppercasing is safe.
+    order_by_clause = ""
+    if plan.order_by_clauses:
+        order_by_parts: list[str] = []
+        for clause in plan.order_by_clauses:
+            order_by_parts.append(f'"{clause.expression}" {clause.direction.upper()}')
+        order_by_clause = "ORDER BY " + ", ".join(order_by_parts)
+
     # LIMIT — always emitted.
     params["p_limit"] = plan.limit
 
@@ -214,6 +226,7 @@ def emit_sql(plan: MetricPlan) -> tuple[str, dict[str, Any]]:
             *join_clauses,
             where_clause,
             group_by_clause,
+            order_by_clause,
             "LIMIT :p_limit",
         )
         if line

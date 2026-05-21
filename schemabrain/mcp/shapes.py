@@ -596,6 +596,31 @@ class MetricFilterArg(BaseModel):
     value: Any = None
 
 
+class MetricOrderByArg(BaseModel):
+    """One ORDER BY clause the agent wants applied to `get_metric`.
+
+    `column` MUST be either the metric's `name` (the SELECT-aliased
+    measure) or one of the `group_by` columns in `<entity>.<column>`
+    form. Anything else refuses with `unknown_order_by_column`. This
+    constraint exists so callers can't smuggle an arbitrary column
+    into ORDER BY without putting it in `group_by` first.
+
+    `direction` is `asc` or `desc`; defaults to `asc` to match SQL
+    default. The compiler always emits the direction explicitly so
+    the SQL is self-documenting.
+
+    The compiler auto-appends a deterministic tie-breaking secondary
+    key (the first `group_by` column, ASC) when ORDER BY is set AND
+    `group_by` is non-empty, so identical measure values produce
+    identical row order across runs.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    column: str
+    direction: Literal["asc", "desc"] = "asc"
+
+
 class MetricResult(BaseModel):
     """Return shape for `get_metric` (success path).
 

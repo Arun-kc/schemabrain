@@ -506,3 +506,61 @@ candidates:
 """
     with pytest.raises(MetricSuggestionParseError, match=r"entity\.column"):
         parse_suggestions(text)
+
+
+# ----- description anti-pattern validation (Gap #5 belt-and-suspenders) ------
+
+
+def test_parse_suggestions_rejects_admits_aggregation_cannot_deliver() -> None:
+    """Gap #5 regression — 2026-05-21 smoke surfaced a metric where the
+    LLM admitted in its own description that the aggregation couldn't
+    deliver what the name promised: `total_order_item_revenue` with
+    measure `sum(unit_price_cents)` and description "unit_price_cents
+    * quantity is not directly available, but unit_price_cents summed
+    gives a price-mix signal". The system prompt now forbids this, but
+    parse-time validation is the belt to that suspenders.
+    """
+    text = """
+candidates:
+  - name: total_order_item_revenue
+    description: >-
+      Sum of line-item revenue (unit_price_cents * quantity is not
+      directly available, but unit_price_cents summed gives a
+      price-mix signal) across all order items.
+    entity: order_item
+    measure: {agg: sum, column: unit_price_cents}
+    confidence: medium
+"""
+    with pytest.raises(MetricSuggestionParseError, match="anti-pattern"):
+        parse_suggestions(text)
+
+
+def test_parse_suggestions_rejects_would_require_multiplication() -> None:
+    text = """
+candidates:
+  - name: total_revenue
+    description: True line revenue would require multiplication of unit_price * quantity.
+    entity: order_item
+    measure: {agg: sum, column: unit_price_cents}
+    confidence: low
+"""
+    with pytest.raises(MetricSuggestionParseError, match="anti-pattern"):
+        parse_suggestions(text)
+
+
+def test_parse_suggestions_accepts_honest_description() -> None:
+    """A metric description that's honest about what it measures (no
+    anti-pattern phrases) MUST still parse cleanly. Regression guard
+    against the validator over-rejecting innocent descriptions.
+    """
+    text = """
+candidates:
+  - name: total_items_sold
+    description: Sum of quantities sold across all order line items.
+    entity: order_item
+    measure: {agg: sum, column: quantity}
+    confidence: high
+"""
+    candidates = parse_suggestions(text)
+    assert len(candidates) == 1
+    assert candidates[0].metric.name == "total_items_sold"

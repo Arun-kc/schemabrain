@@ -43,6 +43,7 @@ from schemabrain.mcp.describe_column import describe_column_impl
 from schemabrain.mcp.describe_entity import describe_entity_impl
 from schemabrain.mcp.describe_table import describe_table_impl
 from schemabrain.mcp.envelope import (
+    DegradationReason,
     Provenance,
     Recovery,
     ToolError,
@@ -70,6 +71,7 @@ from schemabrain.mcp.shapes import (
     JoinNameMismatchError,
     JoinSummary,
     MetricFilterArg,
+    MetricOrderByArg,
     MetricResult,
     MetricSummary,
     NoCanonicalJoinError,
@@ -113,6 +115,7 @@ from schemabrain.semantic.compiler import (
     PiiBlockedError,
     UnknownColumnError,
     UnknownMetricError,
+    UnknownOrderByColumnError,
     UnknownViaJoinError,
     UnreachableEntityError,
 )
@@ -849,13 +852,15 @@ def build_server(
 
     @app.tool(
         description=(
-            "Use this when the user asks what metrics are defined "
-            "(e.g. 'what metrics do we have?', 'what can I compute?'). "
-            "Returns every declared metric with its anchor entity, "
-            "aggregation shape, time-bucketing capabilities, and "
-            "provenance. Use `get_metric` instead when you already "
-            "have a metric name and want its computed value. Chain to "
-            "`describe_entity` for the anchor entity's full shape."
+            "Use this when the user asks any ranking, top-N, "
+            "most/highest/lowest, or aggregation question (e.g. 'who "
+            "bought the most', 'top 5 by revenue', 'rank customers', "
+            "'find users with the highest X', 'what's the total / "
+            "average / count') — returns every declared metric with its "
+            "anchor entity, aggregation, and time-bucketing so you can "
+            "pick the right metric before calling `get_metric`. Use "
+            "`get_metric` instead when you already have the metric "
+            "name. Chain to `describe_entity` for full anchor shape."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -1123,14 +1128,15 @@ def build_server(
 
     @app.tool(
         description=(
-            "Use this when you have a metric name and want its computed "
-            "value sliced/filtered against the live database — returns "
-            "rows plus parameterised SQL. The compiler chains multi-hop "
-            "canonical joins automatically: a metric anchored on "
-            "`order_item` can group_by `user.email` via "
-            "`order_item → order → user`. Use `list_metrics` instead "
-            "when you don't know the metric name. On ambiguity refusal, "
-            "pass `via=(join_name,)` to pin the chain."
+            "Use this when you have a metric name + want ranked/sliced "
+            "rows (top-N, most/highest/lowest). Returns rows + "
+            "parameterised SQL. Compiler chains multi-hop joins "
+            "automatically (anchor `order_item` + group_by `user.email` "
+            "+ order_by `total_items_sold desc` → `order_item → order "
+            "→ user`). Pass `order_by=` for deterministic ranking; "
+            "without it, `limit` is non-deterministic (envelope flags "
+            "`missing_order_by_with_limit`). Use `list_metrics` "
+            "instead when you don't know the metric name."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -1213,6 +1219,29 @@ def build_server(
                 ),
             ),
         ] = (),
+        order_by: Annotated[
+            tuple[MetricOrderByArg, ...],
+            Field(
+                description=(
+                    "ORDER BY clauses applied to the result. Each entry's "
+                    "`column` must be EITHER the metric's `name` (the "
+                    "measure aggregate's SELECT alias) OR one of the "
+                    "`group_by` columns in `entity.column` form. Anything "
+                    "else refuses with `unknown_order_by_column`. "
+                    "`direction` is `asc` (default) or `desc`. Pass this "
+                    'when you want deterministic ranking (e.g. "top 5 '
+                    'users by total_items_sold" → '
+                    "`order_by=[{column:'total_items_sold', direction:"
+                    "'desc'}]`). The compiler auto-appends a tie-breaking "
+                    "secondary key (first group_by column ASC) so equal "
+                    "measure values produce identical row order across "
+                    "runs. Empty tuple = no ORDER BY (database-default "
+                    "row order; the envelope surfaces "
+                    "`missing_order_by_with_limit` as a degradation "
+                    "reason if `limit` is set + `group_by` is non-empty)."
+                ),
+            ),
+        ] = (),
     ) -> ToolResponse[MetricResult]:
         if metric_executor is None:
             return ToolResponse(
@@ -1238,6 +1267,7 @@ def build_server(
                 time_grain=time_grain,
                 limit=limit,
                 via=via,
+                order_by=order_by,
                 pii_block=pii_block,
             )
         except PiiBlockedError as exc:
@@ -1342,6 +1372,22 @@ def build_server(
                     ),
                 ),
             )
+        except UnknownOrderByColumnError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="unknown_order_by_column",
+                    message=str(exc),
+                    recovery=Recovery(
+                        suggested_tool="get_metric",
+                        # Hand the agent the exact allowed-column set
+                        # from the error payload so the retry is
+                        # mechanical — pick any of these as the column
+                        # ref. No need to call list_metrics again.
+                        suggested_args={"allowed_columns": exc.allowed_columns},
+                    ),
+                ),
+            )
         except InvalidTimeGrainError as exc:
             return ToolResponse(
                 status="error",
@@ -1355,16 +1401,31 @@ def build_server(
             return _wrap_internal_error(exc)
         except Exception as exc:  # pragma: no cover — defensive
             return _wrap_internal_error(exc)
-        # Fan-out joins surfaced via `degraded` status (the agent gets
-        # rows but knows aggregation may be inflated). No fan-out
-        # joins = standard `success`.
+        # Degradation precedence: fan_out_join takes priority over
+        # missing_order_by_with_limit because fan-out is a correctness
+        # concern (rows may be inflated) while missing-order-by is a
+        # determinism concern (rows may be ordered randomly). Both are
+        # signals worth surfacing, but if forced to pick one
+        # `degradation_reason` we surface the more load-bearing one.
+        # The PR-6.5 polish bundle considers structured multi-reason
+        # support; for v1 a single enum keeps the contract tight.
+        degradation: DegradationReason | None = None
         if result.fan_out_join_names:
+            degradation = "fan_out_join"
+        elif group_by and not order_by:
+            # `limit` is always set (defaults to 1000, hard cap 10_000)
+            # — so any non-empty group_by without order_by produces a
+            # potentially non-deterministic slice. Surface it even when
+            # the caller used the default limit.
+            degradation = "missing_order_by_with_limit"
+        if degradation is not None:
             return ToolResponse[MetricResult](
                 status="degraded",
                 data=result,
                 confidence="MEDIUM",
                 provenance=Provenance(source="schema"),
                 follow_up_hints=["describe_entity"],
+                degradation_reason=degradation,
             )
         return ToolResponse[MetricResult](
             status="success",
