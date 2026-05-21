@@ -484,38 +484,122 @@ class TestPathAmbiguity:
         assert "nonexistent_join" in exc_info.value.requested_via
         assert exc_info.value.anchor_entity == "order_item"
 
-    def test_unknown_via_error_orphan_sentinel_renders_distinct_message(
-        self,
+    def test_caller_ambiguous_via_with_multiple_parallel_matches_raises(
+        self, tmp_path: Path
     ) -> None:
-        """Round-2 fold (HIGH convergent): `UnknownViaJoinError` with
-        `target_entity=""` is the sentinel for "orphan via at request
-        end-of-call" — distinct from the in-BFS case where the via
-        excluded all candidate paths for a known target. The two cases
-        must render distinguishable messages so the agent and the
-        audit row can branch. The previous shape stuffed an arbitrary
-        canonical-join name into `target_entity`, conflating the two
-        cases and misleading any downstream retry path.
+        """When the parallel-edge branch finds 2+ via names matching
+        the candidate joins (e.g. caller passes BOTH `placing_user`
+        AND `fulfilment_user` at the same hop), the resolver refuses
+        with `AmbiguousJoinError` rather than picking one — caller's
+        constraint is itself ambiguous, recovery shape stays
+        single-edge-shaped.
         """
-        # Targeted case — has a known target.
-        targeted = UnknownViaJoinError(
-            anchor_entity="order_item",
-            target_entity="user",
-            requested_via=("nonexistent",),
-            available_join_names=("order_items_order_id",),
-        )
-        assert "to 'user'" in str(targeted)
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_parallel_single_edge(store)
+            with pytest.raises(AmbiguousJoinError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    group_by=("user.email",),
+                    via=("orders_placing_user", "orders_fulfilment_user"),
+                )
+        # Both names surface as candidates (the caller selected both).
+        assert set(exc_info.value.candidate_join_names) == {
+            "orders_placing_user",
+            "orders_fulfilment_user",
+        }
 
-        # Orphan case — target_entity="" sentinel.
-        orphan = UnknownViaJoinError(
-            anchor_entity="order_item",
-            target_entity="",
-            requested_via=("orphan_name",),
-            available_join_names=("order_items_order_id",),
-        )
-        msg = str(orphan)
-        assert "to ''" not in msg  # NOT the targeted-shape rendering
-        assert "orphan across every resolved" in msg
-        assert "anchor 'order_item'" in msg
+
+# ----- empty-graph guard ----------------------------------------------------
+
+
+class TestEmptyJoinGraph:
+    def test_unreachable_when_store_has_no_canonical_joins(self, tmp_path: Path) -> None:
+        """Both endpoints absent from the join graph (store has zero
+        canonical joins) → `UnreachableEntityError` from the early
+        guard, not from BFS exhaustion.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            # Seed the two-hop schema but DELIBERATELY skip the
+            # `write_canonical_join` calls so the graph is empty.
+            store.write_table(
+                Table(
+                    name="order_items",
+                    schema_name="public",
+                    columns=(_id_col("order_items"),),
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_table(
+                Table(name="users", schema_name="public", columns=(_id_col("users"),)),
+                source_connection_id=SOURCE,
+            )
+            for name, table in (
+                ("order_item", "public.order_items"),
+                ("user", "public.users"),
+            ):
+                store.write_entity(
+                    Entity(
+                        name=name,
+                        description="",
+                        binding=SingleTableBinding(qualified_table=table),
+                        identity="id",
+                    ),
+                    source_connection_id=SOURCE,
+                )
+            store.write_metric(
+                Metric(
+                    name="total_items_sold",
+                    description="",
+                    entity="order_item",
+                    measure=MetricMeasure(agg="sum", column="quantity"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            with pytest.raises(UnreachableEntityError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    group_by=("user.email",),
+                )
+        assert exc_info.value.anchor_entity == "order_item"
+        assert exc_info.value.target_entity == "user"
+
+
+# ----- shared intermediate to different targets -----------------------------
+
+
+class TestSharedIntermediateToDifferentTargets:
+    def test_two_chains_share_intermediate_dedupe_at_iteration(self, tmp_path: Path) -> None:
+        """Two group_by columns reaching DIFFERENT final targets but
+        through the SAME intermediate (`order_item → order → A` and
+        `order_item → order → B`). The second chain's iteration must
+        hit the cache-hit branch for the intermediate (`order`) and
+        skip re-building its ResolvedJoin, producing one join entry
+        for `order`, one for each final target — three total, not
+        four.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_diamond_paths(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="total_items_sold",
+                group_by=("billing_address.country", "shipping_address.country"),
+            )
+        names = plan.required_join_names
+        # `order_items_order_id` must appear exactly once even though
+        # both chains transit it.
+        assert names.count("order_items_order_id") == 1
+        # Both address-side joins resolved, one per chain.
+        assert "orders_billing_address" in names
+        assert "orders_shipping_address" in names
+        # 3 joins total: one shared intermediate + two leaf hops.
+        assert len(plan.joins) == 3
 
 
 # ----- single-edge parallel inside multi-hop --------------------------------

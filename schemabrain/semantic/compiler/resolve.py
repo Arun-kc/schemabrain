@@ -246,27 +246,11 @@ def resolve_metric_plan(
             )
         )
 
-    # Any via= names the caller passed that didn't end up constraining
-    # an actual chain are caller errors — better to refuse than to
-    # silently ignore. (When chain resolution doesn't trip ambiguity,
-    # the via constraint is unnecessary and any name that doesn't
-    # match an edge on the resolved chain is misleading.)
-    unused_via = via_set - consumed_via
-    if unused_via:
-        all_join_names = tuple(sorted({rj.canonical_name for rj in resolved_joins.values()}))
-        # Empty-string sentinel on `target_entity`: the orphan-via raise
-        # has no specific target entity (the via was unmatched globally
-        # across every resolved group_by/filter chain). Agents reading
-        # the field to plan a follow-up `resolve_join` call must branch
-        # on the sentinel — `UnknownViaJoinError.__post_init__` renders
-        # a distinct message for this case so a downstream retry path
-        # doesn't try to look up an entity that doesn't exist.
-        raise UnknownViaJoinError(
-            anchor_entity=metric.entity,
-            target_entity="",
-            requested_via=tuple(sorted(via)),
-            available_join_names=all_join_names,
-        )
+    # `consumed_via` tracking exists for future symmetry with a v2
+    # multi-target retry contract; today, `_find_canonical_chain`'s
+    # `issubset` filter rejects any chain whose path doesn't contain
+    # every via name, so any successful resolution already guarantees
+    # every via name was consumed. No end-of-call orphan check needed.
 
     # `joins` is emitted in topological chain order. Insertion order
     # of `resolved_joins` is already topological because `_resolve`

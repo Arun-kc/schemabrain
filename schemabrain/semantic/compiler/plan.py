@@ -195,15 +195,6 @@ class UnknownViaJoinError(MetricCompilerError):
     Distinct from `AmbiguousPathError` (multiple valid paths) and
     `UnreachableEntityError` (no path exists at all): the path graph
     is well-formed but the via constraint can't be satisfied.
-
-    `target_entity` is the entity the resolver was trying to reach
-    when the via mismatch surfaced — empty string when the via name
-    was orphan across the whole request (the BFS for every referenced
-    entity succeeded but the via constraint went unused by all of
-    them). Agents reading the field to plan a follow-up
-    `resolve_join(entity_b=target_entity)` must branch on the
-    empty-string sentinel; the `__post_init__` message rendering does
-    the same so the two cases stay distinguishable in audit logs.
     """
 
     anchor_entity: str
@@ -212,18 +203,11 @@ class UnknownViaJoinError(MetricCompilerError):
     available_join_names: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if self.target_entity:
-            scope = f"path from {self.anchor_entity!r} to {self.target_entity!r}"
-        else:
-            scope = (
-                f"chain in this request (anchor "
-                f"{self.anchor_entity!r}); the via name was orphan "
-                f"across every resolved group_by/filter target"
-            )
         super().__init__(
             f"`via={list(self.requested_via)}` does not match any "
-            f"canonical-join {scope}. Available joins on resolved "
-            f"chains: {list(self.available_join_names)}"
+            f"canonical-join path from {self.anchor_entity!r} to "
+            f"{self.target_entity!r}. Available joins on candidate "
+            f"paths: {list(self.available_join_names)}"
         )
 
     def __reduce__(
