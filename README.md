@@ -75,7 +75,7 @@ To verify Claude's SQL is mechanically correct (and that flagged caveats are the
 
 ## Quickstart
 
-Three steps from `pip install` to a working Claude Desktop integration. ~60s on the bundled demo.
+Three steps from `pip install` to a working Claude Desktop integration. ~45s once Docker and the embedding model are cached; budget a couple of minutes on a true first run while the `postgres:16-alpine` image and the ~67 MB ONNX embedding model download.
 
 ### 1. Install
 
@@ -100,8 +100,10 @@ schemabrain init
 
 `init` is a seven-stage wizard that takes you from "I have a Postgres database" to "Claude Desktop can answer questions about it" in one command. On first run it prompts for what it needs:
 
-- **A Postgres URL** — paste your own connection string, or press **Enter** to spin up a local demo Postgres container with the bundled e-commerce fixture (Docker is invoked automatically; idempotent on re-runs).
-- **An `ANTHROPIC_API_KEY`** — optional. Skip and the wizard still wires Claude Desktop; entity curation can run later via `schemabrain entities suggest --apply`.
+- **A Postgres URL** — paste your own connection string, or press **Enter** to spin up a local demo Postgres container with the bundled e-commerce fixture (Docker is invoked automatically; idempotent on re-runs). If Docker isn't installed the wizard prints install instructions and exits cleanly — no half-state.
+- **An `ANTHROPIC_API_KEY`** — optional. Skip and the wizard still wires Claude Desktop; entity curation can run later (see "Running without an API key" below).
+
+When you run it, you'll see:
 
 ```
 Schema Brain init — activation wizard
@@ -123,16 +125,16 @@ Schema Brain init — activation wizard
 ```
 
 <details>
-<summary>If <code>ANTHROPIC_API_KEY</code> isn't set</summary>
+<summary>Running without an API key (still works)</summary>
 
-Stage 3 skips gracefully — the wizard still wires the MCP host and the rest works. You can curate entities later:
+Stage 3 skips gracefully — the wizard still wires the MCP host and the rest works. To curate entities later:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 schemabrain entities suggest --apply
 ```
 
-Or skip entity curation entirely by passing `--no-entities` to `init`.
+You'll be prompted for the Postgres URL — paste the same one you gave the wizard. Or skip entity curation entirely by passing `--no-entities` to `init`.
 
 </details>
 
@@ -152,13 +154,13 @@ Or skip entity curation entirely by passing `--no-entities` to `init`.
 </details>
 
 <details>
-<summary>Advanced wizard flags</summary>
+<summary>Other MCP hosts (Cursor, Claude Code, Continue) & advanced flags</summary>
 
-- **CI / scripted runs:** pass `--yes` to skip all interactive prompts (URL prompt, LLM cost-cap pauses, host-overwrite confirmation).
-- **Cost-cap pauses:** before each LLM-driven stage the wizard pauses with the cost cap formatted in the prompt. Skip only the pauses with `--skip-llm-confirm`; the pause auto-suppresses in non-TTY environments regardless.
-- **dbt as the source of truth:** force a specific manifest with `--from-dbt PATH`. See [Import from dbt](#import-from-dbt) for the full surface.
 - **For Claude Code:** add `--host claude-code` to shell out to `claude mcp add` instead of editing JSON directly.
 - **For Cursor / Continue / Windsurf / anything else:** pass `--print-only` to print the MCP snippet without writing — paste into your host's config yourself.
+- **dbt as the source of truth:** force a specific manifest with `--from-dbt PATH`. See [Import from dbt](#import-from-dbt) for the full surface.
+- **CI / scripted runs:** pass `--yes` to skip all interactive prompts (URL prompt, LLM cost-cap pauses, host-overwrite confirmation).
+- **Cost-cap pauses:** before each LLM-driven stage the wizard pauses with the cost cap formatted in the prompt. Skip only the pauses with `--skip-llm-confirm`; the pause auto-suppresses in non-TTY environments regardless.
 
 </details>
 
@@ -186,6 +188,8 @@ See what the agent has — same view it has, no LLM call, no source connection:
 schemabrain inspect
 ```
 
+> **Your output will vary.** Entity names come from Sonnet's read of your schema (you'll typically see `user` not `customer` on the bundled fixture); join names follow your actual FK constraints. Operate on what `inspect` prints, not the names in this sample.
+
 ```
 ◆ store · ./schemabrain.db
 7 tables · 30 columns · 6 entities · 10 metrics · 5 joins
@@ -209,8 +213,6 @@ Definitions
 
 Drill into one: `schemabrain inspect <name>`
 ```
-
-> **Your entity names will vary.** Sonnet names entities from your schema — for the bundled fixture you'll typically see `user` (bound to `public.users`), not `customer`. Operate on the names `inspect` shows you, not the names in this sample.
 
 Drill into one entity for the full detail view — columns, PII tags, and the joins that reach it:
 
@@ -241,7 +243,7 @@ This is the operator's counterpart to the agent-facing MCP tools — anything `d
 Schema Brain isn't tied to Claude Desktop. The MCP server speaks standard MCP stdio, so any host that speaks MCP can drive it:
 
 - **Claude Desktop / Claude Code / Cursor** — `init` already wrote the right config for the host you selected. For Claude Code, run `init --host claude-code` instead of editing JSON; for Continue, Windsurf, Zed, or any arbitrary host, pass `--print-only` and paste the snippet into your host's MCP config yourself.
-- **Your own Anthropic SDK agent** — [`examples/anthropic_demo.py`](examples/anthropic_demo.py) is a 230-LOC drop-in that wires Claude Haiku to `schemabrain serve` over MCP stdio. Run it against your indexed store to see exactly which tools the agent calls and how it answers:
+- **Your own Anthropic SDK agent** — [`examples/anthropic_demo.py`](examples/anthropic_demo.py) is a drop-in that wires Claude Haiku to `schemabrain serve` over MCP stdio. Run it against your indexed store to see exactly which tools the agent calls and how it answers:
 
   ```bash
   export ANTHROPIC_API_KEY=sk-ant-...
@@ -276,9 +278,11 @@ A browser tab opens with every registered tool, its description, the input JSON 
 
 **The first `init` or `schemabrain index` hangs for ~60 seconds.** Normal. The first index downloads the ONNX embedding model (~67 MB) and makes one LLM call per column. It happens once. Subsequent runs are fast.
 
+**`init` fails at stage 6 "wire host".** Claude Desktop must be installed first — Schema Brain writes into its config file, which doesn't exist until Claude Desktop has launched at least once. Download from [claude.ai/download](https://claude.ai/download), launch once, then re-run `schemabrain init`.
+
 **Claude Desktop doesn't show Schema Brain after restart.** Cmd+Q is required (close-window doesn't trigger a re-read of MCP config). After Cmd+Q and relaunch, run `schemabrain doctor` to verify the config landed. If `doctor` says everything's good but Claude Desktop still doesn't see the tool, check `~/Library/Logs/Claude/mcp*.log`.
 
-**`get_metric` / `describe_entity` returns "no entities found".** Stage 3 of `init` was skipped (no `ANTHROPIC_API_KEY`) or `--no-entities` was passed. Run `schemabrain entities suggest --apply --url-env DATABASE_URL --store-path ./schemabrain.db`. Verify with `schemabrain inspect --store-path ./schemabrain.db`.
+**`get_metric` / `describe_entity` returns "no entities found".** Stage 3 of `init` was skipped (no `ANTHROPIC_API_KEY`) or `--no-entities` was passed. Run `schemabrain entities suggest --apply` (you'll be prompted for the URL). Verify with `schemabrain inspect`.
 
 ---
 
