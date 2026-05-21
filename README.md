@@ -95,6 +95,20 @@ Twelve PII categories (`contact`, `financial`, `health`, `identity`, …) tagged
 schemabrain audit verify   # exit 0 = chain clean
 ```
 
+And one property that keeps those four portable:
+
+**5. Pluggable into any agent loop.** The same MCP stdio surface Claude Desktop sees is exposed to any host that speaks MCP — your own Anthropic, OpenAI, or LangGraph loop included. [`examples/anthropic_demo.py`](examples/anthropic_demo.py) is a 230-LOC drop-in that wires Claude Haiku 4.5 to `schemabrain serve` and prints exactly which tools the agent chose to call:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+python examples/anthropic_demo.py \
+    --url-env DATABASE_URL \
+    --store-path ./schemabrain.db \
+    --question "Which tables describe customer orders?"
+```
+
+~$0.005–0.02 per run on Haiku 4.5, bounded by `--max-turns`. ([Plug into your own agent loop](#plug-into-your-own-agent-loop))
+
 ---
 
 ## Quickstart
@@ -267,16 +281,7 @@ This is the operator's counterpart to the agent-facing MCP tools — anything `d
 Schema Brain isn't tied to Claude Desktop. The MCP server speaks standard MCP stdio, so any host that speaks MCP can drive it:
 
 - **Claude Desktop / Claude Code / Cursor** — `init` already wrote the right config for the host you selected. For Claude Code, run `init --host claude-code` instead of editing JSON; for Continue, Windsurf, Zed, or any arbitrary host, pass `--print-only` and paste the snippet into your host's MCP config yourself.
-- **Your own Anthropic SDK agent** — [`examples/anthropic_demo.py`](examples/anthropic_demo.py) is a drop-in that wires Claude Haiku to `schemabrain serve` over MCP stdio. Run it against your indexed store to see exactly which tools the agent calls and how it answers:
-
-  ```bash
-  export ANTHROPIC_API_KEY=sk-ant-...
-  python examples/anthropic_demo.py \
-      --url-env DATABASE_URL \
-      --store-path ./schemabrain.db \
-      --question "Which tables describe customer orders?"
-  ```
-
+- **Your own Anthropic SDK agent** — the command above ([`The firewall §5`](#the-firewall)) is the full setup; [`examples/anthropic_demo.py`](examples/anthropic_demo.py) is 230 LOC of plain Anthropic SDK + the `mcp` Python client, no magic, easy to fork into your own loop.
 - **LangGraph / LlamaIndex / AutoGen / OpenAI Agents SDK** — adapt the demo's loop; the underlying MCP stdio server is the same.
 
 An end-to-end walkthrough that exercises entities, metrics, AND canonical joins (with the bundled fixture) is at [`examples/ecommerce/`](examples/ecommerce/).

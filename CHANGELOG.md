@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **README: promote `examples/anthropic_demo.py` above the Quickstart
+  as the 5th firewall property.** The 230-LOC drop-in proof was buried
+  inside `## After the wizard > Plug into your own agent loop`; now
+  sits at the end of `## The firewall` with the same shape as the
+  four SQL-boundary properties (one-line claim + the actual command
+  + inline forward link). The after-wizard bullet for the Anthropic
+  SDK path is reduced to a one-line pointer so the same proof doesn't
+  appear twice. No code change.
+
 ## [0.3.0] - 2026-05-20
 
 **Highlights** — Schema Brain v0.3.0 is the first release where the
@@ -291,9 +301,7 @@ trio per release.
   not a tier name — the rename makes its scope honest now that the
   general ``status_glyph(status_name)`` primitive ships alongside.
   Sole consumer (``check/render.py``) updated in the same commit;
-  no other in-repo callsites existed. Surfaced by the PR #71
-  3-agent reviewer rotation (code-reviewer MED #4); deferred to
-  this PR so PR #71 stayed foundation-only.
+  no other in-repo callsites existed.
 
 - **Four new `SCHEMABRAIN_*` env-var overrides for tier-1 config
   knobs surfaced by the 2026-05-19 config-flexibility audit.**
@@ -420,8 +428,7 @@ trio per release.
   the bare string has no scheme. Both commands now route through the
   existing `_resolve_url` helper which intercepts the `ValueError`
   and emits a guided `url_invalid` block with exit code 2.
-  Discovered via the 2026-05-19 ecommerce-fixture smoke. Regression
-  test in `tests/test_smoke_2026_05_19_fixes.py::TestB2_*`.
+  Regression test in `tests/test_smoke_2026_05_19_fixes.py::TestB2_*`.
 - **Bundled `ecommerce.sql` fixture now seeds orders / order_items /
   product_categories rows.** Pre-fix, the fixture seeded only users
   / addresses / products / categories — `orders` and `order_items`
