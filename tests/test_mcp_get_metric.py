@@ -65,19 +65,34 @@ class _FakeEmbedder:
 
 
 def _orders_table() -> Table:
+    # Columns beyond `id` exist because tests reference them in
+    # group_by / order_by / filter / time_dimension positions. PR-6h.3's
+    # compile-time column-existence check raises if a referenced
+    # column isn't on the table — fixture must mirror the columns
+    # used by tests.
+    def _col(name: str, ordinal: int, data_type: str = "text") -> Column:
+        return Column(
+            name=name,
+            table_name="orders",
+            schema_name="public",
+            data_type=data_type,
+            nullable=name != "id",
+            ordinal_position=ordinal,
+            is_primary_key=name == "id",
+        )
+
     return Table(
         name="orders",
         schema_name="public",
         columns=(
-            Column(
-                name="id",
-                table_name="orders",
-                schema_name="public",
-                data_type="bigint",
-                nullable=False,
-                ordinal_position=1,
-                is_primary_key=True,
-            ),
+            _col("id", 1, "bigint"),
+            _col("user_id", 2, "bigint"),
+            _col("status", 3),
+            _col("placed_at", 4, "timestamptz"),
+            _col("created_at", 5, "timestamptz"),
+            _col("total_amount", 6, "integer"),
+            _col("billing_address_id", 7, "bigint"),
+            _col("shipping_address_id", 8, "bigint"),
         ),
     )
 
@@ -95,6 +110,19 @@ def _customers_table() -> Table:
                 nullable=False,
                 ordinal_position=1,
                 is_primary_key=True,
+            ),
+            # `region` is referenced by group_by tests; PR-6h.3's
+            # column-existence check now requires fixture columns to
+            # match what tests group_by on, otherwise the validation
+            # raises before the test can assert anything.
+            Column(
+                name="region",
+                table_name="customers",
+                schema_name="public",
+                data_type="text",
+                nullable=True,
+                ordinal_position=2,
+                is_primary_key=False,
             ),
         ),
     )
@@ -503,6 +531,58 @@ class TestEnvelopeMapping:
         allowed = recovery["suggested_args"]["allowed_columns"]
         assert "total_revenue" in allowed
         assert "order.placed_at" in allowed
+
+    def test_unknown_group_by_column_maps_to_unknown_group_by_column(
+        self, store_with_seed: SQLiteStore
+    ) -> None:
+        """PR-6h.3 stress-test fix — agent passes a `group_by`
+        reference where the entity exists but the column doesn't. Pre-
+        fix this resolved to literal SQL, ran against Postgres, and
+        surfaced as `internal_error` after `UndefinedColumn`. The
+        compile-time check raises `UnknownGroupByColumnError` instead,
+        mapped here to a clean envelope kind with `describe_entity`
+        as the recovery hint + allowed-column list.
+        """
+        executor = _StubExecutor()
+        app = _build(store_with_seed, executor)
+        _content, structured = _call(
+            app,
+            {
+                "name": "total_revenue",
+                "group_by": ["order.bogus_column"],
+            },
+        )
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "unknown_group_by_column"
+        recovery = structured["error"]["recovery"]
+        assert recovery["suggested_tool"] == "describe_entity"
+        suggested = recovery["suggested_args"]
+        assert suggested["name"] == "order"
+        # The allowed-column list must reflect the actual columns on
+        # the orders table; pinning a known column is the cheapest
+        # smoke for "the envelope actually carries useful data".
+        assert "placed_at" in suggested["allowed_columns"]
+
+    def test_unknown_filter_column_maps_to_unknown_filter_column(
+        self, store_with_seed: SQLiteStore
+    ) -> None:
+        """Parallel to the group_by check — `filters=` with a column
+        that doesn't exist also gets the compile-time fix instead of
+        leaking `internal_error` from Postgres."""
+        executor = _StubExecutor()
+        app = _build(store_with_seed, executor)
+        _content, structured = _call(
+            app,
+            {
+                "name": "total_revenue",
+                "filters": [{"column": "order.bogus_column", "op": "eq", "value": "x"}],
+            },
+        )
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "unknown_filter_column"
+        recovery = structured["error"]["recovery"]
+        assert recovery["suggested_tool"] == "describe_entity"
+        assert recovery["suggested_args"]["name"] == "order"
 
     def test_invalid_time_grain_maps_to_invalid_time_grain(
         self, store_with_seed: SQLiteStore

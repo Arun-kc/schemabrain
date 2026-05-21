@@ -19,6 +19,9 @@ Error mapping (compiler-side → envelope kind):
   - `AmbiguousJoinError`           → `ambiguous_join`
   - `AmbiguousPathError`           → `ambiguous_path`
   - `UnknownViaJoinError`          → `unknown_via_join`
+  - `UnknownOrderByColumnError`    → `unknown_order_by_column`
+  - `UnknownGroupByColumnError`    → `unknown_group_by_column`
+  - `UnknownFilterColumnError`     → `unknown_filter_column`
   - `InvalidTimeGrainError`        → `invalid_time_grain`
   - `PiiBlockedError` (reserved)   → `pii_blocked`
 

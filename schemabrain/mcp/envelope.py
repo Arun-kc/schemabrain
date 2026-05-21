@@ -95,6 +95,8 @@ ErrorKind = Literal[
     "ambiguous_path",
     "unknown_via_join",
     "unknown_order_by_column",
+    "unknown_group_by_column",
+    "unknown_filter_column",
     "invalid_time_grain",
     "grain_mismatch",
     # MCP dispatch surface — used INTERNALLY by the strict-args

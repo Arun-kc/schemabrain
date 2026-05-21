@@ -50,6 +50,29 @@ SOURCE = "src_a"
 # ----- fixture seed ----------------------------------------------------------
 
 
+# Columns each fixture table carries beyond `id`. PR-6h.3's compile-
+# time column-existence check now validates against the table's column
+# list; the property tests reference these via Hypothesis-generated
+# `entity.column` strings, so every referenced column must be present
+# on the seeded table.
+_FIXTURE_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
+    "orders": (
+        ("user_id", "bigint"),
+        ("product_id", "bigint"),
+        ("status", "text"),
+        ("region", "text"),
+        ("created_at", "timestamptz"),
+        ("refunded_at", "timestamptz"),
+        ("total_amount", "integer"),
+    ),
+    "customers": (
+        ("country", "text"),
+        ("tier", "text"),
+    ),
+    "products": (("category", "text"),),
+}
+
+
 def _seed(store: SQLiteStore) -> None:
     """A rich-enough store to exercise the compiler across input space.
 
@@ -58,22 +81,32 @@ def _seed(store: SQLiteStore) -> None:
     all 5 grains supported).
     """
     for table_name in ("orders", "customers", "products"):
-        store.write_table(
-            Table(
-                name=table_name,
+        extras = _FIXTURE_COLUMNS.get(table_name, ())
+        columns: tuple[Column, ...] = (
+            Column(
+                name="id",
+                table_name=table_name,
                 schema_name="public",
-                columns=(
-                    Column(
-                        name="id",
-                        table_name=table_name,
-                        schema_name="public",
-                        data_type="bigint",
-                        nullable=False,
-                        ordinal_position=1,
-                        is_primary_key=True,
-                    ),
-                ),
+                data_type="bigint",
+                nullable=False,
+                ordinal_position=1,
+                is_primary_key=True,
             ),
+            *(
+                Column(
+                    name=col_name,
+                    table_name=table_name,
+                    schema_name="public",
+                    data_type=col_type,
+                    nullable=True,
+                    ordinal_position=2 + i,
+                    is_primary_key=False,
+                )
+                for i, (col_name, col_type) in enumerate(extras)
+            ),
+        )
+        store.write_table(
+            Table(name=table_name, schema_name="public", columns=columns),
             source_connection_id=SOURCE,
         )
     store.write_entity(

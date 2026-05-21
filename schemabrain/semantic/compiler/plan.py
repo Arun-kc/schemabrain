@@ -85,6 +85,63 @@ class UnknownColumnError(MetricCompilerError):
 
 
 @dataclass(frozen=True)
+class UnknownGroupByColumnError(MetricCompilerError):
+    """Raised when `group_by=['<entity>.<column>']` references an entity
+    that exists but a column that does NOT exist on that entity's table.
+
+    Without this check the compiler used to emit `"<entity>"."<column>"`
+    verbatim and let Postgres surface `UndefinedColumn` at execution
+    time, which the MCP layer wrapped as `internal_error` — a useless
+    response for an agent that just made a typo.
+
+    Carries the requested entity + column + the actual column list on
+    that entity so the MCP layer can populate `recovery` with the
+    allowed names. The 2026-05-21 stress test caught the silent-failure
+    path (`user.bogus_column` → `internal_error`); this error class
+    closes it.
+    """
+
+    entity: str
+    column: str
+    allowed_columns: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        super().__init__(
+            f"group_by column {self.entity!r}.{self.column!r} does not "
+            f"exist on entity {self.entity!r}. Allowed columns: "
+            f"{list(self.allowed_columns)}"
+        )
+
+    def __reduce__(self) -> tuple[type, tuple[str, str, tuple[str, ...]]]:
+        return (self.__class__, (self.entity, self.column, self.allowed_columns))
+
+
+@dataclass(frozen=True)
+class UnknownFilterColumnError(MetricCompilerError):
+    """Raised when a `filters` entry references an entity that exists
+    but a column that does NOT exist on that entity's table.
+
+    Parallel to `UnknownGroupByColumnError` — same compile-time check
+    moved earlier in the pipeline so the agent gets a clean envelope
+    instead of an `internal_error` masking a Postgres UndefinedColumn.
+    """
+
+    entity: str
+    column: str
+    allowed_columns: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        super().__init__(
+            f"filter column {self.entity!r}.{self.column!r} does not "
+            f"exist on entity {self.entity!r}. Allowed columns: "
+            f"{list(self.allowed_columns)}"
+        )
+
+    def __reduce__(self) -> tuple[type, tuple[str, str, tuple[str, ...]]]:
+        return (self.__class__, (self.entity, self.column, self.allowed_columns))
+
+
+@dataclass(frozen=True)
 class UnreachableEntityError(MetricCompilerError):
     """Raised when a group_by or filter column targets an entity that
     has no canonical join from the metric's anchor.
