@@ -63,13 +63,37 @@ Meanwhile in the operator's terminal, `schemabrain tail` streamed every tool cal
               → columns=2 tokens=70 in 8ms
 ```
 
-Every call is auditable, replayable, and PII-aware. See [Observe the agent](#observe-the-agent) for the full surface.
+Every call is auditable, replayable, and PII-aware. The [next section](#the-firewall) substantiates this; [Observe the agent](#observe-the-agent) much further down has the full streaming + OTel surface.
 
 The caveats are the differentiator. None of them — M:N double-counting, recursive-CTE awareness, free-text-status flag — is hardcoded; they fall out of letting Claude reason over the indexed descriptions. Most LLM-over-database tools confidently invent a `payments` table or shoehorn the answer into `orders.total_cents`. Schema Brain doesn't.
 
 **Cost.** ~$0.0003/column with Claude Haiku 4.5. The bundled 7-table fixture indexes for **~$0.01 in ~40s**. The Pagila DVD-rental sample (87 columns after partition deduplication) indexes for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
 
 To verify Claude's SQL is mechanically correct (and that flagged caveats are the actual data behavior), see [Validating SQL Claude generates](docs/setup.md#validating-sql-claude-generates).
+
+---
+
+## The firewall
+
+Four properties Schema Brain enforces at the SQL boundary today:
+
+**1. Agent never writes raw SQL.** Entities, metrics, and canonical joins compile to parameterized SQL Schema Brain runs on its side. The agent sees rows + the SQL that was run — never gets to send arbitrary statements at your database. ([Build your semantic layer](#build-your-semantic-layer))
+
+**2. Read-only enforced at the source.** Stage 1 of `schemabrain init` opens the source with `default_transaction_read_only=on` and verifies the session honors it. A Postgres that won't enforce read-only is refused at activation, not at runtime. ([Activation wizard](#2-run-the-activation-wizard))
+
+**3. PII-aware refusal at the tool boundary.** Set `--pii-block` and any `get_metric` touching the named PII categories returns a `refused` envelope. The compiled SQL never runs and never reaches the source — the refusal itself is recorded as one `mcp_audit` row with `status='refused'`, `refusal_reason='pii_blocked'`, so the attempt is auditable.
+
+```bash
+schemabrain serve --pii-block contact,health   # at serve time
+```
+
+Twelve PII categories (`contact`, `financial`, `health`, `identity`, …) tagged per-column at index time, derived from GDPR, CCPA/CPRA, HIPAA, PCI DSS, and ISO 27018. ([PII classification](#pii-classification))
+
+**4. Tamper-evident audit log.** Every tool call under `schemabrain serve` writes one row to an append-only `mcp_audit` table with a per-row sha256 chain. If anyone rewrites past audit rows the chain breaks; `audit verify` catches it. ([Tamper-evident audit log](#tamper-evident-audit-log))
+
+```bash
+schemabrain audit verify   # exit 0 = chain clean
+```
 
 ---
 
