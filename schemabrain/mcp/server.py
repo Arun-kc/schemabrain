@@ -852,13 +852,15 @@ def build_server(
 
     @app.tool(
         description=(
-            "Use this when the user asks what metrics are defined "
-            "(e.g. 'what metrics do we have?', 'what can I compute?'). "
-            "Returns every declared metric with its anchor entity, "
-            "aggregation shape, time-bucketing capabilities, and "
-            "provenance. Use `get_metric` instead when you already "
-            "have a metric name and want its computed value. Chain to "
-            "`describe_entity` for the anchor entity's full shape."
+            "Use this when the user asks any ranking, top-N, "
+            "most/highest/lowest, or aggregation question (e.g. 'who "
+            "bought the most', 'top 5 by revenue', 'rank customers', "
+            "'find users with the highest X', 'what's the total / "
+            "average / count') — returns every declared metric with its "
+            "anchor entity, aggregation, and time-bucketing so you can "
+            "pick the right metric before calling `get_metric`. Use "
+            "`get_metric` instead when you already have the metric "
+            "name. Chain to `describe_entity` for full anchor shape."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -1126,14 +1128,15 @@ def build_server(
 
     @app.tool(
         description=(
-            "Use this when you have a metric name and want its computed "
-            "value sliced/filtered against the live database — returns "
-            "rows plus parameterised SQL. The compiler chains multi-hop "
-            "canonical joins automatically: a metric anchored on "
-            "`order_item` can group_by `user.email` via "
-            "`order_item → order → user`. Use `list_metrics` instead "
-            "when you don't know the metric name. On ambiguity refusal, "
-            "pass `via=(join_name,)` to pin the chain."
+            "Use this when you have a metric name + want ranked/sliced "
+            "rows (top-N, most/highest/lowest). Returns rows + "
+            "parameterised SQL. Compiler chains multi-hop joins "
+            "automatically (anchor `order_item` + group_by `user.email` "
+            "+ order_by `total_items_sold desc` → `order_item → order "
+            "→ user`). Pass `order_by=` for deterministic ranking; "
+            "without it, `limit` is non-deterministic (envelope flags "
+            "`missing_order_by_with_limit`). Use `list_metrics` "
+            "instead when you don't know the metric name."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
