@@ -533,6 +533,9 @@ class TestStoreProtocolSeamUsable:
             def list_metrics(self, *, source_connection_id: str | None = None) -> list[Metric]:
                 return []
 
+            def delete_metric(self, name: str, *, source_connection_id: str) -> bool:
+                return False
+
             def write_column_pii_tags(
                 self,
                 *,

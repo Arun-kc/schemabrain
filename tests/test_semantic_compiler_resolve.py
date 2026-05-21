@@ -52,20 +52,36 @@ SOURCE = "src_a"
 # ----- fixtures --------------------------------------------------------------
 
 
+def _col(table: str, name: str, ordinal: int, data_type: str = "text") -> Column:
+    # Fixture column factory used across all three table helpers. The
+    # column list on each table reflects what the tests in this file
+    # reference (PR-6h.3 added compile-time column-existence checks,
+    # so the fixtures must declare every column the tests group_by /
+    # filter / order_by on, otherwise the validation raises before
+    # the test can assert anything).
+    return Column(
+        name=name,
+        table_name=table,
+        schema_name="public",
+        data_type=data_type,
+        nullable=name != "id",
+        ordinal_position=ordinal,
+        is_primary_key=name == "id",
+    )
+
+
 def _orders_table() -> Table:
     return Table(
         name="orders",
         schema_name="public",
         columns=(
-            Column(
-                name="id",
-                table_name="orders",
-                schema_name="public",
-                data_type="bigint",
-                nullable=False,
-                ordinal_position=1,
-                is_primary_key=True,
-            ),
+            _col("orders", "id", 1, "bigint"),
+            _col("orders", "user_id", 2, "bigint"),
+            _col("orders", "status", 3),
+            _col("orders", "created_at", 4, "timestamptz"),
+            _col("orders", "total_amount", 5, "integer"),
+            _col("orders", "billing_address_id", 6, "bigint"),
+            _col("orders", "shipping_address_id", 7, "bigint"),
         ),
     )
 
@@ -75,15 +91,9 @@ def _users_table() -> Table:
         name="users",
         schema_name="public",
         columns=(
-            Column(
-                name="id",
-                table_name="users",
-                schema_name="public",
-                data_type="bigint",
-                nullable=False,
-                ordinal_position=1,
-                is_primary_key=True,
-            ),
+            _col("users", "id", 1, "bigint"),
+            _col("users", "region", 2),
+            _col("users", "tier", 3),
         ),
     )
 
@@ -93,15 +103,8 @@ def _addresses_table() -> Table:
         name="addresses",
         schema_name="public",
         columns=(
-            Column(
-                name="id",
-                table_name="addresses",
-                schema_name="public",
-                data_type="bigint",
-                nullable=False,
-                ordinal_position=1,
-                is_primary_key=True,
-            ),
+            _col("addresses", "id", 1, "bigint"),
+            _col("addresses", "country", 2),
         ),
     )
 

@@ -396,13 +396,13 @@ class TestS1NonPiiNameDenylist:
         assert classify_column("Product_Name") == ("public", frozenset())
         assert classify_column("PRODUCT_NAME") == ("public", frozenset())
 
-    def test_known_limitation_bare_name_still_classifies(self) -> None:
-        # `category.name` / `language.name` (bare `name` in a lookup
-        # table) cannot be disambiguated from `customers.name` without
-        # table-level context. The bare-name case remains an
-        # intentional over-tag at v1; this test documents the gap so
-        # a future fix (operator-asserted classification, value
-        # sampling) has a natural failing-test home.
+    def test_bare_name_without_table_context_still_classifies(self) -> None:
+        # Without `table_name=`, the classifier preserves v1's over-tag
+        # posture — bare `name` is ambiguous (could be `users.name` or
+        # `products.name`) and the safe default is to tag. PR-6h.4
+        # added table-context resolution (`table_name=` kwarg); this
+        # test pins the no-context fallback so backward-compat callers
+        # don't lose protection.
         sensitivity, cats = classify_column("name")
         assert sensitivity == "pii"
         assert "contact" in cats
@@ -413,6 +413,73 @@ class TestS1NonPiiNameDenylist:
         # via the independent city/state/country rule. Documenting the
         # narrow scope of the S1 fix.
         sensitivity, cats = classify_column("country_name")
+        assert sensitivity == "pii"
+        assert "contact" in cats
+
+
+class TestS1TableContextGuard:
+    """PR-6h.4 extended the S1 guard to take `table_name=` into
+    account. Bare `name` columns on tables in the non-PII table-name
+    denylist (`products`, `categories`, `brands`, etc., plus their
+    plural forms) now skip the name rule. This closes the false
+    positive Claude Desktop hit on 2026-05-21:
+    `get_metric(group_by=['product.name'])` returned
+    `pii_categories=['contact']` despite touching zero contact data.
+    """
+
+    @pytest.mark.parametrize(
+        "table",
+        [
+            "products",
+            "product",
+            "categories",
+            "category",
+            "brands",
+            "languages",
+            "currencies",
+            "settings",
+            "tags",
+            "PRODUCTS",  # case-insensitive match
+        ],
+    )
+    def test_bare_name_on_denylist_table_classifies_public(self, table: str) -> None:
+        sensitivity, cats = classify_column("name", table_name=table)
+        assert sensitivity == "public"
+        assert cats == frozenset()
+
+    @pytest.mark.parametrize(
+        "table",
+        [
+            "users",
+            "customers",
+            "employees",
+            "contacts",
+            "members",  # not in the denylist — person-bearing context
+        ],
+    )
+    def test_bare_name_on_person_table_still_classifies(self, table: str) -> None:
+        # The guard is one-sided — only suppresses on denylisted
+        # tables. Person-bearing tables (users / customers / etc.)
+        # are NOT in the denylist, so the name rule still fires.
+        sensitivity, cats = classify_column("name", table_name=table)
+        assert sensitivity == "pii"
+        assert "contact" in cats
+
+    def test_table_context_does_not_suppress_other_rules(self) -> None:
+        # `full_name` on a denylist table is contrived but possible —
+        # the `full_name` rule is independent of the bare-`name` rule
+        # so the contact tag must still fire. The S1 guard only
+        # suppresses the bare-name rule, never the explicit
+        # person-name rules.
+        sensitivity, cats = classify_column("full_name", table_name="products")
+        assert sensitivity == "pii"
+        assert "contact" in cats
+
+    def test_unknown_table_name_falls_back_to_over_tag(self) -> None:
+        # Conservative posture: unknown table names don't suppress.
+        # The classifier preserves v1's over-tag default whenever it
+        # can't prove the table is non-PII.
+        sensitivity, cats = classify_column("name", table_name="some_random_table")
         assert sensitivity == "pii"
         assert "contact" in cats
 

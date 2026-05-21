@@ -2083,6 +2083,43 @@ class SQLiteStore:
             ).fetchall()
         return [_row_to_metric(row) for row in rows]
 
+    def delete_metric(self, name: str, *, source_connection_id: str) -> bool:
+        """Idempotent delete of one `(source_connection_id, name)` metric row.
+
+        Returns True if a row was actually removed, False if no row
+        matched. The dbt-owned write guard from `write_metric` is
+        symmetric here: a metric with `origin='dbt_import'` is refused
+        with `DbtOwnedMetricError`, because manual deletion would
+        silently drift from the upstream dbt repo on the next
+        `schemabrain import dbt --include-metrics`.
+
+        Used by `schemabrain metrics audit --fix` (PR-6h.3 fold) to
+        remove already-applied anti-pattern metrics whose descriptions
+        admit the metric doesn't compute what its name implies. The
+        deletion is `with conn:` wrapped so a concurrent reader can't
+        observe a partial state.
+        """
+        conn = self._require_conn()
+        with conn:
+            row = conn.execute(
+                "SELECT origin FROM metrics WHERE source_connection_id = ? AND name = ?",
+                (source_connection_id, name),
+            ).fetchone()
+            if row is None:
+                return False
+            if row["origin"] == "dbt_import":
+                raise DbtOwnedMetricError(
+                    f"metric {name!r} is owned by dbt import "
+                    f"(origin='dbt_import'); manual deletion refused. "
+                    f"Drop the metric in the upstream dbt repo and re-run "
+                    f"`schemabrain import dbt --include-metrics`."
+                )
+            conn.execute(
+                "DELETE FROM metrics WHERE source_connection_id = ? AND name = ?",
+                (source_connection_id, name),
+            )
+            return True
+
     def write_column_pii_tags(
         self,
         *,

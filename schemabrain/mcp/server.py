@@ -114,6 +114,8 @@ from schemabrain.semantic.compiler import (
     MalformedColumnError,
     PiiBlockedError,
     UnknownColumnError,
+    UnknownFilterColumnError,
+    UnknownGroupByColumnError,
     UnknownMetricError,
     UnknownOrderByColumnError,
     UnknownViaJoinError,
@@ -1385,6 +1387,41 @@ def build_server(
                         # mechanical — pick any of these as the column
                         # ref. No need to call list_metrics again.
                         suggested_args={"allowed_columns": exc.allowed_columns},
+                    ),
+                ),
+            )
+        except UnknownGroupByColumnError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="unknown_group_by_column",
+                    message=str(exc),
+                    recovery=Recovery(
+                        # `describe_entity` is the right next step
+                        # because the agent already knows the entity
+                        # but typo'd the column — describe lists every
+                        # column on that entity with PII flags and
+                        # data types so the retry uses a real name.
+                        suggested_tool="describe_entity",
+                        suggested_args={
+                            "name": exc.entity,
+                            "allowed_columns": exc.allowed_columns,
+                        },
+                    ),
+                ),
+            )
+        except UnknownFilterColumnError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="unknown_filter_column",
+                    message=str(exc),
+                    recovery=Recovery(
+                        suggested_tool="describe_entity",
+                        suggested_args={
+                            "name": exc.entity,
+                            "allowed_columns": exc.allowed_columns,
+                        },
                     ),
                 ),
             )

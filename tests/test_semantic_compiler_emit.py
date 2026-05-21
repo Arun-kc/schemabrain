@@ -45,22 +45,61 @@ SOURCE = "src_a"
 # ----- fixture helper --------------------------------------------------------
 
 
+# Columns each fixture table carries beyond `id`. PR-6h.3's compile-
+# time column-existence check now validates against the table's column
+# list; fixtures must declare every column the tests reference in
+# group_by / filter / order_by / time_dimension positions.
+_FIXTURE_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
+    "orders": (
+        ("user_id", "bigint"),
+        ("status", "text"),
+        ("created_at", "timestamptz"),
+        ("shipped_at", "timestamptz"),
+        ("refunded_at", "timestamptz"),
+        ("total_amount", "integer"),
+    ),
+    "users": (
+        ("region", "text"),
+        ("tier", "text"),
+    ),
+    # `customers` is the table TestJoins.test_composite_join uses
+    # under the `customer` entity name (a different binding from
+    # `_seed_total_revenue` which points the customer entity at the
+    # `users` table). Either table can hold the customer entity, so
+    # both column lists need to mirror what tests reference.
+    "customers": (
+        ("region", "text"),
+        ("tier", "text"),
+    ),
+}
+
+
 def _simple_table(name: str) -> Table:
-    return Table(
-        name=name,
-        schema_name="public",
-        columns=(
+    extras = _FIXTURE_COLUMNS.get(name, ())
+    columns: tuple[Column, ...] = (
+        Column(
+            name="id",
+            table_name=name,
+            schema_name="public",
+            data_type="bigint",
+            nullable=False,
+            ordinal_position=1,
+            is_primary_key=True,
+        ),
+        *(
             Column(
-                name="id",
+                name=col_name,
                 table_name=name,
                 schema_name="public",
-                data_type="bigint",
-                nullable=False,
-                ordinal_position=1,
-                is_primary_key=True,
-            ),
+                data_type=col_type,
+                nullable=True,
+                ordinal_position=2 + i,
+                is_primary_key=False,
+            )
+            for i, (col_name, col_type) in enumerate(extras)
         ),
     )
+    return Table(name=name, schema_name="public", columns=columns)
 
 
 def _seed_total_revenue(

@@ -40,6 +40,8 @@ from schemabrain.semantic.compiler.plan import (
     ResolvedOrderBy,
     ResolvedPredicate,
     UnknownColumnError,
+    UnknownFilterColumnError,
+    UnknownGroupByColumnError,
     UnknownMetricError,
     UnknownOrderByColumnError,
     UnknownViaJoinError,
@@ -154,12 +156,76 @@ def resolve_metric_plan(
     # suppressing real `UnknownViaJoinError` raises).
     consumed_via: set[str] = set()
 
+    # Cache of `qualified_table → frozenset[column_name]` for every
+    # table this request touched, so the column-existence check below
+    # never does a redundant store roundtrip when the same entity is
+    # referenced more than once (group_by + filter on user.email, etc.).
+    columns_by_table: dict[str, frozenset[str]] = {}
+
     def _ensure_graph() -> _JoinGraph:
         nonlocal graph
         if graph is None:
             edges = store.list_canonical_joins(source_connection_id=source_connection_id)
             graph = _build_join_graph(edges)
         return graph
+
+    def _columns_on(qualified_table: str) -> frozenset[str]:
+        # Lazy fetch + cache. `qualified_table` is `<schema>.<name>` —
+        # the same shape `entity.qualified_table` uses everywhere else,
+        # validated by `Entity.__post_init__`. Splitting on the first
+        # dot mirrors `_lookup_anchor_table`'s caller contract.
+        cached = columns_by_table.get(qualified_table)
+        if cached is not None:
+            return cached
+        schema_name, table_name = qualified_table.split(".", 1)
+        table = store.get_table(
+            schema_name=schema_name,
+            name=table_name,
+            source_connection_id=source_connection_id,
+        )
+        # `table is None` here is store corruption — same shape as
+        # `_lookup_anchor_table`'s defence. Resolution reached this
+        # line because the entity was found and its qualified_table
+        # was returned, so the underlying tables row should exist.
+        if table is None:  # pragma: no cover — store corruption
+            raise RuntimeError(
+                f"store corruption: entity references table "
+                f"{qualified_table!r} but the `tables` row is missing"
+            )
+        names = frozenset(col.name for col in table.columns)
+        columns_by_table[qualified_table] = names
+        return names
+
+    def _validate_column_on_table(
+        *, entity: str, column: str, qualified_table: str, kind: str
+    ) -> None:
+        # `kind` is "group_by" or "filter" — picks the right error
+        # class so the MCP envelope distinguishes between the two
+        # surfaces. ORDER BY has its own alias-based validation in
+        # the order_by resolution block below.
+        allowed = _columns_on(qualified_table)
+        if column in allowed:
+            return
+        sorted_allowed = tuple(sorted(allowed))
+        if kind == "group_by":
+            raise UnknownGroupByColumnError(
+                entity=entity,
+                column=column,
+                allowed_columns=sorted_allowed,
+            )
+        if kind == "filter":
+            raise UnknownFilterColumnError(
+                entity=entity,
+                column=column,
+                allowed_columns=sorted_allowed,
+            )
+        # No other `kind` value reaches `_resolve` today — keep the
+        # branch tight so a future surface is forced to declare its
+        # error class explicitly instead of inheriting whichever class
+        # happened to be last in the if-chain.
+        raise RuntimeError(  # pragma: no cover — defensive
+            f"unreachable: _validate_column_on_table called with kind={kind!r}"
+        )
 
     def _resolve(column_ref: str, kind: str) -> ResolvedColumn:
         # `kind` is "group_by" or "filter" — surfaces in the
@@ -173,6 +239,12 @@ def resolve_metric_plan(
             )
         entity_name, column = match.group(1), match.group(2)
         if entity_name == metric.entity:
+            _validate_column_on_table(
+                entity=entity_name,
+                column=column,
+                qualified_table=anchor_table,
+                kind=kind,
+            )
             return ResolvedColumn(
                 entity=entity_name,
                 column=column,
@@ -181,6 +253,12 @@ def resolve_metric_plan(
             )
         if entity_name in resolved_joins:
             join = resolved_joins[entity_name]
+            _validate_column_on_table(
+                entity=entity_name,
+                column=column,
+                qualified_table=join.target_table,
+                kind=kind,
+            )
             return ResolvedColumn(
                 entity=entity_name,
                 column=column,
@@ -234,6 +312,12 @@ def resolve_metric_plan(
             )
         # Final ResolvedJoin for the requested entity is now cached.
         join = resolved_joins[entity_name]
+        _validate_column_on_table(
+            entity=entity_name,
+            column=column,
+            qualified_table=join.target_table,
+            kind=kind,
+        )
         return ResolvedColumn(
             entity=entity_name,
             column=column,

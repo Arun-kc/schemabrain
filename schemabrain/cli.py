@@ -515,6 +515,13 @@ def _dispatch(argv: list[str] | None) -> int:
                 provider=args.provider,
                 max_cost_usd=args.max_cost_usd,
             )
+        if args.metrics_action == "audit":
+            return _cmd_metrics_audit(
+                store_path=args.store_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+                fix=args.fix,
+            )
         parser.error(f"unknown metrics action: {args.metrics_action}")  # pragma: no cover
     # argparse `required=True` on subparsers prevents reaching here, but
     # leaving an explicit branch is cheaper than a guarded assertion.
@@ -1321,6 +1328,38 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="VARNAME",
         default=None,
         help="Name of the environment variable that holds the source URL.",
+    )
+
+    p_metrics_audit = metrics_sub.add_parser(
+        "audit",
+        help="Scan applied metrics for anti-pattern descriptions and "
+        "optionally remove them. Counterpart to PR-6h.2's suggest-time "
+        "anti-pattern filter for stores written before that filter shipped.",
+    )
+    p_metrics_audit.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_metrics_audit.add_argument(
+        "--source",
+        default=None,
+        help="Filter audit to one source. Without this flag, audits "
+        "across every source in the store.",
+    )
+    p_metrics_audit.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL.",
+    )
+    p_metrics_audit.add_argument(
+        "--fix",
+        action="store_true",
+        help="Delete every flagged metric (excluding dbt-owned ones). "
+        "Without this flag, audit is read-only — lists findings and "
+        "exits non-zero if any were found.",
     )
 
     p_metrics_suggest = metrics_sub.add_parser(
@@ -4264,6 +4303,94 @@ def _cmd_metrics_list(
             f"origin={metric.origin}"
         )
     return 0
+
+
+def _cmd_metrics_audit(
+    *,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+    fix: bool,
+) -> int:
+    """Scan applied metrics for the anti-pattern phrases PR-6h.2 blocks
+    at suggest-time, optionally deleting them.
+
+    Read-only without `--fix`: list every flagged metric with the
+    matched phrase, exit 0 if clean / 1 if any flagged. CI can fail a
+    build on a store with bad metrics by running the read-only path.
+
+    With `--fix`: delete every non-dbt-owned finding. dbt-owned
+    metrics are listed but not removed — the upstream dbt repo is the
+    source of truth, and a local deletion would just drift back in on
+    the next `schemabrain import dbt --include-metrics`.
+
+    Exit codes:
+      0: audit clean OR audit found+fixed every removable finding
+      1: audit found flagged metrics and `--fix` was not given
+      2: structural (unwritable store / unreadable URL / corrupt row)
+    """
+    from schemabrain.metrics.audit import (
+        find_anti_pattern_metrics,
+        remove_anti_pattern_metrics,
+    )
+
+    source_id: str | None = None
+    if positional_url is not None or url_env is not None:
+        source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+        if source_url is None:
+            return 2
+        if _resolve_url(source_url) is None:  # pragma: no cover — defensive
+            return 2  # pragma: no cover
+        source_id = _make_source_id(source_url)
+
+    try:
+        with SQLiteStore(store_path) as store:
+            findings = find_anti_pattern_metrics(store, source_connection_id=source_id)
+            if not findings:
+                print("metrics audit: no anti-pattern metrics found.")
+                return 0
+
+            print(f"metrics audit: {len(findings)} flagged metric(s):")
+            print()
+            for finding in findings:
+                m = finding.metric
+                print(f"  {m.name}  entity={m.entity}  {m.measure.agg}({m.measure.column})")
+                print(f"    matched phrase: {finding.matched_phrase!r}")
+                print(
+                    f"    origin: {m.origin}"
+                    + (" [DBT-OWNED — cannot fix]" if finding.is_dbt_owned else "")
+                )
+                desc_line = (m.description or "").strip().replace("\n", " ")
+                if desc_line:
+                    excerpt = desc_line if len(desc_line) <= 140 else (desc_line[:137] + "...")
+                    print(f"    description: {excerpt}")
+                print()
+
+            if not fix:
+                # Read-only mode: exit 1 so callers (CI, scripts)
+                # can branch on the audit verdict without parsing
+                # stdout.
+                print("Re-run with --fix to remove the non-dbt-owned findings.")
+                return 1
+
+            # `--fix` path: delete each non-dbt-owned finding.
+            removed, skipped = remove_anti_pattern_metrics(store, findings)
+            print(f"metrics audit: removed {removed} metric(s).")
+            if skipped:
+                print(
+                    f"metrics audit: {len(skipped)} dbt-owned metric(s) were left in place. "
+                    f"Drop them in your dbt repo and re-import to remove."
+                )
+            return 0
+    except OSError as e:  # pragma: no cover — defensive, mirrors _cmd_metrics_list
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+    except ValueError as exc:  # pragma: no cover — defensive, mirrors _cmd_metrics_list
+        print(
+            f"error: failed to read metrics from {store_path!r}: store appears corrupt ({exc})",
+            file=sys.stderr,
+        )
+        return 2
 
 
 def _cmd_metrics_suggest(
