@@ -57,6 +57,73 @@ candidates:
     assert metric.description == "Total revenue summed across all orders."
 
 
+def test_parse_suggestions_composite_expression() -> None:
+    # LLM-suggested composite-expression metric (the v2 measure shape).
+    # Parser must accept `expression` as an alternative to `column`,
+    # mirroring the YAML grammar's XOR contract.
+    text = """
+candidates:
+  - name: line_revenue
+    description: SUM of line-item revenue (unit_price_cents x quantity).
+    entity: order_item
+    measure:
+      agg: sum
+      expression: unit_price_cents * quantity
+    confidence: high
+    rationale: Per-line revenue captures the actual order economics.
+"""
+    candidates = parse_suggestions(text)
+    assert len(candidates) == 1
+    metric = candidates[0].metric
+    assert metric.name == "line_revenue"
+    assert metric.entity == "order_item"
+    assert metric.measure.agg == "sum"
+    assert metric.measure.column is None
+    assert metric.measure.expression == "unit_price_cents * quantity"
+
+
+def test_parse_suggestions_rejects_both_column_and_expression() -> None:
+    text = """
+candidates:
+  - name: bad_metric
+    entity: order
+    measure:
+      agg: sum
+      column: total_cents
+      expression: total_cents * 1
+    confidence: low
+"""
+    with pytest.raises(MetricSuggestionParseError, match="exactly one"):
+        parse_suggestions(text)
+
+
+def test_parse_suggestions_rejects_neither_column_nor_expression() -> None:
+    text = """
+candidates:
+  - name: bad_metric
+    entity: order
+    measure:
+      agg: sum
+    confidence: low
+"""
+    with pytest.raises(MetricSuggestionParseError, match=r"column.*expression|expression.*column"):
+        parse_suggestions(text)
+
+
+def test_parse_suggestions_rejects_malformed_expression() -> None:
+    text = """
+candidates:
+  - name: bad_metric
+    entity: order
+    measure:
+      agg: sum
+      expression: abs(total_cents)
+    confidence: low
+"""
+    with pytest.raises(MetricSuggestionParseError, match="malformed measure expression"):
+        parse_suggestions(text)
+
+
 def test_parse_suggestions_non_temporal_metric() -> None:
     text = """
 candidates:
@@ -279,12 +346,14 @@ candidates:
         parse_suggestions(text)
 
 
-def test_parse_suggestions_rejects_missing_measure_fields() -> None:
+def test_parse_suggestions_rejects_missing_agg() -> None:
+    # `agg` is the only required key now; `column` and `expression`
+    # are XOR'd by `_parse_measure` after the required-key check.
     text = """
 candidates:
   - name: rev
     entity: order
-    measure: {agg: sum}
+    measure: {column: total_cents}
     confidence: high
 """
     with pytest.raises(MetricSuggestionParseError, match="missing required field"):
