@@ -63,7 +63,7 @@ Meanwhile in the operator's terminal, `schemabrain tail` streamed every tool cal
               → columns=2 tokens=70 in 8ms
 ```
 
-Every call is auditable, replayable, and PII-aware. See [The firewall](#the-firewall) for what's enforced at the SQL boundary; [Observe the agent](#observe-the-agent) has the full streaming + OTel surface.
+Every call is auditable, replayable, and PII-aware. The [next section](#the-firewall) substantiates this; [Observe the agent](#observe-the-agent) much further down has the full streaming + OTel surface.
 
 The caveats are the differentiator. None of them — M:N double-counting, recursive-CTE awareness, free-text-status flag — is hardcoded; they fall out of letting Claude reason over the indexed descriptions. Most LLM-over-database tools confidently invent a `payments` table or shoehorn the answer into `orders.total_cents`. Schema Brain doesn't.
 
@@ -77,25 +77,23 @@ To verify Claude's SQL is mechanically correct (and that flagged caveats are the
 
 Four properties Schema Brain enforces at the SQL boundary today:
 
-**1. Agent never executes raw SQL.** Entities, metrics, and canonical joins compile to parameterized SQL Schema Brain runs on its side. The agent sees rows + the SQL that was run — never gets to send arbitrary statements at your database. ([Build your semantic layer](#build-your-semantic-layer))
+**1. Agent never writes raw SQL.** Entities, metrics, and canonical joins compile to parameterized SQL Schema Brain runs on its side. The agent sees rows + the SQL that was run — never gets to send arbitrary statements at your database. ([Build your semantic layer](#build-your-semantic-layer))
 
-**2. Read-only enforced at the source.** Stage 1 of `schemabrain init` validates the session is read-only on Postgres. A connection with write privileges is refused at activation, not at runtime. ([Source check, inside the wizard](#2-run-the-activation-wizard))
+**2. Read-only enforced at the source.** Stage 1 of `schemabrain init` opens the source with `default_transaction_read_only=on` and verifies the session honors it. A Postgres that won't enforce read-only is refused at activation, not at runtime. ([Activation wizard](#2-run-the-activation-wizard))
 
-**3. PII-aware refusal at the tool boundary.** Set `--pii-block` and any `get_metric` touching the named PII categories returns a `refused` envelope. The SQL never compiles, never logs, never executes.
+**3. PII-aware refusal at the tool boundary.** Set `--pii-block` and any `get_metric` touching the named PII categories returns a `refused` envelope. The compiled SQL never runs and never reaches the source — the refusal itself is recorded as one `mcp_audit` row with `status='refused'`, `refusal_reason='pii_blocked'`, so the attempt is auditable.
 
 ```bash
-schemabrain serve --pii-block contact,health
+schemabrain serve --pii-block contact,health   # at serve time
 ```
 
-Twelve PII categories spanning GDPR, CCPA/CPRA, HIPAA, PCI DSS, and ISO 27018 are tagged per-column at index time. ([PII classification](#pii-classification))
+Twelve PII categories (`contact`, `financial`, `health`, `identity`, …) tagged per-column at index time, derived from GDPR, CCPA/CPRA, HIPAA, PCI DSS, and ISO 27018. ([PII classification](#pii-classification))
 
-**4. Tamper-evident audit log.** Every tool call writes one row to an append-only `mcp_audit` table with a per-row sha256 chain. Coherent tampering against any external archive that captured a prior hash is detectable.
+**4. Tamper-evident audit log.** Every tool call under `schemabrain serve` writes one row to an append-only `mcp_audit` table with a per-row sha256 chain. If anyone rewrites past audit rows the chain breaks; `audit verify` catches it. ([Tamper-evident audit log](#tamper-evident-audit-log))
 
 ```bash
 schemabrain audit verify   # exit 0 = chain clean
 ```
-
-([Tamper-evident audit log](#tamper-evident-audit-log))
 
 ---
 
