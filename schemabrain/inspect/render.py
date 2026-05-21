@@ -411,7 +411,12 @@ def _render_metrics(
     table.add_column("Aggregation")
     table.add_column("Time")
     for m in metrics:
-        agg_cell = f"[dim]{m.agg}({m.column})[/]"
+        # `column` and `expression` are mutually exclusive (XOR) — pick
+        # whichever populated field describes the measure shape. Bare
+        # columns render as `sum(amount)`; composite expressions render
+        # as `sum(unit_price * quantity)`.
+        measure_body = m.column if m.column is not None else m.expression
+        agg_cell = f"[dim]{m.agg}({measure_body})[/]"
         time = m.time_dimension or "[dim]non-temporal[/]"
         grains = ", ".join(m.time_grains) if m.time_grains else "[dim]none[/]"
         time_cell = f"{time} [dim]grains={grains}[/]"

@@ -312,6 +312,7 @@ class TestRenderEntityDetailEdgeCases:
                     description="",
                     agg="count",
                     column="id",
+                    expression=None,
                     time_dimension=None,
                     time_grains=(),
                 ),
@@ -320,6 +321,47 @@ class TestRenderEntityDetailEdgeCases:
         out = _capture(render_entity_detail, detail)
         assert "customer_count" in out
         assert "non-temporal" in out
+
+    def test_composite_expression_metric_renders_expression_body(self) -> None:
+        # When `column` is None and `expression` is populated, the
+        # renderer should show the expression inside the agg call
+        # rather than `sum(None)`.
+        detail = EntityDetail(
+            entity=Entity(
+                name="order_item",
+                description="",
+                binding=SingleTableBinding(qualified_table="public.order_items"),
+                identity="id",
+            ),
+            columns=(
+                EntityColumnDetail(
+                    name="id",
+                    data_type="bigint",
+                    nullable=False,
+                    is_primary_key=True,
+                    is_identity=True,
+                    pii_sensitivity="public",
+                    pii_categories=(),
+                ),
+            ),
+            related_entities=(),
+            anchored_metrics=(
+                AnchoredMetric(
+                    name="line_revenue",
+                    description="",
+                    agg="sum",
+                    column=None,
+                    expression="unit_price_cents * quantity",
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+            ),
+        )
+        out = _capture(render_entity_detail, detail)
+        assert "line_revenue" in out
+        assert "sum(unit_price_cents * quantity)" in out
+        # The string `None` must never appear inside the agg cell.
+        assert "sum(None)" not in out
 
 
 # ---------------------------------------------------------------------------

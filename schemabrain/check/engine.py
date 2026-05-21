@@ -274,15 +274,27 @@ def check_drift(
                 f"{metric.entity!r} resolved to a missing live table"
             )
 
-        if live.get_column(metric.measure.column) is None:
+        # Bare-column metrics check that the single named column still
+        # exists on the live anchor table. Composite-expression metrics
+        # check every operand column referenced inside the expression;
+        # the first missing operand becomes the drift, mirroring the
+        # bare-column shape (one drift row per metric, not one per
+        # missing operand). `measure_columns` returns the set for both
+        # shapes so the check loop is uniform.
+        missing_columns = [
+            col for col in sorted(metric.measure.measure_columns) if live.get_column(col) is None
+        ]
+        if missing_columns:
+            first_missing = missing_columns[0]
             drifts.append(
                 Drift(
                     def_kind="metric",
                     def_name=metric.name,
                     drift_kind="measure_column_missing",
-                    detail=f"{anchor.qualified_table}.{metric.measure.column}",
+                    detail=f"{anchor.qualified_table}.{first_missing}",
                     fix_hint=(
-                        f"update metric `{metric.name}`'s `measure.column` "
+                        f"update metric `{metric.name}`'s "
+                        f"`measure.{'column' if metric.measure.column else 'expression'}` "
                         f"and re-run `schemabrain metrics apply`"
                     ),
                 )
