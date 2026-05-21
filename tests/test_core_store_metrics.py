@@ -201,6 +201,61 @@ class TestWriteReadRoundTrip:
         assert got.time_grains == grains
 
 
+class TestCompositeExpressionRoundTrip:
+    """Composite-measure-expression metrics round-trip through the store."""
+
+    def test_composite_expression_round_trips(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_order_entity(store)
+            metric = Metric(
+                name="total_revenue_real",
+                description="SUM of line-item totals",
+                entity="order",
+                measure=MetricMeasure(agg="sum", expression="unit_price * quantity"),
+                time_dimension=None,
+                time_grains=(),
+            )
+            store.write_metric(metric, source_connection_id=SOURCE_A)
+            got = store.get_metric("total_revenue_real", source_connection_id=SOURCE_A)
+        assert got == metric
+        assert got is not None
+        assert got.measure.column is None
+        assert got.measure.expression == "unit_price * quantity"
+        assert got.measure.measure_columns == frozenset({"unit_price", "quantity"})
+
+    def test_composite_metric_survives_reopen(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "store.db"
+        metric = Metric(
+            name="line_revenue",
+            description="",
+            entity="order",
+            measure=MetricMeasure(agg="sum", expression="(price - discount) * qty"),
+            time_dimension=None,
+            time_grains=(),
+        )
+        with SQLiteStore(db_path) as store:
+            _seed_order_entity(store)
+            store.write_metric(metric, source_connection_id=SOURCE_A)
+        with SQLiteStore(db_path) as store:
+            got = store.get_metric("line_revenue", source_connection_id=SOURCE_A)
+        assert got == metric
+
+    def test_bare_column_metric_still_round_trips(self, tmp_path: Path) -> None:
+        # Backward-compat assertion: an existing bare-column metric
+        # written through the new schema (measure_expression IS NULL)
+        # reads back unchanged.
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_order_entity(store)
+            metric = _total_revenue_metric()
+            store.write_metric(metric, source_connection_id=SOURCE_A)
+            got = store.get_metric("total_revenue", source_connection_id=SOURCE_A)
+        assert got == metric
+        assert got is not None
+        assert got.measure.expression is None
+        # `_total_revenue_metric()` fixture-helper uses `total_amount`.
+        assert got.measure.column == "total_amount"
+
+
 # ----- upsert + dbt guard ----------------------------------------------------
 
 

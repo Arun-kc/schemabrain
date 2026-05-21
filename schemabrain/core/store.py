@@ -147,7 +147,7 @@ __all__ = [
 #         `get_column_pii_tags` only returns rows that match the
 #         caller-supplied table + column set.
 # Older stores raise SchemaVersionMismatchError; pre-alpha users re-create.
-SCHEMA_VERSION = "12"
+SCHEMA_VERSION = "13"
 _MEMORY_PATH = ":memory:"
 
 # 1 USD = 1_000_000 micros. Storing the ledger as INTEGER micros avoids
@@ -484,7 +484,14 @@ _DDL_STATEMENTS: tuple[str, ...] = (
             CHECK (measure_agg IN (
                 'sum', 'count', 'count_distinct', 'avg', 'min', 'max'
             )),
-        measure_column TEXT NOT NULL,
+        -- Exactly one of measure_column / measure_expression is populated.
+        -- v12 had measure_column TEXT NOT NULL; v13 makes it nullable to
+        -- accommodate composite expressions (measure_expression). The
+        -- table-level CHECK at the end of the definition enforces the
+        -- XOR invariant the dataclass also enforces, so a corrupted row
+        -- can't smuggle past the read path.
+        measure_column TEXT,
+        measure_expression TEXT,
         time_dimension TEXT,
         time_grains TEXT NOT NULL DEFAULT '',
         origin TEXT NOT NULL
@@ -494,7 +501,12 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         PRIMARY KEY (source_connection_id, name),
         FOREIGN KEY (source_connection_id, entity)
             REFERENCES entities (source_connection_id, name)
-            ON DELETE CASCADE
+            ON DELETE CASCADE,
+        CHECK (
+            (measure_column IS NOT NULL AND measure_expression IS NULL)
+            OR
+            (measure_column IS NULL AND measure_expression IS NOT NULL)
+        )
     )
     """,
     """
@@ -629,13 +641,22 @@ def _row_to_metric(row: sqlite3.Row) -> Metric:
     """
     stored_grains = row["time_grains"]
     time_grains = tuple(stored_grains.split(",")) if stored_grains else ()
+    # Exactly one of measure_column / measure_expression is populated
+    # per the row-level CHECK. The dataclass's `__post_init__` re-enforces
+    # the same XOR invariant — a CHECK-violating row would have been
+    # rejected at write time, but the dataclass guard ensures the
+    # invariant survives a row written by a pre-v13 store or a
+    # future direct-SQL escape hatch.
+    measure_column = row["measure_column"]
+    measure_expression = row["measure_expression"]
     return Metric(
         name=row["name"],
         description=row["description"],
         entity=row["entity"],
         measure=MetricMeasure(
             agg=row["measure_agg"],
-            column=row["measure_column"],
+            column=measure_column,
+            expression=measure_expression,
         ),
         time_dimension=row["time_dimension"],
         time_grains=time_grains,  # type: ignore[arg-type]
@@ -2019,14 +2040,15 @@ class SQLiteStore:
             conn.execute(
                 "INSERT INTO metrics ("
                 "source_connection_id, name, description, "
-                "entity, measure_agg, measure_column, "
+                "entity, measure_agg, measure_column, measure_expression, "
                 "time_dimension, time_grains, origin, "
                 "created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (source_connection_id, name) DO UPDATE SET "
                 "description = excluded.description, "
                 "measure_agg = excluded.measure_agg, "
                 "measure_column = excluded.measure_column, "
+                "measure_expression = excluded.measure_expression, "
                 "time_dimension = excluded.time_dimension, "
                 "time_grains = excluded.time_grains, "
                 "origin = excluded.origin, "
@@ -2038,6 +2060,7 @@ class SQLiteStore:
                     metric.entity,
                     metric.measure.agg,
                     metric.measure.column,
+                    metric.measure.expression,
                     metric.time_dimension,
                     stored_grains,
                     metric.origin,
@@ -2050,7 +2073,7 @@ class SQLiteStore:
         """Return the metric named `name`, or `None` if absent."""
         conn = self._require_conn()
         row = conn.execute(
-            "SELECT name, description, entity, measure_agg, measure_column, "
+            "SELECT name, description, entity, measure_agg, measure_column, measure_expression, "
             "time_dimension, time_grains, origin FROM metrics "
             "WHERE source_connection_id = ? AND name = ?",
             (source_connection_id, name),
@@ -2070,13 +2093,13 @@ class SQLiteStore:
         conn = self._require_conn()
         if source_connection_id is None:
             rows = conn.execute(
-                "SELECT name, description, entity, measure_agg, measure_column, "
+                "SELECT name, description, entity, measure_agg, measure_column, measure_expression, "
                 "time_dimension, time_grains, origin FROM metrics "
                 "ORDER BY name, source_connection_id"
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT name, description, entity, measure_agg, measure_column, "
+                "SELECT name, description, entity, measure_agg, measure_column, measure_expression, "
                 "time_dimension, time_grains, origin FROM metrics "
                 "WHERE source_connection_id = ? ORDER BY name",
                 (source_connection_id,),

@@ -129,10 +129,31 @@ def emit_sql(plan: MetricPlan) -> tuple[str, dict[str, Any]]:
         group_by_parts.append(alias)
 
     # The measure — `agg("anchor"."column") AS metric_name`. The
-    # measure column is always on the anchor entity by Decision 2.
+    # measure columns are always on the anchor entity by Decision 2.
     # `count_distinct` becomes `count(DISTINCT ...)` — the SQL idiom.
+    #
+    # Two shapes: bare-column (the v1 path) renders as `"anchor"."col"`;
+    # composite-expression (v2) renders by walking the parsed AST via
+    # `render_measure_expression` — the same double-quoting + alias-
+    # prefix discipline applied to every operand. Numeric literals
+    # render through Python's stdlib formatters, so no user-supplied
+    # text reaches the SQL string. The choice between the two is the
+    # `MetricMeasure` XOR — exactly one of `column` or `expression` is
+    # populated, enforced by both the dataclass and the store CHECK.
     measure = plan.metric.measure
-    measure_ref = f'{quoted_anchor_alias}."{measure.column}"'
+    if measure.expression is not None:
+        from schemabrain.semantic.compiler.measure_expression import (
+            parse_measure_expression,
+            render_measure_expression,
+        )
+
+        parsed = parse_measure_expression(measure.expression)
+        measure_ref = render_measure_expression(
+            parsed.ast_node, quoted_anchor_alias=quoted_anchor_alias
+        )
+    else:
+        # Mutual exclusion guarantees `measure.column is not None` here.
+        measure_ref = f'{quoted_anchor_alias}."{measure.column}"'
     if measure.agg == "count_distinct":
         agg_expr = f"count(DISTINCT {measure_ref})"
     else:

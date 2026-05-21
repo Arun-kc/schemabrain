@@ -47,6 +47,7 @@ from schemabrain.semantic.compiler import (
     ResolvedOrderBy,
     UnknownFilterColumnError,
     UnknownGroupByColumnError,
+    UnknownMeasureColumnError,
     UnknownOrderByColumnError,
     emit_sql,
     resolve_metric_plan,
@@ -434,6 +435,68 @@ def test_unknown_group_by_column_error_pickles() -> None:
     assert revived.allowed_columns == err.allowed_columns
 
 
+class TestUnknownMeasureColumn:
+    """Compile-time validation of every column the measure references
+    against the anchor entity's table. Covers BOTH the v1 bare-column
+    path and the v2 composite-expression path — a typo in either shape
+    surfaces here as a clean envelope instead of an `internal_error`
+    masking Postgres's UndefinedColumn."""
+
+    def test_unknown_bare_measure_column_raises(self, tmp_path: Path) -> None:
+        from schemabrain.core.metric import Metric, MetricMeasure
+
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop(store)
+            # Overwrite the seeded `total_items_sold` metric with one
+            # that references a column that doesn't exist on `order_item`.
+            store.write_metric(
+                Metric(
+                    name="total_items_sold",
+                    description="",
+                    entity="order_item",
+                    measure=MetricMeasure(agg="sum", column="bogus_column"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            with pytest.raises(UnknownMeasureColumnError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                )
+        assert exc_info.value.entity == "order_item"
+        assert exc_info.value.column == "bogus_column"
+
+    def test_unknown_composite_operand_raises(self, tmp_path: Path) -> None:
+        from schemabrain.core.metric import Metric, MetricMeasure
+
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop(store)
+            # Composite expression with one valid operand + one typo.
+            # `quantity` is on `order_item`; `bogus_field` is not.
+            store.write_metric(
+                Metric(
+                    name="total_items_sold",
+                    description="",
+                    entity="order_item",
+                    measure=MetricMeasure(agg="sum", expression="quantity * bogus_field"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            with pytest.raises(UnknownMeasureColumnError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                )
+        assert exc_info.value.entity == "order_item"
+        assert exc_info.value.column == "bogus_field"
+
+
 def test_unknown_filter_column_error_pickles() -> None:
     import pickle
 
@@ -446,6 +509,63 @@ def test_unknown_filter_column_error_pickles() -> None:
     assert revived.entity == err.entity
     assert revived.column == err.column
     assert revived.allowed_columns == err.allowed_columns
+
+
+def test_unknown_measure_column_error_pickles() -> None:
+    import pickle
+
+    err = UnknownMeasureColumnError(
+        entity="order_item",
+        column="bogus",
+        allowed_columns=("id", "order_id", "quantity", "unit_price"),
+    )
+    revived: UnknownMeasureColumnError = pickle.loads(pickle.dumps(err))
+    assert revived.entity == err.entity
+    assert revived.column == err.column
+    assert revived.allowed_columns == err.allowed_columns
+
+
+def test_ambiguous_path_error_pickles() -> None:
+    """The audit layer fingerprints refusal events; AmbiguousPathError's
+    `candidate_paths` field is a nested tuple, so `__reduce__` must
+    preserve the structure round-trip."""
+    import pickle
+
+    from schemabrain.semantic.compiler import AmbiguousPathError
+
+    err = AmbiguousPathError(
+        anchor_entity="order_item",
+        target_entity="user",
+        candidate_paths=(
+            ("order_items_order_id", "orders_user_id_billing"),
+            ("order_items_order_id", "orders_user_id_shipping"),
+        ),
+    )
+    revived: AmbiguousPathError = pickle.loads(pickle.dumps(err))
+    assert revived.anchor_entity == err.anchor_entity
+    assert revived.target_entity == err.target_entity
+    assert revived.candidate_paths == err.candidate_paths
+
+
+def test_unknown_via_join_error_pickles() -> None:
+    """Same audit-fingerprint contract as the other compiler errors.
+    `requested_via` and `available_join_names` are both tuples that
+    must survive the pickle round-trip."""
+    import pickle
+
+    from schemabrain.semantic.compiler import UnknownViaJoinError
+
+    err = UnknownViaJoinError(
+        anchor_entity="order",
+        target_entity="user",
+        requested_via=("ghost_join",),
+        available_join_names=("orders_user_id_billing", "orders_user_id_shipping"),
+    )
+    revived: UnknownViaJoinError = pickle.loads(pickle.dumps(err))
+    assert revived.anchor_entity == err.anchor_entity
+    assert revived.target_entity == err.target_entity
+    assert revived.requested_via == err.requested_via
+    assert revived.available_join_names == err.available_join_names
 
 
 def test_unknown_order_by_column_error_pickles() -> None:

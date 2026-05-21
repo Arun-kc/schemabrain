@@ -209,7 +209,14 @@ def _resolve_pii_categories(
     by_table: dict[str, set[str]] = {}
 
     anchor_table = plan.anchor_table
-    by_table.setdefault(anchor_table, set()).add(plan.metric.measure.column)
+    # Composite-expression measures (`measure.expression is not None`)
+    # reference multiple operand columns, all on the anchor table. The
+    # `measure_columns` property returns the set for both the v1
+    # bare-column path and the v2 composite-expression path so PII
+    # propagation covers every touched column symmetrically. Without
+    # this, a PII-tagged operand inside a composite expression (e.g.
+    # `email_hash * weight`) would silently bypass `--pii-block`.
+    by_table.setdefault(anchor_table, set()).update(plan.metric.measure.measure_columns)
     if plan.metric.time_dimension is not None:
         # Form is "<entity>.<column>"; the column belongs to the
         # anchor entity's table per the v1 metric model. Guarded

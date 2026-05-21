@@ -356,6 +356,95 @@ class TestAggregations:
         assert 'count(DISTINCT "order"."user_id")' in sql
 
 
+class TestCompositeExpressionEmit:
+    """Composite expressions emit the parsed AST with double-quoting +
+    alias-prefix discipline applied to every column operand."""
+
+    def _seed_composite_revenue(
+        self, store: SQLiteStore, *, expression: str = "unit_price * quantity"
+    ) -> None:
+        # `orders` is the anchor table; we extend its fixture column
+        # list to include the two operand columns the expression
+        # references so the future column-validation pass (commit 4)
+        # won't reject this plan.
+        nonlocal_columns = _FIXTURE_COLUMNS.setdefault("orders", ())
+        if not any(c[0] == "unit_price" for c in nonlocal_columns):
+            _FIXTURE_COLUMNS["orders"] = (
+                *nonlocal_columns,
+                ("unit_price", "integer"),
+                ("quantity", "integer"),
+            )
+        store.write_table(_simple_table("orders"), source_connection_id=SOURCE)
+        store.write_entity(
+            Entity(
+                name="order",
+                description="",
+                binding=SingleTableBinding(qualified_table="public.orders"),
+                identity="id",
+            ),
+            source_connection_id=SOURCE,
+        )
+        store.write_metric(
+            Metric(
+                name="line_revenue",
+                description="",
+                entity="order",
+                measure=MetricMeasure(agg="sum", expression=expression),
+                time_dimension=None,
+                time_grains=(),
+            ),
+            source_connection_id=SOURCE,
+        )
+
+    def test_composite_multiplication_emits_quoted_operands(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            self._seed_composite_revenue(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="line_revenue",
+            )
+            sql, _params = emit_sql(plan)
+        assert 'sum(("order"."unit_price" * "order"."quantity"))' in sql
+
+    def test_composite_with_literal_emits_literal_inline(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            self._seed_composite_revenue(store, expression="unit_price - 100")
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="line_revenue",
+            )
+            sql, _params = emit_sql(plan)
+        assert 'sum(("order"."unit_price" - 100))' in sql
+
+    def test_composite_count_distinct(self, tmp_path: Path) -> None:
+        # count_distinct over a composite expression is unusual but
+        # structurally valid — the DSL doesn't forbid it. SQL idiom is
+        # `count(DISTINCT (a + b))`; emitter should produce exactly that.
+        with SQLiteStore(tmp_path / "store.db") as store:
+            self._seed_composite_revenue(store)
+            # Re-write the metric with count_distinct via the same fixture.
+            store.write_metric(
+                Metric(
+                    name="line_revenue",
+                    description="",
+                    entity="order",
+                    measure=MetricMeasure(agg="count_distinct", expression="unit_price * quantity"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="line_revenue",
+            )
+            sql, _params = emit_sql(plan)
+        assert 'count(DISTINCT ("order"."unit_price" * "order"."quantity"))' in sql
+
+
 # ----- filters ---------------------------------------------------------------
 
 

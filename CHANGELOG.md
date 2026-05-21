@@ -7,7 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Composite-expression measures via a strict whitelist grammar.**
+  `MetricMeasure` now accepts `expression: str` alongside `column: str`
+  (XOR: exactly one set). Composite expressions like `unit_price *
+  quantity` parse through Python's stdlib `ast.parse(mode='eval')` with
+  a node-type whitelist — identifier-shaped columns, integer + float
+  literals, unary `-`, binary `+ - * /`, and parens. Anything outside
+  the whitelist (function calls, comparisons, attribute access, etc.)
+  raises `MalformedMeasureExpressionError` at parse time so the SQL
+  emitter never sees free-form text. The emitter renders each operand
+  with the same double-quoting + alias-prefix discipline as the
+  single-column path; numeric literals are formatted via
+  `str(int)` / `repr(float)`. SQL injection surface closed by
+  construction. New module `schemabrain.semantic.compiler.measure_expression`.
+- **Compile-time `unknown_measure_column` envelope.** Parallel to
+  PR-6h.3's `unknown_group_by_column` / `unknown_filter_column` —
+  every column the measure references is now validated against the
+  anchor entity's table at compile time. Closes a typo-becomes-
+  `internal_error` gap that existed even for v1 bare-column measures
+  and would have widened sharply with composite expressions.
+- **`schemabrain/metrics/fixtures/ecommerce/total_revenue_real.yaml`:**
+  bundled composite-expression metric over the demo's `order_item`
+  entity. Computes line-level revenue as
+  `SUM(unit_price_cents * quantity)` — closes the v1 DSL gap Claude
+  diagnosed during the PR-6h.3 Layer-B Claude Desktop smoke.
+
 ### Changed
+- **YAML measure schema:** `measure.expression` is now a valid
+  alternative to `measure.column`; exactly one of the two must be set.
+- **`MetricSummary` MCP wire shape:** `measure_column` becomes
+  `str | None`; new `measure_expression: str | None` field. Discriminated
+  union — agents reading `list_metrics` branch on which field is
+  populated to decide bare-column vs composite handling.
+- **Store schema bump 12 → 13** for the composite-expression column on
+  the `metrics` table (nullable `measure_column`, new
+  `measure_expression`, table-level XOR CHECK). Pre-alpha contract:
+  operators with v12 stores re-index (re-indexing an unchanged schema
+  costs $0 — fingerprint dedup skips the LLM call).
+- **PII propagation across composite expressions:** every column the
+  measure touches contributes to the propagated category set —
+  previously only `measure.column` was harvested, which for composite
+  expressions would have silently bypassed `--pii-block` on any
+  tagged-but-unwalked operand.
 - **README: promote `examples/anthropic_demo.py` above the Quickstart
   as the 5th firewall property.** The 230-LOC drop-in proof was buried
   inside `## After the wizard > Plug into your own agent loop`; now

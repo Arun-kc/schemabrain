@@ -122,23 +122,88 @@ class DbtOwnedMetricError(ValueError):
 
 @dataclass(frozen=True)
 class MetricMeasure:
-    """The aggregation + column pair that defines a metric's value.
+    """The aggregation + column-or-expression pair that defines a metric's value.
 
-    `agg` is one of the six closed-grammar `AggFunction` values;
-    `column` is a bare identifier on the anchored entity's table.
-    Composite expressions (`case when ... then x end`) are deferred to
-    v2's expression layer — at v1 the column is a single identifier
-    on the entity's bound table.
+    `agg` is one of the six closed-grammar `AggFunction` values.
+    Exactly one of `column` or `expression` is populated:
+
+      - `column` (str): a bare identifier on the anchor entity's table.
+        Used for the common `SUM(amount)` / `COUNT(id)` shapes.
+      - `expression` (str): a composite arithmetic expression over
+        multiple columns on the anchor entity's table — `unit_price *
+        quantity` for line-item revenue. Parsed via the whitelist
+        grammar in `semantic.compiler.measure_expression`. Anything
+        outside arithmetic (function calls, comparisons, subqueries)
+        is rejected at parse time so the emitter never sees free-form
+        text.
+
+    Mutual exclusion is enforced in `__post_init__`. Setting both, or
+    neither, raises `ValueError`.
+
+    The `measure_columns` property returns the set of column names the
+    measure references — one for the `column=` case, possibly many for
+    the `expression=` case. PII propagation + compile-time column
+    validation iterate this set, so both paths get the same
+    security/correctness guarantees by construction.
     """
 
     agg: AggFunction
-    column: str
+    column: str | None = None
+    expression: str | None = None
 
     def __post_init__(self) -> None:
         if self.agg not in _VALID_AGGS:
             raise ValueError(f"agg must be one of {sorted(_VALID_AGGS)} (got {self.agg!r})")
-        if not _IDENT_RE.fullmatch(self.column):
+        # XOR: exactly one of column / expression must be set. The
+        # `(a is None) == (b is None)` form catches both "both set" and
+        # "neither set" in one branch.
+        if (self.column is None) == (self.expression is None):
+            raise ValueError(
+                "measure must set exactly one of `column` or `expression` "
+                f"(got column={self.column!r}, expression={self.expression!r})"
+            )
+        if self.column is not None and not _IDENT_RE.fullmatch(self.column):
             raise ValueError(f"column must be an identifier (got {self.column!r})")
+        if self.expression is not None:
+            # Validate the expression against the whitelist grammar at
+            # construction time so a malformed expression fails fast at
+            # the same boundary as a malformed bare column. Re-raises as
+            # `ValueError` so callers that just want to catch "bad
+            # measure" don't need to import the parser module.
+            from schemabrain.semantic.compiler.measure_expression import (
+                MalformedMeasureExpressionError,
+                parse_measure_expression,
+            )
+
+            try:
+                parse_measure_expression(self.expression)
+            except MalformedMeasureExpressionError as exc:
+                raise ValueError(str(exc)) from exc
+
+    @property
+    def measure_columns(self) -> frozenset[str]:
+        """The set of column names this measure references on the anchor table.
+
+        Single element for the `column=` case, possibly many for the
+        `expression=` case. PII propagation + compile-time column
+        validation iterate this set so both paths cover all touched
+        columns symmetrically.
+
+        The expression is re-parsed on each access — `ast.parse` of a
+        short arithmetic expression is microseconds, and the hot path
+        (one `get_metric` call per request) calls this at most a
+        handful of times. Caching would require breaking the frozen
+        dataclass invariant.
+        """
+        if self.column is not None:
+            return frozenset({self.column})
+        # Mutual exclusion guarantees expression is not None here.
+        assert self.expression is not None
+        from schemabrain.semantic.compiler.measure_expression import (
+            parse_measure_expression,
+        )
+
+        return parse_measure_expression(self.expression).columns
 
 
 @dataclass(frozen=True)

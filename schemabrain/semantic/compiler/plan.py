@@ -142,6 +142,39 @@ class UnknownFilterColumnError(MetricCompilerError):
 
 
 @dataclass(frozen=True)
+class UnknownMeasureColumnError(MetricCompilerError):
+    """Raised when a metric's measure references an entity that exists
+    but a column that does NOT exist on that entity's table.
+
+    Parallel to `UnknownGroupByColumnError` / `UnknownFilterColumnError`.
+    Covers BOTH the v1 bare-column path (single `measure.column`) AND
+    the v2 composite-expression path (every column referenced inside
+    `measure.expression`) — composite expressions reference multiple
+    operands, any of which can be a typo. Without this check, a typo
+    surfaces only at Postgres execution time as `UndefinedColumn`,
+    which the MCP layer wraps as `internal_error`.
+
+    Carries the entity + the offending column + the actual allowed set
+    so the MCP layer can populate `recovery.suggested_args.allowed_columns`
+    for a mechanical retry.
+    """
+
+    entity: str
+    column: str
+    allowed_columns: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        super().__init__(
+            f"measure column {self.entity!r}.{self.column!r} does not "
+            f"exist on entity {self.entity!r}. Allowed columns: "
+            f"{list(self.allowed_columns)}"
+        )
+
+    def __reduce__(self) -> tuple[type, tuple[str, str, tuple[str, ...]]]:
+        return (self.__class__, (self.entity, self.column, self.allowed_columns))
+
+
+@dataclass(frozen=True)
 class UnreachableEntityError(MetricCompilerError):
     """Raised when a group_by or filter column targets an entity that
     has no canonical join from the metric's anchor.

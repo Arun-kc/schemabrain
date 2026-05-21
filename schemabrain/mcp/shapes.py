@@ -545,10 +545,20 @@ class CanonicalJoinInfo(BaseModel):
 class MetricSummary(BaseModel):
     """One metric in the `list_metrics` response.
 
-    Lean by design: name + anchor entity + aggregation shape + time
-    bucketing capabilities + provenance. The agent uses this to pick
-    a metric to feed to `get_metric`; for the actual computation it
-    calls `get_metric(name, ...)`.
+    Lean by design: name + anchor entity + aggregation shape + measure
+    shape + time bucketing capabilities + provenance. The agent uses
+    this to pick a metric to feed to `get_metric`; for the actual
+    computation it calls `get_metric(name, ...)`.
+
+    Measure shape is discriminated: exactly one of `measure_column` and
+    `measure_expression` is populated, never both, never neither — the
+    same XOR the `MetricMeasure` dataclass enforces. Bare-column
+    measures (v1 shape, `SUM(amount)`) carry `measure_column` and
+    `measure_expression is None`. Composite expressions (v2 shape,
+    `SUM(unit_price * quantity)`) carry `measure_expression` (the raw
+    expression source) and `measure_column is None`. Reading agents
+    can branch on which field is populated to decide whether the
+    metric is a simple-column aggregate or a composite computation.
 
     `time_dimension` and `time_grains` are paired — both set or both
     empty. When `time_dimension` is set, the agent may pass any value
@@ -563,7 +573,8 @@ class MetricSummary(BaseModel):
     description: str
     entity: str
     aggregation: AggFunction
-    measure_column: str
+    measure_column: str | None = None
+    measure_expression: str | None = None
     time_dimension: str | None
     time_grains: tuple[TimeGrain, ...]
     origin: MetricOrigin
