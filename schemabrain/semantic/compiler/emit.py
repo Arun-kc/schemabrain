@@ -147,7 +147,7 @@ def emit_sql(plan: MetricPlan) -> tuple[str, dict[str, Any]]:
     # `"schema.table"`. We split on the dot (entity validation
     # guarantees exactly one) and quote each half.
     from_clause = f"FROM {_quote_qualified_table(plan.anchor_table)} AS {quoted_anchor_alias}"
-    # Defense-in-depth (Round-2 fold, silent-failure-hunter F6):
+    # Defense-in-depth on the topological-order invariant.
     # `plan.joins` is contracted to be topologically ordered by the
     # resolver. If a future refactor (or a malformed plan from a
     # programmatic caller) violates that contract, the JOIN emission

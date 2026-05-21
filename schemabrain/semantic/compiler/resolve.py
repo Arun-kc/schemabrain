@@ -7,14 +7,14 @@ Raises structured `MetricCompilerError` subclasses when the request
 can't be satisfied — the MCP tool layer maps each subclass to a
 charter envelope `kind`.
 
-Multi-hop reachability (since PR-6h.1): the resolver BFSes the
-canonical-join graph (treating each canonical join as an undirected
-edge between its `source_entity` and `target_entity`) for the
-shortest path from the metric's anchor to each referenced entity.
-Intermediate hops on the path become additional `ResolvedJoin`
-entries in the plan, in topological chain order. Path-level
-ambiguity (two paths of equal length) refuses with
-`AmbiguousPathError`; the agent disambiguates via `via=(join_name,)`.
+Multi-hop reachability: the resolver BFSes the canonical-join graph
+(treating each canonical join as an undirected edge between its
+`source_entity` and `target_entity`) for the shortest path from the
+metric's anchor to each referenced entity. Intermediate hops on the
+path become additional `ResolvedJoin` entries in the plan, in
+topological chain order. Path-level ambiguity (two paths of equal
+length) refuses with `AmbiguousPathError`; the agent disambiguates
+via `via=(join_name,)`.
 """
 
 from __future__ import annotations
@@ -128,12 +128,12 @@ def resolve_metric_plan(
 
     via_set = frozenset(via)
     # `consumed_via` accumulates which via names actually constrained
-    # a hop in some chain. Round-2 fold (HIGH convergent): previously
-    # the set was a closure-captured shared mutable; `_find_canonical_chain`
-    # mutated it directly even when a chain partially resolved before
-    # an unrelated raise. The current contract is per-call: each
-    # `_find_canonical_chain` returns its consumed names alongside the
-    # chain, and the caller merges into the shared set ONLY on success.
+    # a hop in some chain. Each `_find_canonical_chain` returns its
+    # consumed names alongside the chain; the caller merges into this
+    # request-level set ONLY on success, so partial-chain consumed
+    # names from a chain that later raised don't pollute the shared
+    # set (defends a future retry/catch refactor from silently
+    # suppressing real `UnknownViaJoinError` raises).
     consumed_via: set[str] = set()
 
     def _ensure_graph() -> _JoinGraph:
@@ -254,12 +254,13 @@ def resolve_metric_plan(
     unused_via = via_set - consumed_via
     if unused_via:
         all_join_names = tuple(sorted({rj.canonical_name for rj in resolved_joins.values()}))
-        # Round-2 fold (HIGH convergent): target_entity used to receive
-        # a JOIN name from `next(iter(unused_via))`, misleading agents
-        # reading the error to call `resolve_join(entity_b=<join_name>)`.
-        # Pass empty-string sentinel — the orphan-via raise has no
-        # specific target entity (the via was unmatched globally
-        # across every resolved group_by/filter chain).
+        # Empty-string sentinel on `target_entity`: the orphan-via raise
+        # has no specific target entity (the via was unmatched globally
+        # across every resolved group_by/filter chain). Agents reading
+        # the field to plan a follow-up `resolve_join` call must branch
+        # on the sentinel — `UnknownViaJoinError.__post_init__` renders
+        # a distinct message for this case so a downstream retry path
+        # doesn't try to look up an entity that doesn't exist.
         raise UnknownViaJoinError(
             anchor_entity=metric.entity,
             target_entity="",
@@ -327,13 +328,11 @@ def _build_join_graph(edges: list[CanonicalJoin]) -> _JoinGraph:
         # Reverse orientation: traversing from target_entity, the
         # on-pair columns flip so emit can produce
         # `{neighbor_alias}.{source_column} = {origin_alias}.{target_column}`
-        # using the same emit logic verbatim.
-        #
-        # Round-2 fold (silent-failure-hunter F4): use `dataclasses.replace`
-        # so any future fields added to `JoinColumnPair` (e.g. cast_type,
-        # nullable_override) carry over to the reverse-direction edge
-        # automatically instead of being silently dropped by a positional
-        # constructor.
+        # using the same emit logic verbatim. `dataclasses.replace`
+        # ensures any future fields added to `JoinColumnPair` (e.g.
+        # cast_type, nullable_override) carry over to the reverse-
+        # direction edge automatically instead of being silently
+        # dropped by a positional constructor.
         swapped = tuple(
             dataclasses.replace(
                 p,
@@ -364,14 +363,11 @@ def _find_canonical_chain(
     of (predecessor_entity, ChainEdge) tuples — for a 1-hop chain a
     single tuple, for a 2-hop chain two tuples, etc. — and
     `consumed_via` is the subset of the input `via` set whose names
-    constrained an actual hop in the resolved chain.
-
-    Round-2 fold (HIGH convergent): previous shape mutated a
-    closure-captured `consumed_via: set[str]`, which polluted the
-    request-level set with names from partially-resolved chains that
-    raised mid-BFS. The current shape returns consumed names only on
-    successful resolution; the caller merges into a request-level
-    set only on the success path.
+    constrained an actual hop in the resolved chain. The return-value
+    contract (rather than mutating a closure-captured set) ensures
+    consumed names are only observable on the success path: if BFS
+    raises, no partial-chain names leak back into the caller's
+    request-level tracking set.
 
     Refusal behavior:
       - No path from anchor to target → `UnreachableEntityError`.

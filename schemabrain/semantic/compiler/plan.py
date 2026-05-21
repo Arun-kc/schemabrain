@@ -164,10 +164,11 @@ class AmbiguousPathError(MetricCompilerError):
         # synthesised to balloon the candidate set.
         shown = list(self.candidate_paths[:4])
         more = f" (+{len(self.candidate_paths) - 4} more)" if len(self.candidate_paths) > 4 else ""
-        # Round-2 fold: previous shape rendered `via=(['n1','n2'],)` —
-        # a tuple containing a list, which is invalid for the v1
-        # contract `via: tuple[str, ...]`. Render an inline tuple
-        # literal so the agent's copy-paste retry is valid Python.
+        # Render the suggestion as an inline tuple literal so the
+        # agent's copy-paste retry stays valid against the
+        # `via: tuple[str, ...]` contract — anything that nested a list
+        # inside a tuple (`via=(['n1','n2'],)`) would TypeError when
+        # the resolver iterates `via`.
         first_path_literal = tuple(shown[0]) if shown else ()
         super().__init__(
             f"multiple canonical-join paths exist from {self.anchor_entity!r} "
@@ -199,10 +200,10 @@ class UnknownViaJoinError(MetricCompilerError):
     when the via mismatch surfaced — empty string when the via name
     was orphan across the whole request (the BFS for every referenced
     entity succeeded but the via constraint went unused by all of
-    them). Round-2 fold (CRITICAL convergent): the previous shape
-    stuffed a JOIN name into `target_entity` for the orphan case,
-    misleading any agent that read the field to retry via
-    `resolve_join(entity_b=target_entity)`.
+    them). Agents reading the field to plan a follow-up
+    `resolve_join(entity_b=target_entity)` must branch on the
+    empty-string sentinel; the `__post_init__` message rendering does
+    the same so the two cases stay distinguishable in audit logs.
     """
 
     anchor_entity: str
