@@ -1,14 +1,26 @@
-# Schema Brain
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-dark.svg">
+    <img src="docs/assets/readme-hero-light.svg" alt="schemabrain — the safety and schema intelligence layer for AI systems that interact with databases" width="100%">
+  </picture>
+</p>
 
-[![CI](https://github.com/Arun-kc/schemabrain/actions/workflows/ci.yml/badge.svg)](https://github.com/Arun-kc/schemabrain/actions/workflows/ci.yml)
-[![Python 3.11 | 3.12](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+<h1 align="center">schemabrain</h1>
+
+<p align="center">
+  <a href="https://github.com/Arun-kc/schemabrain/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Arun-kc/schemabrain/ci.yml?style=flat-square&label=CI&labelColor=0A0A0A&color=3ECF8E" alt="CI"></a>
+  <a href="https://pypi.org/project/schemabrain/"><img src="https://img.shields.io/pypi/v/schemabrain?style=flat-square&label=pypi&labelColor=0A0A0A&color=3ECF8E" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/schemabrain/"><img src="https://img.shields.io/pypi/dm/schemabrain?style=flat-square&label=downloads&labelColor=0A0A0A&color=3ECF8E" alt="PyPI downloads"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%20%7C%203.12-0A0A0A?style=flat-square&labelColor=0A0A0A" alt="Python 3.11 | 3.12"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0A0A0A?style=flat-square&labelColor=0A0A0A" alt="License: MIT"></a>
+  <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-compatible-3ECF8E?style=flat-square&labelColor=0A0A0A" alt="MCP compatible"></a>
+</p>
 
 > **The agent never writes SQL. Schema Brain does, from definitions you control.**
 
-A pluggable semantic + SQL firewall for AI agents on Postgres. Your agent only ever sees ten read-only MCP tools — entity lookup, validated metrics, canonical-join resolution, PII-aware refusal — and Schema Brain compiles and runs the parameterized SQL on its side. Every call lands in a tamper-evident audit log.
+A pluggable semantic + SQL firewall for AI agents on Postgres. Your agent only ever sees twelve read-only MCP tools — entity lookup, validated metrics, canonical-join resolution, PII-aware refusal — and Schema Brain compiles and runs the parameterized SQL on its side. Every call lands in a tamper-evident audit log.
 
-- **One command from `pip install` to wired agent** — bare `schemabrain init` prompts for your database URL (or spins up a Docker demo Postgres if you don't have one handy) and walks the 7-stage activation wizard end-to-end. Auto-detects a dbt project and routes through the importer when one is present.
+- **One command from `pip install` to wired agent** — bare `schemabrain init` walks the 7-stage activation wizard end-to-end. Auto-detects a dbt project and routes through the importer when one is present.
 - **Validated metrics, not invented SQL** — entities, metrics, and canonical joins compile to parameterized SQL the agent never sees.
 - **Pluggable into any agent loop** — Claude Desktop, Claude Code, Cursor, or your own Anthropic / OpenAI / LangGraph loop over MCP stdio. 230-LOC drop-in proof at [`examples/anthropic_demo.py`](examples/anthropic_demo.py).
 - **Watch what the agent does** — `schemabrain tail` streams every tool call live; every call lands in an append-only `mcp_audit` table with a sha256 chain.
@@ -19,7 +31,163 @@ schemabrain init
 # then ask your MCP host: "list the entities Schema Brain knows about"
 ```
 
-**Status: 0.3.0 (alpha).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap. The longer-term position is the SQL-boundary safety layer for AI agents — see [How it fits](#how-it-fits).
+**Cost.** ~$0.01 to index 7 tables · ~$0.03 for 87 columns · **$0** to re-index unchanged schemas. Bounded by per-stage cost caps; runs on Claude Haiku 4.5.
+
+**Status: 0.3.0 (alpha).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap. The longer-term position is the SQL-boundary safety layer for AI agents — see [Where it's going](#where-its-going).
+
+---
+
+## Contents
+
+- [Quickstart](#quickstart) — 3 steps from `pip install` to a working agent
+- [The firewall](#the-firewall) — what Schema Brain enforces at the SQL boundary
+- [Sample session](#sample-session) — real Claude Desktop interaction against the bundled fixture
+- [Where it's going](#where-its-going) — honest disclaimer about what's not built yet
+- [Roadmap](#roadmap) — shipped + in progress + planned
+- [Troubleshooting](#troubleshooting) — the five most common first-run failures
+- [Documentation](#documentation) — deeper guides
+
+**Read next based on what you need:**
+
+| Goal | Where to go |
+|---|---|
+| Try it on the bundled fixture | [Quickstart](#quickstart) |
+| Understand the firewall properties | [The firewall](#the-firewall) |
+| Plug into your own agent loop | [`docs/setup.md`](docs/setup.md#path-2--anthropic-sdk-demo-no-claude-desktop-required) |
+| Build a semantic layer | [`docs/semantic-layer.md`](docs/semantic-layer.md) |
+| Run in production (audit, drift, Docker) | [`docs/operations.md`](docs/operations.md) |
+| Observe the agent (tail, audit log, OTel) | [`docs/observability.md`](docs/observability.md) |
+| Compare with Vanna / Atlan / dbt-mcp / WrenAI | [`docs/landscape.md`](docs/landscape.md) |
+
+---
+
+## Quickstart
+
+Three steps from `pip install` to a working Claude Desktop integration. ~45s once Docker and the embedding model are cached; budget a couple of minutes on a true first run while the `postgres:16-alpine` image and the ~67 MB ONNX embedding model download.
+
+### 1. Install
+
+```bash
+pip install schemabrain
+schemabrain --version
+```
+
+Source install (`git clone` + `uv sync --extra dev`) is documented in [`docs/setup.md`](docs/setup.md#0-activation-wizard-recommended).
+
+### 2. Run the activation wizard
+
+```bash
+schemabrain init
+```
+
+`init` is a seven-stage wizard that takes you from "I have a Postgres database" to "Claude Desktop can answer questions about it" in one command. On first run it prompts for what it needs:
+
+- **A Postgres URL** — paste your own connection string, or press **Enter** to spin up a local demo Postgres container with the bundled e-commerce fixture (Docker is invoked automatically; idempotent on re-runs).
+- **An `ANTHROPIC_API_KEY`** — optional. Skip and the wizard still wires Claude Desktop; entity curation can run later.
+
+```
+Schema Brain init — activation wizard
+
+  [1/7] Source check       ✓ source reachable + read-only
+  [2/7] Index schema       ✓ 7 tables, 30 columns indexed
+  [3/7] Curate entities    ✓ 6 entities suggested + applied (cost: $0.01)
+  [4/7] Curate metrics     ✓ 10 metrics suggested + applied (cost: $0.03)
+  [5/7] Curate joins       ✓ 5 canonical joins created (FK-mined, no LLM)
+  [6/7] Wire host          ✓ wrote schemabrain entry to claude_desktop_config.json
+  [7/7] Next               ✓ restart your MCP host, then ask: "list the entities Schema Brain knows about"
+```
+
+Full wizard reference (stages explained, flags, dbt auto-detection, `--print-only` for non-Claude-Desktop hosts, `--no-entities` / `--no-metrics` / `--no-joins` opt-outs, cost-cap pauses): [`docs/setup.md`](docs/setup.md#0-activation-wizard-recommended).
+
+### 3. Restart Claude Desktop and ask
+
+1. Quit Claude Desktop fully — **Cmd+Q**, not just close the window. The MCP config is only read on cold start.
+2. Relaunch.
+3. New conversation:
+
+   > list the entities Schema Brain knows about
+
+If Claude calls `list_entities` and reports `user`, `order`, etc., you're done. If not, see [Troubleshooting](#troubleshooting).
+
+After the wizard, `schemabrain inspect` shows what the agent has and `schemabrain tail` streams every tool call live — see [`docs/operations.md`](docs/operations.md).
+
+---
+
+## The firewall
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/schemabrain-architecture-dark.gif">
+    <img src="docs/assets/schemabrain-architecture-light.gif" alt="schemabrain architecture: agent talks to schemabrain over MCP stdio; schemabrain emits parameterized SQL to Postgres; the schemabrain boundary is the trust boundary. Mint pulse animates from agent through MCP tools, semantic layer, SQL emitter, and audit log to Postgres." width="900">
+  </picture>
+</p>
+
+Four properties Schema Brain enforces at the SQL boundary today — plus one that keeps them portable:
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### 1. Agent never writes raw SQL
+
+Entities, metrics, and canonical joins compile to parameterized SQL Schema Brain runs on its side. The agent sees rows + the SQL that was run — never arbitrary statements at your database.
+
+[Build your semantic layer →](docs/semantic-layer.md)
+
+</td>
+<td width="50%" valign="top">
+
+### 2. Read-only enforced at the source
+
+Stage 1 of `schemabrain init` opens the source with `default_transaction_read_only=on` and verifies the session honors it. A Postgres that won't enforce read-only is refused at activation, not at runtime.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 3. PII-aware refusal at the tool boundary
+
+Any `get_metric` touching a blocked PII category returns a `refused` envelope. The compiled SQL never runs; the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`.
+
+```bash
+schemabrain serve --pii-block contact,health
+```
+
+Twelve categories from GDPR, CCPA/CPRA, HIPAA, PCI DSS, ISO 27018 — tagged per-column at index time.
+
+[PII classification →](docs/observability.md#pii-classification-alpha)
+
+</td>
+<td width="50%" valign="top">
+
+### 4. Tamper-evident audit log
+
+Every tool call under `schemabrain serve` writes one row to an append-only `mcp_audit` table with a per-row sha256 chain. Rewrite past rows and the chain breaks; `audit verify` catches it.
+
+```bash
+schemabrain audit verify   # exit 0 = chain clean
+```
+
+[Tamper-evident audit log →](docs/observability.md#audit-log-alpha)
+
+</td>
+</tr>
+</table>
+
+And one property that keeps those four portable:
+
+**5. Pluggable into any agent loop.** The same MCP stdio surface Claude Desktop sees is exposed to any host that speaks MCP — your own Anthropic, OpenAI, or LangGraph loop included. [`examples/anthropic_demo.py`](examples/anthropic_demo.py) is a 230-LOC drop-in that wires Claude Haiku 4.5 to `schemabrain serve` and prints exactly which tools the agent chose to call:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+python examples/anthropic_demo.py \
+    --url-env DATABASE_URL \
+    --store-path ./schemabrain.db \
+    --question "Which tables describe customer orders?"
+```
+
+~$0.005–0.02 per run on Haiku 4.5, bounded by `--max-turns`. ([Anthropic SDK walkthrough](docs/setup.md#path-2--anthropic-sdk-demo-no-claude-desktop-required))
 
 ---
 
@@ -50,21 +218,6 @@ Real Claude Desktop session against the bundled e-commerce fixture (7 tables, 30
 > - **Assumptions:** No status filter applied — `status` is free TEXT with default `'pending'`. `categories.parent_id` exists (nested categories) but I'm grouping by leaf — say if you want a recursive CTE for roll-up.
 > - **Caveat:** A product in N categories has its spend counted N times (per category). Per-customer cross-category sums will exceed actual spend if products are multi-category in your data.
 
-Meanwhile in the operator's terminal, `schemabrain tail` streamed every tool call Claude made:
-
-```
-14:32:08.221  describe_table  qualified_name='public.users'
-              → columns=4 tokens=130 in 11ms
-14:32:08.224  describe_table  qualified_name='public.products'
-              → columns=5 tokens=160 in 9ms
-14:32:08.227  describe_table  qualified_name='public.order_items'
-              → columns=5 tokens=150 in 10ms
-14:32:08.231  describe_table  qualified_name='public.product_categories'
-              → columns=2 tokens=70 in 8ms
-```
-
-Every call is auditable, replayable, and PII-aware. The [next section](#the-firewall) substantiates this; [Observe the agent](#observe-the-agent) much further down has the full streaming + OTel surface.
-
 The caveats are the differentiator. None of them — M:N double-counting, recursive-CTE awareness, free-text-status flag — is hardcoded; they fall out of letting Claude reason over the indexed descriptions. Most LLM-over-database tools confidently invent a `payments` table or shoehorn the answer into `orders.total_cents`. Schema Brain doesn't.
 
 **Cost.** ~$0.0003/column with Claude Haiku 4.5. The bundled 7-table fixture indexes for **~$0.01 in ~40s**. The Pagila DVD-rental sample (87 columns after partition deduplication) indexes for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
@@ -73,568 +226,19 @@ To verify Claude's SQL is mechanically correct (and that flagged caveats are the
 
 ---
 
-## The firewall
-
-Four properties Schema Brain enforces at the SQL boundary today:
-
-**1. Agent never writes raw SQL.** Entities, metrics, and canonical joins compile to parameterized SQL Schema Brain runs on its side. The agent sees rows + the SQL that was run — never gets to send arbitrary statements at your database. ([Build your semantic layer](#build-your-semantic-layer))
-
-**2. Read-only enforced at the source.** Stage 1 of `schemabrain init` opens the source with `default_transaction_read_only=on` and verifies the session honors it. A Postgres that won't enforce read-only is refused at activation, not at runtime. ([Activation wizard](#2-run-the-activation-wizard))
-
-**3. PII-aware refusal at the tool boundary.** Set `--pii-block` and any `get_metric` touching the named PII categories returns a `refused` envelope. The compiled SQL never runs and never reaches the source — the refusal itself is recorded as one `mcp_audit` row with `status='refused'`, `refusal_reason='pii_blocked'`, so the attempt is auditable.
-
-```bash
-schemabrain serve --pii-block contact,health   # at serve time
-```
-
-Twelve PII categories (`contact`, `financial`, `health`, `identity`, …) tagged per-column at index time, derived from GDPR, CCPA/CPRA, HIPAA, PCI DSS, and ISO 27018. ([PII classification](#pii-classification))
-
-**4. Tamper-evident audit log.** Every tool call under `schemabrain serve` writes one row to an append-only `mcp_audit` table with a per-row sha256 chain. If anyone rewrites past audit rows the chain breaks; `audit verify` catches it. ([Tamper-evident audit log](#tamper-evident-audit-log))
-
-```bash
-schemabrain audit verify   # exit 0 = chain clean
-```
-
-And one property that keeps those four portable:
-
-**5. Pluggable into any agent loop.** The same MCP stdio surface Claude Desktop sees is exposed to any host that speaks MCP — your own Anthropic, OpenAI, or LangGraph loop included. [`examples/anthropic_demo.py`](examples/anthropic_demo.py) is a 230-LOC drop-in that wires Claude Haiku 4.5 to `schemabrain serve` and prints exactly which tools the agent chose to call:
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-python examples/anthropic_demo.py \
-    --url-env DATABASE_URL \
-    --store-path ./schemabrain.db \
-    --question "Which tables describe customer orders?"
-```
-
-~$0.005–0.02 per run on Haiku 4.5, bounded by `--max-turns`. ([Plug into your own agent loop](#plug-into-your-own-agent-loop))
-
----
-
-## Quickstart
-
-Three steps from `pip install` to a working Claude Desktop integration. ~45s once Docker and the embedding model are cached; budget a couple of minutes on a true first run while the `postgres:16-alpine` image and the ~67 MB ONNX embedding model download.
-
-### 1. Install
-
-```bash
-pip install schemabrain
-schemabrain --version
-```
-
-Or from source if you want to hack on it:
-
-```bash
-git clone git@github.com:Arun-kc/schemabrain.git
-cd schemabrain && uv sync --extra dev
-source .venv/bin/activate
-```
-
-### 2. Run the activation wizard
-
-```bash
-schemabrain init
-```
-
-`init` is a seven-stage wizard that takes you from "I have a Postgres database" to "Claude Desktop can answer questions about it" in one command. On first run it prompts for what it needs:
-
-- **A Postgres URL** — paste your own connection string, or press **Enter** to spin up a local demo Postgres container with the bundled e-commerce fixture (Docker is invoked automatically; idempotent on re-runs). If Docker isn't installed the wizard prints install instructions and exits cleanly — no half-state.
-- **An `ANTHROPIC_API_KEY`** — optional. Skip and the wizard still wires Claude Desktop; entity curation can run later (see "Running without an API key" below).
-
-When you run it, you'll see:
-
-```
-Schema Brain init — activation wizard
-
-  [1/7] Source check
-        ✓ source reachable + read-only
-  [2/7] Index schema
-        ✓ 7 tables, 30 columns indexed
-  [3/7] Curate entities
-        ✓ 6 entities suggested + applied (cost: $0.01)
-  [4/7] Curate metrics
-        ✓ 10 metrics suggested + applied (cost: $0.03)
-  [5/7] Curate joins
-        ✓ 5 canonical joins created (FK-mined, no LLM)
-  [6/7] Wire host
-        ✓ wrote schemabrain entry to ~/Library/Application Support/Claude/claude_desktop_config.json
-  [7/7] Next
-        ✓ restart your MCP host, then ask: "list the entities Schema Brain knows about"
-```
-
-<details>
-<summary>Running without an API key (still works)</summary>
-
-Stage 3 skips gracefully — the wizard still wires the MCP host and the rest works. To curate entities later:
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-schemabrain entities suggest --apply
-```
-
-You'll be prompted for the Postgres URL — paste the same one you gave the wizard. Or skip entity curation entirely by passing `--no-entities` to `init`.
-
-</details>
-
-<details>
-<summary>What each stage does</summary>
-
-- **Source check** — validates the URL is reachable + verifies the session is read-only on Postgres. Auto-detects a dbt manifest from `$DBT_PROJECT_DIR/target/manifest.json` or by walking up from the cwd for a `dbt_project.yml`. When found, stages 3 and 4 route through the dbt importer instead of the LLM.
-- **Index schema** — introspects every user-visible table, fingerprints columns, persists to `./schemabrain.db`. Free by default; pass `--enrich` to add LLM column descriptions (typically $0.10–$2.00 for a 50-table schema).
-- **Curate entities** — proposes domain entities via Claude Sonnet 4.6 and writes them into the store. Cap spend with `--entities-max-cost-usd N`. Opt out with `--no-entities`.
-- **Curate metrics** — proposes aggregations anchored on the curated entities (measure column + agg function + grain). Cap spend with `--metrics-max-cost-usd N`. Opt out with `--no-metrics`.
-- **Curate joins** — mines FK constraints + `pg_stat_statements` query log to surface canonical joins. **Deterministic — no LLM call, no cost cap.** Opt out with `--no-joins`.
-- **Wire host** — writes a `schemabrain` MCP entry into Claude Desktop's config. Other MCP servers are left untouched. Existing entries trigger an interactive prompt (or pass `--yes`).
-- **Next** — prints the question to ask first.
-
-**Stages 3, 4, and 5 are best-effort:** a failure records the issue and prints a guided next step, but doesn't abort the wizard. Stages 1, 2, 6, and 7 abort on failure. **Re-running is safe** — identical inputs no-op every stage.
-
-</details>
-
-<details>
-<summary>Other MCP hosts (Cursor, Claude Code, Continue) & advanced flags</summary>
-
-- **For Claude Code:** add `--host claude-code` to shell out to `claude mcp add` instead of editing JSON directly.
-- **For Cursor / Continue / Windsurf / anything else:** pass `--print-only` to print the MCP snippet without writing — paste into your host's config yourself.
-- **dbt as the source of truth:** force a specific manifest with `--from-dbt PATH`. See [Import from dbt](#import-from-dbt) for the full surface.
-- **CI / scripted runs:** pass `--yes` to skip all interactive prompts (URL prompt, LLM cost-cap pauses, host-overwrite confirmation).
-- **Cost-cap pauses:** before each LLM-driven stage the wizard pauses with the cost cap formatted in the prompt. Skip only the pauses with `--skip-llm-confirm`; the pause auto-suppresses in non-TTY environments regardless.
-
-</details>
-
-### 3. Restart Claude Desktop and ask
-
-1. Quit Claude Desktop fully — **Cmd+Q**, not just close the window. The MCP config is only read on cold start.
-2. Relaunch.
-3. In a new conversation:
-
-   > list the entities Schema Brain knows about
-
-If Claude calls `list_entities` and reports `user`, `order`, etc., you're done. If it says "I don't have access to any tool called Schema Brain," see [If something went wrong](#if-something-went-wrong).
-
----
-
-## After the wizard
-
-The agent is now talking to Schema Brain. Three things worth knowing.
-
-### See what got indexed
-
-See what the agent has — same view it has, no LLM call, no source connection:
-
-```bash
-schemabrain inspect
-```
-
-> **Your output will vary.** Entity names come from Sonnet's read of your schema (you'll typically see `user` not `customer` on the bundled fixture); join names follow your actual FK constraints. Operate on what `inspect` prints, not the names in this sample.
-
-```
-◆ store · ./schemabrain.db
-7 tables · 30 columns · 6 entities · 10 metrics · 5 joins
-
-Definitions
-├── Entities (6)
-│   ├── address
-│   ├── category
-│   ├── order
-│   ├── order_item
-│   ├── product
-│   └── user
-├── Metrics (10)
-│   ├── total_revenue
-│   ├── order_count
-│   └── … (8 more)
-└── Joins (5)
-    ├── orders_user_id
-    ├── order_items_order_id
-    └── … (3 more)
-
-Drill into one: `schemabrain inspect <name>`
-```
-
-Drill into one entity for the full detail view — columns, PII tags, and the joins that reach it:
-
-```bash
-schemabrain inspect user
-```
-
-```
-◆ public.users · entity:user · binding id
-
-Description:  A registered user who can place orders.
-
-Columns:
-  id          bigint       not null  pk identity  public
-  email       text         not null              pii (contact)
-  full_name   text         not null              pii (contact)
-  created_at  timestamptz  not null              public
-
-Related entities:
-  order  outgoing  one_to_many  via `orders_user_id`
-      user.id = order.user_id
-```
-
-This is the operator's counterpart to the agent-facing MCP tools — anything `describe_entity` returns to Claude, `inspect` shows you locally.
-
-### Plug into your own agent loop
-
-Schema Brain isn't tied to Claude Desktop. The MCP server speaks standard MCP stdio, so any host that speaks MCP can drive it:
-
-- **Claude Desktop / Claude Code / Cursor** — `init` already wrote the right config for the host you selected. For Claude Code, run `init --host claude-code` instead of editing JSON; for Continue, Windsurf, Zed, or any arbitrary host, pass `--print-only` and paste the snippet into your host's MCP config yourself.
-- **Your own Anthropic SDK agent** — the command above ([`The firewall §5`](#the-firewall)) is the full setup; [`examples/anthropic_demo.py`](examples/anthropic_demo.py) is 230 LOC of plain Anthropic SDK + the `mcp` Python client, no magic, easy to fork into your own loop.
-- **LangGraph / LlamaIndex / AutoGen / OpenAI Agents SDK** — adapt the demo's loop; the underlying MCP stdio server is the same.
-
-An end-to-end walkthrough that exercises entities, metrics, AND canonical joins (with the bundled fixture) is at [`examples/ecommerce/`](examples/ecommerce/).
-
-### Inspect the MCP tool surface
-
-To see exactly what shape the tools expose to an agent — every argument, every JSON schema, every response envelope — without booting any agent at all, use the [official MCP Inspector](https://github.com/modelcontextprotocol/inspector):
-
-```bash
-npx @modelcontextprotocol/inspector \
-    schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db
-```
-
-A browser tab opens with every registered tool, its description, the input JSON schema, and a live call-and-response panel. Requires Node.js 18+. Full walkthrough in [docs/setup.md](docs/setup.md#inspecting-tool-shapes-with-the-official-mcp-inspector).
-
----
-
-## If something went wrong
-
-**`pip install schemabrain` gave me an older version.** Check `schemabrain --version`. If it's not 0.3.0, your pip cache may be stale. Run `pip install --upgrade schemabrain` or — to install from source while you wait for the latest release on PyPI — `git clone` the repo and `uv sync --extra dev`.
-
-**`init` reports `source unreachable`.** Postgres may not be ready yet on first run — wait a few seconds and re-run `schemabrain init`. For your own database, verify host, port, and credentials. Connection URLs in any form are accepted (`postgresql://`, `postgres://`, `postgresql+psycopg://`).
-
-**The first `init` or `schemabrain index` hangs for ~60 seconds.** Normal. The first index downloads the ONNX embedding model (~67 MB) and makes one LLM call per column. It happens once. Subsequent runs are fast.
-
-**`init` fails at stage 6 "wire host".** Claude Desktop must be installed first — Schema Brain writes into its config file, which doesn't exist until Claude Desktop has launched at least once. Download from [claude.ai/download](https://claude.ai/download), launch once, then re-run `schemabrain init`.
-
-**Claude Desktop doesn't show Schema Brain after restart.** Cmd+Q is required (close-window doesn't trigger a re-read of MCP config). After Cmd+Q and relaunch, run `schemabrain doctor` to verify the config landed. If `doctor` says everything's good but Claude Desktop still doesn't see the tool, check `~/Library/Logs/Claude/mcp*.log`.
-
-**`get_metric` / `describe_entity` returns "no entities found".** Stage 3 of `init` was skipped (no `ANTHROPIC_API_KEY`) or `--no-entities` was passed. Run `schemabrain entities suggest --apply` (you'll be prompted for the URL). Verify with `schemabrain inspect`.
-
----
-
-## What's next
-
-`init` got you a working agent. From here, three groups of things you can do:
-
-1. **[Build your semantic layer](#build-your-semantic-layer)** — curate entities, metrics, and canonical joins so the agent talks in domain terms (`get_metric("revenue", by="month")`) instead of inventing SQL.
-2. **[Observe the agent](#observe-the-agent)** — `tail` for live tool-call streaming, an append-only audit log, and PII-aware refusal at the SQL boundary.
-3. **[Operate over time](#operate-over-time)** — `check` to detect drift before it shows up as bad agent answers, Docker for a zero-host-install setup, plus the `inspect` browser you've already met.
-
-The rest of this README is reference material — skim the section that matches what you want to do next.
-
----
-
-## Build your semantic layer
-
-Three concepts compose: **entities** (a domain name bound to one physical table), **metrics** (aggregations anchored on an entity, with grain), and **canonical joins** (the persisted answer to "how do entity A and entity B connect?"). All three are agent-visible via the MCP tool surface and compile to parameterized SQL the agent never sees.
-
-The agent reaches the semantic layer through five dedicated MCP tools:
-
-| Tool | What the agent asks it |
-|---|---|
-| `find_relevant_entities(query)` | "Which entities match this business concept?" — semantic search over the semantic layer. |
-| `list_entities()` | "What entities exist in this database?" |
-| `describe_entity(name)` | "What does this entity expose? Columns, PII sensitivity, bound table." |
-| `resolve_join(entity_a, entity_b)` | "Give me the canonical SQL JOIN between these two entities." |
-| `get_metric(name, by=..., filter=...)` | "Compute this aggregation. Return rows + the SQL + an audit fingerprint." |
-
-The five physical-schema tools (`find_relevant_tables`, `describe_table`, `describe_column`, `suggest_joins`, `get_example_queries`) sit below them — see [`docs/mcp-tools.md`](docs/mcp-tools.md) for the full reference.
-
-### Entities
-
-```bash
-schemabrain entities suggest --url-env DATABASE_URL --dry-run
-```
-
-| Mode | What it does |
-|---|---|
-| `--dry-run` | Print candidates to stdout with confidence + rationale + PII hints. No writes. |
-| `--out-dir ./suggestions` | Write one `<entity>.yaml` per candidate. Edit before applying. |
-| `--apply` | Write candidates straight into the store. |
-
-Spend is bounded by `--max-cost-usd` (default `$1.00`) or `$SCHEMABRAIN_MAX_LLM_COST_USD`. Pair with `--top-k N` to cap candidate count.
-
-Sample dry-run output:
-
-```
-# confidence: high
-# rationale: users has id PK, NOT NULL email, referenced by orders.user_id
-# pii_hints:
-#   email: pii
-version: 1
-name: customer
-description: A registered customer
-binding:
-  single_table: public.users
-identity: id
-origin: suggested
-
--- 3 candidate(s) | model: claude-sonnet-4-6 | cost: $0.0271
-```
-
-Once entities are in the store, the MCP server exposes them via `list_entities` and `describe_entity`.
-
-### Metrics
-
-`metrics suggest` mirrors `entities suggest` — same three modes, same cost guards. The LLM picks the measure column, aggregation function, optional time dimension, and grain:
-
-```bash
-schemabrain metrics suggest --url-env DATABASE_URL --dry-run
-schemabrain metrics suggest --url-env DATABASE_URL --out-dir ./metric-candidates
-schemabrain metrics list --store-path ./schemabrain.db
-```
-
-Metrics anchor on an entity that already exists in the store. If you haven't curated entities first, `metrics suggest` refuses with a guided error pointing at `entities apply`.
-
-### Canonical joins
-
-Where `entities suggest` infers WHAT to query, `joins suggest` infers HOW two entities connect. Candidates are mined from FK constraints (always present) and query-log evidence (when `schemabrain mine-queries` has populated the `example_queries` table from `pg_stat_statements`).
-
-```bash
-schemabrain joins suggest --url-env DATABASE_URL --dry-run
-schemabrain joins suggest --url-env DATABASE_URL --out-dir ./join-candidates
-schemabrain joins apply ./join-candidates --url-env DATABASE_URL
-schemabrain joins list --store-path ./schemabrain.db
-```
-
-Once applied, the agent-facing `resolve_join` MCP tool returns the canonical join with a paste-ready `JOIN ... ON ...` skeleton. Multi-canonical-per-pair (billing vs shipping address, primary vs secondary user) is supported: pass `name=<canonical_name>` to disambiguate, or get a structured ambiguity refusal listing both.
-
-### Import from dbt
-
-If you already curate entities in dbt, point Schema Brain at your compiled `target/manifest.json` and dbt becomes the source of truth. Two entry points:
-
-**During `init` (auto-detected or explicit):** the wizard's stage 1 auto-detects a manifest from `$DBT_PROJECT_DIR/target/manifest.json` or by walking up from the cwd looking for `dbt_project.yml`. When found, stages 3 (entities) and 4 (metrics) route through the importer instead of the LLM — your dbt definitions become the source of truth in one command. Force a specific manifest with `--from-dbt PATH`:
-
-```bash
-schemabrain init --url-env DATABASE_URL --from-dbt /path/to/dbt/target/manifest.json
-```
-
-Stage 5 (joins) still uses FK + query-log mining since dbt has no canonical-join concept.
-
-**Standalone import:** if you've already run `init` (or want to import without going through the wizard), point the importer directly at a manifest:
-
-```bash
-schemabrain import dbt path/to/target/manifest.json --url-env DATABASE_URL
-```
-
-Each dbt model with a single-column primary key lands as a Schema Brain entity with `origin="dbt_import"`. Re-running is idempotent; entities that previously had `origin="manual"` or `"suggested"` flip to `"dbt_import"` (dbt takes ownership). Subsequent manual edits to dbt-owned rows are refused at the store boundary.
-
-| Flag | Behaviour |
-|---|---|
-| _(default)_ | Plan + apply. |
-| `--dry-run` | Compute the plan; write nothing. |
-| `--report report.json` | Emit a CI-friendly JSON report. |
-
-A bundled fixture demonstrates the flow:
-
-```bash
-schemabrain import dbt $(schemabrain fixture-path ecommerce_manifest.json) \
-    --url-env DATABASE_URL --dry-run
-```
-
----
-
-## Observe the agent
-
-Every tool call is observable two ways: a live JSONL stream for real-time debugging, and an append-only audit table inside the SQLite store for after-the-fact verification.
-
-### Live tool-call tail
-
-When `schemabrain serve` is running, every tool call appends one JSON line to `~/.schemabrain/events.jsonl`. `schemabrain tail` reads it in real time:
-
-```bash
-# Terminal 1
-schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db
-
-# Terminal 2
-schemabrain tail
-```
-
-```
-14:32:07.114  find_relevant_tables  query='customer churn last quarter'
-              → matches=3 in 47ms
-
-14:32:08.221  describe_table        qualified_name='public.users'
-              → columns=12 tokens=380 in 12ms
-
-14:32:08.890  suggest_joins         tables=['public.users', 'public.orders']
-              → paths=1 in 6ms
-```
-
-Flags: `--since 30s|5m|2h|1d` (default 5m), `--no-follow` for one-shot replay, `--json` for jq-friendly output. The events file is bounded by a 10 MiB rotation.
-
-The events file is local-only and the redactor strips connection URLs, truncates large strings, masks `get_metric` filter values and email-shaped strings — but treat it as the same trust boundary as your shell history.
-
-See [docs/observability.md](docs/observability.md) for the full event shape and OTel integration.
-
-### Tamper-evident audit log
-
-Alongside the JSONL tail, every MCP tool call writes one row to an append-only `mcp_audit` table inside the local store. The table is append-only by SQL trigger, by a write-only writer connection, and by a per-row sha256 chain hash. Coherent tampering against any external archive that captured a prior hash is detectable.
-
-```bash
-schemabrain audit verify                       # exit 0 = chain clean
-schemabrain audit list --since 1h --status error
-```
-
-The audit row records what tool ran, when, against which source, with what envelope status, and a structural fingerprint. Disable for a run with `--no-audit`. See [ADR 0001](docs/adr/0001-audit-row-and-pii-taxonomy.md) for the 14-field shape and the privacy guarantee the fingerprint preserves.
-
-### OpenTelemetry export
-
-Ship spans to Langfuse, Phoenix, Honeycomb, Grafana Tempo, or any OTLP-compatible backend by installing the optional extra and setting the standard OTel endpoint variable:
-
-```bash
-pip install 'schemabrain[otel]'
-export OTEL_EXPORTER_OTLP_ENDPOINT='https://your-collector.example.com/v1/traces'
-schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db
-```
-
-Spans are named `execute_tool` with `gen_ai.*` semantic-convention attributes (`gen_ai.system`, `gen_ai.tool.name`) plus Schema Brain facets (`schemabrain.session.id`, `schemabrain.status`, `schemabrain.error_kind`). Charter `error` and `refused` statuses map to OTel `ERROR` with the `error_kind` carried as the status description for clean dashboard grouping. When the extra is missing or the endpoint is unset, OTel is silently skipped — tool calls never fail because telemetry failed. See [ADR 0004](docs/adr/0004-observability-event-bus.md) for the design.
-
-### PII classification
-
-`schemabrain index` tags every column with the regulator-derived PII categories from [ADR 0001](docs/adr/0001-audit-row-and-pii-taxonomy.md) — twelve categories spanning GDPR, CCPA/CPRA, HIPAA, PCI DSS, and ISO 27018. Tags propagate across every column a `get_metric` call touches (MAX-sensitivity + UNION-categories) and write into the audit row.
-
-```bash
-# Refuse any get_metric that touches `contact` or `health` columns.
-schemabrain serve --pii-block contact,health
-```
-
-A blocked call returns a Charter `status="refused"` envelope with `error.kind="pii_blocked"`. The SQL is never compiled, never logged, never executed. The audit row records `refusal_reason='pii_blocked'` and the triggering categories.
-
-Skip classification at index time with `schemabrain index ... --no-pii-classify`. Audit rows still land; the `pii_categories` column stays empty.
-
----
-
-## Operate over time
-
-The operator-side commands — see what Schema Brain knows, catch drift before it shows up as bad agent answers, run the whole thing in Docker.
-
-### Inspect what's indexed
-
-Covered in [After the wizard — See what got indexed](#see-what-got-indexed) — `schemabrain inspect` is the operator browser for everything in the local store. Summary form lists entities, metrics, and joins; pass an entity name as a positional argument to drill into columns, PII tags, and reachable joins.
-
-Exit codes: `0` rendered, `1` drilled name not found, `2` operational refusal.
-
-### Detect drift
-
-`schemabrain check` walks every persisted entity, metric, and canonical join and confirms each one still matches the live source schema. Drops or renames at the source surface as a structured drift report — before they become bad agent answers.
-
-```bash
-schemabrain check --url-env DATABASE_URL --store-path ./schemabrain.db
-```
-
-```
-8 entities (7 healthy) · 12 metrics (11 healthy) · 5 joins (5 healthy)
-
-  ✗ entity   customer
-        identity_column_missing  public.customers.legacy_email
-        → update entity 'customer'`s `identity:` field and re-run
-          `schemabrain entities apply`
-
-2 drifts detected.
-```
-
-Exit `0` when everything lines up, `1` when at least one drift is detected, `2` for operational refusals. Drift cascading is suppressed — when an entity's bound table is missing, downstream metric and join drifts on that table are suppressed so the output stays focused on root cause.
-
-Pipe-friendly: `schemabrain check --url-env DATABASE_URL --json | jq '.exit_code'`.
-
-### Preview the cost of catching up
-
-Schedule re-indexes confidently. `schemabrain index --dry-run --since <duration>` previews what a real run would cost — no DB writes, no LLM calls, no `ANTHROPIC_API_KEY` required — and adds a freshness audit showing how much of the local store is stale relative to the chosen cutoff:
-
-```bash
-schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db \
-    --dry-run --since 14d
-```
-
-```
-Would index 87 table(s): 4 changed, 83 unchanged, 0 removed. Columns: +12/~6/-0. Estimated LLM: 18 descriptions ($0.0054). Estimated embeddings: 18. No changes made to the store.
-Stale since 14d: 42 columns across 9 tables (estimated refresh $0.0126)
-```
-
-The "changed/unchanged" line accounts only for the source diff since the last `index` run; the "Stale since" line flags columns whose owning table was last enriched before the cutoff — useful for catching tables that haven't been re-indexed even though they haven't structurally drifted. Accepts compact durations (`30s`, `5m`, `2h`, `14d`) or ISO 8601 timestamps with timezone.
-
-### Run via Docker
-
-If you don't want a host Postgres install at all, the repo ships a `docker-compose.yml` that brings up a Postgres container with the bundled fixture, indexes it, and leaves you with a populated store on a named volume:
-
-```bash
-docker compose up
-```
-
-> **Note on ports.** The compose stack binds Postgres to host port **5433** (not 5432) so it never clashes with a developer-local Postgres already running on 5432. The Quickstart §2 standalone `docker run` recipe uses 5432 because it assumes a clean host. Pick whichever fits your setup; the MCP wiring below talks to the container over the internal Docker network (`postgres:5432`), so the host-side port mapping doesn't matter for the Claude Desktop integration.
-
-Point an MCP host at the indexed store via `docker run`:
-
-```jsonc
-// ~/Library/Application Support/Claude/claude_desktop_config.json
-{
-  "mcpServers": {
-    "schemabrain": {
-      "command": "docker",
-      "args": [
-        "run", "--rm", "-i",
-        "--network", "schemabrain_default",
-        "-v", "schemabrain_sb-data:/data",
-        "-e", "DATABASE_URL=postgresql+psycopg://postgres:local@postgres:5432/postgres",
-        "schemabrain:local",
-        "serve", "--url-env", "DATABASE_URL", "--store-path", "/data/store.db"
-      ]
-    }
-  }
-}
-```
-
-The `docker compose up` recipe builds Schema Brain from the repo's `Dockerfile`, so a checkout is all you need. A pre-built multi-platform image (`linux/amd64` + `linux/arm64`) on a public registry is on the v0.3.x roadmap so you can skip the build step.
-
----
-
-## How it fits
-
-### The problem
-
-AI agents fail when querying real production databases:
-
-1. **Schemas don't fit in context** — a 300-table schema is 50k+ tokens of `CREATE TABLE` alone.
-2. **Column names are cryptic** — `acct_dim_v3`, `pmt_fct_h`, `cust_id_v2_legacy`.
-3. **Joins aren't obvious** — which FK is the "right" one when there are three?
-4. **Data has shapes** — `status` could be 5 enum values, 50, or a free-text mess.
-
-Schema Brain fixes all four and serves the result through a stable MCP tool surface that any agent can call.
-
-The bigger problem behind these — database MCPs running as the credentialed role, prompt injection escalating to SQLi, no PII-aware refusal at the SQL boundary — is what Schema Brain is being built to address at the safety layer. The schema intelligence shipping today is the substrate that layer needs.
-
-### How it compares
-
-The OSS landscape thinned in 2026: Vanna's public repo was frozen as the project went commercial, and the reference Postgres MCP server was archived in 2025 with no first-party successor named.
-
-| Project | License | First-party MCP | Status |
-|---|---|---|---|
-| **Schema Brain** | MIT | ✅ | Active — 0.3.0 |
-| [Vanna AI](https://github.com/vanna-ai/vanna) | MIT (repo frozen) | ❌ | OSS archived 2026-03; project moved commercial |
-| [Reference Postgres MCP](https://github.com/modelcontextprotocol/servers-archived) | MIT | ✅ | Archived 2025-05; no first-party successor named |
-| [Atlan](https://atlan.com) | Closed-source | ✅ | SaaS-only, enterprise pricing |
-| [dbt-mcp](https://github.com/dbt-labs/dbt-mcp) | Apache-2.0 | ✅ | Active — requires a dbt project |
-| [WrenAI](https://github.com/canner/WrenAI) | Apache-2.0 | ❌ (roadmap) | Active — uses MDL modeling layer |
-
-Schema Brain sits where none of these cover cleanly: **OSS + MIT + first-party MCP + no modeling layer required + introspects a live Postgres in one Python process + mines `pg_stat_statements` to surface observed SQL as agent context**.
-
-### Where it's going
+## Where it's going
 
 Schema Brain is being built as the **SQL-boundary safety layer for AI agents** — the layer that parses what your agent is about to ask the database and refuses (or rewrites) before it runs.
 
 That layer needs a semantic substrate underneath it. You can't refuse "this query touches PII" without knowing which columns are PII. You can't rewrite "join through this junction" without canonical-join definitions. You can't validate a metric without knowing its grain.
 
-So the engineering order is **schema intelligence → semantic substrate → safety primitives.** The safety wedge lands in the next major milestone (see Roadmap). Today the product is schema intelligence with a working semantic substrate. If you need PII-tagged refusal and parse-before-execute now, track the roadmap — this isn't ready yet.
+So the engineering order is **schema intelligence → semantic substrate → safety primitives.** The first two are shipped (v0.5 + v1); the third — `validate_query` for agent-emitted SQL and `execute` with hard caps — is the next major milestone. Today the product gives you PII-aware refusal at the `get_metric` boundary plus tamper-evident audit, both running against parameterized SQL the agent never sees. If you need parse-before-execute over arbitrary agent-emitted SQL, track the roadmap.
 
 ---
 
 ## Roadmap
 
-> The `v0.5` / `v1` / `v2` / `v3` labels below are **roadmap milestone names**, not package versions. The package follows strict semver — `1.0.0` is reserved for an API that's been battle-tested by external users without a forced break. See [ADR-0003](docs/adr/0003-versioning-policy.md).
+> The `v0.5` / `v1` / `v2` / `v3` labels are **roadmap milestone names**, not package versions. The package follows strict semver — `1.0.0` is reserved for an API that's been battle-tested by external users without a forced break. See [ADR-0003](docs/adr/0003-versioning-policy.md).
 
 **v0.5 — schema intelligence (shipped):**
 - Agent-UX charter v1.0 retrofit on existing tools + CI enforcement ✓
@@ -642,19 +246,25 @@ So the engineering order is **schema intelligence → semantic substrate → saf
 - Query log mining via `pg_stat_statements` (`schemabrain mine-queries`) ✓
 - 5 physical-schema MCP tools including `get_example_queries` ✓
 
-**v1 — semantic substrate (in progress):**
+**v1 — semantic substrate (shipped):**
 - Entities, metrics, canonical joins as first-class persisted definitions ✓
 - LLM-suggested entity / metric / join definitions from FK graph + column descriptions ✓
 - 5 semantic-layer MCP tools (`find_relevant_entities`, `list_entities`, `describe_entity`, `resolve_join`, `get_metric`) ✓
+- Composite-expression measures — `SUM(unit_price * quantity)` over the same anchor table ✓
+- Multi-hop canonical-join chains — BFS over the join graph with `via=` disambiguation ✓
 - Drift detection (`schemabrain check`) ✓
+- PII-aware refusal at the `get_metric` boundary ✓
+- Tamper-evident audit log with sha256 chain ✓
+
+**v1.x — engine breadth (in progress):**
 - One additional engine: Snowflake / BigQuery / MySQL
 - BIRD Mini-Dev automated eval harness
+- Pre-built multi-platform Docker image on a public registry
 
 **v2 — SQL-boundary safety wedge:**
-- PII tagging beyond pattern redaction — column-level classification with agent-visible refusal at the tool boundary
 - `validate_query` — agent-emitted SQL parsed and judged against policy before execution
 - `execute` with hard caps — read-only role enforced at the database layer, statement timeouts, row caps, per-call cost guards
-- **Sub-query refusal with recovery** — parse the SQL, identify the unsafe fragment, refuse just that fragment with a suggested rewrite
+- Sub-query refusal with recovery — parse the SQL, identify the unsafe fragment, refuse just that fragment with a suggested rewrite
 
 **v3 — multi-engine + control plane (commercial, gated on hosted demand):**
 - Remaining engines (BigQuery / Snowflake / Redshift breadth)
@@ -663,14 +273,32 @@ So the engineering order is **schema intelligence → semantic substrate → saf
 
 ---
 
+## Troubleshooting
+
+The five most common first-run failures. Full troubleshooter in [`docs/setup.md`](docs/setup.md#troubleshooting).
+
+- **`pip install schemabrain` gave me an older version.** Check `schemabrain --version`. If it's not 0.3.0 your pip cache is stale — run `pip install --upgrade schemabrain`.
+- **`init` reports `source unreachable`.** Postgres may not be ready on first run — wait a few seconds and re-run. For your own database, verify host, port, and credentials. Connection URLs in any form are accepted (`postgresql://`, `postgres://`, `postgresql+psycopg://`).
+- **The first `init` or `schemabrain index` hangs for ~60 seconds.** Normal. The first index downloads the ONNX embedding model (~67 MB) and makes one LLM call per column. Subsequent runs are fast.
+- **`init` fails at stage 6 "wire host".** Claude Desktop must be installed first — Schema Brain writes into its config file, which doesn't exist until Claude Desktop has launched at least once.
+- **Claude Desktop doesn't show Schema Brain after restart.** Cmd+Q is required (close-window doesn't trigger a re-read of MCP config). Run `schemabrain doctor` to verify the config landed. If `doctor` says everything's good but Claude Desktop still doesn't see the tool, check `~/Library/Logs/Claude/mcp*.log`.
+
+---
+
 ## Documentation
 
-- [`docs/setup.md`](docs/setup.md) — Claude Desktop wiring + Anthropic SDK demo, with troubleshooting
-- [`docs/mcp-tools.md`](docs/mcp-tools.md) — full reference for all 10 MCP tools (5 physical-schema + 5 semantic-layer)
-- [`docs/architecture.md`](docs/architecture.md) — pipeline, retrieval contract, cache logic, cost model, eval
-- [`docs/observability.md`](docs/observability.md) — event shape, redactor rules, OTel integration
-- [`docs/adr/`](docs/adr/) — architecture decision records (audit/PII taxonomy, store protocol, versioning policy, observability bus)
-- [`examples/`](examples/) — copy-paste-ready MCP configs, headless agent loop, end-to-end ecommerce walkthrough
+| Doc | What's inside |
+|---|---|
+| [`docs/setup.md`](docs/setup.md) | Activation wizard, Claude Desktop / Code / Cursor wiring, Anthropic SDK demo, troubleshooting, validating Claude's SQL |
+| [`docs/semantic-layer.md`](docs/semantic-layer.md) | Building entities, metrics (incl. composite expressions), canonical joins (incl. multi-hop), dbt import |
+| [`docs/operations.md`](docs/operations.md) | `inspect`, `check` (drift), `index --dry-run`, Docker compose |
+| [`docs/observability.md`](docs/observability.md) | `tail`, audit log, OTel export, PII classification |
+| [`docs/mcp-tools.md`](docs/mcp-tools.md) | Full reference for all 12 MCP tools |
+| [`docs/architecture.md`](docs/architecture.md) | Pipeline, retrieval contract, cache logic, cost model, eval |
+| [`docs/landscape.md`](docs/landscape.md) | Comparison vs Vanna / Atlan / dbt-mcp / WrenAI; "is this a semantic layer?" |
+| [`docs/threat-model.md`](docs/threat-model.md) | Security model + boundaries |
+| [`docs/adr/`](docs/adr/) | Architecture decision records (audit/PII taxonomy, store protocol, versioning policy, observability bus) |
+| [`examples/`](examples/) | Copy-paste-ready MCP configs, headless agent loop, end-to-end ecommerce walkthrough |
 
 ---
 
@@ -679,17 +307,21 @@ So the engineering order is **schema intelligence → semantic substrate → saf
 **Does my data leave my machine?**
 Only LLM-enriched column descriptions and the redacted sample values that feed them. Three regex passes (email, US SSN, credit-card-shaped digit runs) run on every sample before it leaves the profiler module — see [`schemabrain/profiler/stats.py`](schemabrain/profiler/stats.py). The Anthropic API call sends column metadata + redacted samples + sibling-column context — no raw rows. Embeddings are generated locally via `fastembed` (BAAI/bge-small-en-v1.5, ONNX, ~67 MB).
 
-**Is this a semantic layer like Cube or dbt Semantic Layer?**
-Partially. Schema Brain ships entities, metrics, and canonical joins as first-class persisted definitions today — agents call them via `list_entities`, `describe_entity`, `resolve_join`, `get_metric`. But the semantic layer isn't the headline; it's the **substrate** that makes the upcoming SQL-boundary safety primitives possible. If you already run dbt or Cube, Schema Brain complements them (point at `target/manifest.json` and dbt becomes the source of truth). If you don't, the substrate is generated for you — LLM-suggested, user-confirmed.
-
 **What databases work today?**
-Postgres 16+ (primary target) and SQLite (for development and demos). Adding Snowflake / BigQuery / MySQL is mostly a new `DataSource` implementation plus a profiler tweak — on the v1 roadmap.
+Postgres 16+ (primary target) and SQLite (for development and demos). Adding Snowflake / BigQuery / MySQL is mostly a new `DataSource` implementation plus a profiler tweak — on the v1.x roadmap.
 
 **Why MCP and not a REST API?**
 The consumer is an agent, not a service. MCP standardizes tool registration, schema description, and request/response transport. Agents discover Schema Brain natively and get its tool surface — no API wrapper, no SDK to maintain per language.
 
-**Why local embeddings instead of OpenAI / Voyage?**
-One LLM provider (Anthropic) and one local vector model is simpler than two API vendors. Embeddings change rarely, the model is bounded (one short description per column), and ~30 ms per query embed on a laptop is fast enough. Local-first also means you can index a private schema without exposing it to a second vendor.
+More questions answered in [`docs/landscape.md`](docs/landscape.md) (is this a semantic layer like Cube?) and [`docs/setup.md`](docs/setup.md#troubleshooting) (why local embeddings, more troubleshooting).
+
+---
+
+## Contributors
+
+<a href="https://github.com/Arun-kc/schemabrain/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Arun-kc/schemabrain" alt="Contributors to schemabrain" />
+</a>
 
 ---
 
