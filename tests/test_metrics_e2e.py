@@ -75,8 +75,7 @@ class TestBundledMetricFixtures:
             metric = parse_metric_yaml_file(yaml_file)
             expected_anchor = _NON_ORDER_ANCHORED_METRICS.get(metric.name, "order")
             assert metric.entity == expected_anchor, (
-                f"metric {metric.name!r} anchors on {metric.entity!r}, "
-                f"expected {expected_anchor!r}"
+                f"metric {metric.name!r} anchors on {metric.entity!r}, expected {expected_anchor!r}"
             )
 
     def test_total_revenue_measures_total_cents(self) -> None:
@@ -114,9 +113,7 @@ class TestBundledMetricFixtures:
         assert metric.measure.agg == "sum"
         assert metric.measure.column is None
         assert metric.measure.expression == "unit_price_cents * quantity"
-        assert metric.measure.measure_columns == frozenset(
-            {"unit_price_cents", "quantity"}
-        )
+        assert metric.measure.measure_columns == frozenset({"unit_price_cents", "quantity"})
 
 
 class TestBundledJoinCardinality:
@@ -335,8 +332,7 @@ class TestCliRoundTrip:
                 # inline in the agg call, not a bare column reference.
                 if name == "total_revenue_real":
                     assert (
-                        'sum(("order_item"."unit_price_cents" * '
-                        '"order_item"."quantity"))'
+                        'sum(("order_item"."unit_price_cents" * "order_item"."quantity"))'
                     ) in sql
 
     def test_metrics_list_after_apply(self, tmp_path: Path, monkeypatch, capsys) -> None:

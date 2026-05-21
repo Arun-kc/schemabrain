@@ -168,9 +168,7 @@ class TestImplHappyPath:
         assert m.time_grains == ()
         assert m.aggregation == "count"
 
-    def test_bare_column_metric_carries_column_and_null_expression(
-        self, tmp_path: Path
-    ) -> None:
+    def test_bare_column_metric_carries_column_and_null_expression(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "s.db") as store:
             store.write_table(_orders_table(), source_connection_id="sid")
             store.write_entity(_order_entity(), source_connection_id="sid")
@@ -180,9 +178,7 @@ class TestImplHappyPath:
         assert m.measure_column == "total_cents"
         assert m.measure_expression is None
 
-    def test_composite_metric_carries_expression_and_null_column(
-        self, tmp_path: Path
-    ) -> None:
+    def test_composite_metric_carries_expression_and_null_column(self, tmp_path: Path) -> None:
         from schemabrain.core.metric import Metric, MetricMeasure
 
         with SQLiteStore(tmp_path / "s.db") as store:
@@ -193,9 +189,7 @@ class TestImplHappyPath:
                     name="line_revenue",
                     description="",
                     entity="order",
-                    measure=MetricMeasure(
-                        agg="sum", expression="unit_price * quantity"
-                    ),
+                    measure=MetricMeasure(agg="sum", expression="unit_price * quantity"),
                     time_dimension=None,
                     time_grains=(),
                 ),
