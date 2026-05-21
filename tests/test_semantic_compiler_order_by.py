@@ -300,3 +300,23 @@ class TestTieBreak:
                 auto_appended_tie_break=True,
             ),
         )
+
+
+# ----- error class shape contracts -------------------------------------------
+
+
+def test_unknown_order_by_column_error_pickles() -> None:
+    """Frozen-dataclass error classes must round-trip through pickle
+    so a future audit layer can fingerprint refusals. Lock the
+    `__reduce__` shape against accidental field-order drift.
+    """
+    import pickle
+
+    err = UnknownOrderByColumnError(
+        requested_column="user.full_name",
+        allowed_columns=("total_items_sold", "user.email"),
+    )
+    revived: UnknownOrderByColumnError = pickle.loads(pickle.dumps(err))
+    assert revived.requested_column == err.requested_column
+    assert revived.allowed_columns == err.allowed_columns
+    assert str(revived) == str(err)
