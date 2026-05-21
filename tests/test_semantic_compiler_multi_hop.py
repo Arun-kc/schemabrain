@@ -313,7 +313,7 @@ def _seed_tangent_parallel_off_chain(store: SQLiteStore) -> None:
     `order → address` pair even though the resolver never needed to
     traverse it to reach `user`.
     """
-    for name in ("order_items", "orders", "users", "addresses"):
+    for name in ("order_items", "orders", "users", "addresses", "products"):
         store.write_table(
             Table(name=name, schema_name="public", columns=(_id_col(name),)),
             source_connection_id=SOURCE,
@@ -323,6 +323,7 @@ def _seed_tangent_parallel_off_chain(store: SQLiteStore) -> None:
         ("order", "public.orders"),
         ("user", "public.users"),
         ("address", "public.addresses"),
+        ("product", "public.products"),
     ):
         store.write_entity(
             Entity(
@@ -351,6 +352,22 @@ def _seed_tangent_parallel_off_chain(store: SQLiteStore) -> None:
             source_entity="order",
             target_entity="user",
             on=(JoinColumnPair(source_column="user_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    # Second tangent off the anchor (mirrors real ecommerce schema):
+    # `order_item → product` is a dead-end branch off `order_item` that
+    # never leads to `user` and must not interfere with BFS reaching
+    # `user` through `order`. Orthogonal to the parallel-canonical bug,
+    # but rounds out fixture fidelity to the real demo store.
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="order_items_product_id",
+            description="",
+            source_entity="order_item",
+            target_entity="product",
+            on=(JoinColumnPair(source_column="product_id", target_column="id"),),
             cardinality="many_to_one",
         ),
         source_connection_id=SOURCE,
@@ -876,3 +893,89 @@ class TestTangentParallelJoinsOffChain:
             "order_items_order_id",
             "orders_billing_address_id",
         )
+
+    def test_target_in_graph_but_disconnected_component_unreachable(self, tmp_path: Path) -> None:
+        """Both anchor and target have canonical-join edges in the
+        graph (so the empty-graph early-out at the top of
+        `_find_canonical_chain` does NOT fire), but the two endpoints
+        live in disconnected components. BFS exhausts its frontier
+        without finding the target and pass 1 returns `[]`. The
+        post-BFS guard then raises `UnreachableEntityError`. Covers
+        the `if not structural_paths` branch in `_find_canonical_chain`
+        and the BFS-exhaustion fall-through in
+        `_structural_shortest_paths`.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_tangent_parallel_off_chain(store)
+            # Add a second, fully disconnected component: `category`
+            # plus `category_alias` with one canonical join between
+            # them. Both entities are in the graph (have edges), but
+            # no edge reaches them from `order_item`'s component.
+            for table_name in ("categories", "category_aliases"):
+                store.write_table(
+                    Table(
+                        name=table_name,
+                        schema_name="public",
+                        columns=(_id_col(table_name),),
+                    ),
+                    source_connection_id=SOURCE,
+                )
+            for entity_name, table in (
+                ("category", "public.categories"),
+                ("category_alias", "public.category_aliases"),
+            ):
+                store.write_entity(
+                    Entity(
+                        name=entity_name,
+                        description="",
+                        binding=SingleTableBinding(qualified_table=table),
+                        identity="id",
+                    ),
+                    source_connection_id=SOURCE,
+                )
+            store.write_canonical_join(
+                CanonicalJoin(
+                    name="category_aliases_category_id",
+                    description="",
+                    source_entity="category_alias",
+                    target_entity="category",
+                    on=(JoinColumnPair(source_column="category_id", target_column="id"),),
+                    cardinality="many_to_one",
+                ),
+                source_connection_id=SOURCE,
+            )
+            with pytest.raises(UnreachableEntityError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    group_by=("category.id",),
+                )
+        assert exc_info.value.anchor_entity == "order_item"
+        assert exc_info.value.target_entity == "category"
+
+    def test_via_tangent_join_for_unrelated_target_raises_unknown(self, tmp_path: Path) -> None:
+        """An agent who picks a tangent canonical-join name from
+        `list_joins` (e.g. `orders_billing_address_id`) and passes it
+        as `via=` for an unrelated target (group_by `user.email`)
+        gets a structured `UnknownViaJoinError` — the via= name does
+        not lie on any structural path to `user`, so it filters every
+        path out. The `available_join_names` payload lists the names
+        on the actual chain to `user`, giving the agent a discoverable
+        recovery hint.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_tangent_parallel_off_chain(store)
+            with pytest.raises(UnknownViaJoinError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    group_by=("user.email",),
+                    via=("orders_billing_address_id",),
+                )
+        assert exc_info.value.anchor_entity == "order_item"
+        assert exc_info.value.target_entity == "user"
+        assert "orders_billing_address_id" in exc_info.value.requested_via
+        assert "order_items_order_id" in exc_info.value.available_join_names
+        assert "orders_user_id" in exc_info.value.available_join_names

@@ -380,9 +380,13 @@ def _find_canonical_chain(
       - 1 structural path with parallel canonicals on a hop and via=
         doesn't pick exactly one of them → `AmbiguousJoinError`.
     """
-    if anchor not in graph and target not in graph:
-        # Graph has no edges at all OR neither endpoint touches the
-        # graph. Either way: no path exists.
+    if anchor not in graph or target not in graph:
+        # If EITHER endpoint has no edges in the canonical-join graph,
+        # no path exists. (The original PR-6h.1 guard used `and`, which
+        # was a strict subset of correct unreachability: an anchor with
+        # no edges still triggers an empty BFS that returns the same
+        # UnreachableEntityError downstream, but the early-out is more
+        # honest about what we know up-front.)
         raise UnreachableEntityError(anchor_entity=anchor, target_entity=target)
 
     # Pass 1 — structural BFS over entity pairs.
@@ -400,7 +404,7 @@ def _find_canonical_chain(
                 {
                     join.name
                     for path in structural_paths
-                    for join in _canonicals_on_structural_path(path, graph)
+                    for join in _canonicals_on_structural_path(path=path, graph=graph)
                 }
             )
         )
@@ -412,7 +416,8 @@ def _find_canonical_chain(
         )
     if len(feasible_paths) > 1:
         candidate_paths = tuple(
-            _render_structural_path_as_canonical_sequence(path, graph) for path in feasible_paths
+            _render_structural_path_as_canonical_sequence(path=path, graph=graph)
+            for path in feasible_paths
         )
         raise AmbiguousPathError(
             anchor_entity=anchor,
@@ -430,6 +435,22 @@ def _find_canonical_chain(
     chosen_path = feasible_paths[0]
     for predecessor, neighbor in chosen_path:
         candidates = [(j, op) for (n, j, op) in graph.get(predecessor, []) if n == neighbor]
+        if not candidates:  # pragma: no cover — defensive
+            # Pass-1/pass-2 invariant violation: pass 1 only emits a
+            # hop `(predecessor, neighbor)` when `neighbor` appears in
+            # `graph[predecessor]`. Unreachable on a single-request
+            # graph (the graph is built once and not mutated between
+            # passes), but a future refactor that filters or rebuilds
+            # the graph between passes would silently land here and
+            # crash later in `AmbiguousJoinError.__post_init__` when
+            # it indexed into an empty `candidate_join_names`. Make
+            # the invariant explicit so the failure mode is named.
+            raise RuntimeError(
+                f"compiler invariant violation: structural path hop "
+                f"({predecessor!r}, {neighbor!r}) resolved to zero "
+                f"canonical joins in pass 2 — graph-path consistency "
+                f"is broken. This is a compiler bug."
+            )
         if len(candidates) == 1:
             chosen_join, chosen_pairs = candidates[0]
             # Even on unique-canonical hops, record consumption: the
@@ -511,7 +532,9 @@ def _structural_shortest_paths(
     return found_paths
 
 
-def _canonicals_on_structural_path(path: _StructuralPath, graph: _JoinGraph) -> list[CanonicalJoin]:
+def _canonicals_on_structural_path(
+    *, path: _StructuralPath, graph: _JoinGraph
+) -> list[CanonicalJoin]:
     """All canonical joins lying on any hop of `path`. Used for via=
     feasibility checking and `UnknownViaJoinError.available_join_names`.
     """
@@ -540,12 +563,12 @@ def _filter_structural_paths_by_via(
     return [
         path
         for path in paths
-        if via.issubset({j.name for j in _canonicals_on_structural_path(path, graph)})
+        if via.issubset({j.name for j in _canonicals_on_structural_path(path=path, graph=graph)})
     ]
 
 
 def _render_structural_path_as_canonical_sequence(
-    path: _StructuralPath, graph: _JoinGraph
+    *, path: _StructuralPath, graph: _JoinGraph
 ) -> tuple[str, ...]:
     """Render a structural path as a canonical-join-name sequence for
     `AmbiguousPathError.candidate_paths`. Each hop picks the first
@@ -561,6 +584,20 @@ def _render_structural_path_as_canonical_sequence(
         canonicals_on_hop = sorted(
             j.name for (n, j, _op) in graph.get(predecessor, []) if n == neighbor
         )
+        if not canonicals_on_hop:  # pragma: no cover — defensive
+            # Same invariant as pass 2's empty-candidates guard:
+            # `_structural_shortest_paths` only emits a hop where the
+            # graph has at least one edge in that direction. Unreachable
+            # on a single-request graph, but a bare `IndexError` would
+            # become an opaque `internal_error` envelope downstream —
+            # name the invariant so a future graph-mutation refactor
+            # fails loudly here instead.
+            raise RuntimeError(
+                f"compiler invariant violation: structural path hop "
+                f"({predecessor!r}, {neighbor!r}) has zero canonical "
+                f"joins while rendering AmbiguousPathError candidate. "
+                f"This is a compiler bug."
+            )
         names.append(canonicals_on_hop[0])
     return tuple(names)
 
