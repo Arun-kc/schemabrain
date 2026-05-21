@@ -63,13 +63,39 @@ Meanwhile in the operator's terminal, `schemabrain tail` streamed every tool cal
               → columns=2 tokens=70 in 8ms
 ```
 
-Every call is auditable, replayable, and PII-aware. See [Observe the agent](#observe-the-agent) for the full surface.
+Every call is auditable, replayable, and PII-aware. See [The firewall](#the-firewall) for what's enforced at the SQL boundary; [Observe the agent](#observe-the-agent) has the full streaming + OTel surface.
 
 The caveats are the differentiator. None of them — M:N double-counting, recursive-CTE awareness, free-text-status flag — is hardcoded; they fall out of letting Claude reason over the indexed descriptions. Most LLM-over-database tools confidently invent a `payments` table or shoehorn the answer into `orders.total_cents`. Schema Brain doesn't.
 
 **Cost.** ~$0.0003/column with Claude Haiku 4.5. The bundled 7-table fixture indexes for **~$0.01 in ~40s**. The Pagila DVD-rental sample (87 columns after partition deduplication) indexes for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
 
 To verify Claude's SQL is mechanically correct (and that flagged caveats are the actual data behavior), see [Validating SQL Claude generates](docs/setup.md#validating-sql-claude-generates).
+
+---
+
+## The firewall
+
+Four properties Schema Brain enforces at the SQL boundary today:
+
+**1. Agent never executes raw SQL.** Entities, metrics, and canonical joins compile to parameterized SQL Schema Brain runs on its side. The agent sees rows + the SQL that was run — never gets to send arbitrary statements at your database. ([Build your semantic layer](#build-your-semantic-layer))
+
+**2. Read-only enforced at the source.** Stage 1 of `schemabrain init` validates the session is read-only on Postgres. A connection with write privileges is refused at activation, not at runtime. ([Source check, inside the wizard](#2-run-the-activation-wizard))
+
+**3. PII-aware refusal at the tool boundary.** Set `--pii-block` and any `get_metric` touching the named PII categories returns a `refused` envelope. The SQL never compiles, never logs, never executes.
+
+```bash
+schemabrain serve --pii-block contact,health
+```
+
+Twelve PII categories spanning GDPR, CCPA/CPRA, HIPAA, PCI DSS, and ISO 27018 are tagged per-column at index time. ([PII classification](#pii-classification))
+
+**4. Tamper-evident audit log.** Every tool call writes one row to an append-only `mcp_audit` table with a per-row sha256 chain. Coherent tampering against any external archive that captured a prior hash is detectable.
+
+```bash
+schemabrain audit verify   # exit 0 = chain clean
+```
+
+([Tamper-evident audit log](#tamper-evident-audit-log))
 
 ---
 
