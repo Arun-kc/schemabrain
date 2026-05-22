@@ -505,10 +505,16 @@ class TestSuggestJoinsEnvelope:
         assert data["token_estimate"] > 0
         # FK-graph data is schema-sourced (declared constraints) — surface
         # that explicitly so a client agent knows this isn't LLM-inferred.
+        # Charter v1.2 populates the 2D trust signal explicitly:
+        # `inference_method='fk_constraint'` (DB constraint, not LLM)
+        # + `validation_state='applied'` (the constraint exists in the
+        # live schema, no operator confirmation needed).
         assert structured["provenance"] == {
             "source": "schema",
             "model": None,
             "observed_in": None,
+            "inference_method": "fk_constraint",
+            "validation_state": "applied",
         }
 
     def test_single_table_input_maps_to_malformed_name_error(self, server_with_fk_pair) -> None:

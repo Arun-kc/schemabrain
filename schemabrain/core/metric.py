@@ -83,6 +83,17 @@ _VALID_ORIGINS: frozenset[str] = frozenset(get_args(MetricOrigin))
 _VALID_AGGS: frozenset[str] = frozenset(get_args(AggFunction))
 _VALID_GRAINS: frozenset[str] = frozenset(get_args(TimeGrain))
 
+# v14 / charter v1.2: 2D trust signal mirrors the `entity` module.
+# Re-imported here rather than aliased so a caller `from
+# schemabrain.core.metric import InferenceMethod` works without an
+# entity-side dependency surfacing in the public surface.
+from schemabrain.core.entity import (  # noqa: E402
+    InferenceMethod as InferenceMethod,
+    ValidationState as ValidationState,
+    _VALID_INFERENCE_METHODS,
+    _VALID_VALIDATION_STATES,
+)
+
 # Canonical ordering for `time_grains`. Without a fixed order, two
 # YAMLs with the same set of grains in different listing orders would
 # round-trip as inequal `Metric` instances and break fingerprint
@@ -266,6 +277,11 @@ class Metric:
     time_dimension: str | None
     time_grains: tuple[TimeGrain, ...]
     origin: MetricOrigin = "manual"
+    # v14 / charter v1.2: 2D trust signal — see `core/entity.py` for
+    # the design. Defaults match the hand-authored YAML construction
+    # path; LLM-suggest + dbt importers override explicitly.
+    inference_method: InferenceMethod = "manually_authored"
+    validation_state: ValidationState = "applied"
 
     def __post_init__(self) -> None:
         if not _IDENT_RE.fullmatch(self.name):
@@ -320,4 +336,14 @@ class Metric:
         if self.origin not in _VALID_ORIGINS:
             raise ValueError(
                 f"origin must be one of {sorted(_VALID_ORIGINS)} (got {self.origin!r})"
+            )
+        if self.inference_method not in _VALID_INFERENCE_METHODS:
+            raise ValueError(
+                f"inference_method must be one of "
+                f"{sorted(_VALID_INFERENCE_METHODS)} (got {self.inference_method!r})"
+            )
+        if self.validation_state not in _VALID_VALIDATION_STATES:
+            raise ValueError(
+                f"validation_state must be one of "
+                f"{sorted(_VALID_VALIDATION_STATES)} (got {self.validation_state!r})"
             )

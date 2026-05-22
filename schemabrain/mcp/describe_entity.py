@@ -95,5 +95,7 @@ def describe_entity_impl(
         origin=entity.origin,
         columns=columns,
         token_estimate=0,  # placeholder; `_with_token_estimate` rebuilds
+        inference_method=entity.inference_method,
+        validation_state=entity.validation_state,
     )
     return _with_token_estimate(partial)

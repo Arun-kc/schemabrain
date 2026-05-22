@@ -373,8 +373,12 @@ class TestToolResponseSerialization:
 
 
 class TestCharterV11WireVersion:
-    def test_charter_version_is_eleven(self) -> None:
-        assert CHARTER_VERSION == "1.1"
+    def test_charter_version_is_twelve(self) -> None:
+        # v1.2 additive minor bump: adds `Provenance.inference_method`
+        # + `Provenance.validation_state` and changes `confidence`
+        # semantics from "always HIGH" to "derived from the 2D
+        # trust signal". Wire-compatible with v1.1 / v1.0 clients.
+        assert CHARTER_VERSION == "1.2"
 
 
 class TestStatusV11Refused:

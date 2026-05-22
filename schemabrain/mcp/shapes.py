@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from schemabrain.core.entity import Origin
+from schemabrain.core.entity import InferenceMethod, Origin, ValidationState
 from schemabrain.core.example_query import ExampleQuerySource
 from schemabrain.core.join import JoinOrigin
 from schemabrain.core.metric import AggFunction, MetricOrigin, TimeGrain
@@ -352,6 +352,11 @@ class EntitySummary(BaseModel):
     a wrong value raises `ValidationError`, so callers building
     summaries from raw dicts get the same closed-set guarantee that
     `Entity.__post_init__` provides at the storage layer.
+
+    v14 / charter v1.2: `inference_method` + `validation_state` are
+    the 2D trust signal that backs the envelope-level `confidence`.
+    Per-row signal lets the agent pick out which entity in a list is
+    weak-confidence rather than seeing an aggregate-only label.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -361,6 +366,8 @@ class EntitySummary(BaseModel):
     qualified_table: str
     identity: str
     origin: Origin
+    inference_method: InferenceMethod = "manually_authored"
+    validation_state: ValidationState = "applied"
 
 
 class EntityColumn(BaseModel):
@@ -400,6 +407,11 @@ class EntityDetail(BaseModel):
     `columns` is the full underlying table. The agent gets one-look
     access to "what does this entity expose?" without a second
     round-trip to `describe_table`.
+
+    v14 / charter v1.2: `inference_method` + `validation_state`
+    mirror `EntitySummary` so a single-entity drill carries the
+    same 2D trust signal at the data layer as well as the
+    envelope-level `confidence`.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -411,6 +423,8 @@ class EntityDetail(BaseModel):
     origin: Origin
     columns: list[EntityColumn]
     token_estimate: int
+    inference_method: InferenceMethod = "manually_authored"
+    validation_state: ValidationState = "applied"
 
 
 # ----- canonical-join shapes ------------------------------------------------
@@ -492,6 +506,11 @@ class JoinSummary(BaseModel):
 
     Direction is preserved from the stored row — see
     `CanonicalJoinInfo` for the same orientation convention.
+
+    v14 / charter v1.2: `inference_method` carries the load-bearing
+    `fk_constraint` vs `llm_suggested` vs `manually_authored`
+    distinction. An agent listing joins gets a clear signal of
+    which joins are DB-validated vs LLM-guessed.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -501,6 +520,8 @@ class JoinSummary(BaseModel):
     source_entity: str
     target_entity: str
     origin: JoinOrigin
+    inference_method: InferenceMethod = "manually_authored"
+    validation_state: ValidationState = "applied"
 
 
 class CanonicalJoinInfo(BaseModel):
@@ -532,6 +553,12 @@ class CanonicalJoinInfo(BaseModel):
     on: list[JoinColumnPairInfo] = Field(min_length=1)
     sql_skeleton: str
     token_estimate: int
+    # v14 / charter v1.2: the load-bearing FK-vs-LLM-guess
+    # distinction. An agent resolving a join sees whether it can
+    # trust the on-clause blindly (`fk_constraint`) or should
+    # treat it as an unverified LLM guess (`llm_suggested`).
+    inference_method: InferenceMethod = "manually_authored"
+    validation_state: ValidationState = "applied"
 
 
 # ----- metric shapes --------------------------------------------------------
@@ -578,6 +605,13 @@ class MetricSummary(BaseModel):
     time_dimension: str | None
     time_grains: tuple[TimeGrain, ...]
     origin: MetricOrigin
+    # v14 / charter v1.2: 2D trust signal at the per-metric level so
+    # `list_metrics` makes the LLM-vs-hand-confirmed distinction
+    # visible — an LLM-suggested metric is `(llm_suggested, applied)`
+    # (MEDIUM), a hand-confirmed one is `(manually_authored,
+    # confirmed)` (HIGH).
+    inference_method: InferenceMethod = "manually_authored"
+    validation_state: ValidationState = "applied"
 
 
 class MetricFilterArg(BaseModel):
@@ -668,3 +702,14 @@ class MetricResult(BaseModel):
     # audit row reads this to populate `mcp_audit.pii_categories`
     # and to derive `FingerprintInput.pii_tags_touched`.
     pii_categories: tuple[PIICategory, ...] = ()
+    # v14 / charter v1.2: the 2D trust signal aggregated from the
+    # metric itself + every canonical join the compiler traversed.
+    # `metric_inference_method` reports the metric's own derivation.
+    # `aggregate_inference_method` is the worst-case over the metric
+    # AND its traversed joins — an FK-validated metric anchored over
+    # an LLM-guessed join inherits the join's weaker signal because
+    # the SQL the agent sees depends on the unreliable on-clause.
+    metric_inference_method: InferenceMethod = "manually_authored"
+    metric_validation_state: ValidationState = "applied"
+    aggregate_inference_method: InferenceMethod = "manually_authored"
+    aggregate_validation_state: ValidationState = "applied"

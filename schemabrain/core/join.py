@@ -59,6 +59,17 @@ _VALID_ORIGINS: frozenset[str] = frozenset(get_args(JoinOrigin))
 Cardinality = Literal["one_to_one", "one_to_many", "many_to_one", "many_to_many"]
 _VALID_CARDINALITIES: frozenset[str] = frozenset(get_args(Cardinality))
 
+# v14 / charter v1.2: 2D trust signal mirrors `core/entity.py`. For
+# canonical joins specifically the `fk_constraint` vs `llm_suggested`
+# distinction is load-bearing — an FK-derived join is DB-validated;
+# an LLM-guessed join is not.
+from schemabrain.core.entity import (  # noqa: E402
+    InferenceMethod as InferenceMethod,
+    ValidationState as ValidationState,
+    _VALID_INFERENCE_METHODS,
+    _VALID_VALIDATION_STATES,
+)
+
 # Postgres unquoted identifier shape — same alphabet as
 # `Entity.name` and `Entity.identity` so a canonical join's
 # columns satisfy the same identifier invariants the bound
@@ -110,6 +121,13 @@ class CanonicalJoin:
     on: tuple[JoinColumnPair, ...]
     origin: JoinOrigin = "manual"
     cardinality: Cardinality | None = None
+    # v14 / charter v1.2: 2D trust signal. FK-derived joins set
+    # `inference_method='fk_constraint'`; LLM-suggested joins set
+    # `'llm_suggested'`. The agent uses this to decide whether to
+    # trust a join blindly or surface "this join wasn't derived from
+    # a foreign key" to the human.
+    inference_method: InferenceMethod = "manually_authored"
+    validation_state: ValidationState = "applied"
 
     def __post_init__(self) -> None:
         if not _IDENT_RE.fullmatch(self.name):
@@ -146,4 +164,14 @@ class CanonicalJoin:
             raise ValueError(
                 f"cardinality must be None or one of "
                 f"{sorted(_VALID_CARDINALITIES)} (got {self.cardinality!r})"
+            )
+        if self.inference_method not in _VALID_INFERENCE_METHODS:
+            raise ValueError(
+                f"inference_method must be one of "
+                f"{sorted(_VALID_INFERENCE_METHODS)} (got {self.inference_method!r})"
+            )
+        if self.validation_state not in _VALID_VALIDATION_STATES:
+            raise ValueError(
+                f"validation_state must be one of "
+                f"{sorted(_VALID_VALIDATION_STATES)} (got {self.validation_state!r})"
             )

@@ -44,6 +44,8 @@ def list_joins_impl(
             source_entity=j.source_entity,
             target_entity=j.target_entity,
             origin=j.origin,
+            inference_method=j.inference_method,
+            validation_state=j.validation_state,
         )
         for j in joins
     ]

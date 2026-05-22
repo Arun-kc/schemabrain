@@ -44,11 +44,16 @@ from schemabrain.mcp.describe_column import describe_column_impl
 from schemabrain.mcp.describe_entity import describe_entity_impl
 from schemabrain.mcp.describe_table import describe_table_impl
 from schemabrain.mcp.envelope import (
+    Confidence,
     DegradationReason,
+    InferenceMethod,
     Provenance,
     Recovery,
     ToolError,
     ToolResponse,
+    ValidationState,
+    derive_confidence,
+    derive_provenance_source,
 )
 from schemabrain.mcp.find_relevant_entities import find_relevant_entities_impl
 from schemabrain.mcp.find_relevant_tables import find_relevant_tables_impl
@@ -179,6 +184,81 @@ def _confidence_from_score(score: float) -> str:
     if score >= _CONFIDENCE_MEDIUM_FLOOR:
         return "MEDIUM"
     return "LOW"
+
+
+_CONFIDENCE_RANK: dict[Confidence, int] = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+
+
+def _aggregate_signal(
+    items: object,
+) -> tuple[InferenceMethod, ValidationState]:
+    """Return the worst-case `(inference_method, validation_state)`
+    over a non-empty iterable of items.
+
+    The "worst" item is the one whose derived `Confidence` is lowest;
+    ties are broken by first-seen order. Charter v1.2 producers use
+    this for list-shaped tools (`list_entities`, `list_metrics`,
+    `list_joins`) so the envelope-level `confidence` reflects the
+    weakest signal in the set — an agent listing 10 metrics where 9
+    are hand-confirmed and 1 is LLM-suggested sees `MEDIUM`, not the
+    misleading `HIGH` the 9 majority would imply.
+
+    Caller MUST ensure the iterable is non-empty (empty list
+    responses route to `status="empty"` with `confidence=None`
+    before this helper would be called).
+
+    Each item must expose `inference_method` and `validation_state`
+    attributes — works for the core dataclasses (`Entity`, `Metric`,
+    `CanonicalJoin`) and for the v1.2-extended Pydantic summaries.
+    """
+    worst_item: object | None = None
+    worst_rank = 99  # higher than any rank
+    for item in items:  # type: ignore[union-attr]
+        rank = _CONFIDENCE_RANK[
+            derive_confidence(item.inference_method, item.validation_state)
+        ]
+        if rank < worst_rank:
+            worst_item = item
+            worst_rank = rank
+    if worst_item is None:
+        # Defensive fallback — caller should have guarded against empty.
+        return ("manually_authored", "applied")
+    return (worst_item.inference_method, worst_item.validation_state)
+
+
+def _min_confidence(a: Confidence, b: Confidence) -> Confidence:
+    """Return the LOWER of two `Confidence` labels.
+
+    Used by `get_metric` to combine the 2D-derived signal with a
+    degradation-induced cap (`fan_out_join` and `missing_order_by_
+    with_limit` cap the envelope at MEDIUM). When both inputs are
+    HIGH the result is HIGH; one MEDIUM caps the pair at MEDIUM;
+    any LOW dominates.
+    """
+    if _CONFIDENCE_RANK[a] <= _CONFIDENCE_RANK[b]:
+        return a
+    return b
+
+
+def _provenance_from_signal(
+    inference_method: InferenceMethod,
+    validation_state: ValidationState,
+    *,
+    model: str | None = None,
+) -> Provenance:
+    """Build a Charter v1.2 `Provenance` from the 2D trust signal.
+
+    Computes `source` via `derive_provenance_source(inference_method)`
+    so v1.0 / v1.1 clients that only read `provenance.source` see a
+    sensible value derived from the same signal that drives the new
+    `inference_method` field.
+    """
+    return Provenance(
+        source=derive_provenance_source(inference_method),
+        model=model,
+        inference_method=inference_method,
+        validation_state=validation_state,
+    )
 
 
 def _safe_table_part(qualified_name: str) -> str | None:
@@ -804,11 +884,16 @@ def build_server(
             )
         except Exception as exc:
             return _wrap_internal_error(exc)
+        # FK-derived paths: the join columns come from declared
+        # foreign-key constraints (information_schema is the source of
+        # truth), not stored entity/metric/join rows. Mark as
+        # `fk_constraint` + `applied` so the agent gets the strong
+        # signal "this is DB-validated".
         return ToolResponse[SuggestJoinsResult](
             status="success",
             data=result,
             confidence="HIGH",
-            provenance=Provenance(source="schema"),
+            provenance=_provenance_from_signal("fk_constraint", "applied"),
             follow_up_hints=["describe_table"],
         )
 
@@ -846,11 +931,16 @@ def build_server(
                 confidence=None,
                 follow_up_hints=["find_relevant_tables"],
             )
+        # Charter v1.2: derive the 2D trust signal from the rows
+        # rather than hardcoding HIGH+schema. A list with even one
+        # LLM-suggested entity downgrades the aggregate confidence
+        # so the agent sees that not every row is hand-confirmed.
+        method, state = _aggregate_signal(summaries)
         return ToolResponse[list[EntitySummary]](
             status="success",
             data=summaries,
-            confidence="HIGH",
-            provenance=Provenance(source="schema"),
+            confidence=derive_confidence(method, state),
+            provenance=_provenance_from_signal(method, state),
             follow_up_hints=["describe_entity"],
         )
 
@@ -889,11 +979,17 @@ def build_server(
                 confidence=None,
                 follow_up_hints=["list_entities"],
             )
+        # Charter v1.2: derive aggregate confidence from per-metric
+        # trust signal so an LLM-suggested metric and an FK-derived
+        # metric report distinct labels (MEDIUM and HIGH respectively)
+        # rather than both reporting the hardcoded HIGH of the v1.1
+        # era. Aggregate reflects the weakest member.
+        method, state = _aggregate_signal(summaries)
         return ToolResponse[list[MetricSummary]](
             status="success",
             data=summaries,
-            confidence="HIGH",
-            provenance=Provenance(source="schema"),
+            confidence=derive_confidence(method, state),
+            provenance=_provenance_from_signal(method, state),
             # `describe_entity` is the natural drill — `MetricSummary`
             # exposes `measure_column` as an opaque identifier; the
             # agent needs the anchor entity's full column shape to
@@ -940,11 +1036,16 @@ def build_server(
                 confidence=None,
                 follow_up_hints=["find_relevant_tables"],
             )
+        # Charter v1.2: per-join trust signal so the agent sees
+        # `fk_constraint` (DB-validated) vs `llm_suggested` (model
+        # proposed) on each join, and the aggregate envelope-level
+        # confidence reflects the weakest member.
+        method, state = _aggregate_signal(summaries)
         return ToolResponse[list[JoinSummary]](
             status="success",
             data=summaries,
-            confidence="HIGH",
-            provenance=Provenance(source="schema"),
+            confidence=derive_confidence(method, state),
+            provenance=_provenance_from_signal(method, state),
             follow_up_hints=["resolve_join"],
         )
 
@@ -995,11 +1096,16 @@ def build_server(
             )
         except Exception as exc:
             return _wrap_internal_error(exc)
+        # Charter v1.2: pull the 2D trust signal from the single
+        # entity row so `confidence` reflects whether this specific
+        # entity is hand-confirmed (HIGH) or LLM-suggested (MEDIUM).
         return ToolResponse[EntityDetail](
             status="success",
             data=detail,
-            confidence="HIGH",
-            provenance=Provenance(source="schema"),
+            confidence=derive_confidence(detail.inference_method, detail.validation_state),
+            provenance=_provenance_from_signal(
+                detail.inference_method, detail.validation_state
+            ),
             follow_up_hints=["describe_table", "describe_column"],
         )
 
@@ -1122,11 +1228,18 @@ def build_server(
             )
         except Exception as exc:
             return _wrap_internal_error(exc)
+        # Charter v1.2: the load-bearing FK-vs-LLM-guess distinction
+        # shows up here. A `(fk_constraint, applied)` join reports
+        # HIGH and the agent can trust the on-clause blindly; an
+        # `(llm_suggested, applied)` join reports MEDIUM and the
+        # agent should consider verifying before relying on it.
         return ToolResponse[CanonicalJoinInfo](
             status="success",
             data=info,
-            confidence="HIGH",
-            provenance=Provenance(source="schema"),
+            confidence=derive_confidence(info.inference_method, info.validation_state),
+            provenance=_provenance_from_signal(
+                info.inference_method, info.validation_state
+            ),
             follow_up_hints=["describe_entity"],
         )
 
@@ -1490,20 +1603,33 @@ def build_server(
             # potentially non-deterministic slice. Surface it even when
             # the caller used the default limit.
             degradation = "missing_order_by_with_limit"
+        # Charter v1.2: take the worst of (the 2D trust signal from
+        # the metric + its traversed joins) AND the degradation-
+        # induced MEDIUM cap. A fan-out plan can never report HIGH
+        # even if every input signal is strong; a clean plan whose
+        # metric is `llm_suggested` reports MEDIUM regardless of
+        # degradation.
+        signal_confidence = derive_confidence(
+            result.aggregate_inference_method, result.aggregate_validation_state
+        )
+        provenance = _provenance_from_signal(
+            result.aggregate_inference_method, result.aggregate_validation_state
+        )
         if degradation is not None:
+            capped = _min_confidence(signal_confidence, "MEDIUM")
             return ToolResponse[MetricResult](
                 status="degraded",
                 data=result,
-                confidence="MEDIUM",
-                provenance=Provenance(source="schema"),
+                confidence=capped,
+                provenance=provenance,
                 follow_up_hints=["describe_entity"],
                 degradation_reason=degradation,
             )
         return ToolResponse[MetricResult](
             status="success",
             data=result,
-            confidence="HIGH",
-            provenance=Provenance(source="schema"),
+            confidence=signal_confidence,
+            provenance=provenance,
             follow_up_hints=["describe_entity"],
         )
 

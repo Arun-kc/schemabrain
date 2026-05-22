@@ -52,6 +52,8 @@ def list_metrics_impl(
             time_dimension=m.time_dimension,
             time_grains=m.time_grains,
             origin=m.origin,
+            inference_method=m.inference_method,
+            validation_state=m.validation_state,
         )
         for m in metrics
     ]
