@@ -171,6 +171,22 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
         _kw("patient", "insurance_id", "health_record"),
         frozenset({"health"}),
     ),
+    # Encounter-level health identifiers — visit/admission/discharge/
+    # encounter IDs reveal that a person had a clinical interaction,
+    # which is HIPAA-sensitive even without the clinical detail. These
+    # are commonly integer FKs whose category should survive the S2
+    # guard (`health` is in `_FK_SAFE_CATEGORIES`).
+    (
+        _kw("encounter_id", "visit_id", "admission_id", "discharge_id"),
+        frozenset({"health"}),
+    ),
+    # Health-insurance member identifiers. `subscriber_id` alone is
+    # ambiguous (newsletter contexts), so we require the `insurance_`
+    # prefix to keep the rule unambiguous.
+    (
+        _kw("insurance_member_id", "insurance_subscriber_id"),
+        frozenset({"health"}),
+    ),
     # ---- genetic ----
     (_kw("genome", "genotype", "dna_seq", "rsid"), frozenset({"genetic"})),
     # ---- biometric ----
@@ -212,6 +228,17 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
         _kw("aid", "google_aid", "fb_aid", "advertising_aid"),
         frozenset({"online_identifier"}),
     ),
+    # Blockchain wallet addresses are pseudonymous on-chain identifiers.
+    # The bare `address` rule above also matches `wallet_address`, so
+    # this rule contributes `online_identifier` in union with `contact`
+    # — operators can downgrade at the column-overlay layer if needed.
+    # Transaction hashes themselves are public on-chain data and are
+    # NOT tagged here (over-tagging public ledger content would obscure
+    # genuine PII signal in the audit trail).
+    (
+        _kw("wallet_address", "blockchain_address", "crypto_address"),
+        frozenset({"online_identifier"}),
+    ),
     # ---- credential ----
     (_kw("password", "passwd", "pwd"), frozenset({"credential"})),
     (_kw("api_key", "secret"), frozenset({"credential"})),
@@ -220,6 +247,15 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
         frozenset({"credential"}),
     ),
     (_kw("pass_hash", "pw_hash"), frozenset({"credential"})),
+    # Crypto private keys and seed phrases are key material whose
+    # disclosure is catastrophic — treated as credentials alongside
+    # API keys and passwords. Joining the credential bucket also means
+    # they participate in the FK-safe set if someone (oddly) stores them
+    # as an integer FK reference.
+    (
+        _kw("private_key", "seed_phrase", "mnemonic_phrase", "mnemonic"),
+        frozenset({"credential"}),
+    ),
     # ---- government_id ----
     (_kw("ssn", "tin", "nino"), frozenset({"government_id"})),
     (_kw("passport"), frozenset({"government_id"})),
@@ -241,6 +277,15 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
     (_kw("tax_id"), frozenset({"government_id"})),
     (
         _kw("national_id", "aadhar", "aadhaar", "voter_id", "ein"),
+        frozenset({"government_id"}),
+    ),
+    # NPI (US National Provider Identifier, HHS-issued) and DEA numbers
+    # are government-issued professional identifiers. They live in the
+    # government_id bucket rather than `health` because the *identifier*
+    # is the regulator's, not the patient's. A column named `provider_npi`
+    # on a claims table will tag here.
+    (
+        _kw("npi", "provider_npi", "dea_number"),
         frozenset({"government_id"}),
     ),
     # ---- location ----

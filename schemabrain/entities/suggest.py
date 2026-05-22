@@ -173,33 +173,39 @@ Identify domain entities the schema represents. An ENTITY is a named,
 single-table concept that:
   - Maps to exactly one physical table (multi-table entities are out of scope)
   - Has an identity column that uniquely identifies one instance
-  - Represents a real domain concept (customer, order, product), not a
-    technical artifact (audit log, association/junction table)
+  - Represents a real domain concept derived from the schema's own
+    vocabulary (e.g. patient/encounter/medication in a clinical schema,
+    account/transaction/security in a financial schema, customer/order
+    in a commerce schema, case/filing/party in a legal schema) —
+    NOT a technical artifact (audit log, association/junction table)
 
 Output STRICT YAML with this shape (no markdown fences, no commentary
 outside YAML):
 
 candidates:
-  - name: customer                          # snake_case identifier
+  - name: <entity_name>                     # snake_case identifier derived from the table's domain meaning
     description: One sentence about it
     binding:
-      single_table: public.users            # schema.table — must exist in the schema
-    identity: id                            # PK column on the bound table
+      single_table: <schema>.<table>        # schema.table — must exist in the schema
+    identity: <pk_column>                   # PK column on the bound table
     confidence: high                        # one of: high | medium | low
     rationale: One sentence on why this is an entity
     pii_hints:                              # OPTIONAL: column -> sensitivity
-      email: pii                            # one of: public | internal | confidential | pii
+      <column_name>: pii                    # one of: public | internal | confidential | pii
 
 Rules:
   - `name` and `identity` must match ^[A-Za-z_][A-Za-z0-9_$]*$
   - `binding.single_table` must be exactly "schema.table" (one dot)
   - Skip junction tables (composite PK whose every column is part of an FK)
   - Skip pure-audit/log tables
-  - For pii_hints, infer from column names + types:
-    email/phone/ssn/full_name -> pii
-    addresses/zip/dob -> confidential
-    internal_id/tenant_id -> internal
-    timestamps/booleans/counts -> public
+  - For pii_hints, infer from column names + types. The taxonomy is
+    domain-agnostic — apply it to whatever schema you see:
+      Direct personal identifiers (email, phone, full_name, ssn,
+        national_id, dob, mrn, patient_id, wallet_address, ip) -> pii
+      Operational tenancy keys (tenant_id, organization_id,
+        workspace_id) -> internal
+      Aggregates and metadata (timestamps, booleans, counts,
+        flags) -> public
   - Confidence: `high` if PK + multiple referencing FKs;
     `medium` if PK + clear semantic name; `low` otherwise.
 """
