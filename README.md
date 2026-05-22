@@ -148,7 +148,7 @@ Stage 1 of `schemabrain init` opens the source with `default_transaction_read_on
 
 ### 3. PII-aware refusal at the tool boundary
 
-Any `get_metric` touching a blocked PII category returns a `refused` envelope. The compiled SQL never runs; the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`. `schemabrain init` writes `--pii-block contact` into the Claude Desktop snippet by default so email / phone / address columns refuse on a fresh install; widen with `--pii-block contact,health` and other categories as needed.
+Any `get_metric` touching a blocked PII category returns a `refused` envelope; the compiled SQL never runs and the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`. `describe_entity` enforces the same policy at the column level — the agent still sees the entity and its non-PII columns, but blocked columns ship with `redacted=True` and the LLM-enriched description cleared. `schemabrain init` writes `--pii-block contact` into the Claude Desktop snippet by default so email / phone / address columns are blocked on a fresh install; widen with `--pii-block contact,health` and other categories as needed.
 
 ```bash
 schemabrain serve --pii-block contact,health

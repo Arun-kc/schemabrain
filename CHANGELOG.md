@@ -8,6 +8,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Junction-table bridge synthesis on read.** `list_joins` and
+  `schemabrain inspect <entity>` now surface logical M:N bridges
+  through junction entities (e.g. `products <-> categories via
+  product_categories`) alongside direct canonical joins. Detection
+  reuses the existing `Table.is_junction_table()` heuristic
+  (composite PK whose columns are all FK sources to ≥2 distinct
+  targets); synthesis pairs the junction's canonical-join legs and
+  emits one `JoinSummary` per unordered endpoint pair with
+  `via_junction` + `via_joins` carrying the bridge mediation. No
+  schema change — bridges are computed fresh on every read so
+  follow-up edits to either leg reflect immediately. New module
+  `schemabrain.joins.bridges` (`find_junction_entities`,
+  `synthesize_bridges`, `synthesize_bridges_for_entity`,
+  `composed_on_pairs`). Bridge inference inherits the WORST signal
+  of its two legs — if either leg is `llm_suggested`, the bridge
+  is too, so the agent cannot trust the bridge more than its
+  weakest link. New optional `via_junction: str | None = None` +
+  `via_joins: tuple[str, ...] = ()` fields on `JoinSummary` carry
+  bridges over the wire; old clients that ignore them still see
+  the entity pair and provenance. `RelatedEntity` gains the same
+  `via_junction` field so `inspect` can mark mediated relationships
+  in the renderer.
+- **Charter v1.2 time-dimension inheritance via canonical-join
+  chains.** When a metric has no `time_dimension` of its own AND
+  the caller passes `time_grain`, the resolver BFSes the canonical-
+  join graph for reachable entities with timestamp-typed columns
+  over non-fan-out edges (`many_to_one` / `one_to_one` only) and
+  inherits the unique candidate. The plan ships with
+  `time_dimension_resolution="inherited"` and
+  `inherited_time_dimension="<entity>.<column>"`; the emitter
+  date_truncs against the joined entity's alias rather than the
+  anchor's. 2+ candidates raise the new
+  `AmbiguousTimeDimensionError`; 0 candidates ship unbucketed with
+  `time_dimension_resolution="unavailable"`. New ErrorKind
+  `ambiguous_time_dimension` (recovery contract: agent re-calls
+  with explicit `time_dimension` once the override path lands).
+  New DegradationReason `time_dimension_unavailable`. The fields
+  surface on `MetricResult` so the agent sees which column was
+  used and via which chain.
+- **Charter v1.2 column-granular PII redaction in
+  `describe_entity`.** Each column's real
+  `pii_sensitivity` and `pii_categories` now propagate from the
+  `column_pii_tags` store layer (previously hardcoded to
+  `"public"`). When the server-policy `--pii-block` set
+  intersects a column's categories, that column's
+  `EntityColumn.redacted` field is `True` and its LLM-enriched
+  semantic `description` is cleared — moving PII refusal from
+  "whole entity blocked" to "specific columns redacted". The
+  agent still sees the column exists; it just cannot read the
+  model-generated semantics for it. The `EntityDetail`-level
+  `redacted_columns: tuple[str, ...]` lists the redacted names
+  at a glance. Envelope `confidence` is capped at MEDIUM when
+  any redaction is applied so the agent knows it saw a partial
+  view. `describe_entity_impl` accepts a `pii_block` kwarg for
+  callers that build their own server scaffold.
 - **Non-e-commerce-domain PII coverage.** Five new rules in
   `schemabrain.pii.classifier` extend the heuristic taxonomy to medical
   and blockchain-analytics schemas without relying on operator overlays.
