@@ -335,11 +335,14 @@ def resolve_metric_plan(
             # join from target→source (reverse of stored
             # source→target), the cardinality flips so downstream
             # consumers (fan-out detector, plan emitter) see the
-            # shape that actually applies to the SQL they emit.
-            traversed_reversed = edge.on_pairs_in_chain_direction != edge.join.on
+            # shape that actually applies to the SQL they emit. The
+            # direction signal comes from `_ChainEdge.is_reverse_traversal`
+            # (set deterministically at graph-build time) rather than
+            # an on-pair comparison — same-column-name FK joins would
+            # have silently bypassed an on-pair check.
             effective_cardinality = (
                 flip_cardinality(edge.join.cardinality)
-                if traversed_reversed
+                if edge.is_reverse_traversal
                 else edge.join.cardinality
             )
             resolved_joins[edge.target_entity_in_chain] = ResolvedJoin(
@@ -547,34 +550,64 @@ class _ChainEdge:
     canonical join in the reverse of its stored direction, the
     on_pairs are SWAPPED at edge-construction time so emit can use
     them verbatim — the emitter does not need to know about direction.
+
+    `is_reverse_traversal` is the load-bearing direction signal for
+    downstream consumers (fan-out detector, cardinality reporter):
+    True when BFS walked the canonical join from its stored
+    `target_entity` toward its stored `source_entity` (i.e. reverse
+    of how the operator confirmed it). The earlier
+    `on_pairs != join.on` heuristic gave a false NEGATIVE whenever
+    the join's source and target columns shared a name (e.g. an FK
+    join on `customer_id` between `rental.customer_id` and
+    `customer.customer_id`) — the swapped pairs compared equal to
+    the stored pairs and the flip silently never fired. This explicit
+    boolean replaces that comparison.
     """
 
-    __slots__ = ("join", "on_pairs_in_chain_direction", "target_entity_in_chain")
+    __slots__ = (
+        "is_reverse_traversal",
+        "join",
+        "on_pairs_in_chain_direction",
+        "target_entity_in_chain",
+    )
 
     def __init__(
         self,
         join: CanonicalJoin,
         target_entity_in_chain: str,
         on_pairs_in_chain_direction: tuple[JoinColumnPair, ...],
+        is_reverse_traversal: bool,
     ) -> None:
         self.join = join
         self.target_entity_in_chain = target_entity_in_chain
         self.on_pairs_in_chain_direction = on_pairs_in_chain_direction
+        self.is_reverse_traversal = is_reverse_traversal
 
 
 # A directed-from-traversal-perspective adjacency map: at each entity
-# node, the list of (neighbor_entity, canonical_join, on_pairs_oriented)
-# triples representing every way to leave that node along a canonical
-# join. Each stored canonical join contributes TWO entries (one per
-# endpoint) since BFS over canonical joins is undirected.
-_JoinGraph = dict[str, list[tuple[str, CanonicalJoin, tuple[JoinColumnPair, ...]]]]
+# node, the list of `(neighbor_entity, canonical_join, on_pairs_oriented,
+# is_reverse_traversal)` tuples representing every way to leave that
+# node along a canonical join. Each stored canonical join contributes
+# TWO entries (one per endpoint) since BFS over canonical joins is
+# undirected. The 4-tuple's last element is True when the entry walks
+# the join in the reverse of its stored direction; downstream
+# cardinality logic uses this rather than comparing on-pair tuples
+# (the earlier on-pair heuristic broke on same-column-name FK joins).
+_JoinGraph = dict[
+    str,
+    list[tuple[str, CanonicalJoin, tuple[JoinColumnPair, ...], bool]],
+]
 
 
 def _build_join_graph(edges: list[CanonicalJoin]) -> _JoinGraph:
     graph: _JoinGraph = {}
     for join in edges:
         # Stored orientation: source_entity → target_entity along on_pairs.
-        graph.setdefault(join.source_entity, []).append((join.target_entity, join, tuple(join.on)))
+        # `is_reverse_traversal=False` — this edge walks the join in the
+        # direction it was stored.
+        graph.setdefault(join.source_entity, []).append(
+            (join.target_entity, join, tuple(join.on), False)
+        )
         # Reverse orientation: traversing from target_entity, the
         # on-pair columns flip so emit can produce
         # `{neighbor_alias}.{source_column} = {origin_alias}.{target_column}`
@@ -583,6 +616,10 @@ def _build_join_graph(edges: list[CanonicalJoin]) -> _JoinGraph:
         # cast_type, nullable_override) carry over to the reverse-
         # direction edge automatically instead of being silently
         # dropped by a positional constructor.
+        # `is_reverse_traversal=True` — flag this edge as walking the
+        # join from its stored target toward its stored source so the
+        # cardinality flip fires deterministically (without depending
+        # on whether the on-pair columns happen to share names).
         swapped = tuple(
             dataclasses.replace(
                 p,
@@ -591,7 +628,9 @@ def _build_join_graph(edges: list[CanonicalJoin]) -> _JoinGraph:
             )
             for p in join.on
         )
-        graph.setdefault(join.target_entity, []).append((join.source_entity, join, swapped))
+        graph.setdefault(join.target_entity, []).append(
+            (join.source_entity, join, swapped, True)
+        )
     # Deterministic neighbor order so BFS path ties resolve identically
     # across runs — sort by canonical-join name within each adjacency
     # list.
@@ -700,7 +739,11 @@ def _find_canonical_chain(
     consumed_via: set[str] = set()
     chosen_path = feasible_paths[0]
     for predecessor, neighbor in chosen_path:
-        candidates = [(j, op) for (n, j, op) in graph.get(predecessor, []) if n == neighbor]
+        candidates = [
+            (j, op, rev)
+            for (n, j, op, rev) in graph.get(predecessor, [])
+            if n == neighbor
+        ]
         if not candidates:  # pragma: no cover — defensive
             # Pass-1/pass-2 invariant violation: pass 1 only emits a
             # hop `(predecessor, neighbor)` when `neighbor` appears in
@@ -718,7 +761,7 @@ def _find_canonical_chain(
                 f"is broken. This is a compiler bug."
             )
         if len(candidates) == 1:
-            chosen_join, chosen_pairs = candidates[0]
+            chosen_join, chosen_pairs, chosen_reverse = candidates[0]
             # Even on unique-canonical hops, record consumption: the
             # via= name may have been the lever that narrowed pass 1
             # structural ambiguity, in which case it constrained THIS
@@ -726,12 +769,16 @@ def _find_canonical_chain(
             if chosen_join.name in via:
                 consumed_via.add(chosen_join.name)
         else:
-            matching = [(j, op) for (j, op) in candidates if j.name in via]
+            matching = [
+                (j, op, rev) for (j, op, rev) in candidates if j.name in via
+            ]
             if len(matching) == 0:
                 raise AmbiguousJoinError(
                     anchor_entity=predecessor,
                     target_entity=neighbor,
-                    candidate_join_names=tuple(sorted(j.name for (j, _op) in candidates)),
+                    candidate_join_names=tuple(
+                        sorted(j.name for (j, _op, _rev) in candidates)
+                    ),
                 )
             if len(matching) > 1:
                 # via= matched 2+ parallels at this hop — caller is
@@ -741,14 +788,17 @@ def _find_canonical_chain(
                 raise AmbiguousJoinError(
                     anchor_entity=predecessor,
                     target_entity=neighbor,
-                    candidate_join_names=tuple(sorted(j.name for (j, _op) in matching)),
+                    candidate_join_names=tuple(
+                        sorted(j.name for (j, _op, _rev) in matching)
+                    ),
                 )
-            chosen_join, chosen_pairs = matching[0]
+            chosen_join, chosen_pairs, chosen_reverse = matching[0]
             consumed_via.add(chosen_join.name)
         edge = _ChainEdge(
             join=chosen_join,
             target_entity_in_chain=neighbor,
             on_pairs_in_chain_direction=chosen_pairs,
+            is_reverse_traversal=chosen_reverse,
         )
         chain.append((predecessor, edge))
     return chain, frozenset(consumed_via)
@@ -781,7 +831,7 @@ def _structural_shortest_paths(
         for entity, path in frontier:
             # Collapse parallel canonicals on each (entity, neighbor)
             # pair into a single entity-pair edge for this pass.
-            neighbor_entities = {n for (n, _j, _op) in graph.get(entity, [])}
+            neighbor_entities = {n for (n, _j, _op, _rev) in graph.get(entity, [])}
             for neighbor in sorted(neighbor_entities):
                 if neighbor in visited:
                     continue
@@ -806,7 +856,7 @@ def _canonicals_on_structural_path(
     """
     out: list[CanonicalJoin] = []
     for predecessor, neighbor in path:
-        for n, join, _op in graph.get(predecessor, []):
+        for n, join, _op, _rev in graph.get(predecessor, []):
             if n == neighbor:
                 out.append(join)
     return out
@@ -848,7 +898,9 @@ def _render_structural_path_as_canonical_sequence(
     names: list[str] = []
     for predecessor, neighbor in path:
         canonicals_on_hop = sorted(
-            j.name for (n, j, _op) in graph.get(predecessor, []) if n == neighbor
+            j.name
+            for (n, j, _op, _rev) in graph.get(predecessor, [])
+            if n == neighbor
         )
         if not canonicals_on_hop:  # pragma: no cover — defensive
             # Same invariant as pass 2's empty-candidates guard:
@@ -1012,7 +1064,7 @@ def _find_inherited_time_dimension(
     while frontier:
         current = frontier.popleft()
         current_path = visited[current]
-        for neighbor, join, _on_pairs in graph.get(current, []):
+        for neighbor, join, _on_pairs, _rev in graph.get(current, []):
             if neighbor in visited:
                 continue
             # Direction-aware cardinality: when the canonical join is

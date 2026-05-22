@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Reverse-traversal cardinality flip missed same-name FK joins —
+  silent over-counting on grouped aggregates.** The earlier fan-out
+  detector compared on-pair tuples against the stored `join.on` to
+  decide whether BFS had walked a canonical join in reverse. When the
+  FK source and target columns shared a name (extremely common: an FK
+  on `customer_id` between `rental.customer_id` and
+  `customer.customer_id`), the swapped pairs compared equal to the
+  stored pairs and the cardinality flip silently never fired. A
+  metric anchored on `customer` grouped by `rental.rental_date`
+  reported `cardinality=many_to_one` instead of the correct
+  `one_to_many`, `fan_out_join_names` came back empty, and the
+  envelope shipped `status="success"` with inflated counts. Replaced
+  the heuristic with an explicit `is_reverse_traversal: bool` flag
+  carried on `_ChainEdge` and set deterministically at graph-build
+  time. Surfaced by a Pagila re-test: 158 distinct customers per
+  rental timestamp were reported as 182 by the compiler before the
+  fix. New regression test
+  `TestReverseTraversalCardinalityFlip::test_same_name_fk_reverse_traversal_flips_cardinality`.
+
 ### Added
 - **Junction-table bridge synthesis on read.** `list_joins` and
   `schemabrain inspect <entity>` now surface logical M:N bridges
