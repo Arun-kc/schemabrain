@@ -35,6 +35,7 @@ from mcp.server.fastmcp.exceptions import ToolError as FastMCPToolError
 from mcp.types import ContentBlock, ToolAnnotations
 from pydantic import Field
 
+from schemabrain import __version__ as _SCHEMABRAIN_VERSION
 from schemabrain.audit.writer import AuditWriter
 from schemabrain.core.metric import MalformedMetricRowError
 from schemabrain.core.store_protocol import Store
@@ -506,6 +507,12 @@ def build_server(
         icons=_server_icons() or None,
         on_rejected=_on_rejected_call,
     )
+    # FastMCP doesn't accept a `version` kwarg, so the underlying
+    # low-level Server defaults `server_version` to the `mcp` package
+    # version (e.g. "1.27.1") in the `initialize` response. Pin it to
+    # Schema Brain's own version string so MCP clients see the
+    # right server identity instead of the SDK's internal version.
+    app._mcp_server.version = _SCHEMABRAIN_VERSION
 
     def _trace(name: str):
         return instrument(

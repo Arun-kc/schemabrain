@@ -3015,6 +3015,19 @@ def _cmd_entities_apply(
     return 1 if failures else 0
 
 
+def _format_trust(inference_method: str, validation_state: str) -> str:
+    """Render the charter v1.2 2D trust signal as `<method> · <state> (<CONF>)`.
+
+    Lazily imports `derive_confidence` to keep the envelope module
+    (and its Pydantic transitive deps) off the import path of CLI
+    commands that don't render trust.
+    """
+    from schemabrain.mcp.envelope import derive_confidence
+
+    confidence = derive_confidence(inference_method, validation_state)  # type: ignore[arg-type]
+    return f"{inference_method} · {validation_state} ({confidence})"
+
+
 def _cmd_entities_list(
     *,
     store_path: str,
@@ -3068,11 +3081,13 @@ def _cmd_entities_list(
         return 0
 
     for entity in entities:
+        trust = _format_trust(entity.inference_method, entity.validation_state)
         print(
             f"{entity.name}  "
             f"table={entity.binding.qualified_table}  "
             f"identity={entity.identity}  "
-            f"origin={entity.origin}"
+            f"origin={entity.origin}  "
+            f"trust={trust}"
         )
     return 0
 
@@ -4135,10 +4150,12 @@ def _cmd_joins_list(
 
     for join in joins:
         on_summary = ", ".join(f"{p.source_column} ↔ {p.target_column}" for p in join.on)
+        trust = _format_trust(join.inference_method, join.validation_state)
         print(
             f"{join.name}  "
             f"{join.source_entity} → {join.target_entity}  "
-            f"[{on_summary}]  origin={join.origin}"
+            f"[{on_summary}]  origin={join.origin}  "
+            f"trust={trust}"
         )
     return 0
 
@@ -4312,13 +4329,15 @@ def _cmd_metrics_list(
             if metric.measure.column is not None
             else metric.measure.expression
         )
+        trust = _format_trust(metric.inference_method, metric.validation_state)
         print(
             f"{metric.name}  "
             f"entity={metric.entity}  "
             f"{metric.measure.agg}({measure_body})  "
             f"time_dim={time_dim}  "
             f"grains={grains}  "
-            f"origin={metric.origin}"
+            f"origin={metric.origin}  "
+            f"trust={trust}"
         )
     return 0
 
@@ -5725,6 +5744,17 @@ def _cmd_audit_list(
         except _sqlite3.DatabaseError as exc:
             print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
             return 2
+        # Differentiate "empty audit log" from "filters excluded
+        # everything". A bare `no rows matched` was ambiguous — operators
+        # couldn't tell whether they had no MCP traffic yet, or simply a
+        # filter typo. Computed only when needed so the happy path
+        # doesn't pay for an extra query.
+        total_rows: int | None = None
+        if not rows:
+            try:
+                total_rows = conn.execute("SELECT COUNT(*) FROM mcp_audit").fetchone()[0]
+            except _sqlite3.DatabaseError:  # pragma: no cover — defensive
+                total_rows = None
     finally:
         conn.close()
 
@@ -5744,7 +5774,19 @@ def _cmd_audit_list(
         return 0
 
     if not rows:
-        print("no audit rows matched the filters")
+        if total_rows == 0:
+            print("(audit log is empty — no MCP tool calls have run yet)")
+            print(
+                "  next: drive the MCP server (Claude Desktop, "
+                "`examples/anthropic_demo.py`, or another MCP client) to "
+                "produce audit rows."
+            )
+        elif where_clauses:
+            suffix = f" (audit log has {total_rows} rows total)" if total_rows else ""
+            print(f"no audit rows matched the filters{suffix}")
+            print("  next: widen with `--since 24h` or drop `--status`/`--tool` filters.")
+        else:  # pragma: no cover — empty without filters yet total>0 is impossible
+            print("no audit rows in this view")
         return 0
 
     console = _Console()

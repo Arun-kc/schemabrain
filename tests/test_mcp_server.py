@@ -117,6 +117,44 @@ def server_with_one_table_zero_embedder(tmp_path: Path) -> Generator[FastMCP, No
     store.close()
 
 
+class TestServerInfoVersion:
+    """`serverInfo.version` in the MCP `initialize` response must be
+    Schema Brain's own version string, not the version of the underlying
+    `mcp` SDK package. FastMCP defaults `server_version` to the SDK
+    package version, which leaks an unrelated identity to clients.
+    """
+
+    def test_initialize_response_carries_schemabrain_version(
+        self, server_with_one_table
+    ) -> None:
+        from schemabrain import __version__ as schemabrain_version
+
+        opts = server_with_one_table._mcp_server.create_initialization_options()
+        assert opts.server_version == schemabrain_version
+
+    def test_initialize_response_does_not_leak_mcp_sdk_version(
+        self, server_with_one_table
+    ) -> None:
+        """Defensive: even if the SDK package version coincidentally
+        matches Schema Brain's at some point, the test_initialize_response
+        above already pins the contract. This assertion is the negative
+        symmetric counterpart — the server must not be using the
+        FastMCP default fallback that calls `pkg_version("mcp")`.
+        """
+        from importlib.metadata import version as _pkg_version
+
+        from schemabrain import __version__ as schemabrain_version
+
+        mcp_sdk_version = _pkg_version("mcp")
+        # If the two happen to match, the assertion is still meaningful;
+        # the contract is "use Schema Brain's version", and equality
+        # there is satisfied. Only fail when the SERVER version is the
+        # SDK version AND they differ (which would prove the bug).
+        opts = server_with_one_table._mcp_server.create_initialization_options()
+        if mcp_sdk_version != schemabrain_version:
+            assert opts.server_version != mcp_sdk_version
+
+
 class TestToolRegistry:
     def test_all_tools_are_registered(self, server_with_one_table) -> None:
         names = {t.name for t in asyncio.run(server_with_one_table.list_tools())}

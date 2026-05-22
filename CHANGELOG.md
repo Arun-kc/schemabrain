@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`serverInfo.version` in the MCP `initialize` response leaked the
+  underlying `mcp` SDK package version (e.g. `1.27.1`) instead of
+  Schema Brain's own version string.** FastMCP doesn't accept a
+  `version` kwarg and the low-level Server defaults `server_version`
+  to `pkg_version("mcp")`. Pinning the underlying server's `version`
+  attribute to `schemabrain.__version__` after construction makes MCP
+  clients see the right server identity (`0.3.0`) in the handshake.
+  New regression tests in `TestServerInfoVersion`.
+- **`schemabrain audit list` empty-state was ambiguous.** A bare
+  "no audit rows matched the filters" landed for both an empty audit
+  table AND a populated table whose rows didn't match the filters.
+  Operators couldn't tell whether the MCP server had never been
+  driven, or whether they had a filter typo. The empty-table branch
+  now prints "(audit log is empty — no MCP tool calls have run yet)"
+  with a `next:` hint pointing at the MCP client surfaces that
+  populate audit rows. The filtered-empty branch reports the total
+  row count and suggests widening with `--since` / dropping
+  `--status`/`--tool`. New regression test
+  `test_filters_excluding_all_rows_show_total_and_widen_hint`.
+- **Bridge join names truncated with an ellipsis on narrow terminals
+  in `schemabrain inspect <entity>`.** Synthesised bridge names
+  (`<a>_<b>_via_<junction>`) are typically long, and Rich's default
+  column overflow behaviour truncated the name with `…` when the
+  related-entities table sized down. Setting `overflow="fold"` on the
+  `On` column lets the bridge marker line wrap across visual rows
+  instead, preserving the full identifier. New regression test
+  `test_bridge_edge_never_truncates_long_join_name`.
 - **Reverse-traversal cardinality flip missed same-name FK joins —
   silent over-counting on grouped aggregates.** The earlier fan-out
   detector compared on-pair tuples against the stored `join.on` to
@@ -28,6 +55,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TestReverseTraversalCardinalityFlip::test_same_name_fk_reverse_traversal_flips_cardinality`.
 
 ### Added
+- **`entities list`, `joins list`, and `metrics list` CLI commands
+  now surface the charter v1.2 2D trust signal.** Each rendered row
+  now ends with `trust=<inference_method> · <validation_state>
+  (<CONF>)` alongside the legacy `origin=` field, so the discovery
+  surface agrees with the `inspect <name>` drill view's vocabulary.
+  The 2D signal lived on the envelope and MCP responses but the CLI
+  list surfaces still printed only the 1D `origin=`, which made
+  operators rely on the v1.0 vocab even after the v1.2 charter
+  shipped. New helper `_format_trust(inference_method,
+  validation_state)` in `schemabrain.cli` lazily imports
+  `derive_confidence` to keep Pydantic off the import path of CLI
+  commands that don't render trust.
 - **Junction-table bridge synthesis on read.** `list_joins` and
   `schemabrain inspect <entity>` now surface logical M:N bridges
   through junction entities (e.g. `products <-> categories via

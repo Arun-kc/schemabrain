@@ -383,7 +383,11 @@ def _render_related(
     table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 2), expand=False)
     table.add_column("Entity", style="bold")
     table.add_column("Edge")
-    table.add_column("On")
+    # `overflow="fold"` lets the bridge-name line wrap across multiple
+    # display rows instead of truncating with an ellipsis when the
+    # synthesised name (`<a>_<b>_via_<junction>`) exceeds the column
+    # width Rich picks for narrow terminals.
+    table.add_column("On", overflow="fold")
     for rel in related:
         cardinality = rel.cardinality or "?"
         edge_cell = f"[dim]{rel.direction}[/] · {cardinality}"

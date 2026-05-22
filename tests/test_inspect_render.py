@@ -289,6 +289,50 @@ class TestRenderEntityDetailEdgeCases:
         # Design brand line still names the bound table.
         assert "public.users" in out
 
+    def test_bridge_edge_never_truncates_long_join_name(self) -> None:
+        """Bridge join names (`<a>_<b>_via_<junction>`) are typically
+        long and used to ellipsis-truncate on narrow terminals. The
+        `overflow="fold"` setting on the `On` column must let the name
+        wrap across rows instead of dropping characters.
+        """
+        buf = io.StringIO()
+        # Narrow width forces Rich to size columns aggressively, which
+        # is the exact scenario where ellipsis truncation kicked in.
+        console = Console(file=buf, force_terminal=False, width=70)
+        long_bridge = "category_film_via_film_category_with_extras"
+        detail = EntityDetail(
+            entity=_entity(),
+            columns=(
+                EntityColumnDetail(
+                    name="id",
+                    data_type="bigint",
+                    nullable=False,
+                    is_primary_key=True,
+                    is_identity=True,
+                    pii_sensitivity="public",
+                    pii_categories=(),
+                ),
+            ),
+            related_entities=(
+                RelatedEntity(
+                    name="category",
+                    direction="outgoing",
+                    join_name=long_bridge,
+                    on=(("id", "film_id"),),
+                    cardinality="many_to_many",
+                    via_junction="film_category",
+                ),
+            ),
+            anchored_metrics=(),
+        )
+        render_entity_detail(detail, console=console)
+        out = buf.getvalue()
+        # The full bridge name must survive; rendering can fold across
+        # lines but must never replace characters with an ellipsis.
+        normalized = out.replace("\n", "").replace(" ", "")
+        assert long_bridge in normalized
+        assert "…" not in out
+
     def test_anchored_metric_without_time_dimension_renders_non_temporal(
         self,
     ) -> None:

@@ -77,6 +77,10 @@ class TestEntitiesList:
         assert "table=public.users" in out
         assert "identity=id" in out
         assert "origin=manual" in out
+        # The 2D charter v1.2 trust signal accompanies `origin=` on
+        # every list row so the discovery surface and the deeper
+        # `inspect <name>` view agree on the same vocabulary.
+        assert "trust=manually_authored · applied (HIGH)" in out
 
     def test_list_with_source_filter(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
