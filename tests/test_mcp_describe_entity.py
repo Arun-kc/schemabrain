@@ -445,9 +445,7 @@ class TestPiiBlockColumnRedaction:
         """The PII-tagged column ships with `redacted=True` and its
         description is cleared. The non-PII column is untouched.
         """
-        server, store = self._build_with_pii_block(
-            tmp_path, frozenset({"contact"})
-        )
+        server, store = self._build_with_pii_block(tmp_path, frozenset({"contact"}))
         try:
             _content, structured = asyncio.run(
                 server.call_tool("describe_entity", {"name": "customer"})
@@ -467,9 +465,7 @@ class TestPiiBlockColumnRedaction:
         """A `pii_block` set that doesn't intersect any column's tags
         leaves every column unredacted — and the description survives.
         """
-        server, store = self._build_with_pii_block(
-            tmp_path, frozenset({"financial"})
-        )
+        server, store = self._build_with_pii_block(tmp_path, frozenset({"financial"}))
         try:
             _content, structured = asyncio.run(
                 server.call_tool("describe_entity", {"name": "customer"})
@@ -487,9 +483,7 @@ class TestPiiBlockColumnRedaction:
         is capped at MEDIUM — the agent saw a partial view of the
         entity, so even a hand-confirmed entity row cannot report HIGH.
         """
-        server, store = self._build_with_pii_block(
-            tmp_path, frozenset({"contact"})
-        )
+        server, store = self._build_with_pii_block(tmp_path, frozenset({"contact"}))
         try:
             _content, structured = asyncio.run(
                 server.call_tool("describe_entity", {"name": "customer"})

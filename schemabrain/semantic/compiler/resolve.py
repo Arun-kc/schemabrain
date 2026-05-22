@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from collections import deque
 from typing import Any, Literal
 
 from schemabrain.core.join import CanonicalJoin, JoinColumnPair, flip_cardinality
@@ -49,7 +50,6 @@ from schemabrain.semantic.compiler.plan import (
     UnknownViaJoinError,
     UnreachableEntityError,
 )
-from collections import deque
 
 # Closed grammar of column-validation surfaces. Annotating
 # `_validate_column_on_table(kind=...)` and `_resolve(kind=...)` as
@@ -628,9 +628,7 @@ def _build_join_graph(edges: list[CanonicalJoin]) -> _JoinGraph:
             )
             for p in join.on
         )
-        graph.setdefault(join.target_entity, []).append(
-            (join.source_entity, join, swapped, True)
-        )
+        graph.setdefault(join.target_entity, []).append((join.source_entity, join, swapped, True))
     # Deterministic neighbor order so BFS path ties resolve identically
     # across runs — sort by canonical-join name within each adjacency
     # list.
@@ -740,9 +738,7 @@ def _find_canonical_chain(
     chosen_path = feasible_paths[0]
     for predecessor, neighbor in chosen_path:
         candidates = [
-            (j, op, rev)
-            for (n, j, op, rev) in graph.get(predecessor, [])
-            if n == neighbor
+            (j, op, rev) for (n, j, op, rev) in graph.get(predecessor, []) if n == neighbor
         ]
         if not candidates:  # pragma: no cover — defensive
             # Pass-1/pass-2 invariant violation: pass 1 only emits a
@@ -769,16 +765,12 @@ def _find_canonical_chain(
             if chosen_join.name in via:
                 consumed_via.add(chosen_join.name)
         else:
-            matching = [
-                (j, op, rev) for (j, op, rev) in candidates if j.name in via
-            ]
+            matching = [(j, op, rev) for (j, op, rev) in candidates if j.name in via]
             if len(matching) == 0:
                 raise AmbiguousJoinError(
                     anchor_entity=predecessor,
                     target_entity=neighbor,
-                    candidate_join_names=tuple(
-                        sorted(j.name for (j, _op, _rev) in candidates)
-                    ),
+                    candidate_join_names=tuple(sorted(j.name for (j, _op, _rev) in candidates)),
                 )
             if len(matching) > 1:
                 # via= matched 2+ parallels at this hop — caller is
@@ -788,9 +780,7 @@ def _find_canonical_chain(
                 raise AmbiguousJoinError(
                     anchor_entity=predecessor,
                     target_entity=neighbor,
-                    candidate_join_names=tuple(
-                        sorted(j.name for (j, _op, _rev) in matching)
-                    ),
+                    candidate_join_names=tuple(sorted(j.name for (j, _op, _rev) in matching)),
                 )
             chosen_join, chosen_pairs, chosen_reverse = matching[0]
             consumed_via.add(chosen_join.name)
@@ -898,9 +888,7 @@ def _render_structural_path_as_canonical_sequence(
     names: list[str] = []
     for predecessor, neighbor in path:
         canonicals_on_hop = sorted(
-            j.name
-            for (n, j, _op, _rev) in graph.get(predecessor, [])
-            if n == neighbor
+            j.name for (n, j, _op, _rev) in graph.get(predecessor, []) if n == neighbor
         )
         if not canonicals_on_hop:  # pragma: no cover — defensive
             # Same invariant as pass 2's empty-candidates guard:
@@ -1081,15 +1069,13 @@ def _find_inherited_time_dimension(
             # before bucketing, producing inflated sums.
             if effective not in ("many_to_one", "one_to_one"):
                 continue
-            new_path = current_path + (join.name,)
+            new_path = (*current_path, join.name)
             visited[neighbor] = new_path
             frontier.append(neighbor)
             # Inspect the reached entity's bound table for timestamp
             # columns. The entity row is guaranteed to exist because
             # the canonical join's FK to `entities` covers both ends.
-            entity = store.get_entity(
-                neighbor, source_connection_id=source_connection_id
-            )
+            entity = store.get_entity(neighbor, source_connection_id=source_connection_id)
             if entity is None:  # pragma: no cover — FK guarantee
                 continue
             schema_name, table_name = entity.qualified_table.split(".", 1)

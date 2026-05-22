@@ -399,13 +399,9 @@ def _render_related(
             # bridge name + junction-mediated nature explicitly so the
             # operator never confuses a bridge with a direct join.
             on_pretty = ", ".join(
-                f"{this_entity}.{local} = {rel.via_junction}.{remote}"
-                for local, remote in rel.on
+                f"{this_entity}.{local} = {rel.via_junction}.{remote}" for local, remote in rel.on
             )
-            on_cell = (
-                f"{on_pretty}\n"
-                f"[dim]bridge `{rel.join_name}` via {rel.via_junction}[/]"
-            )
+            on_cell = f"{on_pretty}\n[dim]bridge `{rel.join_name}` via {rel.via_junction}[/]"
         else:
             # Format `on` pairs as `this.col = other.col` from the
             # drilled entity's perspective; engine already normalised
@@ -486,17 +482,12 @@ def render_metric_detail(detail: MetricDetail, *, console: Console) -> None:
         console.print()
 
     measure_body = (
-        metric.measure.column
-        if metric.measure.column is not None
-        else metric.measure.expression
+        metric.measure.column if metric.measure.column is not None else metric.measure.expression
     )
     console.print(f"[bold]Measure:[/]      [dim]{metric.measure.agg}({measure_body})[/]")
     if metric.time_dimension is not None:
         grain_str = ", ".join(metric.time_grains) if metric.time_grains else "[dim]none[/]"
-        console.print(
-            f"[bold]Time:[/]         {metric.time_dimension} "
-            f"[dim]grains: {grain_str}[/]"
-        )
+        console.print(f"[bold]Time:[/]         {metric.time_dimension} [dim]grains: {grain_str}[/]")
     else:
         console.print("[bold]Time:[/]         [dim]non-temporal[/]")
     _render_trust_line(

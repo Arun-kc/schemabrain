@@ -6929,8 +6929,7 @@ def _cmd_inspect(
                 )
                 if not source_ids:
                     print(
-                        f"error: no entity, metric, or join named "
-                        f"{name!r} in {store_path!r}",
+                        f"error: no entity, metric, or join named {name!r} in {store_path!r}",
                         file=sys.stderr,
                     )
                     return 1
@@ -6979,8 +6978,7 @@ def _cmd_inspect(
 
             if not rendered:
                 print(
-                    f"error: no entity, metric, or join named "
-                    f"{name!r} in {store_path!r}",
+                    f"error: no entity, metric, or join named {name!r} in {store_path!r}",
                     file=sys.stderr,
                 )
                 return 1

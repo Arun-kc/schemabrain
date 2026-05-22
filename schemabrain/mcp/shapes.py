@@ -765,8 +765,6 @@ class MetricResult(BaseModel):
     # candidate was reachable, so the plan ran unbucketed. When
     # `inherited`, `inherited_time_dimension` carries `<entity>.<column>`
     # and `time_dimension_inherited_via` lists the join chain traversed.
-    time_dimension_resolution: Literal["local", "inherited", "unavailable"] = (
-        "local"
-    )
+    time_dimension_resolution: Literal["local", "inherited", "unavailable"] = "local"
     inherited_time_dimension: str | None = None
     time_dimension_inherited_via: tuple[str, ...] = ()

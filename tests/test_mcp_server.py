@@ -124,17 +124,13 @@ class TestServerInfoVersion:
     package version, which leaks an unrelated identity to clients.
     """
 
-    def test_initialize_response_carries_schemabrain_version(
-        self, server_with_one_table
-    ) -> None:
+    def test_initialize_response_carries_schemabrain_version(self, server_with_one_table) -> None:
         from schemabrain import __version__ as schemabrain_version
 
         opts = server_with_one_table._mcp_server.create_initialization_options()
         assert opts.server_version == schemabrain_version
 
-    def test_initialize_response_does_not_leak_mcp_sdk_version(
-        self, server_with_one_table
-    ) -> None:
+    def test_initialize_response_does_not_leak_mcp_sdk_version(self, server_with_one_table) -> None:
         """Defensive: even if the SDK package version coincidentally
         matches Schema Brain's at some point, the test_initialize_response
         above already pins the contract. This assertion is the negative
@@ -1262,9 +1258,7 @@ class TestServerBranding:
 
         icons = _server_icons()
         for icon in icons:
-            assert icon.src.startswith(
-                "https://raw.githubusercontent.com/Arun-kc/schemabrain/"
-            )
+            assert icon.src.startswith("https://raw.githubusercontent.com/Arun-kc/schemabrain/")
             assert icon.mimeType == "image/png"
 
     def test_website_url_is_repo(self) -> None:

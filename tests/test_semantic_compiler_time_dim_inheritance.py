@@ -117,14 +117,18 @@ def _entity(name: str, *, table: str, identity: str = "id") -> Entity:
     )
 
 
-def _seed_orderitem_anchored(
-    store: SQLiteStore, *, users_table: Table = _users_table()
-) -> None:
+def _seed_orderitem_anchored(store: SQLiteStore, *, users_table: Table | None = None) -> None:
     """Order-item anchored metric setup. order_item -> order (m:1) and
     optionally order -> user (m:1). The order_items table has no
     timestamp; inheritance must reach `orders.created_at` (and
     optionally `users.signup_at`).
     """
+    # Build the default users_table inside the body (not in the
+    # signature) so the call doesn't execute at module import time —
+    # ruff B008 + a real correctness reason: function-call defaults
+    # capture a single instance shared across every call.
+    if users_table is None:
+        users_table = _users_table()
     store.write_table(_order_items_table(), source_connection_id=SOURCE)
     store.write_table(_orders_table(), source_connection_id=SOURCE)
     store.write_table(users_table, source_connection_id=SOURCE)
@@ -204,7 +208,7 @@ class TestSingleInheritance:
             )
             sql, _params = emit_sql(plan)
         assert 'date_trunc(\'day\', "order"."created_at")' in sql
-        assert 'date_trunc(\'day\', "order_item"' not in sql
+        assert "date_trunc('day', \"order_item\"" not in sql
 
 
 class TestAmbiguousInheritance:
@@ -279,12 +283,8 @@ class TestFanOutPathsSkipped:
                     name="order_items_dated",
                     schema_name="public",
                     columns=(
-                        _col(
-                            "order_items_dated", "id", 1, "bigint", pk=True
-                        ),
-                        _col(
-                            "order_items_dated", "order_id", 2, "bigint"
-                        ),
+                        _col("order_items_dated", "id", 1, "bigint", pk=True),
+                        _col("order_items_dated", "order_id", 2, "bigint"),
                         _col(
                             "order_items_dated",
                             "added_at",
@@ -309,11 +309,7 @@ class TestFanOutPathsSkipped:
                     description="",
                     source_entity="order_no_ts",
                     target_entity="order_item",
-                    on=(
-                        JoinColumnPair(
-                            source_column="id", target_column="order_id"
-                        ),
-                    ),
+                    on=(JoinColumnPair(source_column="id", target_column="order_id"),),
                     cardinality="one_to_many",
                 ),
                 source_connection_id=SOURCE,

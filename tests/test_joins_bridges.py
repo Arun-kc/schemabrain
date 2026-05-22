@@ -36,7 +36,6 @@ from schemabrain.joins.bridges import (
     synthesize_bridges_for_entity,
 )
 
-
 # ----- helpers -----------------------------------------------------------------
 
 
@@ -168,9 +167,7 @@ def _seed_two_way_junction(tmp_path: Path) -> SQLiteStore:
     store.write_table(_categories_table(), source_connection_id="sid")
     store.write_table(_product_categories_table(), source_connection_id="sid")
     store.write_entity(_entity("product", table="products"), source_connection_id="sid")
-    store.write_entity(
-        _entity("category", table="categories"), source_connection_id="sid"
-    )
+    store.write_entity(_entity("category", table="categories"), source_connection_id="sid")
     # Junction entity binds to the pivot table.
     store.write_entity(
         Entity(
@@ -223,9 +220,7 @@ class TestFindJunctionEntities:
     def test_no_junctions_returns_empty(self, tmp_path: Path) -> None:
         store = SQLiteStore(tmp_path / "s.db")
         store.write_table(_products_table(), source_connection_id="sid")
-        store.write_entity(
-            _entity("product", table="products"), source_connection_id="sid"
-        )
+        store.write_entity(_entity("product", table="products"), source_connection_id="sid")
         with store:
             result = find_junction_entities(store=store, source_connection_id="sid")
         assert result == []
@@ -239,9 +234,7 @@ class TestFindJunctionEntities:
     def test_non_junction_entities_excluded(self, tmp_path: Path) -> None:
         store = _seed_two_way_junction(tmp_path)
         with store:
-            junctions = find_junction_entities(
-                store=store, source_connection_id="sid"
-            )
+            junctions = find_junction_entities(store=store, source_connection_id="sid")
         # Sanity: products + categories must NOT be reported as junctions.
         names = {e.name for e in junctions}
         assert "product" not in names
@@ -273,15 +266,9 @@ class TestSynthesizeBridges:
         store.write_table(_categories_table(), source_connection_id="sid")
         store.write_table(_tags_table(), source_connection_id="sid")
         store.write_table(_three_way_junction_table(), source_connection_id="sid")
-        store.write_entity(
-            _entity("product", table="products"), source_connection_id="sid"
-        )
-        store.write_entity(
-            _entity("category", table="categories"), source_connection_id="sid"
-        )
-        store.write_entity(
-            _entity("tag", table="tags"), source_connection_id="sid"
-        )
+        store.write_entity(_entity("product", table="products"), source_connection_id="sid")
+        store.write_entity(_entity("category", table="categories"), source_connection_id="sid")
+        store.write_entity(_entity("tag", table="tags"), source_connection_id="sid")
         store.write_entity(
             Entity(
                 name="product_facets",
@@ -305,9 +292,7 @@ class TestSynthesizeBridges:
                     description="",
                     source_entity="product_facets",
                     target_entity=target,
-                    on=(
-                        JoinColumnPair(source_column=target_col, target_column="id"),
-                    ),
+                    on=(JoinColumnPair(source_column=target_col, target_column="id"),),
                     origin="suggested",
                     cardinality="many_to_one",
                     inference_method="fk_constraint",
@@ -334,7 +319,7 @@ class TestSynthesizeBridges:
         # Remove one of the two legs to simulate a half-defined junction.
         with store:
             # Use a direct execute to avoid public API for surgical setup.
-            conn = store._require_conn()  # noqa: SLF001
+            conn = store._require_conn()
             conn.execute(
                 "DELETE FROM canonical_joins WHERE name = ?",
                 ("product_categories_category",),
@@ -343,9 +328,7 @@ class TestSynthesizeBridges:
             bridges = synthesize_bridges(store=store, source_connection_id="sid")
         assert bridges == []
 
-    def test_worst_inference_downgrades_to_llm_suggested(
-        self, tmp_path: Path
-    ) -> None:
+    def test_worst_inference_downgrades_to_llm_suggested(self, tmp_path: Path) -> None:
         """If one leg is `llm_suggested`, the bridge inherits that — the
         agent must not trust the bridge more than its weakest link.
         """
@@ -358,11 +341,7 @@ class TestSynthesizeBridges:
                     description="",
                     source_entity="product_categories",
                     target_entity="product",
-                    on=(
-                        JoinColumnPair(
-                            source_column="product_id", target_column="id"
-                        ),
-                    ),
+                    on=(JoinColumnPair(source_column="product_id", target_column="id"),),
                     origin="suggested",
                     cardinality="many_to_one",
                     inference_method="llm_suggested",
@@ -430,30 +409,20 @@ class TestComposedOnPairs:
             bridges = synthesize_bridges(store=store, source_connection_id="sid")
             assert len(bridges) == 1
             bridge = bridges[0]
-            leg_lo = store.get_canonical_join(
-                bridge.via_joins[0], source_connection_id="sid"
-            )
-            leg_hi = store.get_canonical_join(
-                bridge.via_joins[1], source_connection_id="sid"
-            )
+            leg_lo = store.get_canonical_join(bridge.via_joins[0], source_connection_id="sid")
+            leg_hi = store.get_canonical_join(bridge.via_joins[1], source_connection_id="sid")
             assert leg_lo is not None
             assert leg_hi is not None
-            a_to_j, j_to_b = composed_on_pairs(
-                bridge=bridge, leg_lo=leg_lo, leg_hi=leg_hi
-            )
+            a_to_j, j_to_b = composed_on_pairs(bridge=bridge, leg_lo=leg_lo, leg_hi=leg_hi)
         # First leg connects bridge.source_entity → via_junction.
         # Stored shape is `source=product_categories, target=category`
         # so the orienter flips it to read `category.id =
         # product_categories.category_id`.
-        assert a_to_j == (
-            JoinColumnPair(source_column="id", target_column="category_id"),
-        )
+        assert a_to_j == (JoinColumnPair(source_column="id", target_column="category_id"),)
         # Second leg connects via_junction → bridge.target_entity.
         # Stored as `source=product_categories, target=product`, no flip
         # needed; reads `product_categories.product_id = product.id`.
-        assert j_to_b == (
-            JoinColumnPair(source_column="product_id", target_column="id"),
-        )
+        assert j_to_b == (JoinColumnPair(source_column="product_id", target_column="id"),)
 
     def test_raises_when_leg_does_not_connect_ends(self, tmp_path: Path) -> None:
         store = _seed_two_way_junction(tmp_path)
@@ -469,14 +438,10 @@ class TestComposedOnPairs:
                 on=(JoinColumnPair(source_column="x", target_column="y"),),
                 origin="manual",
             )
-            real_leg = store.get_canonical_join(
-                bridge.via_joins[1], source_connection_id="sid"
-            )
+            real_leg = store.get_canonical_join(bridge.via_joins[1], source_connection_id="sid")
             assert real_leg is not None
             with pytest.raises(ValueError, match="does not connect"):
-                composed_on_pairs(
-                    bridge=bridge, leg_lo=wrong_leg, leg_hi=real_leg
-                )
+                composed_on_pairs(bridge=bridge, leg_lo=wrong_leg, leg_hi=real_leg)
 
 
 # ----- BridgeJoin equality / hash ---------------------------------------------

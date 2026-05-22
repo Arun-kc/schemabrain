@@ -373,14 +373,8 @@ class AmbiguousTimeDimensionError(MetricCompilerError):
         # text. The recovery contract still lets the agent walk the
         # full set via the structured field.
         shown = self.candidates[:4]
-        more = (
-            f" (+{len(self.candidates) - 4} more)"
-            if len(self.candidates) > 4
-            else ""
-        )
-        rendered = ", ".join(
-            f"{column} (via {list(via)})" for column, via in shown
-        )
+        more = f" (+{len(self.candidates) - 4} more)" if len(self.candidates) > 4 else ""
+        rendered = ", ".join(f"{column} (via {list(via)})" for column, via in shown)
         first_column = shown[0][0] if shown else ""
         super().__init__(
             f"metric anchored on {self.anchor_entity!r} has no "
@@ -661,9 +655,7 @@ class MetricPlan:
     #                   with `time_bucket=None`; the MCP layer surfaces
     #                   `time_dimension_unavailable` as a degradation
     #                   reason rather than failing.
-    time_dimension_resolution: Literal["local", "inherited", "unavailable"] = field(
-        default="local"
-    )
+    time_dimension_resolution: Literal["local", "inherited", "unavailable"] = field(default="local")
     inherited_time_dimension: str | None = field(default=None)
     time_dimension_inherited_via: tuple[str, ...] = field(default=())
 

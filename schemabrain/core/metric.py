@@ -88,10 +88,14 @@ _VALID_GRAINS: frozenset[str] = frozenset(get_args(TimeGrain))
 # schemabrain.core.metric import InferenceMethod` works without an
 # entity-side dependency surfacing in the public surface.
 from schemabrain.core.entity import (  # noqa: E402
-    InferenceMethod as InferenceMethod,
-    ValidationState as ValidationState,
     _VALID_INFERENCE_METHODS,
     _VALID_VALIDATION_STATES,
+)
+from schemabrain.core.entity import (  # noqa: E402
+    InferenceMethod as InferenceMethod,
+)
+from schemabrain.core.entity import (  # noqa: E402
+    ValidationState as ValidationState,
 )
 
 # Canonical ordering for `time_grains`. Without a fixed order, two

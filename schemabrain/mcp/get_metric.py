@@ -225,9 +225,7 @@ def _aggregate_metric_plan_signal(
             # signal dominates.
             continue
         rank = _RANK[
-            derive_confidence(
-                canonical_join.inference_method, canonical_join.validation_state
-            )
+            derive_confidence(canonical_join.inference_method, canonical_join.validation_state)
         ]
         if rank < worst_rank:
             worst_method = canonical_join.inference_method

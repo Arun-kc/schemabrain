@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, get_args
 
-from schemabrain.core.entity import Entity, InferenceMethod, ValidationState
+from schemabrain.core.entity import Entity
 from schemabrain.core.join import CanonicalJoin, Cardinality
 from schemabrain.core.metric import AggFunction, Metric
 from schemabrain.core.store_protocol import Store
@@ -391,12 +391,8 @@ def build_join_detail(
     join = store.get_canonical_join(join_name, source_connection_id=source_connection_id)
     if join is None:
         return None
-    source_entity = store.get_entity(
-        join.source_entity, source_connection_id=source_connection_id
-    )
-    target_entity = store.get_entity(
-        join.target_entity, source_connection_id=source_connection_id
-    )
+    source_entity = store.get_entity(join.source_entity, source_connection_id=source_connection_id)
+    target_entity = store.get_entity(join.target_entity, source_connection_id=source_connection_id)
     return JoinDetail(join=join, source=source_entity, target=target_entity)
 
 

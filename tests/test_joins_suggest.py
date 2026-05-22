@@ -736,9 +736,10 @@ class TestInferFkCardinality:
             target_table="users",
             target_columns=("id",),
         )
-        assert _infer_fk_cardinality(
-            fk=fk, source_table=source_table, target_table=target_table
-        ) == "many_to_one"
+        assert (
+            _infer_fk_cardinality(fk=fk, source_table=source_table, target_table=target_table)
+            == "many_to_one"
+        )
 
     def test_fk_with_both_pks_unique_is_one_to_one(self) -> None:
         # User profile pattern: user_profiles.user_id is BOTH the PK
@@ -762,9 +763,10 @@ class TestInferFkCardinality:
             target_table="users",
             target_columns=("id",),
         )
-        assert _infer_fk_cardinality(
-            fk=fk, source_table=source_table, target_table=target_table
-        ) == "one_to_one"
+        assert (
+            _infer_fk_cardinality(fk=fk, source_table=source_table, target_table=target_table)
+            == "one_to_one"
+        )
 
     def test_no_target_table_returns_none(self) -> None:
         # Defensive: without the target table we can't know its PK.
@@ -777,9 +779,7 @@ class TestInferFkCardinality:
             target_table="users",
             target_columns=("id",),
         )
-        assert _infer_fk_cardinality(
-            fk=fk, source_table=None, target_table=None
-        ) is None
+        assert _infer_fk_cardinality(fk=fk, source_table=None, target_table=None) is None
 
     def test_fk_target_not_pk_returns_none(self) -> None:
         # When target columns don't match the target table's PK,
@@ -801,11 +801,8 @@ class TestInferFkCardinality:
             target_table="users",
             target_columns=("email",),  # NOT the PK
         )
-        assert _infer_fk_cardinality(
-            fk=fk, source_table=None, target_table=target_table
-        ) is None
+        assert _infer_fk_cardinality(fk=fk, source_table=None, target_table=target_table) is None
 
 
 # Re-imports for the test class above — these test cases use Column,
 # Table, ForeignKey from core/models.
-from schemabrain.core.models import Column, ForeignKey, Table  # noqa: E402

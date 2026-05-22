@@ -149,9 +149,7 @@ _SERVER_WEBSITE_URL = "https://github.com/Arun-kc/schemabrain"
 # repo so a deployed wheel produces a stable icon URL without
 # bundling the binary in the wheel — keeps the install size
 # unaffected and avoids version-pinning the icon to the wheel.
-_SERVER_ICON_BASE = (
-    "https://raw.githubusercontent.com/Arun-kc/schemabrain/main/docs/assets"
-)
+_SERVER_ICON_BASE = "https://raw.githubusercontent.com/Arun-kc/schemabrain/main/docs/assets"
 
 
 def _server_icons() -> list[Any]:
@@ -264,9 +262,7 @@ def _aggregate_signal(
     worst_item: object | None = None
     worst_rank = 99  # higher than any rank
     for item in items:  # type: ignore[union-attr]
-        rank = _CONFIDENCE_RANK[
-            derive_confidence(item.inference_method, item.validation_state)
-        ]
+        rank = _CONFIDENCE_RANK[derive_confidence(item.inference_method, item.validation_state)]
         if rank < worst_rank:
             worst_item = item
             worst_rank = rank
@@ -1169,9 +1165,7 @@ def build_server(
             status="success",
             data=detail,
             confidence=confidence,
-            provenance=_provenance_from_signal(
-                detail.inference_method, detail.validation_state
-            ),
+            provenance=_provenance_from_signal(detail.inference_method, detail.validation_state),
             follow_up_hints=["describe_table", "describe_column"],
         )
 
@@ -1303,9 +1297,7 @@ def build_server(
             status="success",
             data=info,
             confidence=derive_confidence(info.inference_method, info.validation_state),
-            provenance=_provenance_from_signal(
-                info.inference_method, info.validation_state
-            ),
+            provenance=_provenance_from_signal(info.inference_method, info.validation_state),
             follow_up_hints=["describe_entity"],
         )
 

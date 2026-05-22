@@ -399,9 +399,7 @@ class TestJunctionBridges:
             Entity(
                 name="product_categories",
                 description="",
-                binding=SingleTableBinding(
-                    qualified_table="public.product_categories"
-                ),
+                binding=SingleTableBinding(qualified_table="public.product_categories"),
                 identity="product_id",
                 origin="suggested",
                 inference_method="fk_constraint",
@@ -429,9 +427,7 @@ class TestJunctionBridges:
                 description="",
                 source_entity="product_categories",
                 target_entity="category",
-                on=(
-                    JoinColumnPair(source_column="category_id", target_column="id"),
-                ),
+                on=(JoinColumnPair(source_column="category_id", target_column="id"),),
                 origin="suggested",
                 cardinality="many_to_one",
                 inference_method="fk_constraint",
@@ -441,9 +437,7 @@ class TestJunctionBridges:
         )
         return store
 
-    def test_bridge_surfaces_alongside_direct_joins(
-        self, tmp_path: Path
-    ) -> None:
+    def test_bridge_surfaces_alongside_direct_joins(self, tmp_path: Path) -> None:
         with self._seed_junction(tmp_path) as store:
             result = list_joins_impl(store=store, source_connection_id="sid")
         names = [j.name for j in result]

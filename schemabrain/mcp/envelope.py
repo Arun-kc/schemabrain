@@ -161,6 +161,8 @@ def derive_provenance_source(inference_method: InferenceMethod) -> ProvenanceSou
     if inference_method == "observed_in_query_log":
         return "inferred"
     return "schema"
+
+
 # v1.0 shipped 7 kinds. v1.1 adds 3 for the refuse-before-execute
 # taxonomy. Additions are minor-version bumps.
 ErrorKind = Literal[

@@ -651,9 +651,7 @@ class TestEnvelopeMapping:
         assert structured["status"] == "error"
         assert structured["error"]["kind"] == "invalid_time_grain"
 
-    def test_ambiguous_time_dimension_maps_to_error(
-        self, tmp_path: Path
-    ) -> None:
+    def test_ambiguous_time_dimension_maps_to_error(self, tmp_path: Path) -> None:
         """Charter v1.2: when a non-temporal metric has 2+ reachable
         timestamp columns via canonical-join chains, the resolver
         raises `AmbiguousTimeDimensionError` and the envelope maps to

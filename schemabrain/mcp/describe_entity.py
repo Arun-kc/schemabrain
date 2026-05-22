@@ -111,9 +111,7 @@ def describe_entity_impl(
         if is_redacted:
             redacted_names.append(col.name)
         description = (
-            "" if is_redacted else (
-                descriptions[col.name].text if col.name in descriptions else ""
-            )
+            "" if is_redacted else (descriptions[col.name].text if col.name in descriptions else "")
         )
         columns.append(
             EntityColumn(

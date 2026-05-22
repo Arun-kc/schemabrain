@@ -86,15 +86,20 @@ def flip_cardinality(c: Cardinality | None) -> Cardinality | None:
         "many_to_many": "many_to_many",
     }[c]
 
+
 # v14 / charter v1.2: 2D trust signal mirrors `core/entity.py`. For
 # canonical joins specifically the `fk_constraint` vs `llm_suggested`
 # distinction is load-bearing — an FK-derived join is DB-validated;
 # an LLM-guessed join is not.
 from schemabrain.core.entity import (  # noqa: E402
-    InferenceMethod as InferenceMethod,
-    ValidationState as ValidationState,
     _VALID_INFERENCE_METHODS,
     _VALID_VALIDATION_STATES,
+)
+from schemabrain.core.entity import (  # noqa: E402
+    InferenceMethod as InferenceMethod,
+)
+from schemabrain.core.entity import (  # noqa: E402
+    ValidationState as ValidationState,
 )
 
 # Postgres unquoted identifier shape — same alphabet as

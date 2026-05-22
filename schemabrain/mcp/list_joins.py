@@ -59,9 +59,7 @@ def list_joins_impl(
         )
         for j in joins
     ]
-    bridges = synthesize_bridges(
-        store=store, source_connection_id=source_connection_id
-    )
+    bridges = synthesize_bridges(store=store, source_connection_id=source_connection_id)
     for b in bridges:
         summaries.append(
             JoinSummary(

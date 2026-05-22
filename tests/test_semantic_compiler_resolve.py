@@ -550,9 +550,7 @@ class TestReverseTraversalCardinalityFlip:
     that comparison.
     """
 
-    def test_same_name_fk_reverse_traversal_flips_cardinality(
-        self, tmp_path: Path
-    ) -> None:
+    def test_same_name_fk_reverse_traversal_flips_cardinality(self, tmp_path: Path) -> None:
         """A metric anchored on `customer` grouped by `rental.rental_date`
         traverses `customer_orders` in reverse (rental's FK points at
         customer, so chain direction is customer → rental). Both join

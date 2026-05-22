@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from schemabrain.core.entity import Entity
-from schemabrain.core.join import Cardinality, CanonicalJoin, JoinColumnPair, JoinOrigin
+from schemabrain.core.join import CanonicalJoin, Cardinality, JoinColumnPair, JoinOrigin
 from schemabrain.core.models import ForeignKey, Table
 from schemabrain.core.store_protocol import Store
 from schemabrain.joins.mining import (

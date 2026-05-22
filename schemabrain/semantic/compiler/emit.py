@@ -87,8 +87,7 @@ def emit_sql(plan: MetricPlan) -> tuple[str, dict[str, Any]]:
     # resolver bug into a crash instead of a silently-wrong SQL
     # emission.
     assert plan.time_bucket is None or (
-        plan.metric.time_dimension is not None
-        or plan.inherited_time_dimension is not None
+        plan.metric.time_dimension is not None or plan.inherited_time_dimension is not None
     ), (
         "compiler invariant: time_bucket requires either "
         "metric.time_dimension or plan.inherited_time_dimension"
@@ -126,9 +125,7 @@ def emit_sql(plan: MetricPlan) -> tuple[str, dict[str, Any]]:
         # via plan.joins. The alias for entity X is `_alias_for(X)` —
         # entity names are identifier-shaped so they double as aliases.
         if plan.inherited_time_dimension is not None:
-            time_entity, time_column = plan.inherited_time_dimension.split(
-                ".", 1
-            )
+            time_entity, time_column = plan.inherited_time_dimension.split(".", 1)
             quoted_time_alias = f'"{time_entity}"'
         elif plan.metric.time_dimension is not None:
             _, time_column = plan.metric.time_dimension.split(".", 1)

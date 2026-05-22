@@ -127,7 +127,20 @@ class TestSchemaVersionBumpToV14:
                 "measure_column, measure_expression, time_dimension, "
                 "time_grains, origin, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                ("src", "order_count", "", "order", "count", "id", None, None, "", "suggested", 0, 0),
+                (
+                    "src",
+                    "order_count",
+                    "",
+                    "order",
+                    "count",
+                    "id",
+                    None,
+                    None,
+                    "",
+                    "suggested",
+                    0,
+                    0,
+                ),
             )
             conn.execute(
                 "INSERT INTO canonical_joins ("
@@ -158,12 +171,12 @@ class TestSchemaVersionBumpToV14:
                 ).fetchone()["value"]
                 == "14"
             )
+
             # `suggested` rows land on (llm_suggested, applied);
             # `manual` rows land on (manually_authored, confirmed).
             def _signal(table: str, name: str) -> tuple[str, str]:
                 row = conn.execute(
-                    f"SELECT inference_method, validation_state FROM {table} "
-                    f"WHERE name = ?",
+                    f"SELECT inference_method, validation_state FROM {table} WHERE name = ?",
                     (name,),
                 ).fetchone()
                 return (row["inference_method"], row["validation_state"])

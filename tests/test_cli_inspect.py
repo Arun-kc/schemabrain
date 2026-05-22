@@ -368,9 +368,7 @@ class TestInspectDrill:
         # `total_revenue` exists only as a metric (no entity / join
         # of the same name). The drill path should fall through
         # entity → metric and render the metric detail surface.
-        exit_code = main(
-            ["inspect", "total_revenue", "--store-path", str(fully_populated_store)]
-        )
+        exit_code = main(["inspect", "total_revenue", "--store-path", str(fully_populated_store)])
         assert exit_code == 0
         err = capsys.readouterr().err
         assert "metric:total_revenue" in err
@@ -384,9 +382,7 @@ class TestInspectDrill:
         fully_populated_store: Path,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        exit_code = main(
-            ["inspect", "customer_orders", "--store-path", str(fully_populated_store)]
-        )
+        exit_code = main(["inspect", "customer_orders", "--store-path", str(fully_populated_store)])
         assert exit_code == 0
         err = capsys.readouterr().err
         assert "join:customer_orders" in err

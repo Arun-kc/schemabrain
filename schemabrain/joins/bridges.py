@@ -59,9 +59,7 @@ class BridgeJoin:
     validation_state: str
 
 
-def find_junction_entities(
-    *, store: Store, source_connection_id: str
-) -> list[Entity]:
+def find_junction_entities(*, store: Store, source_connection_id: str) -> list[Entity]:
     """Return the entities whose bound table is a junction (M:N pivot).
 
     Order matches `store.list_entities` (alphabetical by name). An empty
@@ -103,9 +101,7 @@ def synthesize_bridges(
     the two legs (the closest-to-llm_suggested). Same for
     validation_state (closest-to-draft wins).
     """
-    junctions = find_junction_entities(
-        store=store, source_connection_id=source_connection_id
-    )
+    junctions = find_junction_entities(store=store, source_connection_id=source_connection_id)
     if not junctions:
         return []
 
@@ -167,13 +163,8 @@ def synthesize_bridges_for_entity(
     store. Computes the full bridge list then filters; the cost is
     bounded by the number of junctions, which is small in practice.
     """
-    all_bridges = synthesize_bridges(
-        store=store, source_connection_id=source_connection_id
-    )
-    return [
-        b for b in all_bridges
-        if entity_name in (b.source_entity, b.target_entity)
-    ]
+    all_bridges = synthesize_bridges(store=store, source_connection_id=source_connection_id)
+    return [b for b in all_bridges if entity_name in (b.source_entity, b.target_entity)]
 
 
 def composed_on_pairs(
