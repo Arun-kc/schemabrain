@@ -503,7 +503,17 @@ class TestTimeGrainRefusal:
         assert exc_info.value.requested_grain == "quarter"
         assert exc_info.value.allowed_grains == ("day", "week", "month")
 
-    def test_time_grain_on_non_temporal_metric(self, tmp_path: Path) -> None:
+    def test_time_grain_on_non_temporal_metric_with_no_reachable_timestamp_degrades(
+        self, tmp_path: Path
+    ) -> None:
+        """Charter v1.2 inheritance: a non-temporal metric whose graph
+        has zero reachable timestamp columns no longer hard-errors —
+        the plan ships unbucketed with `time_dimension_resolution`
+        set to `"unavailable"`. The MCP layer surfaces this as the
+        `time_dimension_unavailable` degradation reason. The
+        seed-basic graph reaches `customer` only (no timestamp
+        columns on `users`), so the inheritance BFS finds 0 candidates.
+        """
         with SQLiteStore(tmp_path / "store.db") as store:
             _seed_basic(store)
             store.write_metric(
@@ -517,14 +527,15 @@ class TestTimeGrainRefusal:
                 ),
                 source_connection_id=SOURCE,
             )
-            with pytest.raises(InvalidTimeGrainError) as exc_info:
-                resolve_metric_plan(
-                    store=store,
-                    source_connection_id=SOURCE,
-                    metric_name="open_count",
-                    time_grain="day",
-                )
-        assert exc_info.value.allowed_grains == ()
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="open_count",
+                time_grain="day",
+            )
+        assert plan.time_dimension_resolution == "unavailable"
+        assert plan.time_bucket is None
+        assert plan.inherited_time_dimension is None
 
 
 class TestMalformedInputs:

@@ -387,13 +387,29 @@ def _render_related(
     for rel in related:
         cardinality = rel.cardinality or "?"
         edge_cell = f"[dim]{rel.direction}[/] · {cardinality}"
-        # Format `on` pairs as `this.col = other.col` from the
-        # drilled entity's perspective; engine already normalised the
-        # pair order so the first element is the local column.
-        on_pretty = ", ".join(
-            f"{this_entity}.{local} = {rel.name}.{remote}" for local, remote in rel.on
-        )
-        on_cell = f"{on_pretty}\n[dim]via `{rel.join_name}`[/]"
+        if rel.via_junction is not None:
+            # Bridges read M:N from the drilled side; the on-pairs
+            # describe the FIRST leg only (drilled → junction), so the
+            # column-equality string is rendered against the junction
+            # rather than the far end. The second-line provides the
+            # bridge name + junction-mediated nature explicitly so the
+            # operator never confuses a bridge with a direct join.
+            on_pretty = ", ".join(
+                f"{this_entity}.{local} = {rel.via_junction}.{remote}"
+                for local, remote in rel.on
+            )
+            on_cell = (
+                f"{on_pretty}\n"
+                f"[dim]bridge `{rel.join_name}` via {rel.via_junction}[/]"
+            )
+        else:
+            # Format `on` pairs as `this.col = other.col` from the
+            # drilled entity's perspective; engine already normalised
+            # the pair order so the first element is the local column.
+            on_pretty = ", ".join(
+                f"{this_entity}.{local} = {rel.name}.{remote}" for local, remote in rel.on
+            )
+            on_cell = f"{on_pretty}\n[dim]via `{rel.join_name}`[/]"
         table.add_row(rel.name, edge_cell, on_cell)
     console.print(table)
 

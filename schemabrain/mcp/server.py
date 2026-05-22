@@ -116,6 +116,7 @@ from schemabrain.semantic.compiler import (
     AmbiguousPathError as CompilerAmbiguousPathError,
 )
 from schemabrain.semantic.compiler import (
+    AmbiguousTimeDimensionError,
     InvalidTimeGrainError,
     MalformedColumnError,
     PiiBlockedError,
@@ -1132,6 +1133,7 @@ def build_server(
                 store=store,
                 source_connection_id=source_connection_id,
                 name=name,
+                pii_block=pii_block,
             )
         except ValueError as exc:
             return _malformed_name_response(
@@ -1149,10 +1151,17 @@ def build_server(
         # Charter v1.2: pull the 2D trust signal from the single
         # entity row so `confidence` reflects whether this specific
         # entity is hand-confirmed (HIGH) or LLM-suggested (MEDIUM).
+        # When columns were redacted under `--pii-block`, cap
+        # confidence at MEDIUM (the agent saw a partial view of the
+        # entity). The data-layer `redacted_columns` field carries
+        # the precise list.
+        confidence = derive_confidence(detail.inference_method, detail.validation_state)
+        if detail.redacted_columns:
+            confidence = _min_confidence(confidence, "MEDIUM")
         return ToolResponse[EntityDetail](
             status="success",
             data=detail,
-            confidence=derive_confidence(detail.inference_method, detail.validation_state),
+            confidence=confidence,
             provenance=_provenance_from_signal(
                 detail.inference_method, detail.validation_state
             ),
@@ -1619,6 +1628,20 @@ def build_server(
                     recovery=Recovery(suggested_tool="get_metric"),
                 ),
             )
+        except AmbiguousTimeDimensionError as exc:
+            # Charter v1.2: 2+ candidate timestamp columns were reachable
+            # from the metric's anchor via canonical-join chains and the
+            # caller didn't disambiguate. Recovery is for the agent to
+            # re-call with an explicit time_dimension (or remove
+            # time_grain to bucket-less aggregate).
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="ambiguous_time_dimension",
+                    message=str(exc),
+                    recovery=Recovery(suggested_tool="get_metric"),
+                ),
+            )
         except MalformedMetricRowError as exc:
             # The row passed the store's CHECK constraints but its
             # `measure_expression` (or another field) fails the
@@ -1647,6 +1670,15 @@ def build_server(
         degradation: DegradationReason | None = None
         if result.fan_out_join_names:
             degradation = "fan_out_join"
+        elif result.time_dimension_resolution == "unavailable":
+            # Caller passed time_grain but the resolver couldn't find a
+            # reachable timestamp column via canonical-join chains. The
+            # plan ran unbucketed; surface the degradation so the agent
+            # can decide whether to widen the metric definition or drop
+            # the grain. Precedence below missing_order_by_with_limit
+            # would mask the time-dim signal when both apply, so place
+            # it before that branch.
+            degradation = "time_dimension_unavailable"
         elif group_by and not order_by:
             # `limit` is always set (defaults to 1000, hard cap 10_000)
             # — so any non-empty group_by without order_by produces a

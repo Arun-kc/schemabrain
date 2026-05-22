@@ -28,6 +28,7 @@ from schemabrain.core.entity import Entity, InferenceMethod, ValidationState
 from schemabrain.core.join import CanonicalJoin, Cardinality
 from schemabrain.core.metric import AggFunction, Metric
 from schemabrain.core.store_protocol import Store
+from schemabrain.joins.bridges import synthesize_bridges_for_entity
 from schemabrain.pii.categories import Sensitivity
 
 # Closed direction values — `outgoing` from the drilled entity's
@@ -68,6 +69,13 @@ class RelatedEntity:
     `cardinality` mirrors `CanonicalJoin.cardinality` (4-value
     Literal, or `None` for back-compat with joins authored before
     the column existed).
+
+    Bridges: when `via_junction` is set, this edge represents a logical
+    M:N bridge through a junction entity. `join_name` carries the
+    synthesised bridge name (`<a>_<b>_via_<junction>`) and `on` lists
+    the column pairs of the FIRST leg (drilled-entity → junction); the
+    renderer surfaces the bridge label so the operator sees that the
+    relationship is mediated rather than direct.
     """
 
     name: str
@@ -75,6 +83,7 @@ class RelatedEntity:
     join_name: str
     on: tuple[tuple[str, str], ...]
     cardinality: Cardinality | None
+    via_junction: str | None = None
 
     def __post_init__(self) -> None:
         if self.direction not in _VALID_DIRECTIONS:
@@ -401,6 +410,12 @@ def _resolve_related_entities(
     that touch `entity_name`. Direction + on-pair orientation are
     normalised to the drilled entity's perspective so renderers don't
     have to flip anything.
+
+    Junction bridges: in addition to direct canonical joins, synthesise
+    M:N bridge edges through any junction entity (`products <->
+    categories via product_categories`). Bridges always render with
+    `direction="outgoing"` from the drilled entity — the operator's
+    perspective is the natural left side of the bridge.
     """
     joins = store.list_canonical_joins(source_connection_id=source_connection_id)
     related: list[RelatedEntity] = []
@@ -428,6 +443,51 @@ def _resolve_related_entities(
                     cardinality=join.cardinality,
                 )
             )
+
+    bridges = synthesize_bridges_for_entity(
+        store=store,
+        source_connection_id=source_connection_id,
+        entity_name=entity_name,
+    )
+    # Build a lookup of canonical joins for orienting the bridge's
+    # first leg from the drilled entity's perspective.
+    joins_by_name = {j.name: j for j in joins}
+    for bridge in bridges:
+        # The drilled entity is one of the two ends. Identify the
+        # opposite end + the leg that connects drilled-entity to
+        # junction so we can show that leg's on-pairs.
+        if entity_name == bridge.source_entity:
+            other_end = bridge.target_entity
+            # First leg in (lo, hi) order is the source-end leg.
+            first_leg_name = bridge.via_joins[0]
+        else:
+            other_end = bridge.source_entity
+            first_leg_name = bridge.via_joins[1]
+        first_leg = joins_by_name.get(first_leg_name)
+        if first_leg is None:  # pragma: no cover — bridge derives from these joins
+            continue
+        # Orient the first leg so the pair reads
+        # `(local_column, junction_column)` from the drilled entity's
+        # perspective.
+        if first_leg.source_entity == entity_name:
+            on = tuple((p.source_column, p.target_column) for p in first_leg.on)
+        else:
+            on = tuple((p.target_column, p.source_column) for p in first_leg.on)
+        related.append(
+            RelatedEntity(
+                name=other_end,
+                direction="outgoing",
+                join_name=bridge.name,
+                on=on,
+                # Bridge cardinality is many_to_many by definition
+                # (that's what an M:N junction encodes). Surfacing
+                # this explicitly lets the fan-out detector reason
+                # about bridge edges the same way it reasons about
+                # direct ones.
+                cardinality="many_to_many",
+                via_junction=bridge.via_junction,
+            )
+        )
     # Stable alphabetical ordering by related-entity name so the
     # render is deterministic across runs.
     related.sort(key=lambda r: (r.name, r.join_name))

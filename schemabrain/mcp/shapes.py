@@ -373,12 +373,25 @@ class EntitySummary(BaseModel):
 class EntityColumn(BaseModel):
     """One column on an entity's bound table.
 
-    Mirrors the per-column shape from `describe_table` plus a
-    `pii_sensitivity` field that future PII-redaction work will
-    populate. Today every column ships with the default `"public"` —
-    the field is inert at this stage but the wire shape is locked
-    so the redaction layer can fill it without retrofitting the
-    envelope.
+    Mirrors the per-column shape from `describe_table` plus the
+    column-granular PII signal:
+
+      - `pii_sensitivity` carries the 4-value closed Literal classified
+        at index time by the heuristic PII classifier (`public`,
+        `internal`, `confidential`, `pii`).
+      - `pii_categories` lists the specific PII category labels
+        (`contact`, `financial`, `health`, etc.) — sorted tuple for
+        deterministic serialisation.
+      - `redacted` is True when this column's categories intersect the
+        server's `--pii-block` policy. When True, `description` is
+        cleared so an agent cannot read the LLM-enriched semantic
+        description for a column it is policy-forbidden to access.
+
+    Charter v1.2 column-granular firewall: refusal moves from "whole
+    entity blocked" to "specific columns redacted". An agent asking
+    about the `customers` entity with `--pii-block contact` set sees
+    the entity and the non-PII columns; the `email`/`phone` columns
+    ship with `redacted=True` and an empty description.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -389,13 +402,27 @@ class EntityColumn(BaseModel):
     description: str = Field(
         default="",
         description="LLM-generated semantic description, or empty string "
-        "if the column was indexed without enrichment.",
+        "if the column was indexed without enrichment OR if the column "
+        "was redacted under the server's `--pii-block` policy.",
     )
     pii_sensitivity: Sensitivity = Field(
         default="public",
         description="PII classification carried through to the agent. "
-        "Currently hardcoded to 'public' for every column; a future "
-        "release will populate from column-level classification.",
+        "Populated from the heuristic PII classifier's `column_pii_tags` "
+        "row; defaults to `public` when no classification was stored.",
+    )
+    pii_categories: tuple[str, ...] = Field(
+        default=(),
+        description="Sorted tuple of PII category labels this column "
+        "carries. Empty when the column has no PII classification.",
+    )
+    redacted: bool = Field(
+        default=False,
+        description="True when at least one of this column's "
+        "`pii_categories` intersects the server's `--pii-block` set. "
+        "When True, `description` is cleared so an agent cannot read "
+        "the LLM-enriched semantic description for a policy-blocked "
+        "column.",
     )
 
 
@@ -412,6 +439,14 @@ class EntityDetail(BaseModel):
     mirror `EntitySummary` so a single-entity drill carries the
     same 2D trust signal at the data layer as well as the
     envelope-level `confidence`.
+
+    Charter v1.2 column-granular firewall: `redacted_columns` is the
+    sorted tuple of column names whose `pii_categories` intersect the
+    server's `--pii-block` set. Each such column's
+    `EntityColumn.redacted` field is also True and its description
+    is cleared. An agent reading `redacted_columns` knows which
+    columns are policy-blocked at a glance without scanning every
+    column entry.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -425,6 +460,7 @@ class EntityDetail(BaseModel):
     token_estimate: int
     inference_method: InferenceMethod = "manually_authored"
     validation_state: ValidationState = "applied"
+    redacted_columns: tuple[str, ...] = ()
 
 
 # ----- canonical-join shapes ------------------------------------------------
@@ -511,6 +547,13 @@ class JoinSummary(BaseModel):
     `fk_constraint` vs `llm_suggested` vs `manually_authored`
     distinction. An agent listing joins gets a clear signal of
     which joins are DB-validated vs LLM-guessed.
+
+    Junction bridges: when the join is a synthesised bridge through a
+    junction (M:N pivot table), `via_junction` names the middle entity
+    and `via_joins` carries the two underlying canonical-join names the
+    agent can `resolve_join` against for the actual SQL skeleton. Both
+    fields default to `None`/empty for direct canonical joins; an agent
+    that ignores them still gets the entity pair and provenance.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -522,6 +565,8 @@ class JoinSummary(BaseModel):
     origin: JoinOrigin
     inference_method: InferenceMethod = "manually_authored"
     validation_state: ValidationState = "applied"
+    via_junction: str | None = None
+    via_joins: tuple[str, ...] = ()
 
 
 class CanonicalJoinInfo(BaseModel):
@@ -713,3 +758,15 @@ class MetricResult(BaseModel):
     metric_validation_state: ValidationState = "applied"
     aggregate_inference_method: InferenceMethod = "manually_authored"
     aggregate_validation_state: ValidationState = "applied"
+    # Charter v1.2: time-dimension inheritance outcome. `local` means
+    # the metric author declared `time_dimension`; `inherited` means the
+    # resolver picked a reachable timestamp column via canonical-join
+    # chains; `unavailable` means the caller asked for a grain but no
+    # candidate was reachable, so the plan ran unbucketed. When
+    # `inherited`, `inherited_time_dimension` carries `<entity>.<column>`
+    # and `time_dimension_inherited_via` lists the join chain traversed.
+    time_dimension_resolution: Literal["local", "inherited", "unavailable"] = (
+        "local"
+    )
+    inherited_time_dimension: str | None = None
+    time_dimension_inherited_via: tuple[str, ...] = ()

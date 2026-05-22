@@ -29,6 +29,7 @@ from schemabrain.core.store_protocol import Store
 from schemabrain.semantic.compiler.plan import (
     AmbiguousJoinError,
     AmbiguousPathError,
+    AmbiguousTimeDimensionError,
     InvalidTimeGrainError,
     MalformedColumnError,
     MetricPlan,
@@ -48,6 +49,7 @@ from schemabrain.semantic.compiler.plan import (
     UnknownViaJoinError,
     UnreachableEntityError,
 )
+from collections import deque
 
 # Closed grammar of column-validation surfaces. Annotating
 # `_validate_column_on_table(kind=...)` and `_resolve(kind=...)` as
@@ -138,7 +140,14 @@ def resolve_metric_plan(
             f"run `schemabrain metrics list` to see available metrics."
         )
 
-    _check_time_grain(metric, time_grain)
+    # When the metric DECLARES a time_dimension, validate the requested
+    # grain against the metric's allowed grains as before. When the
+    # metric has no time_dimension, defer the validation to the
+    # inheritance step below — the inherited dimension supports the
+    # full grain set so a v1.2 caller can bucket against a reachable
+    # timestamp column without the metric author having to pre-declare.
+    if metric.time_dimension is not None:
+        _check_time_grain(metric, time_grain)
     anchor_alias = _alias_for(metric.entity)
     anchor_table = _lookup_anchor_table(store, metric.entity, source_connection_id)
 
@@ -466,16 +475,64 @@ def resolve_metric_plan(
                 )
                 break
 
+    # Time-dimension inheritance: when the metric has no time_dimension
+    # of its own AND the caller passed `time_grain`, BFS the canonical-
+    # join graph for reachable entities with timestamp columns (over
+    # non-fan-out edges only). 1 candidate → inherit; the inherited
+    # dimension supports the full grain set so v1.2 callers can bucket
+    # without the metric author having to pre-declare. 2+ → raise
+    # `AmbiguousTimeDimensionError` so the agent picks one explicitly.
+    # 0 → degrade gracefully: ship the plan unbucketed with resolution
+    # `unavailable`; the MCP layer surfaces this as the
+    # `time_dimension_unavailable` degradation reason so the agent gets
+    # a useful answer plus context rather than a hard error.
+    time_dimension_resolution: Literal["local", "inherited", "unavailable"] = "local"
+    inherited_time_dimension: str | None = None
+    inherited_via: tuple[str, ...] = ()
+    effective_time_bucket: TimeGrain | None = time_grain
+    if metric.time_dimension is None and time_grain is not None:
+        g = _ensure_graph()
+        candidates = _find_inherited_time_dimension(
+            graph=g,
+            anchor=metric.entity,
+            store=store,
+            source_connection_id=source_connection_id,
+        )
+        if len(candidates) > 1:
+            raise AmbiguousTimeDimensionError(
+                anchor_entity=metric.entity,
+                candidates=tuple(candidates),
+            )
+        if len(candidates) == 1:
+            inherited_time_dimension, inherited_via = candidates[0]
+            time_dimension_resolution = "inherited"
+            # Force the JOIN to the inherited entity into the plan so
+            # the emitter can reference it by alias. `_resolve` does
+            # column-existence validation + populates `resolved_joins`
+            # as a side effect — we discard the returned ResolvedColumn
+            # because we only need the join materialised.
+            _resolve(inherited_time_dimension, kind="group_by")
+            # `_resolve` may have grown `resolved_joins`; rebuild the
+            # ordered tuple so the plan ships every required join in
+            # topological order.
+            ordered_joins = tuple(resolved_joins.values())
+        else:
+            time_dimension_resolution = "unavailable"
+            effective_time_bucket = None
+
     return MetricPlan(
         metric=metric,
         anchor_table=anchor_table,
         anchor_alias=anchor_alias,
         group_by_columns=group_by_columns_ordered,
-        time_bucket=time_grain,
+        time_bucket=effective_time_bucket,
         filter_predicates=tuple(filter_predicates),
         limit=limit,
         joins=ordered_joins,
         order_by_clauses=tuple(order_by_resolved),
+        time_dimension_resolution=time_dimension_resolution,
+        inherited_time_dimension=inherited_time_dimension,
+        time_dimension_inherited_via=inherited_via,
     )
 
 
@@ -898,3 +955,100 @@ def _lookup_optional_table(store: Store, entity_name: str, source_connection_id:
     if entity is None:
         return None
     return entity.qualified_table
+
+
+# ----- time-dimension inheritance --------------------------------------------
+#
+# Heuristic detection of columns the agent is likely to mean by "time".
+# Substring match against the lowercased column data type so dialect
+# variants (`timestamp`, `timestamp with time zone`, `timestamptz`,
+# `datetime`, `date`) all qualify. False positives are bounded: a
+# column typed `text` containing ISO dates would not be picked, which
+# is the correct conservative behaviour. False negatives (a custom
+# domain type that wraps a timestamp) require the metric author to
+# declare `time_dimension` explicitly — the agent gets a helpful
+# `AmbiguousTimeDimensionError` candidate list to copy from when the
+# heuristic fires.
+_TIMESTAMP_DATA_TYPE_KEYWORDS: tuple[str, ...] = (
+    "timestamp",
+    "datetime",
+    "date",
+)
+
+
+def _is_timestamp_type(data_type: str) -> bool:
+    """True when `data_type` names a temporal column type by substring."""
+    lower = data_type.lower()
+    return any(kw in lower for kw in _TIMESTAMP_DATA_TYPE_KEYWORDS)
+
+
+def _find_inherited_time_dimension(
+    *,
+    graph: _JoinGraph,
+    anchor: str,
+    store: Store,
+    source_connection_id: str,
+) -> list[tuple[str, tuple[str, ...]]]:
+    """Return candidate (`<entity>.<column>`, join-chain) pairs the
+    resolver could use as an inherited time_dimension.
+
+    Walks the canonical-join graph from `anchor` over edges whose
+    effective cardinality in the chain direction is `many_to_one` or
+    `one_to_one` — these are NON-fan-out joins, so bucketing on the
+    target's timestamp won't inflate aggregates. Edges with unknown
+    cardinality are skipped (defensive: prefer to ask the agent than
+    silently over-count). The anchor's own table is excluded — when
+    the anchor has a timestamp column, the metric author should have
+    declared `time_dimension` directly.
+
+    The returned ordering is BFS traversal order: shortest chains first,
+    alphabetical tiebreak by canonical-join name (inherited from the
+    pre-sorted adjacency list in `_build_join_graph`).
+    """
+    candidates: list[tuple[str, tuple[str, ...]]] = []
+    # `visited` maps entity_name → shortest path of join names from anchor.
+    visited: dict[str, tuple[str, ...]] = {anchor: ()}
+    frontier: deque[str] = deque([anchor])
+    while frontier:
+        current = frontier.popleft()
+        current_path = visited[current]
+        for neighbor, join, _on_pairs in graph.get(current, []):
+            if neighbor in visited:
+                continue
+            # Direction-aware cardinality: when the canonical join is
+            # traversed from `current` toward `neighbor` and stored
+            # source == current, the stored cardinality applies as-is.
+            # Otherwise we're walking it in reverse and need to flip.
+            if join.source_entity == current:
+                effective = join.cardinality
+            else:
+                effective = flip_cardinality(join.cardinality)
+            # Only follow paths that don't fan out — many_to_one and
+            # one_to_one preserve anchor row count; many_to_many and
+            # one_to_many (in chain direction) would multiply rows
+            # before bucketing, producing inflated sums.
+            if effective not in ("many_to_one", "one_to_one"):
+                continue
+            new_path = current_path + (join.name,)
+            visited[neighbor] = new_path
+            frontier.append(neighbor)
+            # Inspect the reached entity's bound table for timestamp
+            # columns. The entity row is guaranteed to exist because
+            # the canonical join's FK to `entities` covers both ends.
+            entity = store.get_entity(
+                neighbor, source_connection_id=source_connection_id
+            )
+            if entity is None:  # pragma: no cover — FK guarantee
+                continue
+            schema_name, table_name = entity.qualified_table.split(".", 1)
+            table = store.get_table(
+                schema_name=schema_name,
+                name=table_name,
+                source_connection_id=source_connection_id,
+            )
+            if table is None:  # pragma: no cover — store corruption guard
+                continue
+            for col in table.columns:
+                if _is_timestamp_type(col.data_type):
+                    candidates.append((f"{neighbor}.{col.name}", new_path))
+    return candidates

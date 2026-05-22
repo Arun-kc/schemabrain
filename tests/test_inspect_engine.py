@@ -32,7 +32,7 @@ import pytest
 from schemabrain.core.entity import Entity, SingleTableBinding
 from schemabrain.core.join import CanonicalJoin, JoinColumnPair
 from schemabrain.core.metric import Metric, MetricMeasure
-from schemabrain.core.models import Column, Table
+from schemabrain.core.models import Column, ForeignKey, Table
 from schemabrain.core.store import SQLiteStore
 from schemabrain.inspect.engine import (
     RelatedEntity,
@@ -584,6 +584,217 @@ class TestDataclassValidation:
                 on=(("id", "user_id"),),
                 cardinality="one_to_many",
             )
+
+
+class TestRelatedEntityBridges:
+    """Drilling into an entity that participates in an M:N junction
+    must surface the bridge edges alongside its direct canonical joins.
+    The bridge edge reports `via_junction` so the renderer can mark it
+    as a mediated relationship rather than a direct edge.
+    """
+
+    def _seed_with_junction(self, store: SQLiteStore) -> None:
+        # Products + categories + junction product_categories.
+        store.write_table(
+            Table(
+                schema_name="public",
+                name="products",
+                columns=(
+                    _make_column(
+                        "id",
+                        table_name="products",
+                        data_type="bigint",
+                        nullable=False,
+                        pk=True,
+                        pos=1,
+                    ),
+                ),
+            ),
+            source_connection_id=SOURCE_ID,
+        )
+        store.write_table(
+            Table(
+                schema_name="public",
+                name="categories",
+                columns=(
+                    _make_column(
+                        "id",
+                        table_name="categories",
+                        data_type="bigint",
+                        nullable=False,
+                        pk=True,
+                        pos=1,
+                    ),
+                ),
+            ),
+            source_connection_id=SOURCE_ID,
+        )
+        store.write_table(
+            Table(
+                schema_name="public",
+                name="product_categories",
+                columns=(
+                    _make_column(
+                        "product_id",
+                        table_name="product_categories",
+                        data_type="bigint",
+                        nullable=False,
+                        pk=True,
+                        pos=1,
+                    ),
+                    _make_column(
+                        "category_id",
+                        table_name="product_categories",
+                        data_type="bigint",
+                        nullable=False,
+                        pk=True,
+                        pos=2,
+                    ),
+                ),
+                foreign_keys=(
+                    ForeignKey(
+                        name="pc_product_fkey",
+                        source_columns=("product_id",),
+                        target_schema="public",
+                        target_table="products",
+                        target_columns=("id",),
+                    ),
+                    ForeignKey(
+                        name="pc_category_fkey",
+                        source_columns=("category_id",),
+                        target_schema="public",
+                        target_table="categories",
+                        target_columns=("id",),
+                    ),
+                ),
+            ),
+            source_connection_id=SOURCE_ID,
+        )
+        store.write_entity(
+            Entity(
+                name="product",
+                description="",
+                binding=SingleTableBinding(qualified_table="public.products"),
+                identity="id",
+            ),
+            source_connection_id=SOURCE_ID,
+        )
+        store.write_entity(
+            Entity(
+                name="category",
+                description="",
+                binding=SingleTableBinding(qualified_table="public.categories"),
+                identity="id",
+            ),
+            source_connection_id=SOURCE_ID,
+        )
+        store.write_entity(
+            Entity(
+                name="product_categories",
+                description="",
+                binding=SingleTableBinding(
+                    qualified_table="public.product_categories"
+                ),
+                identity="product_id",
+                origin="suggested",
+                inference_method="fk_constraint",
+                validation_state="applied",
+            ),
+            source_connection_id=SOURCE_ID,
+        )
+        store.write_canonical_join(
+            CanonicalJoin(
+                name="pc_product",
+                description="",
+                source_entity="product_categories",
+                target_entity="product",
+                on=(
+                    JoinColumnPair(source_column="product_id", target_column="id"),
+                ),
+                origin="suggested",
+                cardinality="many_to_one",
+                inference_method="fk_constraint",
+                validation_state="applied",
+            ),
+            source_connection_id=SOURCE_ID,
+        )
+        store.write_canonical_join(
+            CanonicalJoin(
+                name="pc_category",
+                description="",
+                source_entity="product_categories",
+                target_entity="category",
+                on=(
+                    JoinColumnPair(
+                        source_column="category_id", target_column="id"
+                    ),
+                ),
+                origin="suggested",
+                cardinality="many_to_one",
+                inference_method="fk_constraint",
+                validation_state="applied",
+            ),
+            source_connection_id=SOURCE_ID,
+        )
+
+    def test_drilling_product_surfaces_bridge_to_category(
+        self, store: SQLiteStore
+    ) -> None:
+        self._seed_with_junction(store)
+        detail = build_entity_detail(
+            store=store,
+            entity_name="product",
+            source_connection_id=SOURCE_ID,
+        )
+        assert detail is not None
+        bridge_edges = [
+            r for r in detail.related_entities if r.via_junction is not None
+        ]
+        assert len(bridge_edges) == 1
+        bridge = bridge_edges[0]
+        assert bridge.name == "category"
+        assert bridge.via_junction == "product_categories"
+        assert bridge.cardinality == "many_to_many"
+        # First leg from product's perspective: product.id =
+        # product_categories.product_id. Engine orients the pair so
+        # the local column comes first.
+        assert bridge.on == (("id", "product_id"),)
+
+    def test_drilling_category_surfaces_bridge_to_product(
+        self, store: SQLiteStore
+    ) -> None:
+        self._seed_with_junction(store)
+        detail = build_entity_detail(
+            store=store,
+            entity_name="category",
+            source_connection_id=SOURCE_ID,
+        )
+        assert detail is not None
+        bridge_edges = [
+            r for r in detail.related_entities if r.via_junction is not None
+        ]
+        assert len(bridge_edges) == 1
+        assert bridge_edges[0].name == "product"
+        assert bridge_edges[0].via_junction == "product_categories"
+
+    def test_drilling_junction_itself_only_shows_direct_legs(
+        self, store: SQLiteStore
+    ) -> None:
+        """The junction entity itself has only direct canonical-join
+        edges — no self-bridge, no fabricated relationship to itself.
+        """
+        self._seed_with_junction(store)
+        detail = build_entity_detail(
+            store=store,
+            entity_name="product_categories",
+            source_connection_id=SOURCE_ID,
+        )
+        assert detail is not None
+        # All two related-entity rows are direct legs (no bridges).
+        assert all(r.via_junction is None for r in detail.related_entities)
+        # The two legs: product_categories -> product, product_categories -> category.
+        targets = {r.name for r in detail.related_entities}
+        assert targets == {"product", "category"}
 
 
 class TestEntityDetailWithPiiTags:

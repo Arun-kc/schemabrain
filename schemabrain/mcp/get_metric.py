@@ -182,6 +182,9 @@ def get_metric_impl(
         metric_validation_state=metric_state,
         aggregate_inference_method=aggregate_method,
         aggregate_validation_state=aggregate_state,
+        time_dimension_resolution=plan.time_dimension_resolution,
+        inherited_time_dimension=plan.inherited_time_dimension,
+        time_dimension_inherited_via=plan.time_dimension_inherited_via,
     )
     return _with_token_estimate(partial)
 

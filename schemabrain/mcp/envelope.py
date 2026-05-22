@@ -192,6 +192,12 @@ ErrorKind = Literal[
     "unknown_measure_column",
     "invalid_time_grain",
     "grain_mismatch",
+    # Time-dimension inheritance surface (v1.2): when a metric has no
+    # `time_dimension` of its own but the caller passes `time_grain`,
+    # the resolver BFSes for a reachable timestamp column. 2+ candidates
+    # surfaces as `ambiguous_time_dimension`; 0 candidates degrades
+    # silently to unbucketed (see `time_dimension_unavailable` below).
+    "ambiguous_time_dimension",
     # MCP dispatch surface — used INTERNALLY by the strict-args
     # rejection path to record unknown-kwargs calls in the audit
     # table and event bus. The client sees a `FastMCPToolError`
@@ -221,6 +227,11 @@ DegradationReason = Literal[
     # pass `order_by=` to specify what "top N" means before relying on
     # the row order.
     "missing_order_by_with_limit",
+    # Caller passed `time_grain` but the metric has no `time_dimension`
+    # and no reachable timestamp column was found via canonical joins.
+    # The plan ships unbucketed; the agent can re-call without
+    # `time_grain` or after declaring a time_dimension on the metric.
+    "time_dimension_unavailable",
 ]
 
 # The subset of ErrorKinds that semantically support v1.1 Recovery

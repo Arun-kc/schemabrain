@@ -1,19 +1,19 @@
 """Tests for the `list_joins` MCP tool.
 
-Mirrors `test_mcp_list_entities.py` and `test_mcp_list_metrics.py`.
 Two layers:
 
   - `list_joins_impl` (pure function, store + source_connection_id
     in, `list[JoinSummary]` out) — empty, single, multi alphabetical,
-    source filter, direction preservation.
+    source filter, direction preservation, junction-bridge synthesis.
   - The wired tool on the FastMCP server — envelope round-trip,
     empty/success status mapping, follow-up hints to `resolve_join`
     (success) and `suggest_joins` (empty).
 
-Closes the parity gap surfaced alongside `list_metrics` in the
-2026-05-21 manual smoke: five canonical joins lived in the store,
-the agent had no way to enumerate them before deciding which pair
-to resolve.
+When canonical joins live in the store but the agent has no way to
+enumerate them, deep-joins-required questions hit a dead end. Junction
+bridges close the same gap for M:N relationships — `categories` is
+reachable from `products` via `product_categories`, but without bridge
+synthesis it looks orphaned to the agent.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import pytest
 
 from schemabrain.core.entity import Entity, SingleTableBinding
 from schemabrain.core.join import CanonicalJoin, JoinColumnPair
-from schemabrain.core.models import Column, Table
+from schemabrain.core.models import Column, ForeignKey, Table
 from schemabrain.core.store import SQLiteStore
 from schemabrain.mcp import build_server
 from schemabrain.mcp.envelope import ToolResponse
@@ -285,6 +285,199 @@ class TestEnvelopeSuccess:
         assert envelope.data[0]["source_entity"] == "order"
         assert envelope.data[0]["target_entity"] == "user"
         assert envelope.data[0]["name"] == "orders_user_id"
+
+
+class TestJunctionBridges:
+    """Junction-mediated M:N bridges appear in `list_joins` alongside
+    the stored canonical joins so the agent sees the full reachability
+    surface — not just direct edges.
+    """
+
+    def _seed_junction(self, tmp_path: Path) -> SQLiteStore:
+        store = SQLiteStore(tmp_path / "s.db")
+        # Products + categories + junction table.
+        store.write_table(
+            Table(
+                name="products",
+                schema_name="public",
+                columns=(
+                    Column(
+                        name="id",
+                        table_name="products",
+                        schema_name="public",
+                        data_type="bigint",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                ),
+            ),
+            source_connection_id="sid",
+        )
+        store.write_table(
+            Table(
+                name="categories",
+                schema_name="public",
+                columns=(
+                    Column(
+                        name="id",
+                        table_name="categories",
+                        schema_name="public",
+                        data_type="bigint",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                ),
+            ),
+            source_connection_id="sid",
+        )
+        store.write_table(
+            Table(
+                name="product_categories",
+                schema_name="public",
+                columns=(
+                    Column(
+                        name="product_id",
+                        table_name="product_categories",
+                        schema_name="public",
+                        data_type="bigint",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                    Column(
+                        name="category_id",
+                        table_name="product_categories",
+                        schema_name="public",
+                        data_type="bigint",
+                        nullable=False,
+                        ordinal_position=2,
+                        is_primary_key=True,
+                    ),
+                ),
+                foreign_keys=(
+                    ForeignKey(
+                        name="pc_product_fkey",
+                        source_columns=("product_id",),
+                        target_schema="public",
+                        target_table="products",
+                        target_columns=("id",),
+                    ),
+                    ForeignKey(
+                        name="pc_category_fkey",
+                        source_columns=("category_id",),
+                        target_schema="public",
+                        target_table="categories",
+                        target_columns=("id",),
+                    ),
+                ),
+            ),
+            source_connection_id="sid",
+        )
+        store.write_entity(
+            Entity(
+                name="product",
+                description="",
+                binding=SingleTableBinding(qualified_table="public.products"),
+                identity="id",
+                origin="manual",
+            ),
+            source_connection_id="sid",
+        )
+        store.write_entity(
+            Entity(
+                name="category",
+                description="",
+                binding=SingleTableBinding(qualified_table="public.categories"),
+                identity="id",
+                origin="manual",
+            ),
+            source_connection_id="sid",
+        )
+        store.write_entity(
+            Entity(
+                name="product_categories",
+                description="",
+                binding=SingleTableBinding(
+                    qualified_table="public.product_categories"
+                ),
+                identity="product_id",
+                origin="suggested",
+                inference_method="fk_constraint",
+                validation_state="applied",
+            ),
+            source_connection_id="sid",
+        )
+        store.write_canonical_join(
+            CanonicalJoin(
+                name="pc_product",
+                description="",
+                source_entity="product_categories",
+                target_entity="product",
+                on=(JoinColumnPair(source_column="product_id", target_column="id"),),
+                origin="suggested",
+                cardinality="many_to_one",
+                inference_method="fk_constraint",
+                validation_state="applied",
+            ),
+            source_connection_id="sid",
+        )
+        store.write_canonical_join(
+            CanonicalJoin(
+                name="pc_category",
+                description="",
+                source_entity="product_categories",
+                target_entity="category",
+                on=(
+                    JoinColumnPair(source_column="category_id", target_column="id"),
+                ),
+                origin="suggested",
+                cardinality="many_to_one",
+                inference_method="fk_constraint",
+                validation_state="applied",
+            ),
+            source_connection_id="sid",
+        )
+        return store
+
+    def test_bridge_surfaces_alongside_direct_joins(
+        self, tmp_path: Path
+    ) -> None:
+        with self._seed_junction(tmp_path) as store:
+            result = list_joins_impl(store=store, source_connection_id="sid")
+        names = [j.name for j in result]
+        # Two direct legs + one synthesised bridge.
+        assert "pc_category" in names
+        assert "pc_product" in names
+        assert "category_product_via_product_categories" in names
+
+    def test_bridge_summary_carries_via_fields(self, tmp_path: Path) -> None:
+        with self._seed_junction(tmp_path) as store:
+            result = list_joins_impl(store=store, source_connection_id="sid")
+        bridges = [j for j in result if j.via_junction is not None]
+        assert len(bridges) == 1
+        bridge = bridges[0]
+        assert bridge.via_junction == "product_categories"
+        assert bridge.via_joins == ("pc_category", "pc_product")
+        # Direct joins keep the defaults.
+        direct = [j for j in result if j.via_junction is None]
+        for j in direct:
+            assert j.via_joins == ()
+
+    def test_no_bridges_when_no_junction(self, tmp_path: Path) -> None:
+        """Sanity: a non-junction store produces zero bridges (regression
+        guard — bridge synthesis must not invent edges from FK paths
+        that don't go through a junction-shaped entity).
+        """
+        with SQLiteStore(tmp_path / "s.db") as store:
+            store.write_table(_users_table(), source_connection_id="sid")
+            store.write_table(_orders_table(), source_connection_id="sid")
+            store.write_entity(_user_entity(), source_connection_id="sid")
+            store.write_entity(_order_entity(), source_connection_id="sid")
+            store.write_canonical_join(_join(), source_connection_id="sid")
+            result = list_joins_impl(store=store, source_connection_id="sid")
+        assert all(j.via_junction is None for j in result)
 
 
 class TestEnvelopeStoreFailure:
