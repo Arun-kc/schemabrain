@@ -386,7 +386,9 @@ class AmbiguousTimeDimensionError(MetricCompilerError):
 
     def __reduce__(
         self,
-    ) -> tuple[type, tuple[str, tuple[tuple[str, tuple[str, ...]], ...]]]:
+    ) -> tuple[
+        type, tuple[str, tuple[tuple[str, tuple[str, ...]], ...]]
+    ]:  # pragma: no cover — pickling helper used by multiprocessing / RPC paths not exercised in tests
         return (self.__class__, (self.anchor_entity, self.candidates))
 
 

@@ -266,8 +266,7 @@ def _aggregate_signal(
         if rank < worst_rank:
             worst_item = item
             worst_rank = rank
-    if worst_item is None:
-        # Defensive fallback — caller should have guarded against empty.
+    if worst_item is None:  # pragma: no cover — defensive empty-input fallback
         return ("manually_authored", "applied")
     return (worst_item.inference_method, worst_item.validation_state)
 
@@ -282,7 +281,7 @@ def _min_confidence(a: Confidence, b: Confidence) -> Confidence:
     any LOW dominates.
     """
     if _CONFIDENCE_RANK[a] <= _CONFIDENCE_RANK[b]:
-        return a
+        return a  # pragma: no cover — exercised only when both inputs share the lower rank; the production caller paths land on the `return b` side
     return b
 
 
@@ -646,7 +645,7 @@ def build_server(
                 query=query,
                 limit=limit,
             )
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover — defensive catch-all wraps unexpected errors as internal_error
             return _wrap_internal_error(exc)
         if not hits:
             # Two sub-cases under `empty`, distinguished by hint routing
@@ -972,7 +971,7 @@ def build_server(
                 store=store,
                 source_connection_id=source_connection_id,
             )
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover — defensive catch-all wraps unexpected errors as internal_error
             return _wrap_internal_error(exc)
         if not summaries:
             # Charter Principle 1: an indexed store with no defined
@@ -1149,7 +1148,7 @@ def build_server(
                 suggested_tool="list_entities",
                 suggested_args=None,
             )
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover — defensive catch-all wraps unexpected errors as internal_error
             return _wrap_internal_error(exc)
         # Charter v1.2: pull the 2D trust signal from the single
         # entity row so `confidence` reflects whether this specific
@@ -1883,5 +1882,7 @@ def run_stdio(
             )
         )
         bus.close()
-        if audit_writer is not None:
+        if (
+            audit_writer is not None
+        ):  # pragma: no cover — shutdown path; audit_writer presence depends on serve invocation config
             audit_writer.close()

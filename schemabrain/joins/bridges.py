@@ -118,17 +118,18 @@ def synthesize_bridges(
             for j in range(i + 1, len(legs)):
                 leg_a, end_a = legs[i]
                 leg_b, end_b = legs[j]
-                if end_a == end_b:
-                    # Both legs land on the same entity — would imply a
-                    # self-bridge, which CanonicalJoin already refuses
-                    # at the leg level. Defensive skip.
+                if (
+                    end_a == end_b
+                ):  # pragma: no cover — defensive self-bridge skip; CanonicalJoin refuses self-joins at leg level
                     continue
                 lo, hi = sorted([end_a, end_b])
                 # If lo == end_a, leg_lo is leg_a; else leg_b.
                 leg_lo = leg_a if lo == end_a else leg_b
                 leg_hi = leg_b if lo == end_a else leg_a
                 name = f"{lo}_{hi}_via_{junction.name}"
-                if name in seen_names:
+                if (
+                    name in seen_names
+                ):  # pragma: no cover — defensive dedup; bridge names are unique by (lo, hi, junction)
                     continue
                 seen_names.add(name)
                 bridges.append(

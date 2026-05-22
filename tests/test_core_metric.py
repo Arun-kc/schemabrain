@@ -251,6 +251,20 @@ class TestMetricValidation:
         for origin in ("manual", "suggested", "dbt_import"):
             _make_metric(origin=origin)
 
+    def test_rejects_unknown_inference_method(self) -> None:
+        # Charter v1.2 2D trust signal: the closed-set check in
+        # `__post_init__` rejects any inference_method outside the
+        # five-value Literal. Mirrors the equivalent on `Entity` and
+        # `CanonicalJoin`.
+        with pytest.raises(ValueError, match="inference_method"):
+            _make_metric(inference_method="bogus")
+
+    def test_rejects_unknown_validation_state(self) -> None:
+        # Charter v1.2 2D trust signal: `validation_state` must be
+        # one of {draft, applied, confirmed}.
+        with pytest.raises(ValueError, match="validation_state"):
+            _make_metric(validation_state="archived")
+
 
 class TestMetricTimeDimension:
     def test_time_dimension_set_with_empty_grains_rejected(self) -> None:

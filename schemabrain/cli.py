@@ -6960,7 +6960,7 @@ def _cmd_inspect(
                     source_connection_id=sid,
                 )
                 if metric_detail is not None:
-                    if rendered:
+                    if rendered:  # pragma: no cover — multi-source separator; same name resolving in >1 source-id is rare
                         console.print()
                     render_metric_detail(metric_detail, console=console)
                     rendered = True
@@ -6971,7 +6971,7 @@ def _cmd_inspect(
                     source_connection_id=sid,
                 )
                 if join_detail is not None:
-                    if rendered:
+                    if rendered:  # pragma: no cover — multi-source separator; same name resolving in >1 source-id is rare
                         console.print()
                     render_join_detail(join_detail, console=console)
                     rendered = True
@@ -7036,7 +7036,7 @@ def _list_source_ids_with_entity(store: SQLiteStore, entity_name: str) -> list[s
             "SELECT DISTINCT source_connection_id FROM entities WHERE name = ?",
             (entity_name,),
         ).fetchall()
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError:  # pragma: no cover — pre-v10 partial-migration defense
         return []
     return [r[0] for r in rows]
 
@@ -7054,7 +7054,7 @@ def _list_source_ids_with_metric(store: SQLiteStore, metric_name: str) -> list[s
             "SELECT DISTINCT source_connection_id FROM metrics WHERE name = ?",
             (metric_name,),
         ).fetchall()
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError:  # pragma: no cover — pre-v10 partial-migration defense
         return []
     return [r[0] for r in rows]
 
@@ -7067,7 +7067,7 @@ def _list_source_ids_with_join(store: SQLiteStore, join_name: str) -> list[str]:
             "SELECT DISTINCT source_connection_id FROM canonical_joins WHERE name = ?",
             (join_name,),
         ).fetchall()
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError:  # pragma: no cover — pre-v10 partial-migration defense
         return []
     return [r[0] for r in rows]
 

@@ -228,6 +228,20 @@ class TestCanonicalJoinValidation:
         for origin in ("manual", "suggested", "dbt_import"):
             _make_join(origin=origin)
 
+    def test_rejects_unknown_inference_method(self) -> None:
+        # Charter v1.2 2D trust signal: the closed-set check in
+        # `__post_init__` rejects any inference_method outside the
+        # five-value Literal. Mirrors the equivalent on `Entity` and
+        # `Metric`.
+        with pytest.raises(ValueError, match="inference_method"):
+            _make_join(inference_method="bogus")
+
+    def test_rejects_unknown_validation_state(self) -> None:
+        # Charter v1.2 2D trust signal: `validation_state` must be
+        # one of {draft, applied, confirmed}.
+        with pytest.raises(ValueError, match="validation_state"):
+            _make_join(validation_state="archived")
+
 
 # ----- Cardinality -----------------------------------------------------------
 
