@@ -96,9 +96,9 @@ class UnknownGroupByColumnError(MetricCompilerError):
 
     Carries the requested entity + column + the actual column list on
     that entity so the MCP layer can populate `recovery` with the
-    allowed names. The 2026-05-21 stress test caught the silent-failure
-    path (`user.bogus_column` → `internal_error`); this error class
-    closes it.
+    allowed names. Closes the silent-failure path where a typo'd
+    column (`user.bogus_column`) used to surface only as a generic
+    `internal_error`.
     """
 
     entity: str
@@ -344,6 +344,52 @@ class InvalidTimeGrainError(MetricCompilerError):
 
     def __reduce__(self) -> tuple[type, tuple[TimeGrain, tuple[TimeGrain, ...]]]:
         return (self.__class__, (self.requested_grain, self.allowed_grains))
+
+
+@dataclass(frozen=True)
+class AmbiguousTimeDimensionError(MetricCompilerError):
+    """Raised when a metric has no `time_dimension` of its own and 2+
+    reachable entities (via canonical-join chains) carry a candidate
+    timestamp column, so the resolver can't pick one without the agent
+    being explicit.
+
+    `candidates` is a tuple of `(<entity>.<column>, via_join_names)`
+    pairs the agent can pass back as `time_dimension=` on `get_metric`
+    to disambiguate. Recovery contract: future `get_metric` calls
+    accept an explicit `time_dimension` override that supersedes
+    inference.
+
+    Distinct from `InvalidTimeGrainError`: that fires when the grain
+    isn't supported; this fires when the grain is supported but the
+    timestamp column to bucket on cannot be uniquely identified.
+    """
+
+    anchor_entity: str
+    candidates: tuple[tuple[str, tuple[str, ...]], ...]
+
+    def __post_init__(self) -> None:
+        # Bound the message echo to the first 4 candidates so a
+        # pathological canonical-join graph cannot balloon the error
+        # text. The recovery contract still lets the agent walk the
+        # full set via the structured field.
+        shown = self.candidates[:4]
+        more = f" (+{len(self.candidates) - 4} more)" if len(self.candidates) > 4 else ""
+        rendered = ", ".join(f"{column} (via {list(via)})" for column, via in shown)
+        first_column = shown[0][0] if shown else ""
+        super().__init__(
+            f"metric anchored on {self.anchor_entity!r} has no "
+            f"`time_dimension` declared and multiple timestamp columns "
+            f"are reachable via canonical joins: {rendered}{more}. "
+            f"Pass `time_dimension={first_column!r}` (or another "
+            f"candidate) on `get_metric` to disambiguate."
+        )
+
+    def __reduce__(
+        self,
+    ) -> tuple[
+        type, tuple[str, tuple[tuple[str, tuple[str, ...]], ...]]
+    ]:  # pragma: no cover — pickling helper used by multiprocessing / RPC paths not exercised in tests
+        return (self.__class__, (self.anchor_entity, self.candidates))
 
 
 @dataclass(frozen=True)
@@ -594,6 +640,27 @@ class MetricPlan:
     # without the new kwarg.
     order_by_clauses: tuple[ResolvedOrderBy, ...] = field(default=())
 
+    # Time-dimension resolution outcome:
+    #   "local"       — `metric.time_dimension` was set and lives on the
+    #                   anchor entity (the v1 default). The emitter
+    #                   buckets against `anchor_alias`.
+    #   "inherited"   — `metric.time_dimension` was None (or on a
+    #                   non-anchor entity) and the resolver inferred /
+    #                   used a reachable timestamp column. The
+    #                   `inherited_time_dimension` field carries the
+    #                   `<entity>.<column>` form and
+    #                   `time_dimension_inherited_via` lists the chain
+    #                   of canonical joins traversed. The emitter
+    #                   buckets against the joined entity's alias.
+    #   "unavailable" — `time_grain` was passed but no candidate
+    #                   timestamp column is reachable. The plan ships
+    #                   with `time_bucket=None`; the MCP layer surfaces
+    #                   `time_dimension_unavailable` as a degradation
+    #                   reason rather than failing.
+    time_dimension_resolution: Literal["local", "inherited", "unavailable"] = field(default="local")
+    inherited_time_dimension: str | None = field(default=None)
+    time_dimension_inherited_via: tuple[str, ...] = field(default=())
+
     @property
     def required_join_names(self) -> tuple[str, ...]:
         """Canonical-join names, for the result envelope's
@@ -602,10 +669,26 @@ class MetricPlan:
 
     @property
     def fan_out_join_names(self) -> tuple[str, ...]:
-        """Subset of `required_join_names` with one_to_many /
-        many_to_many cardinality (or unspecified, treated as
-        worst-case). The MCP envelope surfaces these as fan-out
-        warnings."""
+        """Subset of `required_join_names` whose effective cardinality
+        multiplies rows on the anchor side of the chain.
+
+        Cardinality on `ResolvedJoin` is direction-aware (the resolver
+        flips the stored value when BFS walked the canonical join in
+        reverse), so this check reads it verbatim:
+
+          - `one_to_many` — the source side (already in the chain,
+            carrying anchor rows) has 1 row per N target rows; adding
+            target multiplies anchor rows. Fan-out.
+          - `many_to_many` — always multiplies. Fan-out.
+          - `None` — unknown, defensive worst case. Fan-out.
+          - `many_to_one` — N source rows per 1 target row; adding
+            target preserves source-side row count. NOT fan-out.
+          - `one_to_one` — symmetric; NOT fan-out.
+
+        The MCP envelope surfaces these as the `fan_out_join`
+        degradation reason so the agent can switch to `count_distinct`
+        on an identity column when the metric requires it.
+        """
         return tuple(
             j.canonical_name
             for j in self.joins

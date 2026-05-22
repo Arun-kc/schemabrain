@@ -90,6 +90,7 @@ def build_snippet(
     store_path: Path,
     db_url: str,
     runner: str = "uvx",
+    pii_block: tuple[str, ...] = (),
 ) -> SchemabrainSnippet:
     """Construct the schemabrain MCP entry.
 
@@ -102,6 +103,13 @@ def build_snippet(
     installed schemabrain entrypoint, used as fallback when `uvx`
     isn't on PATH), the args use `<runner> serve ...`; the binary
     itself is the implicit pin.
+
+    `pii_block` is the comma-joined argument for `--pii-block`. Empty
+    tuple means the flag is OMITTED from the args entirely (server
+    runs with PII enforcement off). The init wizard prompts the
+    operator for which categories to block and passes the chosen
+    set through here — the server-side firewall is opt-in, but
+    the wizard surfaces the choice rather than burying it.
 
     Invariants enforced:
 
@@ -127,6 +135,8 @@ def build_snippet(
         "--store-path",
         str(store_path),
     )
+    if pii_block:
+        serve_args = (*serve_args, "--pii-block", ",".join(pii_block))
     if runner == "uvx":
         command = "uvx"
         args: tuple[str, ...] = (f"schemabrain=={version_pin}", *serve_args)

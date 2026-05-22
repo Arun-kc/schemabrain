@@ -69,7 +69,7 @@ class MalformedMeasureExpressionError(ValueError):
         # which would render the round-trip exception unable to expose
         # `.expression` / `.reason` for structured re-handling. Explicit
         # reducer preserves the dataclass-style fields. Mirrors the
-        # convention PR-6h.3 established for frozen-dataclass errors in
+        # convention used by frozen-dataclass errors in
         # `semantic/compiler/plan.py`.
         return (self.__class__, (self.expression, self.reason))
 

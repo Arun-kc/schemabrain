@@ -7,7 +7,121 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`serverInfo.version` in the MCP `initialize` response leaked the
+  underlying `mcp` SDK package version (e.g. `1.27.1`) instead of
+  Schema Brain's own version string.** FastMCP doesn't accept a
+  `version` kwarg and the low-level Server defaults `server_version`
+  to `pkg_version("mcp")`. Pinning the underlying server's `version`
+  attribute to `schemabrain.__version__` after construction makes MCP
+  clients see the right server identity (`0.3.0`) in the handshake.
+  New regression tests in `TestServerInfoVersion`.
+- **`schemabrain audit list` empty-state was ambiguous.** A bare
+  "no audit rows matched the filters" landed for both an empty audit
+  table AND a populated table whose rows didn't match the filters.
+  Operators couldn't tell whether the MCP server had never been
+  driven, or whether they had a filter typo. The empty-table branch
+  now prints "(audit log is empty — no MCP tool calls have run yet)"
+  with a `next:` hint pointing at the MCP client surfaces that
+  populate audit rows. The filtered-empty branch reports the total
+  row count and suggests widening with `--since` / dropping
+  `--status`/`--tool`. New regression test
+  `test_filters_excluding_all_rows_show_total_and_widen_hint`.
+- **Bridge join names truncated with an ellipsis on narrow terminals
+  in `schemabrain inspect <entity>`.** Synthesised bridge names
+  (`<a>_<b>_via_<junction>`) are typically long, and Rich's default
+  column overflow behaviour truncated the name with `…` when the
+  related-entities table sized down. Setting `overflow="fold"` on the
+  `On` column lets the bridge marker line wrap across visual rows
+  instead, preserving the full identifier. New regression test
+  `test_bridge_edge_never_truncates_long_join_name`.
+- **Reverse-traversal cardinality flip missed same-name FK joins —
+  silent over-counting on grouped aggregates.** The earlier fan-out
+  detector compared on-pair tuples against the stored `join.on` to
+  decide whether BFS had walked a canonical join in reverse. When the
+  FK source and target columns shared a name (extremely common: an FK
+  on `customer_id` between `rental.customer_id` and
+  `customer.customer_id`), the swapped pairs compared equal to the
+  stored pairs and the cardinality flip silently never fired. A
+  metric anchored on `customer` grouped by `rental.rental_date`
+  reported `cardinality=many_to_one` instead of the correct
+  `one_to_many`, `fan_out_join_names` came back empty, and the
+  envelope shipped `status="success"` with inflated counts. Replaced
+  the heuristic with an explicit `is_reverse_traversal: bool` flag
+  carried on `_ChainEdge` and set deterministically at graph-build
+  time. Surfaced by a Pagila re-test: 158 distinct customers per
+  rental timestamp were reported as 182 by the compiler before the
+  fix. New regression test
+  `TestReverseTraversalCardinalityFlip::test_same_name_fk_reverse_traversal_flips_cardinality`.
+
 ### Added
+- **`entities list`, `joins list`, and `metrics list` CLI commands
+  now surface the charter v1.2 2D trust signal.** Each rendered row
+  now ends with `trust=<inference_method> · <validation_state>
+  (<CONF>)` alongside the legacy `origin=` field, so the discovery
+  surface agrees with the `inspect <name>` drill view's vocabulary.
+  The 2D signal lived on the envelope and MCP responses but the CLI
+  list surfaces still printed only the 1D `origin=`, which made
+  operators rely on the v1.0 vocab even after the v1.2 charter
+  shipped. New helper `_format_trust(inference_method,
+  validation_state)` in `schemabrain.cli` lazily imports
+  `derive_confidence` to keep Pydantic off the import path of CLI
+  commands that don't render trust.
+- **Junction-table bridge synthesis on read.** `list_joins` and
+  `schemabrain inspect <entity>` now surface logical M:N bridges
+  through junction entities (e.g. `products <-> categories via
+  product_categories`) alongside direct canonical joins. Detection
+  reuses the existing `Table.is_junction_table()` heuristic
+  (composite PK whose columns are all FK sources to ≥2 distinct
+  targets); synthesis pairs the junction's canonical-join legs and
+  emits one `JoinSummary` per unordered endpoint pair with
+  `via_junction` + `via_joins` carrying the bridge mediation. No
+  schema change — bridges are computed fresh on every read so
+  follow-up edits to either leg reflect immediately. New module
+  `schemabrain.joins.bridges` (`find_junction_entities`,
+  `synthesize_bridges`, `synthesize_bridges_for_entity`,
+  `composed_on_pairs`). Bridge inference inherits the WORST signal
+  of its two legs — if either leg is `llm_suggested`, the bridge
+  is too, so the agent cannot trust the bridge more than its
+  weakest link. New optional `via_junction: str | None = None` +
+  `via_joins: tuple[str, ...] = ()` fields on `JoinSummary` carry
+  bridges over the wire; old clients that ignore them still see
+  the entity pair and provenance. `RelatedEntity` gains the same
+  `via_junction` field so `inspect` can mark mediated relationships
+  in the renderer.
+- **Charter v1.2 time-dimension inheritance via canonical-join
+  chains.** When a metric has no `time_dimension` of its own AND
+  the caller passes `time_grain`, the resolver BFSes the canonical-
+  join graph for reachable entities with timestamp-typed columns
+  over non-fan-out edges (`many_to_one` / `one_to_one` only) and
+  inherits the unique candidate. The plan ships with
+  `time_dimension_resolution="inherited"` and
+  `inherited_time_dimension="<entity>.<column>"`; the emitter
+  date_truncs against the joined entity's alias rather than the
+  anchor's. 2+ candidates raise the new
+  `AmbiguousTimeDimensionError`; 0 candidates ship unbucketed with
+  `time_dimension_resolution="unavailable"`. New ErrorKind
+  `ambiguous_time_dimension` (recovery contract: agent re-calls
+  with explicit `time_dimension` once the override path lands).
+  New DegradationReason `time_dimension_unavailable`. The fields
+  surface on `MetricResult` so the agent sees which column was
+  used and via which chain.
+- **Charter v1.2 column-granular PII redaction in
+  `describe_entity`.** Each column's real
+  `pii_sensitivity` and `pii_categories` now propagate from the
+  `column_pii_tags` store layer (previously hardcoded to
+  `"public"`). When the server-policy `--pii-block` set
+  intersects a column's categories, that column's
+  `EntityColumn.redacted` field is `True` and its LLM-enriched
+  semantic `description` is cleared — moving PII refusal from
+  "whole entity blocked" to "specific columns redacted". The
+  agent still sees the column exists; it just cannot read the
+  model-generated semantics for it. The `EntityDetail`-level
+  `redacted_columns: tuple[str, ...]` lists the redacted names
+  at a glance. Envelope `confidence` is capped at MEDIUM when
+  any redaction is applied so the agent knows it saw a partial
+  view. `describe_entity_impl` accepts a `pii_block` kwarg for
+  callers that build their own server scaffold.
 - **Non-e-commerce-domain PII coverage.** Five new rules in
   `schemabrain.pii.classifier` extend the heuristic taxonomy to medical
   and blockchain-analytics schemas without relying on operator overlays.
@@ -38,7 +152,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `str(int)` / `repr(float)`. SQL injection surface closed by
   construction. New module `schemabrain.semantic.compiler.measure_expression`.
 - **Compile-time `unknown_measure_column` envelope.** Parallel to
-  PR-6h.3's `unknown_group_by_column` / `unknown_filter_column` —
+  the existing `unknown_group_by_column` / `unknown_filter_column` —
   every column the measure references is now validated against the
   anchor entity's table at compile time. Closes a typo-becomes-
   `internal_error` gap that existed even for v1 bare-column measures
@@ -46,8 +160,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`schemabrain/metrics/fixtures/ecommerce/total_revenue_real.yaml`:**
   bundled composite-expression metric over the demo's `order_item`
   entity. Computes line-level revenue as
-  `SUM(unit_price_cents * quantity)` — closes the v1 DSL gap Claude
-  diagnosed during the PR-6h.3 Layer-B Claude Desktop smoke.
+  `SUM(unit_price_cents * quantity)` — closes a v1 DSL gap where
+  a metric anchored on `order_item` couldn't express revenue
+  derived from the line-item columns themselves.
+- **Charter v1.2: 2D trust signal — `Provenance.inference_method`
+  + `Provenance.validation_state`.** Replaces the v1.1 era's
+  hardcoded `confidence="HIGH"` on every entity / metric / join
+  producer with a derived label computed from two orthogonal axes:
+  HOW was the fact derived (`manually_authored`, `llm_suggested`,
+  `fk_constraint`, `dbt_import`, `observed_in_query_log`) and HOW
+  VALIDATED is it (`draft`, `applied`, `confirmed`). `derive_
+  confidence(method, state)` is the matrix; `derive_provenance_
+  source(method)` keeps the v1.0 `Provenance.source` field
+  consistent so old clients see a sensible value. Additive
+  charter bump — v1.1 / v1.0 clients still deserialize cleanly.
+  Per-row signal lands on the Pydantic summaries (`EntitySummary`,
+  `MetricSummary`, `JoinSummary`, `EntityDetail`,
+  `CanonicalJoinInfo`, `MetricResult`).
+- **Store schema bump 13 → 14: `inference_method` +
+  `validation_state` columns on entities, metrics, and
+  canonical_joins.** First real in-place migration:
+  `_migrate_v13_to_v14` ALTERs the three tables, backfills from
+  the existing `origin` column (`manual` → `manually_authored` +
+  `confirmed`; `suggested` → `llm_suggested` + `applied`;
+  `dbt_import` → `dbt_import` + `applied`), and stamps version to
+  14. Pre-v13 stores still raise `SchemaVersionMismatchError`.
+- **FK-inferred cardinality at suggest time.** `joins suggest`
+  now infers `many_to_one` / `one_to_one` / `one_to_many` from FK
+  + PK info via `_infer_fk_cardinality`. Removes the spurious
+  fan-out warning the prior `cardinality=None`-default suggester
+  produced on every typical OLTP FK chain.
+- **Direction-aware effective cardinality on `ResolvedJoin`.**
+  The resolver flips the stored cardinality via
+  `core.join.flip_cardinality` when BFS walks a canonical join in
+  reverse of its stored direction. The fan-out detector now reads
+  the EFFECTIVE value verbatim — multi-hop chains whose reverse
+  hop multiplied anchor rows used to be missed.
+- **`schemabrain inspect <name>` drills through metrics and
+  joins.** Adds `MetricDetail` + `JoinDetail` data builders and
+  parallel renderers; `_cmd_inspect` resolves `name` as
+  entity → metric → join in priority. The pre-fix surface returned
+  `no entity named <X>` for a metric or join name, breaking the
+  summary view's "Drill into one" link.
+- **MCP server `icons` + `website_url`.** FastMCP `initialize`
+  response now carries three icon sizes (32 / 64 / 512 PNG) and
+  the project repo URL so hosts that render server cards (Claude
+  Desktop, Cursor) display the schemabrain mark instead of a
+  generic placeholder.
+- **Init wizard installs `--pii-block contact` by default.** The
+  Claude Desktop snippet `build_snippet` writes the categories
+  passed via `WizardConfig.pii_block`; the default
+  (`("contact",)`) ensures the firewall is active on a fresh
+  install. Operators with development / synthetic-data sources
+  can opt out.
+
+### Changed
+- **MCP `CHARTER_VERSION` bumps `1.1` → `1.2`.** Wire-compatible
+  with v1.1 / v1.0 clients; `confidence` is now a derivation
+  rather than a hardcoded HIGH.
+
+### Fixed
+- **`schemabrain metrics list` empty-state hint.** Mirrors the
+  MCP `list_metrics` tool's empty-state shape — the CLI now tells
+  the operator the next command instead of dead-ending with a
+  parenthetical.
 
 ### Changed
 - **YAML measure schema:** `measure.expression` is now a valid

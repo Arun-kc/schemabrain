@@ -1333,7 +1333,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_metrics_audit = metrics_sub.add_parser(
         "audit",
         help="Scan applied metrics for anti-pattern descriptions and "
-        "optionally remove them. Counterpart to PR-6h.2's suggest-time "
+        "optionally remove them. Counterpart to the suggest-time "
         "anti-pattern filter for stores written before that filter shipped.",
     )
     p_metrics_audit.add_argument(
@@ -1685,9 +1685,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Path to the JSONL events file written by `schemabrain serve`. "
         f"Default: $SCHEMABRAIN_EVENTS_PATH or {_DEFAULT_EVENTS_PATH}.",
     )
-    # Smoke 2026-05-19: operators reflexively pass `--store-path` to
-    # `tail` (every other subcommand accepts it). Accept it here so the
-    # CLI doesn't surface a hostile `unrecognized arguments` error.
+    # Operators reflexively pass `--store-path` to `tail` (every other
+    # subcommand accepts it). Accept it here so the CLI doesn't
+    # surface a hostile `unrecognized arguments` error.
     # The events JSONL is decoupled from the SQLite store by default
     # (events go to `~/.schemabrain/events.jsonl`, store goes wherever
     # the operator chose), so `--store-path` is only used as a
@@ -2675,14 +2675,14 @@ def _cmd_serve(
                 tracer=tracer,
             )
     except SchemaVersionMismatchError as exc:
-        # Smoke 2026-05-19 surfaced this: a Claude Desktop launch
-        # against a store written by an older schemabrain version
-        # crashed with a raw Python traceback to MCP stderr. Claude
-        # Desktop's UI then just showed "Server disconnected" with
-        # no actionable hint. Match the inspect/check/doctor pattern
-        # and emit a guided block instead — the operator-facing
-        # remediation is identical across all four subcommands so
-        # operators only have to learn the message once.
+        # A Claude Desktop launch against a store written by an older
+        # schemabrain version would otherwise crash with a raw Python
+        # traceback to MCP stderr — Claude Desktop's UI then just
+        # shows "Server disconnected" with no actionable hint. Match
+        # the inspect/check/doctor pattern and emit a guided block
+        # instead — the operator-facing remediation is identical across
+        # all four subcommands so operators only have to learn the
+        # message once.
         _render_guided(
             GuidedError(
                 kind="serve_schema_version_mismatch",
@@ -3015,6 +3015,19 @@ def _cmd_entities_apply(
     return 1 if failures else 0
 
 
+def _format_trust(inference_method: str, validation_state: str) -> str:
+    """Render the charter v1.2 2D trust signal as `<method> · <state> (<CONF>)`.
+
+    Lazily imports `derive_confidence` to keep the envelope module
+    (and its Pydantic transitive deps) off the import path of CLI
+    commands that don't render trust.
+    """
+    from schemabrain.mcp.envelope import derive_confidence
+
+    confidence = derive_confidence(inference_method, validation_state)  # type: ignore[arg-type]
+    return f"{inference_method} · {validation_state} ({confidence})"
+
+
 def _cmd_entities_list(
     *,
     store_path: str,
@@ -3068,11 +3081,13 @@ def _cmd_entities_list(
         return 0
 
     for entity in entities:
+        trust = _format_trust(entity.inference_method, entity.validation_state)
         print(
             f"{entity.name}  "
             f"table={entity.binding.qualified_table}  "
             f"identity={entity.identity}  "
-            f"origin={entity.origin}"
+            f"origin={entity.origin}  "
+            f"trust={trust}"
         )
     return 0
 
@@ -4135,10 +4150,12 @@ def _cmd_joins_list(
 
     for join in joins:
         on_summary = ", ".join(f"{p.source_column} ↔ {p.target_column}" for p in join.on)
+        trust = _format_trust(join.inference_method, join.validation_state)
         print(
             f"{join.name}  "
             f"{join.source_entity} → {join.target_entity}  "
-            f"[{on_summary}]  origin={join.origin}"
+            f"[{on_summary}]  origin={join.origin}  "
+            f"trust={trust}"
         )
     return 0
 
@@ -4288,7 +4305,17 @@ def _cmd_metrics_list(
         return 2
 
     if not metrics:
+        # Mirror the MCP `list_metrics` tool's empty-state hint: tell
+        # the operator how to populate the surface rather than dead-
+        # ending with a parenthetical. The CLI used to print only
+        # `(no metrics in the store)` and the operator had to guess
+        # the next command.
         print("(no metrics in the store)")
+        print(
+            "  next: run `schemabrain metrics suggest --out-dir ./metrics` "
+            "to propose metrics from the indexed entities, then "
+            "`schemabrain metrics apply ./metrics` to persist."
+        )
         return 0
 
     for metric in metrics:
@@ -4302,13 +4329,15 @@ def _cmd_metrics_list(
             if metric.measure.column is not None
             else metric.measure.expression
         )
+        trust = _format_trust(metric.inference_method, metric.validation_state)
         print(
             f"{metric.name}  "
             f"entity={metric.entity}  "
             f"{metric.measure.agg}({measure_body})  "
             f"time_dim={time_dim}  "
             f"grains={grains}  "
-            f"origin={metric.origin}"
+            f"origin={metric.origin}  "
+            f"trust={trust}"
         )
     return 0
 
@@ -4320,8 +4349,8 @@ def _cmd_metrics_audit(
     url_env: str | None,
     fix: bool,
 ) -> int:
-    """Scan applied metrics for the anti-pattern phrases PR-6h.2 blocks
-    at suggest-time, optionally deleting them.
+    """Scan applied metrics for the anti-pattern phrases that
+    `metrics suggest` blocks at suggest-time, optionally deleting them.
 
     Read-only without `--fix`: list every flagged metric with the
     matched phrase, exit 0 if clean / 1 if any flagged. CI can fail a
@@ -5715,6 +5744,17 @@ def _cmd_audit_list(
         except _sqlite3.DatabaseError as exc:
             print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
             return 2
+        # Differentiate "empty audit log" from "filters excluded
+        # everything". A bare `no rows matched` was ambiguous — operators
+        # couldn't tell whether they had no MCP traffic yet, or simply a
+        # filter typo. Computed only when needed so the happy path
+        # doesn't pay for an extra query.
+        total_rows: int | None = None
+        if not rows:
+            try:
+                total_rows = conn.execute("SELECT COUNT(*) FROM mcp_audit").fetchone()[0]
+            except _sqlite3.DatabaseError:  # pragma: no cover — defensive
+                total_rows = None
     finally:
         conn.close()
 
@@ -5734,7 +5774,19 @@ def _cmd_audit_list(
         return 0
 
     if not rows:
-        print("no audit rows matched the filters")
+        if total_rows == 0:
+            print("(audit log is empty — no MCP tool calls have run yet)")
+            print(
+                "  next: drive the MCP server (Claude Desktop, "
+                "`examples/anthropic_demo.py`, or another MCP client) to "
+                "produce audit rows."
+            )
+        elif where_clauses:
+            suffix = f" (audit log has {total_rows} rows total)" if total_rows else ""
+            print(f"no audit rows matched the filters{suffix}")
+            print("  next: widen with `--since 24h` or drop `--status`/`--tool` filters.")
+        else:  # pragma: no cover — empty without filters yet total>0 is impossible
+            print("no audit rows in this view")
         return 0
 
     console = _Console()
@@ -5940,9 +5992,9 @@ def _format_path_for_terminal(path: Path, *, max_width: int = 60) -> str:
 # Stages whose handlers commonly take long enough to need a visible
 # "I'm working" cue. Stages 1, 5 are fast enough that a spinner
 # would flash and clear before the eye registers it; stages 2, 3, 4
-# routinely take 5-60s on real schemas. Smoke 2026-05-19 surfaced
-# stage 4 looking frozen for ~56s without the spinner — adding
-# `metrics` here restores symmetry with stage 3.
+# routinely take 5-60s on real schemas. Without the `metrics`
+# entry stage 4 can look frozen for ~minute on a real schema; the
+# spinner restores symmetry with stage 3.
 _SPINNER_STAGES: frozenset[str] = frozenset({"index", "entities", "metrics"})
 
 
@@ -6046,10 +6098,10 @@ def _wizard_stage_context(stage: object) -> Iterator[None]:
     # `__exit__`) and direct `.start()` / `.stop()` calls. The wizard's
     # interactive prompt code pauses the spinner via the latter — see
     # `_ui.pause_active_spinner` and `setup.wizard._prompt_llm_confirmation`.
-    # Smoke 2026-05-19 surfaced a UX bug where the spinner kept
-    # rendering during `input()` and read as "stage is already running";
-    # registering the active spinner here gives the prompt a handle to
-    # pause it during the wait.
+    # Without registration the spinner kept rendering during
+    # `input()` and read as "stage is already running"; registering
+    # the active spinner here gives the prompt a handle to pause it
+    # during the wait.
     #
     # Cleanup ordering note: in `with A, B:`, Python exits B first,
     # then A. Here that means `register_active_spinner.__exit__` runs
@@ -6812,8 +6864,12 @@ def _cmd_inspect(
     from schemabrain.core.store import SchemaVersionMismatchError
     from schemabrain.inspect import (
         build_entity_detail,
+        build_join_detail,
+        build_metric_detail,
         build_summary,
         render_entity_detail,
+        render_join_detail,
+        render_metric_detail,
         render_summary,
     )
 
@@ -6854,25 +6910,26 @@ def _cmd_inspect(
                 render_summary(summary, console=console, store_path=store_path)
                 return 0
 
-            # Drill mode. If no `--source` filter was supplied we walk
-            # every source in the store and render every match. This
-            # keeps the operator UX simple in the common one-source
-            # case (no flag required) while still surfacing
-            # multi-source matches when they exist.
+            # Drill mode resolves `name` as entity → metric → join in
+            # that priority. The summary view lists all three kinds
+            # alongside each other with no namespace, so callers like
+            # the summary's "Drill into one: `schemabrain inspect <name>`"
+            # link must work for any of them.
             if source_id is not None:
                 candidate_sources = [source_id]
             else:
-                # `list_entities()` with no filter walks every source.
-                # We dedupe to the unique source set via the entity
-                # rows' implicit source-id grouping. The
-                # `Store.list_entities` Protocol returns just Entity
-                # rows without exposing `source_connection_id`, so
-                # we fall back to the raw store-private path: enumerate
-                # via the table list and walk by entity name.
-                source_ids = _list_source_ids_with_entity(store, name)
+                # Union the source-id sets across the three name spaces
+                # — a name that lives only as a metric (or join) still
+                # gets a non-empty candidate set so the drill below can
+                # find it. Sorted for determinism in the rendered output.
+                source_ids = sorted(
+                    set(_list_source_ids_with_entity(store, name))
+                    | set(_list_source_ids_with_metric(store, name))
+                    | set(_list_source_ids_with_join(store, name))
+                )
                 if not source_ids:
                     print(
-                        f"error: no entity named {name!r} in {store_path!r}",
+                        f"error: no entity, metric, or join named {name!r} in {store_path!r}",
                         file=sys.stderr,
                     )
                     return 1
@@ -6880,21 +6937,48 @@ def _cmd_inspect(
 
             rendered = False
             for sid in candidate_sources:
-                detail = build_entity_detail(
+                # Priority: entity → metric → join. A name that exists
+                # as both an entity and a metric (rare; the identifiers
+                # share the same alphabet but the operator typically
+                # avoids the collision) drills as the entity, and the
+                # operator can disambiguate by passing the metric/join
+                # name verbatim when it differs.
+                entity_detail = build_entity_detail(
                     store=store,
                     entity_name=name,
                     source_connection_id=sid,
                 )
-                if detail is None:
+                if entity_detail is not None:
+                    if rendered:
+                        console.print()
+                    render_entity_detail(entity_detail, console=console)
+                    rendered = True
                     continue
-                if rendered:
-                    console.print()
-                render_entity_detail(detail, console=console)
-                rendered = True
+                metric_detail = build_metric_detail(
+                    store=store,
+                    metric_name=name,
+                    source_connection_id=sid,
+                )
+                if metric_detail is not None:
+                    if rendered:  # pragma: no cover — multi-source separator; same name resolving in >1 source-id is rare
+                        console.print()
+                    render_metric_detail(metric_detail, console=console)
+                    rendered = True
+                    continue
+                join_detail = build_join_detail(
+                    store=store,
+                    join_name=name,
+                    source_connection_id=sid,
+                )
+                if join_detail is not None:
+                    if rendered:  # pragma: no cover — multi-source separator; same name resolving in >1 source-id is rare
+                        console.print()
+                    render_join_detail(join_detail, console=console)
+                    rendered = True
 
             if not rendered:
                 print(
-                    f"error: no entity named {name!r} in {store_path!r}",
+                    f"error: no entity, metric, or join named {name!r} in {store_path!r}",
                     file=sys.stderr,
                 )
                 return 1
@@ -6952,7 +7036,38 @@ def _list_source_ids_with_entity(store: SQLiteStore, entity_name: str) -> list[s
             "SELECT DISTINCT source_connection_id FROM entities WHERE name = ?",
             (entity_name,),
         ).fetchall()
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError:  # pragma: no cover — pre-v10 partial-migration defense
+        return []
+    return [r[0] for r in rows]
+
+
+def _list_source_ids_with_metric(store: SQLiteStore, metric_name: str) -> list[str]:
+    """Cross-source variant of `_list_source_ids_with_entity` for metrics.
+
+    Same partial-migration tolerance: a store missing the `metrics`
+    table (pre-v10) returns an empty list rather than crashing, so
+    the caller's "name not found" path still renders cleanly.
+    """
+    conn = store._require_conn()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT source_connection_id FROM metrics WHERE name = ?",
+            (metric_name,),
+        ).fetchall()
+    except sqlite3.OperationalError:  # pragma: no cover — pre-v10 partial-migration defense
+        return []
+    return [r[0] for r in rows]
+
+
+def _list_source_ids_with_join(store: SQLiteStore, join_name: str) -> list[str]:
+    """Cross-source variant of `_list_source_ids_with_entity` for joins."""
+    conn = store._require_conn()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT source_connection_id FROM canonical_joins WHERE name = ?",
+            (join_name,),
+        ).fetchall()
+    except sqlite3.OperationalError:  # pragma: no cover — pre-v10 partial-migration defense
         return []
     return [r[0] for r in rows]
 

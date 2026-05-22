@@ -74,9 +74,8 @@ _HAIKU_MAX_OUTPUT_TOKENS_ENV = "SCHEMABRAIN_HAIKU_MAX_OUTPUT_TOKENS"
 # (a) cryptic-column descriptions (one paragraph each), and
 # (b) entity / metric suggestion (multi-candidate YAML, typically 10+
 #     entries with rationale and PII hints).
-# The previous default (300) was sized for (a) only and silently
-# truncated (b) on schemas with more than ~5 entities — discovered via
-# the 2026-05-19 ecommerce-fixture smoke. 4096 comfortably fits 10+
+# A 300-token cap was sized for (a) only and silently truncated (b)
+# on schemas with more than ~5 entities. 4096 comfortably fits 10+
 # candidates with room to spare while still bounding a runaway response.
 # Sonnet 4.6 supports much higher (8192+); callers who need it can set
 # SCHEMABRAIN_SONNET_MAX_OUTPUT_TOKENS or construct AnthropicClient
@@ -85,13 +84,12 @@ _SONNET_DEFAULT_MAX_OUTPUT_TOKENS = 4096
 _SONNET_MAX_OUTPUT_TOKENS_ENV = "SCHEMABRAIN_SONNET_MAX_OUTPUT_TOKENS"
 
 # Per-tier max output tokens resolution delegates to the shared
-# `schemabrain._env` parser (factored out 2026-05-19 from the original
-# PR #67 implementation that lived here). The shared module's
-# `on_invalid="raise"` mode preserves PR #67's "fail fast on a
-# typo'd cap rather than send a nonsensical max_tokens to the API and
-# chase an opaque 400" contract. Test coverage of the strict-regex
-# footguns now lives in `tests/test_env_resolution.py`; behavior
-# pins on this module's factories stay in
+# `schemabrain._env` parser. The shared module's `on_invalid="raise"`
+# mode preserves the "fail fast on a typo'd cap rather than send a
+# nonsensical max_tokens to the API and chase an opaque 400" contract.
+# Test coverage of the strict-regex footguns lives in
+# `tests/test_env_resolution.py`; behavior pins on this module's
+# factories stay in
 # `tests/test_enrichment_anthropic.py::TestMaxOutputTokensConfiguration`.
 
 

@@ -337,6 +337,7 @@ def peek_claude_desktop_overwrite(
     source_url: str,
     store_path: Path,
     env_var_name: str,
+    pii_block: tuple[str, ...] = (),
 ) -> ClaudeDesktopEntryComparison | None:
     """Resolve the config path, build the snippet, and compare against existing.
 
@@ -353,6 +354,12 @@ def peek_claude_desktop_overwrite(
     the same `claude_desktop_config_path` / `build_snippet` /
     `_resolve_runner` bindings tests already monkeypatch on this
     module — keeping the test surface small.
+
+    `pii_block` mirrors `init()` — passing the wizard's default
+    ensures the overwrite-diff preview reflects the same args the
+    eventual install will write, so the operator's "is this
+    different from what's already there?" verdict is consistent
+    with what they'll actually accept.
     """
     config_path = claude_desktop_config_path()
     if config_path is None:
@@ -364,6 +371,7 @@ def peek_claude_desktop_overwrite(
         store_path=store_path.expanduser().resolve(),
         db_url=source_url,
         runner=runner,
+        pii_block=pii_block,
     )
     return compare_existing_claude_desktop_entry(snippet=snippet, config_path=config_path)
 
@@ -376,6 +384,7 @@ def init(
     env_var_name: str,
     skip_index: bool,
     assume_yes: bool,
+    pii_block: tuple[str, ...] = (),
 ) -> InitResult:
     """Run the non-interactive init pipeline.
 
@@ -386,6 +395,13 @@ def init(
     `assume_yes` only matters when the host config already has a
     different `schemabrain` entry — `True` overwrites it (with the
     backup-once contract from config_io), `False` refuses.
+
+    `pii_block` is the comma-joined argument list for the `--pii-block`
+    server flag. Empty tuple omits the flag entirely. Passed through
+    verbatim to `build_snippet`. The wizard supplies its default here
+    so the firewall is opt-in but visible — bare-default Claude
+    Desktop wiring used to ship without any PII enforcement at all,
+    contradicting the README's "the firewall protects you" framing.
     """
     runner = _resolve_runner()
     _validate_source_reachable(source_url)
@@ -400,6 +416,7 @@ def init(
         store_path=store_path.expanduser().resolve(),
         db_url=source_url,
         runner=runner,
+        pii_block=pii_block,
     )
 
     if host == "manual":

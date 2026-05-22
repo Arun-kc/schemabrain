@@ -1,4 +1,4 @@
-"""MCP response envelope (Charter v1.1).
+"""MCP response envelope (Charter v1.2).
 
 Every MCP tool wraps its return value in a `ToolResponse[T]`:
 
@@ -9,7 +9,7 @@ Every MCP tool wraps its return value in a `ToolResponse[T]`:
       "confidence": "HIGH" | "MEDIUM" | "LOW" | None,
       "provenance": <Provenance | None>,
       "follow_up_hints": [<tool_name>, ...] | None,
-      "charter_version": "1.1"
+      "charter_version": "1.2"
     }
 
 The envelope is the public contract for Schema Brain's MCP surface. See
@@ -20,10 +20,25 @@ envelope construction must work in any context (tests, alternative
 transports, in-process clients). The FastMCP wiring lives in
 `server.py`.
 
-Versioning: this module pins `CHARTER_VERSION = "1.1"` as an additive
-minor bump over the v1.0 contract. Changes in 1.1 (all backward-
-compatible with 1.0):
+Versioning: this module pins `CHARTER_VERSION = "1.2"` as an additive
+minor bump over the v1.1 contract. Changes in 1.2 (all backward-
+compatible with 1.0 / 1.1):
 
+  - New `Provenance.inference_method` Literal: closed set
+    `manually_authored | llm_suggested | fk_constraint | dbt_import |
+    observed_in_query_log` — names HOW the fact was derived.
+  - New `Provenance.validation_state` Literal: closed set
+    `draft | applied | confirmed` — names HOW VALIDATED the fact is.
+  - `confidence` is now a derivation of `(inference_method,
+    validation_state)` (helper `derive_confidence`). The pre-1.2
+    behaviour where every producer hardcoded `confidence="HIGH"`
+    regardless of derivation conflated FK-derived metrics with
+    LLM-guessed ones — the agent could not tell them apart.
+    Charter v1.2 fixes that without removing the `confidence`
+    field: old clients still read a meaningful 1D label; new
+    clients can read the 2D signal directly.
+
+Changes in 1.1 (preserved):
   - New ErrorKinds: `pii_blocked`, `policy_blocked`, `allowlist_violation`.
   - Reserved `refused` status — present in the Status literal so v2's
     refuse-before-execute primitives ship the type contract on day
@@ -42,10 +57,13 @@ from schemabrain.pii.categories import PIICategory
 
 # Pinned charter version. Bumped per the Versioning section of the
 # charter; minor bumps are additive (new optional fields, new error
-# kinds), major bumps remove or rename fields. v1.0 -> v1.1 adds
-# `refused` status, 3 new ErrorKinds, and 2 new optional Recovery
-# fields — all backward-compatible.
-CHARTER_VERSION = "1.1"
+# kinds), major bumps remove or rename fields. v1.1 -> v1.2 adds
+# `Provenance.inference_method` + `Provenance.validation_state` and
+# changes `confidence` semantics from "always HIGH" to "derived from
+# the 2D trust signal" — additive at the schema layer (both new
+# fields are optional), but the value of `confidence` now varies in
+# the wild for the first time.
+CHARTER_VERSION = "1.2"
 
 Status = Literal[
     "success",
@@ -69,6 +87,82 @@ Status = Literal[
 ]
 Confidence = Literal["HIGH", "MEDIUM", "LOW"]
 ProvenanceSource = Literal["schema", "llm", "inferred"]
+
+# v1.2 — 2D trust signal. `InferenceMethod` names HOW a fact was
+# derived (FK constraint, LLM guess, hand-typed YAML, dbt import,
+# query-log mining). `ValidationState` names HOW VALIDATED that fact
+# is (draft = proposed-but-unapplied, applied = in store, confirmed
+# = operator explicitly signed off). The two axes are orthogonal:
+# an LLM-suggested join that an operator manually confirmed is
+# (llm_suggested, confirmed) → HIGH. An FK-derived join that hasn't
+# been applied yet is (fk_constraint, draft) → MEDIUM. Both Literals
+# stay in lock-step with `schemabrain.core.entity.{InferenceMethod,
+# ValidationState}` and the SQL CHECK constraints on the entities /
+# metrics / canonical_joins tables.
+InferenceMethod = Literal[
+    "manually_authored",
+    "llm_suggested",
+    "fk_constraint",
+    "dbt_import",
+    "observed_in_query_log",
+]
+ValidationState = Literal["draft", "applied", "confirmed"]
+
+
+def derive_confidence(
+    inference_method: InferenceMethod, validation_state: ValidationState
+) -> Confidence:
+    """Compute the 1D `Confidence` label from the 2D trust signal.
+
+    The matrix is intentionally conservative: an LLM-suggested
+    entity / metric / join that the operator merely applied (without
+    confirming) is not equivalent to a hand-authored or FK-derived
+    one. Charter v1.2 makes that asymmetry visible by treating
+    `llm_suggested` + `applied` as MEDIUM (the LLM proposed it, the
+    operator clicked apply, but no human verified the substantive
+    correctness beyond the apply gesture).
+
+    Matrix:
+      confirmed                                              → HIGH
+      manually_authored, applied                             → HIGH
+      fk_constraint, applied                                 → HIGH
+      dbt_import, applied                                    → HIGH
+      llm_suggested, applied                                 → MEDIUM
+      observed_in_query_log, applied                         → MEDIUM
+      manually_authored / fk_constraint / dbt_import, draft  → MEDIUM
+      llm_suggested / observed_in_query_log, draft           → LOW
+    """
+    if validation_state == "confirmed":
+        return "HIGH"
+    if validation_state == "applied":
+        if inference_method in {"manually_authored", "fk_constraint", "dbt_import"}:
+            return "HIGH"
+        return "MEDIUM"
+    # validation_state == "draft"
+    if inference_method in {"manually_authored", "fk_constraint", "dbt_import"}:
+        return "MEDIUM"
+    return "LOW"
+
+
+def derive_provenance_source(inference_method: InferenceMethod) -> ProvenanceSource:
+    """Map the v1.2 `InferenceMethod` to the v1.0 `ProvenanceSource`.
+
+    Lets producers populate the new 2D signal AND keep the older 1D
+    `source` field deterministic — old clients that only read
+    `provenance.source` see a sensible value derived from the new
+    signal rather than a hardcoded `"schema"`.
+
+      manually_authored / fk_constraint / dbt_import → schema
+      llm_suggested                                  → llm
+      observed_in_query_log                          → inferred
+    """
+    if inference_method == "llm_suggested":
+        return "llm"
+    if inference_method == "observed_in_query_log":
+        return "inferred"
+    return "schema"
+
+
 # v1.0 shipped 7 kinds. v1.1 adds 3 for the refuse-before-execute
 # taxonomy. Additions are minor-version bumps.
 ErrorKind = Literal[
@@ -100,6 +194,12 @@ ErrorKind = Literal[
     "unknown_measure_column",
     "invalid_time_grain",
     "grain_mismatch",
+    # Time-dimension inheritance surface (v1.2): when a metric has no
+    # `time_dimension` of its own but the caller passes `time_grain`,
+    # the resolver BFSes for a reachable timestamp column. 2+ candidates
+    # surfaces as `ambiguous_time_dimension`; 0 candidates degrades
+    # silently to unbucketed (see `time_dimension_unavailable` below).
+    "ambiguous_time_dimension",
     # MCP dispatch surface — used INTERNALLY by the strict-args
     # rejection path to record unknown-kwargs calls in the audit
     # table and event bus. The client sees a `FastMCPToolError`
@@ -112,11 +212,10 @@ ErrorKind = Literal[
 # Closed-grammar reasons for `status="degraded"` envelopes. Parallel
 # to `ErrorKind` but for the partial-success path: the tool ran and
 # returned `data`, but with a structured caveat the agent should
-# surface to the user (or branch on programmatically). Today's set
-# covers the two reasons surfaced by the 2026-05-21 smoke; new kinds
-# are added by appending here AND wiring the producer at the
-# degradation point. Closed grammar so agents can switch on the value
-# without parsing free-form text.
+# surface to the user (or branch on programmatically). New kinds are
+# added by appending here AND wiring the producer at the degradation
+# point. Closed grammar so agents can switch on the value without
+# parsing free-form text.
 DegradationReason = Literal[
     # `MetricPlan.fan_out_join_names` is non-empty: at least one
     # `one_to_many` / `many_to_many` (or unspecified-cardinality)
@@ -130,6 +229,11 @@ DegradationReason = Literal[
     # pass `order_by=` to specify what "top N" means before relying on
     # the row order.
     "missing_order_by_with_limit",
+    # Caller passed `time_grain` but the metric has no `time_dimension`
+    # and no reachable timestamp column was found via canonical joins.
+    # The plan ships unbucketed; the agent can re-call without
+    # `time_grain` or after declaring a time_dimension on the metric.
+    "time_dimension_unavailable",
 ]
 
 # The subset of ErrorKinds that semantically support v1.1 Recovery
@@ -150,6 +254,21 @@ class Provenance(BaseModel):
     an LLM; `model` names which one. `source="inferred"` — derived from
     observed signals (query log, sampling); `observed_in` carries
     {count, first_seen, last_seen} or similar diagnostic metadata.
+
+    v1.2 additions:
+
+    - `inference_method` (`InferenceMethod | None`) — finer-grained
+      derivation label. Replaces the 1D `source` for callers that
+      need to distinguish FK-derived joins from LLM-guessed metrics.
+      None for v1.1 envelopes; populated for v1.2 producers.
+    - `validation_state` (`ValidationState | None`) — orthogonal
+      validation axis. None for v1.1 envelopes; populated for v1.2
+      producers.
+
+    Producers should compute `confidence` via `derive_confidence(
+    inference_method, validation_state)` and set `source` via
+    `derive_provenance_source(inference_method)` so the 1D and 2D
+    signals stay consistent.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -157,6 +276,10 @@ class Provenance(BaseModel):
     source: ProvenanceSource
     model: str | None = None
     observed_in: dict[str, Any] | None = None
+    # v1.2 additions — optional for back-compat with v1.0 / v1.1
+    # producers that haven't been migrated yet.
+    inference_method: InferenceMethod | None = None
+    validation_state: ValidationState | None = None
 
 
 class SuggestedRewrite(BaseModel):
@@ -368,6 +491,7 @@ __all__ = [
     "Confidence",
     "DegradationReason",
     "ErrorKind",
+    "InferenceMethod",
     "Provenance",
     "ProvenanceSource",
     "Recovery",
@@ -375,5 +499,8 @@ __all__ = [
     "SuggestedRewrite",
     "ToolError",
     "ToolResponse",
+    "ValidationState",
     "WideningHint",
+    "derive_confidence",
+    "derive_provenance_source",
 ]

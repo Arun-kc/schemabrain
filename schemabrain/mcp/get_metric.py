@@ -38,9 +38,11 @@ from __future__ import annotations
 import sys
 from typing import Any, cast
 
+from schemabrain.core.entity import InferenceMethod, ValidationState
 from schemabrain.core.metric import _VALID_GRAINS, TimeGrain
 from schemabrain.core.store_protocol import Store
 from schemabrain.mcp._helpers import _with_token_estimate
+from schemabrain.mcp.envelope import derive_confidence
 from schemabrain.mcp.metric_executor import MetricExecutor
 from schemabrain.mcp.shapes import MetricFilterArg, MetricOrderByArg, MetricResult
 from schemabrain.pii import PIICategory, Sensitivity, propagate
@@ -156,6 +158,16 @@ def get_metric_impl(
     sql_text, sql_params = emit_sql(plan)
     rows = executor.execute(sql_text, sql_params)
 
+    metric_method = plan.metric.inference_method
+    metric_state = plan.metric.validation_state
+    aggregate_method, aggregate_state = _aggregate_metric_plan_signal(
+        store=store,
+        source_connection_id=source_connection_id,
+        metric_method=metric_method,
+        metric_state=metric_state,
+        required_join_names=plan.required_join_names,
+    )
+
     partial = MetricResult(
         rows=rows,
         row_count=len(rows),
@@ -166,8 +178,60 @@ def get_metric_impl(
         required_joins=list(plan.required_join_names),
         fan_out_join_names=list(plan.fan_out_join_names),
         pii_categories=pii_categories_sorted,
+        metric_inference_method=metric_method,
+        metric_validation_state=metric_state,
+        aggregate_inference_method=aggregate_method,
+        aggregate_validation_state=aggregate_state,
+        time_dimension_resolution=plan.time_dimension_resolution,
+        inherited_time_dimension=plan.inherited_time_dimension,
+        time_dimension_inherited_via=plan.time_dimension_inherited_via,
     )
     return _with_token_estimate(partial)
+
+
+def _aggregate_metric_plan_signal(
+    *,
+    store: Store,
+    source_connection_id: str,
+    metric_method: InferenceMethod,
+    metric_state: ValidationState,
+    required_join_names: tuple[str, ...],
+) -> tuple[InferenceMethod, ValidationState]:
+    """Worst-case (inference_method, validation_state) across the metric
+    AND every canonical join the plan traverses.
+
+    The SQL the agent receives depends on each join's ON-clause. If
+    even one join is LLM-suggested rather than FK-derived, the agent
+    cannot trust the join columns blindly — the aggregate signal
+    inherits the weaker member. An FK-derived metric anchored over
+    an LLM-guessed join is therefore MEDIUM, not HIGH: the metric's
+    derivation is strong, but the SQL relies on an unverified
+    on-clause.
+
+    No-op when `required_join_names` is empty (metric-only path) —
+    returns the metric's own signal verbatim.
+    """
+    _RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+    worst_method, worst_state = metric_method, metric_state
+    worst_rank = _RANK[derive_confidence(worst_method, worst_state)]
+    for join_name in required_join_names:
+        canonical_join = store.get_canonical_join(
+            join_name, source_connection_id=source_connection_id
+        )
+        if canonical_join is None:
+            # Unexpected — `required_join_names` came from the
+            # resolved plan, so every name MUST exist. Skip
+            # defensively rather than crash; the metric's own
+            # signal dominates.
+            continue
+        rank = _RANK[
+            derive_confidence(canonical_join.inference_method, canonical_join.validation_state)
+        ]
+        if rank < worst_rank:
+            worst_method = canonical_join.inference_method
+            worst_state = canonical_join.validation_state
+            worst_rank = rank
+    return (worst_method, worst_state)
 
 
 def _resolve_pii_categories(

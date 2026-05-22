@@ -21,14 +21,16 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from collections import deque
 from typing import Any, Literal
 
-from schemabrain.core.join import CanonicalJoin, JoinColumnPair
+from schemabrain.core.join import CanonicalJoin, JoinColumnPair, flip_cardinality
 from schemabrain.core.metric import Metric, TimeGrain
 from schemabrain.core.store_protocol import Store
 from schemabrain.semantic.compiler.plan import (
     AmbiguousJoinError,
     AmbiguousPathError,
+    AmbiguousTimeDimensionError,
     InvalidTimeGrainError,
     MalformedColumnError,
     MetricPlan,
@@ -138,7 +140,14 @@ def resolve_metric_plan(
             f"run `schemabrain metrics list` to see available metrics."
         )
 
-    _check_time_grain(metric, time_grain)
+    # When the metric DECLARES a time_dimension, validate the requested
+    # grain against the metric's allowed grains as before. When the
+    # metric has no time_dimension, defer the validation to the
+    # inheritance step below — the inherited dimension supports the
+    # full grain set so a v1.2 caller can bucket against a reachable
+    # timestamp column without the metric author having to pre-declare.
+    if metric.time_dimension is not None:
+        _check_time_grain(metric, time_grain)
     anchor_alias = _alias_for(metric.entity)
     anchor_table = _lookup_anchor_table(store, metric.entity, source_connection_id)
 
@@ -320,6 +329,22 @@ def resolve_metric_plan(
                 if predecessor == metric.entity
                 else resolved_joins[predecessor].target_alias
             )
+            # Cardinality reported on `ResolvedJoin` is the EFFECTIVE
+            # value in the chain's traversal direction, not the
+            # stored direction. When the BFS walked the canonical
+            # join from target→source (reverse of stored
+            # source→target), the cardinality flips so downstream
+            # consumers (fan-out detector, plan emitter) see the
+            # shape that actually applies to the SQL they emit. The
+            # direction signal comes from `_ChainEdge.is_reverse_traversal`
+            # (set deterministically at graph-build time) rather than
+            # an on-pair comparison — same-column-name FK joins would
+            # have silently bypassed an on-pair check.
+            effective_cardinality = (
+                flip_cardinality(edge.join.cardinality)
+                if edge.is_reverse_traversal
+                else edge.join.cardinality
+            )
             resolved_joins[edge.target_entity_in_chain] = ResolvedJoin(
                 canonical_name=edge.join.name,
                 source_alias=source_alias,
@@ -327,7 +352,7 @@ def resolve_metric_plan(
                 target_table=target_table,
                 target_alias=_alias_for(edge.target_entity_in_chain),
                 on_pairs=edge.on_pairs_in_chain_direction,
-                cardinality=edge.join.cardinality,
+                cardinality=effective_cardinality,
             )
         # Final ResolvedJoin for the requested entity is now cached.
         join = resolved_joins[entity_name]
@@ -453,16 +478,64 @@ def resolve_metric_plan(
                 )
                 break
 
+    # Time-dimension inheritance: when the metric has no time_dimension
+    # of its own AND the caller passed `time_grain`, BFS the canonical-
+    # join graph for reachable entities with timestamp columns (over
+    # non-fan-out edges only). 1 candidate → inherit; the inherited
+    # dimension supports the full grain set so v1.2 callers can bucket
+    # without the metric author having to pre-declare. 2+ → raise
+    # `AmbiguousTimeDimensionError` so the agent picks one explicitly.
+    # 0 → degrade gracefully: ship the plan unbucketed with resolution
+    # `unavailable`; the MCP layer surfaces this as the
+    # `time_dimension_unavailable` degradation reason so the agent gets
+    # a useful answer plus context rather than a hard error.
+    time_dimension_resolution: Literal["local", "inherited", "unavailable"] = "local"
+    inherited_time_dimension: str | None = None
+    inherited_via: tuple[str, ...] = ()
+    effective_time_bucket: TimeGrain | None = time_grain
+    if metric.time_dimension is None and time_grain is not None:
+        g = _ensure_graph()
+        candidates = _find_inherited_time_dimension(
+            graph=g,
+            anchor=metric.entity,
+            store=store,
+            source_connection_id=source_connection_id,
+        )
+        if len(candidates) > 1:
+            raise AmbiguousTimeDimensionError(
+                anchor_entity=metric.entity,
+                candidates=tuple(candidates),
+            )
+        if len(candidates) == 1:
+            inherited_time_dimension, inherited_via = candidates[0]
+            time_dimension_resolution = "inherited"
+            # Force the JOIN to the inherited entity into the plan so
+            # the emitter can reference it by alias. `_resolve` does
+            # column-existence validation + populates `resolved_joins`
+            # as a side effect — we discard the returned ResolvedColumn
+            # because we only need the join materialised.
+            _resolve(inherited_time_dimension, kind="group_by")
+            # `_resolve` may have grown `resolved_joins`; rebuild the
+            # ordered tuple so the plan ships every required join in
+            # topological order.
+            ordered_joins = tuple(resolved_joins.values())
+        else:
+            time_dimension_resolution = "unavailable"
+            effective_time_bucket = None
+
     return MetricPlan(
         metric=metric,
         anchor_table=anchor_table,
         anchor_alias=anchor_alias,
         group_by_columns=group_by_columns_ordered,
-        time_bucket=time_grain,
+        time_bucket=effective_time_bucket,
         filter_predicates=tuple(filter_predicates),
         limit=limit,
         joins=ordered_joins,
         order_by_clauses=tuple(order_by_resolved),
+        time_dimension_resolution=time_dimension_resolution,
+        inherited_time_dimension=inherited_time_dimension,
+        time_dimension_inherited_via=inherited_via,
     )
 
 
@@ -477,34 +550,64 @@ class _ChainEdge:
     canonical join in the reverse of its stored direction, the
     on_pairs are SWAPPED at edge-construction time so emit can use
     them verbatim — the emitter does not need to know about direction.
+
+    `is_reverse_traversal` is the load-bearing direction signal for
+    downstream consumers (fan-out detector, cardinality reporter):
+    True when BFS walked the canonical join from its stored
+    `target_entity` toward its stored `source_entity` (i.e. reverse
+    of how the operator confirmed it). The earlier
+    `on_pairs != join.on` heuristic gave a false NEGATIVE whenever
+    the join's source and target columns shared a name (e.g. an FK
+    join on `customer_id` between `rental.customer_id` and
+    `customer.customer_id`) — the swapped pairs compared equal to
+    the stored pairs and the flip silently never fired. This explicit
+    boolean replaces that comparison.
     """
 
-    __slots__ = ("join", "on_pairs_in_chain_direction", "target_entity_in_chain")
+    __slots__ = (
+        "is_reverse_traversal",
+        "join",
+        "on_pairs_in_chain_direction",
+        "target_entity_in_chain",
+    )
 
     def __init__(
         self,
         join: CanonicalJoin,
         target_entity_in_chain: str,
         on_pairs_in_chain_direction: tuple[JoinColumnPair, ...],
+        is_reverse_traversal: bool,
     ) -> None:
         self.join = join
         self.target_entity_in_chain = target_entity_in_chain
         self.on_pairs_in_chain_direction = on_pairs_in_chain_direction
+        self.is_reverse_traversal = is_reverse_traversal
 
 
 # A directed-from-traversal-perspective adjacency map: at each entity
-# node, the list of (neighbor_entity, canonical_join, on_pairs_oriented)
-# triples representing every way to leave that node along a canonical
-# join. Each stored canonical join contributes TWO entries (one per
-# endpoint) since BFS over canonical joins is undirected.
-_JoinGraph = dict[str, list[tuple[str, CanonicalJoin, tuple[JoinColumnPair, ...]]]]
+# node, the list of `(neighbor_entity, canonical_join, on_pairs_oriented,
+# is_reverse_traversal)` tuples representing every way to leave that
+# node along a canonical join. Each stored canonical join contributes
+# TWO entries (one per endpoint) since BFS over canonical joins is
+# undirected. The 4-tuple's last element is True when the entry walks
+# the join in the reverse of its stored direction; downstream
+# cardinality logic uses this rather than comparing on-pair tuples
+# (the earlier on-pair heuristic broke on same-column-name FK joins).
+_JoinGraph = dict[
+    str,
+    list[tuple[str, CanonicalJoin, tuple[JoinColumnPair, ...], bool]],
+]
 
 
 def _build_join_graph(edges: list[CanonicalJoin]) -> _JoinGraph:
     graph: _JoinGraph = {}
     for join in edges:
         # Stored orientation: source_entity → target_entity along on_pairs.
-        graph.setdefault(join.source_entity, []).append((join.target_entity, join, tuple(join.on)))
+        # `is_reverse_traversal=False` — this edge walks the join in the
+        # direction it was stored.
+        graph.setdefault(join.source_entity, []).append(
+            (join.target_entity, join, tuple(join.on), False)
+        )
         # Reverse orientation: traversing from target_entity, the
         # on-pair columns flip so emit can produce
         # `{neighbor_alias}.{source_column} = {origin_alias}.{target_column}`
@@ -513,6 +616,10 @@ def _build_join_graph(edges: list[CanonicalJoin]) -> _JoinGraph:
         # cast_type, nullable_override) carry over to the reverse-
         # direction edge automatically instead of being silently
         # dropped by a positional constructor.
+        # `is_reverse_traversal=True` — flag this edge as walking the
+        # join from its stored target toward its stored source so the
+        # cardinality flip fires deterministically (without depending
+        # on whether the on-pair columns happen to share names).
         swapped = tuple(
             dataclasses.replace(
                 p,
@@ -521,7 +628,7 @@ def _build_join_graph(edges: list[CanonicalJoin]) -> _JoinGraph:
             )
             for p in join.on
         )
-        graph.setdefault(join.target_entity, []).append((join.source_entity, join, swapped))
+        graph.setdefault(join.target_entity, []).append((join.source_entity, join, swapped, True))
     # Deterministic neighbor order so BFS path ties resolve identically
     # across runs — sort by canonical-join name within each adjacency
     # list.
@@ -578,11 +685,11 @@ def _find_canonical_chain(
     """
     if anchor not in graph or target not in graph:
         # If EITHER endpoint has no edges in the canonical-join graph,
-        # no path exists. (The original PR-6h.1 guard used `and`, which
-        # was a strict subset of correct unreachability: an anchor with
-        # no edges still triggers an empty BFS that returns the same
+        # no path exists. An earlier guard used `and`, which was a
+        # strict subset of correct unreachability: an anchor with no
+        # edges still triggers an empty BFS that returns the same
         # UnreachableEntityError downstream, but the early-out is more
-        # honest about what we know up-front.)
+        # honest about what we know up-front.
         raise UnreachableEntityError(anchor_entity=anchor, target_entity=target)
 
     # Pass 1 — structural BFS over entity pairs.
@@ -630,7 +737,9 @@ def _find_canonical_chain(
     consumed_via: set[str] = set()
     chosen_path = feasible_paths[0]
     for predecessor, neighbor in chosen_path:
-        candidates = [(j, op) for (n, j, op) in graph.get(predecessor, []) if n == neighbor]
+        candidates = [
+            (j, op, rev) for (n, j, op, rev) in graph.get(predecessor, []) if n == neighbor
+        ]
         if not candidates:  # pragma: no cover — defensive
             # Pass-1/pass-2 invariant violation: pass 1 only emits a
             # hop `(predecessor, neighbor)` when `neighbor` appears in
@@ -648,7 +757,7 @@ def _find_canonical_chain(
                 f"is broken. This is a compiler bug."
             )
         if len(candidates) == 1:
-            chosen_join, chosen_pairs = candidates[0]
+            chosen_join, chosen_pairs, chosen_reverse = candidates[0]
             # Even on unique-canonical hops, record consumption: the
             # via= name may have been the lever that narrowed pass 1
             # structural ambiguity, in which case it constrained THIS
@@ -656,12 +765,12 @@ def _find_canonical_chain(
             if chosen_join.name in via:
                 consumed_via.add(chosen_join.name)
         else:
-            matching = [(j, op) for (j, op) in candidates if j.name in via]
+            matching = [(j, op, rev) for (j, op, rev) in candidates if j.name in via]
             if len(matching) == 0:
                 raise AmbiguousJoinError(
                     anchor_entity=predecessor,
                     target_entity=neighbor,
-                    candidate_join_names=tuple(sorted(j.name for (j, _op) in candidates)),
+                    candidate_join_names=tuple(sorted(j.name for (j, _op, _rev) in candidates)),
                 )
             if len(matching) > 1:
                 # via= matched 2+ parallels at this hop — caller is
@@ -671,14 +780,15 @@ def _find_canonical_chain(
                 raise AmbiguousJoinError(
                     anchor_entity=predecessor,
                     target_entity=neighbor,
-                    candidate_join_names=tuple(sorted(j.name for (j, _op) in matching)),
+                    candidate_join_names=tuple(sorted(j.name for (j, _op, _rev) in matching)),
                 )
-            chosen_join, chosen_pairs = matching[0]
+            chosen_join, chosen_pairs, chosen_reverse = matching[0]
             consumed_via.add(chosen_join.name)
         edge = _ChainEdge(
             join=chosen_join,
             target_entity_in_chain=neighbor,
             on_pairs_in_chain_direction=chosen_pairs,
+            is_reverse_traversal=chosen_reverse,
         )
         chain.append((predecessor, edge))
     return chain, frozenset(consumed_via)
@@ -711,7 +821,7 @@ def _structural_shortest_paths(
         for entity, path in frontier:
             # Collapse parallel canonicals on each (entity, neighbor)
             # pair into a single entity-pair edge for this pass.
-            neighbor_entities = {n for (n, _j, _op) in graph.get(entity, [])}
+            neighbor_entities = {n for (n, _j, _op, _rev) in graph.get(entity, [])}
             for neighbor in sorted(neighbor_entities):
                 if neighbor in visited:
                     continue
@@ -736,7 +846,7 @@ def _canonicals_on_structural_path(
     """
     out: list[CanonicalJoin] = []
     for predecessor, neighbor in path:
-        for n, join, _op in graph.get(predecessor, []):
+        for n, join, _op, _rev in graph.get(predecessor, []):
             if n == neighbor:
                 out.append(join)
     return out
@@ -778,7 +888,7 @@ def _render_structural_path_as_canonical_sequence(
     names: list[str] = []
     for predecessor, neighbor in path:
         canonicals_on_hop = sorted(
-            j.name for (n, j, _op) in graph.get(predecessor, []) if n == neighbor
+            j.name for (n, j, _op, _rev) in graph.get(predecessor, []) if n == neighbor
         )
         if not canonicals_on_hop:  # pragma: no cover — defensive
             # Same invariant as pass 2's empty-candidates guard:
@@ -885,3 +995,98 @@ def _lookup_optional_table(store: Store, entity_name: str, source_connection_id:
     if entity is None:
         return None
     return entity.qualified_table
+
+
+# ----- time-dimension inheritance --------------------------------------------
+#
+# Heuristic detection of columns the agent is likely to mean by "time".
+# Substring match against the lowercased column data type so dialect
+# variants (`timestamp`, `timestamp with time zone`, `timestamptz`,
+# `datetime`, `date`) all qualify. False positives are bounded: a
+# column typed `text` containing ISO dates would not be picked, which
+# is the correct conservative behaviour. False negatives (a custom
+# domain type that wraps a timestamp) require the metric author to
+# declare `time_dimension` explicitly — the agent gets a helpful
+# `AmbiguousTimeDimensionError` candidate list to copy from when the
+# heuristic fires.
+_TIMESTAMP_DATA_TYPE_KEYWORDS: tuple[str, ...] = (
+    "timestamp",
+    "datetime",
+    "date",
+)
+
+
+def _is_timestamp_type(data_type: str) -> bool:
+    """True when `data_type` names a temporal column type by substring."""
+    lower = data_type.lower()
+    return any(kw in lower for kw in _TIMESTAMP_DATA_TYPE_KEYWORDS)
+
+
+def _find_inherited_time_dimension(
+    *,
+    graph: _JoinGraph,
+    anchor: str,
+    store: Store,
+    source_connection_id: str,
+) -> list[tuple[str, tuple[str, ...]]]:
+    """Return candidate (`<entity>.<column>`, join-chain) pairs the
+    resolver could use as an inherited time_dimension.
+
+    Walks the canonical-join graph from `anchor` over edges whose
+    effective cardinality in the chain direction is `many_to_one` or
+    `one_to_one` — these are NON-fan-out joins, so bucketing on the
+    target's timestamp won't inflate aggregates. Edges with unknown
+    cardinality are skipped (defensive: prefer to ask the agent than
+    silently over-count). The anchor's own table is excluded — when
+    the anchor has a timestamp column, the metric author should have
+    declared `time_dimension` directly.
+
+    The returned ordering is BFS traversal order: shortest chains first,
+    alphabetical tiebreak by canonical-join name (inherited from the
+    pre-sorted adjacency list in `_build_join_graph`).
+    """
+    candidates: list[tuple[str, tuple[str, ...]]] = []
+    # `visited` maps entity_name → shortest path of join names from anchor.
+    visited: dict[str, tuple[str, ...]] = {anchor: ()}
+    frontier: deque[str] = deque([anchor])
+    while frontier:
+        current = frontier.popleft()
+        current_path = visited[current]
+        for neighbor, join, _on_pairs, _rev in graph.get(current, []):
+            if neighbor in visited:
+                continue
+            # Direction-aware cardinality: when the canonical join is
+            # traversed from `current` toward `neighbor` and stored
+            # source == current, the stored cardinality applies as-is.
+            # Otherwise we're walking it in reverse and need to flip.
+            if join.source_entity == current:
+                effective = join.cardinality
+            else:
+                effective = flip_cardinality(join.cardinality)
+            # Only follow paths that don't fan out — many_to_one and
+            # one_to_one preserve anchor row count; many_to_many and
+            # one_to_many (in chain direction) would multiply rows
+            # before bucketing, producing inflated sums.
+            if effective not in ("many_to_one", "one_to_one"):
+                continue
+            new_path = (*current_path, join.name)
+            visited[neighbor] = new_path
+            frontier.append(neighbor)
+            # Inspect the reached entity's bound table for timestamp
+            # columns. The entity row is guaranteed to exist because
+            # the canonical join's FK to `entities` covers both ends.
+            entity = store.get_entity(neighbor, source_connection_id=source_connection_id)
+            if entity is None:  # pragma: no cover — FK guarantee
+                continue
+            schema_name, table_name = entity.qualified_table.split(".", 1)
+            table = store.get_table(
+                schema_name=schema_name,
+                name=table_name,
+                source_connection_id=source_connection_id,
+            )
+            if table is None:  # pragma: no cover — store corruption guard
+                continue
+            for col in table.columns:
+                if _is_timestamp_type(col.data_type):
+                    candidates.append((f"{neighbor}.{col.name}", new_path))
+    return candidates

@@ -681,3 +681,128 @@ class TestCycleDetection:
         ]
         report = detect_cycles_in_join_graph(joins)
         assert len(report.cycles) == 1
+
+
+# ----- _infer_fk_cardinality -------------------------------------------------
+
+
+class TestInferFkCardinality:
+    """Cardinality inference from FK + PK info. The pragmatic rule:
+    when `fk.target_columns == target_table.primary_key_columns`, the
+    target side is uniquely identified by the FK, so the join is
+    `many_to_one` (the typical OLTP shape).
+    """
+
+    @staticmethod
+    def _column(
+        name: str,
+        table: str,
+        schema: str = "public",
+        *,
+        pk: bool = False,
+        ord_: int = 1,
+    ) -> Column:
+        return Column(
+            name=name,
+            table_name=table,
+            schema_name=schema,
+            data_type="bigint",
+            nullable=False,
+            ordinal_position=ord_,
+            is_primary_key=pk,
+        )
+
+    def test_fk_to_pk_target_is_many_to_one(self) -> None:
+        # Typical OLTP: orders.user_id -> users.id where users.id is PK.
+        from schemabrain.joins.suggest import _infer_fk_cardinality
+
+        source_table = Table(
+            schema_name="public",
+            name="orders",
+            columns=(
+                self._column("id", "orders", pk=True, ord_=1),
+                self._column("user_id", "orders", ord_=2),
+            ),
+        )
+        target_table = Table(
+            schema_name="public",
+            name="users",
+            columns=(self._column("id", "users", pk=True),),
+        )
+        fk = ForeignKey(
+            name="orders_user_id_fkey",
+            source_columns=("user_id",),
+            target_schema="public",
+            target_table="users",
+            target_columns=("id",),
+        )
+        assert (
+            _infer_fk_cardinality(fk=fk, source_table=source_table, target_table=target_table)
+            == "many_to_one"
+        )
+
+    def test_fk_with_both_pks_unique_is_one_to_one(self) -> None:
+        # User profile pattern: user_profiles.user_id is BOTH the PK
+        # of user_profiles AND the FK to users.id. Both sides unique.
+        from schemabrain.joins.suggest import _infer_fk_cardinality
+
+        source_table = Table(
+            schema_name="public",
+            name="user_profiles",
+            columns=(self._column("user_id", "user_profiles", pk=True),),
+        )
+        target_table = Table(
+            schema_name="public",
+            name="users",
+            columns=(self._column("id", "users", pk=True),),
+        )
+        fk = ForeignKey(
+            name="user_profiles_user_id_fkey",
+            source_columns=("user_id",),
+            target_schema="public",
+            target_table="users",
+            target_columns=("id",),
+        )
+        assert (
+            _infer_fk_cardinality(fk=fk, source_table=source_table, target_table=target_table)
+            == "one_to_one"
+        )
+
+    def test_no_target_table_returns_none(self) -> None:
+        # Defensive: without the target table we can't know its PK.
+        from schemabrain.joins.suggest import _infer_fk_cardinality
+
+        fk = ForeignKey(
+            name="x_fkey",
+            source_columns=("user_id",),
+            target_schema="public",
+            target_table="users",
+            target_columns=("id",),
+        )
+        assert _infer_fk_cardinality(fk=fk, source_table=None, target_table=None) is None
+
+    def test_fk_target_not_pk_returns_none(self) -> None:
+        # When target columns don't match the target table's PK,
+        # cardinality is unrecognisable from FK info alone.
+        from schemabrain.joins.suggest import _infer_fk_cardinality
+
+        target_table = Table(
+            schema_name="public",
+            name="users",
+            columns=(
+                self._column("id", "users", pk=True, ord_=1),
+                self._column("email", "users", ord_=2),
+            ),
+        )
+        fk = ForeignKey(
+            name="x_email_fkey",
+            source_columns=("user_email",),
+            target_schema="public",
+            target_table="users",
+            target_columns=("email",),  # NOT the PK
+        )
+        assert _infer_fk_cardinality(fk=fk, source_table=None, target_table=target_table) is None
+
+
+# Re-imports for the test class above — these test cases use Column,
+# Table, ForeignKey from core/models.

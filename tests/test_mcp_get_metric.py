@@ -651,6 +651,151 @@ class TestEnvelopeMapping:
         assert structured["status"] == "error"
         assert structured["error"]["kind"] == "invalid_time_grain"
 
+    def test_ambiguous_time_dimension_maps_to_error(self, tmp_path: Path) -> None:
+        """Charter v1.2: when a non-temporal metric has 2+ reachable
+        timestamp columns via canonical-join chains, the resolver
+        raises `AmbiguousTimeDimensionError` and the envelope maps to
+        the `ambiguous_time_dimension` kind. Recovery routes the agent
+        back to `get_metric` so it can re-call with explicit guidance.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            # order_item (anchor, no timestamp) -> order (created_at) -> user (signup_at).
+            # Both are reachable via many_to_one chains: 2 candidates.
+            store.write_table(
+                Table(
+                    name="order_items",
+                    schema_name="public",
+                    columns=(
+                        Column(
+                            name="id",
+                            table_name="order_items",
+                            schema_name="public",
+                            data_type="bigint",
+                            nullable=False,
+                            ordinal_position=1,
+                            is_primary_key=True,
+                        ),
+                        Column(
+                            name="order_id",
+                            table_name="order_items",
+                            schema_name="public",
+                            data_type="bigint",
+                            nullable=False,
+                            ordinal_position=2,
+                        ),
+                        Column(
+                            name="quantity",
+                            table_name="order_items",
+                            schema_name="public",
+                            data_type="integer",
+                            nullable=False,
+                            ordinal_position=3,
+                        ),
+                    ),
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_table(_orders_table(), source_connection_id=SOURCE)
+            store.write_table(
+                Table(
+                    name="signed_users",
+                    schema_name="public",
+                    columns=(
+                        Column(
+                            name="id",
+                            table_name="signed_users",
+                            schema_name="public",
+                            data_type="bigint",
+                            nullable=False,
+                            ordinal_position=1,
+                            is_primary_key=True,
+                        ),
+                        Column(
+                            name="signup_at",
+                            table_name="signed_users",
+                            schema_name="public",
+                            data_type="timestamptz",
+                            nullable=False,
+                            ordinal_position=2,
+                        ),
+                    ),
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_entity(
+                Entity(
+                    name="order_item",
+                    description="",
+                    binding=SingleTableBinding(qualified_table="public.order_items"),
+                    identity="id",
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_entity(
+                Entity(
+                    name="order",
+                    description="",
+                    binding=SingleTableBinding(qualified_table="public.orders"),
+                    identity="id",
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_entity(
+                Entity(
+                    name="signed_user",
+                    description="",
+                    binding=SingleTableBinding(qualified_table="public.signed_users"),
+                    identity="id",
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_canonical_join(
+                CanonicalJoin(
+                    name="order_item_order",
+                    description="",
+                    source_entity="order_item",
+                    target_entity="order",
+                    on=(JoinColumnPair(source_column="order_id", target_column="id"),),
+                    cardinality="many_to_one",
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_canonical_join(
+                CanonicalJoin(
+                    name="order_signed_user",
+                    description="",
+                    source_entity="order",
+                    target_entity="signed_user",
+                    on=(JoinColumnPair(source_column="user_id", target_column="id"),),
+                    cardinality="many_to_one",
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_metric(
+                Metric(
+                    name="units_sold",
+                    description="",
+                    entity="order_item",
+                    measure=MetricMeasure(agg="sum", column="quantity"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            executor = _StubExecutor()
+            app = _build(store, executor)
+            _content, structured = _call(
+                app,
+                {
+                    "name": "units_sold",
+                    "time_grain": "month",
+                },
+            )
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "ambiguous_time_dimension"
+        recovery = structured["error"]["recovery"]
+        assert recovery["suggested_tool"] == "get_metric"
+
     def test_fan_out_join_maps_to_degraded(self, store_with_fan_out: SQLiteStore) -> None:
         # one_to_many join → SQL still executes but envelope status
         # surfaces `degraded` so the agent knows aggregation may
@@ -730,6 +875,51 @@ class TestEnvelopeMapping:
         )
         assert structured["status"] == "success"
         assert structured["degradation_reason"] is None
+
+    def test_time_dimension_unavailable_maps_to_degraded(self, tmp_path: Path) -> None:
+        """Charter v1.2: when the metric has no local `time_dimension`
+        and the caller passes `time_grain`, the resolver BFSes the
+        canonical-join graph for reachable timestamp columns. When
+        none are reachable over non-fan-out edges, the plan runs
+        unbucketed and the envelope surfaces
+        `degradation_reason='time_dimension_unavailable'` so the
+        agent can decide whether to widen the metric definition.
+
+        Setup: metric anchored on `customer` (no timestamp), only
+        outgoing edge is the reverse-traversal of `customer_orders`
+        (originally m:1 from order→customer, walked back it becomes
+        1:m → fan-out filter rejects). No reachable timestamp; the
+        inheritance step marks the resolution as `unavailable`.
+        """
+        store = SQLiteStore(tmp_path / "store.db")
+        _seed(store)  # gives us order + customer + customer_orders
+        # Metric anchored on customer with no time_dimension. The
+        # `customer` entity's bound table has no timestamp column;
+        # the only join is `order→customer` (m:1), which the
+        # inheritance BFS walks backward as a fan-out edge and skips.
+        store.write_metric(
+            Metric(
+                name="customer_count",
+                description="",
+                entity="customer",
+                measure=MetricMeasure(agg="count", column="id"),
+                time_dimension=None,
+                time_grains=(),
+            ),
+            source_connection_id=SOURCE,
+        )
+        executor = _StubExecutor(rows=[{"customer_count": 42}])
+        app = _build(store, executor)
+        _content, structured = _call(
+            app,
+            {
+                "name": "customer_count",
+                "time_grain": "month",
+            },
+        )
+        assert structured["status"] == "degraded"
+        assert structured["degradation_reason"] == "time_dimension_unavailable"
+        assert structured["data"]["time_dimension_resolution"] == "unavailable"
 
     def test_no_executor_returns_internal_error(self, store_with_seed: SQLiteStore) -> None:
         # Build without an executor — get_metric is registered but

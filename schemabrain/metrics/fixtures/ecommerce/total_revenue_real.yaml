@@ -2,12 +2,12 @@
 # demo. Computes line-level revenue as `SUM(unit_price_cents * quantity)`
 # — the actual revenue, not a pre-aggregated `total_cents` column.
 #
-# This is the metric that closes the v1 DSL gap Claude diagnosed during
-# the PR-6h.3 Layer-B smoke: asked "what is per-product revenue?",
-# Claude correctly refused to fabricate it and pointed out that the
-# semantic layer didn't expose a way to compute SUM over a product of
-# columns. PR-7 added the composite-expression layer; this fixture
-# exercises it end-to-end.
+# Closes the v1 DSL gap where bare-column measures couldn't express
+# `SUM(unit_price * quantity)`: asked "what is per-product revenue?",
+# a metric anchored on `order_item` with measure_column=total_cents
+# would be wrong (totals are stored at the order level, not the line
+# level). The composite-expression layer accepts arithmetic over the
+# anchor's columns; this fixture exercises it end-to-end.
 #
 # To apply:
 #   schemabrain metrics apply schemabrain/metrics/fixtures/ecommerce/total_revenue_real.yaml \

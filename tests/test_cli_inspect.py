@@ -327,7 +327,7 @@ class TestInspectDrill:
         )
         assert exit_code == 1
         err = capsys.readouterr().err
-        assert "no entity named 'nonexistent'" in err
+        assert "no entity, metric, or join named 'nonexistent'" in err
 
     def test_drill_without_source_walks_every_source(
         self,
@@ -358,7 +358,38 @@ class TestInspectDrill:
         exit_code = main(["inspect", "ghost", "--store-path", str(empty_store)])
         assert exit_code == 1
         err = capsys.readouterr().err
-        assert "no entity named 'ghost'" in err
+        assert "no entity, metric, or join named 'ghost'" in err
+
+    def test_drill_into_metric_renders_metric_detail(
+        self,
+        fully_populated_store: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # `total_revenue` exists only as a metric (no entity / join
+        # of the same name). The drill path should fall through
+        # entity → metric and render the metric detail surface.
+        exit_code = main(["inspect", "total_revenue", "--store-path", str(fully_populated_store)])
+        assert exit_code == 0
+        err = capsys.readouterr().err
+        assert "metric:total_revenue" in err
+        # Measure shape rendered.
+        assert "sum(total_cents)" in err
+        # 2D trust signal rendered as a Trust: line.
+        assert "Trust:" in err
+
+    def test_drill_into_join_renders_join_detail(
+        self,
+        fully_populated_store: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        exit_code = main(["inspect", "customer_orders", "--store-path", str(fully_populated_store)])
+        assert exit_code == 0
+        err = capsys.readouterr().err
+        assert "join:customer_orders" in err
+        # ON-clause rendered with entity-qualified columns.
+        assert "customer.id = order.user_id" in err
+        # Cardinality on the brand line.
+        assert "one_to_many" in err
 
 
 # ----- operational refusals -------------------------------------------------

@@ -228,6 +228,20 @@ class TestCanonicalJoinValidation:
         for origin in ("manual", "suggested", "dbt_import"):
             _make_join(origin=origin)
 
+    def test_rejects_unknown_inference_method(self) -> None:
+        # Charter v1.2 2D trust signal: the closed-set check in
+        # `__post_init__` rejects any inference_method outside the
+        # five-value Literal. Mirrors the equivalent on `Entity` and
+        # `Metric`.
+        with pytest.raises(ValueError, match="inference_method"):
+            _make_join(inference_method="bogus")
+
+    def test_rejects_unknown_validation_state(self) -> None:
+        # Charter v1.2 2D trust signal: `validation_state` must be
+        # one of {draft, applied, confirmed}.
+        with pytest.raises(ValueError, match="validation_state"):
+            _make_join(validation_state="archived")
+
 
 # ----- Cardinality -----------------------------------------------------------
 
@@ -277,3 +291,42 @@ class TestCanonicalJoinCardinality:
         a = _make_join()
         b = _make_join(cardinality=None)
         assert a == b
+
+
+# ----- flip_cardinality ------------------------------------------------------
+
+
+class TestFlipCardinality:
+    """`flip_cardinality(c)` mirrors a stored cardinality across the
+    reverse-traversal axis. Load-bearing for the BFS-traversal-aware
+    fan-out detector — a stored `many_to_one` traversed in reverse
+    actually multiplies anchor rows in the chain's direction.
+    """
+
+    def test_one_to_many_flips_to_many_to_one(self) -> None:
+        from schemabrain.core.join import flip_cardinality
+
+        assert flip_cardinality("one_to_many") == "many_to_one"
+
+    def test_many_to_one_flips_to_one_to_many(self) -> None:
+        from schemabrain.core.join import flip_cardinality
+
+        assert flip_cardinality("many_to_one") == "one_to_many"
+
+    def test_one_to_one_is_symmetric(self) -> None:
+        from schemabrain.core.join import flip_cardinality
+
+        assert flip_cardinality("one_to_one") == "one_to_one"
+
+    def test_many_to_many_is_symmetric(self) -> None:
+        from schemabrain.core.join import flip_cardinality
+
+        assert flip_cardinality("many_to_many") == "many_to_many"
+
+    def test_none_passes_through(self) -> None:
+        # `None` propagates so the worst-case "treat as many_to_many"
+        # downstream behaves identically regardless of traversal
+        # direction.
+        from schemabrain.core.join import flip_cardinality
+
+        assert flip_cardinality(None) is None

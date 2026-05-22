@@ -212,6 +212,14 @@ class WizardConfig:
     no_joins: bool = False
     from_dbt: Path | None = None
     skip_llm_confirm: bool = False
+    # Default `--pii-block` categories written into the host snippet.
+    # `("contact",)` is the safe default — blocks the most universally
+    # sensitive PII (email, phone, address) without surprising the
+    # operator with over-broad refusals on benign columns. `()` opts
+    # out entirely (no `--pii-block` flag added to the snippet, server
+    # runs with enforcement off — useful for development databases
+    # or fully synthetic fixtures).
+    pii_block: tuple[str, ...] = ("contact",)
 
     def __post_init__(self) -> None:
         if self.host not in _VALID_HOSTS:
@@ -438,12 +446,11 @@ def _prompt_llm_confirmation(*, stage_label: str, cost_cap_usd: float) -> bool:
 
     The CLI's ``_wizard_stage_context`` registers the active Rich
     spinner before the stage handler runs; ``pause_active_spinner``
-    stops it for the duration of the ``input()`` call. Smoke
-    2026-05-19 surfaced the bug this fixes — the spinner kept
-    rendering during the prompt and the user read it as "stage is
-    already running" rather than "waiting on Enter". When there's no
-    active spinner (non-spinner stages, test fixtures, ``--quiet``)
-    the helper is a no-op.
+    stops it for the duration of the ``input()`` call. Without the
+    pause the spinner keeps rendering during the prompt and the user
+    reads it as "stage is already running" rather than "waiting on
+    Enter". When there's no active spinner (non-spinner stages, test
+    fixtures, ``--quiet``) the helper is a no-op.
     """
     if not sys.stdin.isatty():
         return True
@@ -2459,6 +2466,7 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
                 source_url=cfg.source_url,
                 store_path=cfg.store_path,
                 env_var_name=cfg.env_var_name,
+                pii_block=cfg.pii_block,
             )
         except InitRefusal as refusal:
             return _failed_from_refusal(stage=6, name="wire_host", error=refusal.error)
@@ -2520,6 +2528,7 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
             env_var_name=cfg.env_var_name,
             skip_index=True,
             assume_yes=effective_assume_yes,
+            pii_block=cfg.pii_block,
         )
     except InitRefusal as refusal:
         return _failed_from_refusal(stage=6, name="wire_host", error=refusal.error)

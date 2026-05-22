@@ -31,7 +31,7 @@ schemabrain init
 # then ask your MCP host: "list the entities Schema Brain knows about"
 ```
 
-**Cost.** ~$0.01 to index 7 tables · ~$0.03 for 87 columns · **$0** to re-index unchanged schemas. Bounded by per-stage cost caps; runs on Claude Haiku 4.5.
+**Cost.** ~$0.01 to index the bundled 7-table demo (30 columns) · ~$0.03 for a 87-column Pagila sample · **$0** to re-index unchanged schemas. Bounded by per-stage cost caps; runs on Claude Haiku 4.5.
 
 **Status: 0.3.0 (alpha).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap. The longer-term position is the SQL-boundary safety layer for AI agents — see [Where it's going](#where-its-going).
 
@@ -148,7 +148,7 @@ Stage 1 of `schemabrain init` opens the source with `default_transaction_read_on
 
 ### 3. PII-aware refusal at the tool boundary
 
-Any `get_metric` touching a blocked PII category returns a `refused` envelope. The compiled SQL never runs; the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`.
+Any `get_metric` touching a blocked PII category returns a `refused` envelope; the compiled SQL never runs and the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`. `describe_entity` enforces the same policy at the column level — the agent still sees the entity and its non-PII columns, but blocked columns ship with `redacted=True` and the LLM-enriched description cleared. `schemabrain init` writes `--pii-block contact` into the Claude Desktop snippet by default so email / phone / address columns are blocked on a fresh install; widen with `--pii-block contact,health` and other categories as needed.
 
 ```bash
 schemabrain serve --pii-block contact,health
@@ -277,7 +277,7 @@ So the engineering order is **schema intelligence → semantic substrate → saf
 
 The five most common first-run failures. Full troubleshooter in [`docs/setup.md`](docs/setup.md#troubleshooting).
 
-- **`pip install schemabrain` gave me an older version.** Check `schemabrain --version`. If it's not 0.3.0 your pip cache is stale — run `pip install --upgrade schemabrain`.
+- **`pip install schemabrain` gave me an older version.** Check `schemabrain --version`. If it doesn't match the [latest release](https://pypi.org/project/schemabrain/) your pip cache is stale — run `pip install --upgrade schemabrain`. `schemabrain init` writes the same version into the Claude Desktop snippet (`uvx schemabrain==<pin>`) so it stays reproducible across restarts; bump the pin in the snippet manually after upgrading via pip.
 - **`init` reports `source unreachable`.** Postgres may not be ready on first run — wait a few seconds and re-run. For your own database, verify host, port, and credentials. Connection URLs in any form are accepted (`postgresql://`, `postgres://`, `postgresql+psycopg://`).
 - **The first `init` or `schemabrain index` hangs for ~60 seconds.** Normal. The first index downloads the ONNX embedding model (~67 MB) and makes one LLM call per column. Subsequent runs are fast.
 - **`init` fails at stage 6 "wire host".** Claude Desktop must be installed first — Schema Brain writes into its config file, which doesn't exist until Claude Desktop has launched at least once.

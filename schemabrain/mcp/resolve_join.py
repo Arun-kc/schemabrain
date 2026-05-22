@@ -219,6 +219,8 @@ def _render_join_info(
         ],
         sql_skeleton=sql_skeleton,
         token_estimate=0,  # placeholder; `_with_token_estimate` rebuilds
+        inference_method=join.inference_method,
+        validation_state=join.validation_state,
     )
     return _with_token_estimate(partial)
 

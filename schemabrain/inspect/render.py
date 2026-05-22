@@ -41,6 +41,8 @@ from schemabrain.inspect.engine import (
     AnchoredMetric,
     EntityColumnDetail,
     EntityDetail,
+    JoinDetail,
+    MetricDetail,
     RelatedEntity,
     StoreSummary,
 )
@@ -116,14 +118,13 @@ def render_summary(
         f"{summary.join_count} join"
         f"{'' if summary.join_count == 1 else 's'}"
     )
-    # Smoke 2026-05-19: when the store holds data from more than one
-    # source-id (typically: pre-existing rows from an older
-    # schemabrain version's `_canonical_url` plus fresh rows from
-    # the current version), surface a banner so the operator can
-    # tell why the counts above are larger than they expected from
-    # a single `init` run. The renderer already dedupes names
-    # cross-source, so this banner is the ONLY visual signal a
-    # second source-id exists in the store.
+    # When the store holds data from more than one source-id (typically:
+    # pre-existing rows from an older schemabrain version's
+    # `_canonical_url` plus fresh rows from the current version),
+    # surface a banner so the operator can tell why the counts above
+    # are larger than they expected from a single `init` run. The
+    # renderer already dedupes names cross-source, so this banner is
+    # the ONLY visual signal a second source-id exists in the store.
     if len(summary.source_connection_ids) > 1:
         console.print(
             f"[yellow]⚠[/] store has data from "
@@ -382,17 +383,33 @@ def _render_related(
     table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 2), expand=False)
     table.add_column("Entity", style="bold")
     table.add_column("Edge")
-    table.add_column("On")
+    # `overflow="fold"` lets the bridge-name line wrap across multiple
+    # display rows instead of truncating with an ellipsis when the
+    # synthesised name (`<a>_<b>_via_<junction>`) exceeds the column
+    # width Rich picks for narrow terminals.
+    table.add_column("On", overflow="fold")
     for rel in related:
         cardinality = rel.cardinality or "?"
         edge_cell = f"[dim]{rel.direction}[/] · {cardinality}"
-        # Format `on` pairs as `this.col = other.col` from the
-        # drilled entity's perspective; engine already normalised the
-        # pair order so the first element is the local column.
-        on_pretty = ", ".join(
-            f"{this_entity}.{local} = {rel.name}.{remote}" for local, remote in rel.on
-        )
-        on_cell = f"{on_pretty}\n[dim]via `{rel.join_name}`[/]"
+        if rel.via_junction is not None:
+            # Bridges read M:N from the drilled side; the on-pairs
+            # describe the FIRST leg only (drilled → junction), so the
+            # column-equality string is rendered against the junction
+            # rather than the far end. The second-line provides the
+            # bridge name + junction-mediated nature explicitly so the
+            # operator never confuses a bridge with a direct join.
+            on_pretty = ", ".join(
+                f"{this_entity}.{local} = {rel.via_junction}.{remote}" for local, remote in rel.on
+            )
+            on_cell = f"{on_pretty}\n[dim]bridge `{rel.join_name}` via {rel.via_junction}[/]"
+        else:
+            # Format `on` pairs as `this.col = other.col` from the
+            # drilled entity's perspective; engine already normalised
+            # the pair order so the first element is the local column.
+            on_pretty = ", ".join(
+                f"{this_entity}.{local} = {rel.name}.{remote}" for local, remote in rel.on
+            )
+            on_cell = f"{on_pretty}\n[dim]via `{rel.join_name}`[/]"
         table.add_row(rel.name, edge_cell, on_cell)
     console.print(table)
 
@@ -424,4 +441,141 @@ def _render_metrics(
     console.print(table)
 
 
-__all__ = ["render_entity_detail", "render_summary"]
+def render_metric_detail(detail: MetricDetail, *, console: Console) -> None:
+    """Render the drill view for one metric.
+
+    Shape:
+
+        ◆ metric:total_revenue · entity:order (public.orders) · origin suggested
+
+        Description:  Sum of order totals.
+
+        Measure:      sum(total_cents)
+        Time:         order.created_at — grains: day, week, month
+        Trust:        llm_suggested · applied (MEDIUM)
+
+    The brand line leads with `metric:<name>` mirroring the entity
+    drill's `entity:<name>` so the operator sees the same shape
+    regardless of which kind they drilled into. Anchor table is
+    surfaced in parentheses next to the anchor entity name — answers
+    "where does the measure column live?" without a second drill.
+    """
+    metric = detail.metric
+    text = Text()
+    text.append(GLYPH_BRAND, style="cyan")
+    text.append(" ")
+    text.append(f"metric:{metric.name}", style="bold")
+    text.append(f" {GLYPH_SEP} ", style="bright_black")
+    anchor_label = f"entity:{metric.entity}"
+    if detail.anchor is not None:
+        anchor_label = f"{anchor_label} ({detail.anchor.qualified_table})"
+    else:
+        anchor_label = f"{anchor_label} [red](orphaned)[/]"
+    text.append(anchor_label, style="green")
+    if metric.origin != "manual":
+        text.append(f" {GLYPH_SEP} ", style="bright_black")
+        text.append(f"origin {metric.origin}", style="dim")
+    console.print(text)
+    console.print()
+    if metric.description:
+        console.print(f"[dim]Description:[/]  {metric.description}")
+        console.print()
+
+    measure_body = (
+        metric.measure.column if metric.measure.column is not None else metric.measure.expression
+    )
+    console.print(f"[bold]Measure:[/]      [dim]{metric.measure.agg}({measure_body})[/]")
+    if metric.time_dimension is not None:
+        grain_str = ", ".join(metric.time_grains) if metric.time_grains else "[dim]none[/]"
+        console.print(f"[bold]Time:[/]         {metric.time_dimension} [dim]grains: {grain_str}[/]")
+    else:
+        console.print("[bold]Time:[/]         [dim]non-temporal[/]")
+    _render_trust_line(
+        inference_method=metric.inference_method,
+        validation_state=metric.validation_state,
+        console=console,
+    )
+
+
+def render_join_detail(detail: JoinDetail, *, console: Console) -> None:
+    """Render the drill view for one canonical join.
+
+    Shape:
+
+        ◆ join:customer_orders · order ← customer · cardinality many_to_one
+
+        Description:  ...
+
+        On:           order.user_id = customer.id
+        Trust:        fk_constraint · applied (HIGH)
+    """
+    join = detail.join
+    text = Text()
+    text.append(GLYPH_BRAND, style="cyan")
+    text.append(" ")
+    text.append(f"join:{join.name}", style="bold")
+    text.append(f" {GLYPH_SEP} ", style="bright_black")
+    text.append(f"{join.source_entity} → {join.target_entity}", style="green")
+    if join.cardinality is not None:
+        text.append(f" {GLYPH_SEP} ", style="bright_black")
+        text.append(f"cardinality {join.cardinality}", style="dim")
+    if join.origin != "manual":
+        text.append(f" {GLYPH_SEP} ", style="bright_black")
+        text.append(f"origin {join.origin}", style="dim")
+    console.print(text)
+    console.print()
+    if join.description:
+        console.print(f"[dim]Description:[/]  {join.description}")
+        console.print()
+
+    pretty_on = "  AND  ".join(
+        f"{join.source_entity}.{p.source_column} = {join.target_entity}.{p.target_column}"
+        for p in join.on
+    )
+    console.print(f"[bold]On:[/]           {pretty_on}")
+    if detail.source is not None and detail.target is not None:
+        console.print(
+            f"[bold]Tables:[/]       {detail.source.qualified_table} ↔ "
+            f"{detail.target.qualified_table}"
+        )
+    _render_trust_line(
+        inference_method=join.inference_method,
+        validation_state=join.validation_state,
+        console=console,
+    )
+
+
+def _render_trust_line(
+    *,
+    inference_method: str,
+    validation_state: str,
+    console: Console,
+) -> None:
+    """Render the Charter v1.2 2D trust signal as a single labelled line.
+
+    Computes the derived confidence label so the operator sees both
+    the raw 2D signal (`fk_constraint · applied`) AND the bucket the
+    MCP envelope would report (`HIGH`). Import is local because the
+    envelope module pulls in Pydantic transitively — keeping it
+    off the module-load path of the otherwise-light inspect renderer.
+    """
+    from schemabrain.mcp.envelope import derive_confidence
+
+    confidence = derive_confidence(inference_method, validation_state)  # type: ignore[arg-type]
+    confidence_style = {
+        "HIGH": "green",
+        "MEDIUM": "yellow",
+        "LOW": "red",
+    }.get(confidence, "")
+    console.print(
+        f"[bold]Trust:[/]        {inference_method} {GLYPH_SEP} {validation_state} "
+        f"[{confidence_style}]({confidence})[/]"
+    )
+
+
+__all__ = [
+    "render_entity_detail",
+    "render_join_detail",
+    "render_metric_detail",
+    "render_summary",
+]

@@ -34,8 +34,11 @@ from schemabrain.pii.categories import ColumnPiiTag
 
 
 @runtime_checkable
-class Store(Protocol):
+class Store(Protocol):  # pragma: no cover
     """The persistence boundary for Schema Brain.
+
+    Protocol class — method bodies are ellipses, never executed at
+    runtime; coverage tracks the concrete `SQLiteStore` instead.
 
     See module docstring for the broader rationale. Method docs are
     kept terse here because the concrete implementation
@@ -518,7 +521,7 @@ class Store(Protocol):
         Used by `schemabrain metrics audit --fix` to remove
         LLM-suggested metrics whose descriptions admit the metric does
         not actually compute what its name implies (the
-        `total_order_item_revenue` footgun pattern from PR-6h.2).
+        `total_order_item_revenue` footgun pattern).
         """
         ...
 

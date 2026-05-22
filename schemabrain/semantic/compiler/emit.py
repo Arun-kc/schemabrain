@@ -80,19 +80,25 @@ def emit_sql(plan: MetricPlan) -> tuple[str, dict[str, Any]]:
     group_by_parts: list[str] = []
     params: dict[str, Any] = {}
 
-    # Defense-in-depth invariant: a time bucket requires a time
-    # dimension on the metric. The resolver enforces this — but
-    # asserting here converts a future resolver bug into a crash
-    # instead of a silently-wrong SQL emission.
-    assert plan.time_bucket is None or plan.metric.time_dimension is not None, (
-        "compiler invariant: time_bucket requires metric.time_dimension"
+    # Defense-in-depth invariant: a time bucket requires either a
+    # locally-declared time_dimension on the metric OR a resolver-
+    # inherited one (charter v1.2 time-dimension inheritance). The
+    # resolver enforces this — but asserting here converts a future
+    # resolver bug into a crash instead of a silently-wrong SQL
+    # emission.
+    assert plan.time_bucket is None or (
+        plan.metric.time_dimension is not None or plan.inherited_time_dimension is not None
+    ), (
+        "compiler invariant: time_bucket requires either "
+        "metric.time_dimension or plan.inherited_time_dimension"
     )
 
     # Time bucket — date_trunc('day' | 'week' | ...) — emitted only
-    # when a grain was requested AND the metric has a time_dimension.
-    # The time dimension is on the anchor entity by Decision 2 (v1
-    # cross-entity time dimensions defer to v2), so the alias is
-    # always the anchor alias.
+    # when a grain was requested AND a time_dimension is resolved (local
+    # or inherited). For a local time_dimension the column lives on the
+    # anchor entity (current convention); for an inherited one the
+    # resolver has already added the chain of JOINs that brings the
+    # owning entity's alias into scope.
     #
     # `time_bucket` is interpolated as a SQL LITERAL rather than a
     # parameter binding. This is safe-by-construction because
@@ -112,11 +118,26 @@ def emit_sql(plan: MetricPlan) -> tuple[str, dict[str, Any]]:
     # out injection; quoting handles the keyword case Postgres rejects.
     quoted_anchor_alias = f'"{plan.anchor_alias}"'
 
-    if plan.time_bucket is not None and plan.metric.time_dimension is not None:
-        _, time_column = plan.metric.time_dimension.split(".", 1)
+    if plan.time_bucket is not None:
+        # Pick the time-dim column reference: local time_dimension lives
+        # on the anchor; inherited time_dimension lives on a joined
+        # entity whose alias the resolver has already brought into scope
+        # via plan.joins. The alias for entity X is `_alias_for(X)` —
+        # entity names are identifier-shaped so they double as aliases.
+        if plan.inherited_time_dimension is not None:
+            time_entity, time_column = plan.inherited_time_dimension.split(".", 1)
+            quoted_time_alias = f'"{time_entity}"'
+        elif plan.metric.time_dimension is not None:
+            _, time_column = plan.metric.time_dimension.split(".", 1)
+            quoted_time_alias = quoted_anchor_alias
+        else:  # pragma: no cover — defended by the invariant above
+            raise RuntimeError(
+                "emit invariant: time_bucket set but no time_dimension "
+                "(neither local nor inherited)"
+            )
         select_parts.append(
             f"date_trunc('{plan.time_bucket}', "
-            f'{quoted_anchor_alias}."{time_column}") AS time_bucket'
+            f'{quoted_time_alias}."{time_column}") AS time_bucket'
         )
         group_by_parts.append("time_bucket")
 

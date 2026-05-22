@@ -60,24 +60,134 @@ def _eq(
     )
 
 
-class TestSchemaVersionBumpToV13:
-    """Pre-alpha contract: a store written by a v12 Schema Brain raises
-    `SchemaVersionMismatchError` on open. Per project convention only
-    the current N-1 version-bump test is retained — the prior
-    `TestSchemaVersionBumpToV12` class (added at the v11→v12 bump for
-    column_pii_tags) was removed when this class was added at the
-    v12→v13 bump (nullable measure_column + new measure_expression
-    column on the metrics table to support composite expressions).
+class TestSchemaVersionBumpToV14:
+    """v14 schema contract: fresh stores stamp `schema_version='14'`;
+    v13 stores migrate in-place via `_migrate_v13_to_v14`; pre-v13
+    stores still raise `SchemaVersionMismatchError` (pre-alpha
+    cliff — no migration path for v12-or-older). Per project
+    convention only the current N-1 version-bump test is retained.
     """
 
-    def test_fresh_store_has_schema_version_13(self, tmp_path: Path) -> None:
+    def test_fresh_store_has_schema_version_14(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "sb.db") as store:
             row = (
                 store._require_conn()
                 .execute("SELECT value FROM schemabrain_meta WHERE key = 'schema_version'")
                 .fetchone()
             )
-            assert row["value"] == "13"
+            assert row["value"] == "14"
+
+    def test_v13_store_migrates_in_place(self, tmp_path: Path) -> None:
+        # v13 → v14 is the first real migration. Seed a v13 store with
+        # rows in entities / metrics / canonical_joins under origin
+        # values, close it, re-open with v14 code, and verify (a) the
+        # version bumped, (b) the new columns are populated, (c) the
+        # backfill from `origin` lands on the correct trust signal.
+        db_path = tmp_path / "sb.db"
+        with SQLiteStore(db_path) as store:
+            conn = store._require_conn()
+            # Stamp the meta row to v13 so the re-open sees a v13 store.
+            # Drop the v14 columns we just added so the migration has
+            # work to do; this is the only way to fabricate a v13 shape
+            # from a v14-aware codebase.
+            conn.execute("UPDATE schemabrain_meta SET value = '13' WHERE key = 'schema_version'")
+            for table in ("entities", "metrics", "canonical_joins"):
+                conn.execute(f"ALTER TABLE {table} DROP COLUMN inference_method")
+                conn.execute(f"ALTER TABLE {table} DROP COLUMN validation_state")
+            # Seed `tables` + `entities` rows because the FK chain
+            # forces this order. Two entities so a canonical join can
+            # reference both.
+            conn.execute(
+                "INSERT INTO tables (schema_name, name, source_connection_id, indexed_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("public", "orders", "src", 1_700_000_000),
+            )
+            conn.execute(
+                "INSERT INTO tables (schema_name, name, source_connection_id, indexed_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("public", "users", "src", 1_700_000_000),
+            )
+            conn.execute(
+                "INSERT INTO entities ("
+                "source_connection_id, name, description, binding_schema, "
+                "binding_table, identity, origin, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("src", "order", "", "public", "orders", "id", "suggested", 0, 0),
+            )
+            conn.execute(
+                "INSERT INTO entities ("
+                "source_connection_id, name, description, binding_schema, "
+                "binding_table, identity, origin, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("src", "user", "", "public", "users", "id", "manual", 0, 0),
+            )
+            conn.execute(
+                "INSERT INTO metrics ("
+                "source_connection_id, name, description, entity, measure_agg, "
+                "measure_column, measure_expression, time_dimension, "
+                "time_grains, origin, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "src",
+                    "order_count",
+                    "",
+                    "order",
+                    "count",
+                    "id",
+                    None,
+                    None,
+                    "",
+                    "suggested",
+                    0,
+                    0,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO canonical_joins ("
+                "source_connection_id, name, description, source_entity, "
+                "target_entity, on_columns_json, origin, cardinality, "
+                "created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "src",
+                    "order_to_user",
+                    "",
+                    "order",
+                    "user",
+                    '[["user_id", "id"]]',
+                    "manual",
+                    "many_to_one",
+                    0,
+                    0,
+                ),
+            )
+            conn.commit()
+
+        with SQLiteStore(db_path) as store:
+            conn = store._require_conn()
+            assert (
+                conn.execute(
+                    "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
+                ).fetchone()["value"]
+                == "14"
+            )
+
+            # `suggested` rows land on (llm_suggested, applied);
+            # `manual` rows land on (manually_authored, confirmed).
+            def _signal(table: str, name: str) -> tuple[str, str]:
+                row = conn.execute(
+                    f"SELECT inference_method, validation_state FROM {table} WHERE name = ?",
+                    (name,),
+                ).fetchone()
+                return (row["inference_method"], row["validation_state"])
+
+            assert _signal("entities", "order") == ("llm_suggested", "applied")
+            assert _signal("entities", "user") == ("manually_authored", "confirmed")
+            assert _signal("metrics", "order_count") == ("llm_suggested", "applied")
+            assert _signal("canonical_joins", "order_to_user") == (
+                "manually_authored",
+                "confirmed",
+            )
 
     def test_opening_a_v12_store_raises(self, tmp_path: Path) -> None:
         db_path = tmp_path / "sb.db"
@@ -87,7 +197,7 @@ class TestSchemaVersionBumpToV13:
         )
         store._require_conn().commit()
         store.close()
-        with pytest.raises(SchemaVersionMismatchError, match=r"12.*13|13.*12"):
+        with pytest.raises(SchemaVersionMismatchError, match=r"12.*14|14.*12"):
             SQLiteStore(db_path)
 
     def test_unique_index_exists(self, tmp_path: Path) -> None:

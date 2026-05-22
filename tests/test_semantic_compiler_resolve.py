@@ -503,7 +503,17 @@ class TestTimeGrainRefusal:
         assert exc_info.value.requested_grain == "quarter"
         assert exc_info.value.allowed_grains == ("day", "week", "month")
 
-    def test_time_grain_on_non_temporal_metric(self, tmp_path: Path) -> None:
+    def test_time_grain_on_non_temporal_metric_with_no_reachable_timestamp_degrades(
+        self, tmp_path: Path
+    ) -> None:
+        """Charter v1.2 inheritance: a non-temporal metric whose graph
+        has zero reachable timestamp columns no longer hard-errors —
+        the plan ships unbucketed with `time_dimension_resolution`
+        set to `"unavailable"`. The MCP layer surfaces this as the
+        `time_dimension_unavailable` degradation reason. The
+        seed-basic graph reaches `customer` only (no timestamp
+        columns on `users`), so the inheritance BFS finds 0 candidates.
+        """
         with SQLiteStore(tmp_path / "store.db") as store:
             _seed_basic(store)
             store.write_metric(
@@ -517,14 +527,95 @@ class TestTimeGrainRefusal:
                 ),
                 source_connection_id=SOURCE,
             )
-            with pytest.raises(InvalidTimeGrainError) as exc_info:
-                resolve_metric_plan(
-                    store=store,
-                    source_connection_id=SOURCE,
-                    metric_name="open_count",
-                    time_grain="day",
-                )
-        assert exc_info.value.allowed_grains == ()
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="open_count",
+                time_grain="day",
+            )
+        assert plan.time_dimension_resolution == "unavailable"
+        assert plan.time_bucket is None
+        assert plan.inherited_time_dimension is None
+
+
+class TestReverseTraversalCardinalityFlip:
+    """Regression: traversing a canonical join in the reverse of its
+    stored direction must flip the cardinality so the fan-out detector
+    fires correctly. The earlier heuristic (compare on-pair tuple
+    against `join.on`) gave a false NEGATIVE whenever the source and
+    target columns shared a name (e.g. `customer_id` on both
+    `rental.customer_id` and `customer.customer_id`) — the swapped
+    pairs compared equal to the stored pairs and the flip never fired.
+    The explicit `is_reverse_traversal` flag on `_ChainEdge` replaces
+    that comparison.
+    """
+
+    def test_same_name_fk_reverse_traversal_flips_cardinality(self, tmp_path: Path) -> None:
+        """A metric anchored on `customer` grouped by `rental.rental_date`
+        traverses `customer_orders` in reverse (rental's FK points at
+        customer, so chain direction is customer → rental). Both join
+        columns are named `customer_id`, so the on-pair tuple is
+        identical in both directions. With the bug, the resolver saw
+        no reversal and reported `cardinality=many_to_one`; with the
+        fix it must report `one_to_many` (one customer has many
+        rentals) and the join must appear in `fan_out_join_names`.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            # Use the existing seed which stores
+            # `customer_orders: order -> customer` with
+            # cardinality=many_to_one. The on-pair is
+            # (user_id, id) — different column names, so the OLD
+            # heuristic would have correctly flipped. We need a join
+            # where source_column == target_column to exercise the
+            # bug, so wire a fresh one here.
+            _seed_basic(store)
+            # Add a same-column-name FK join: order ↔ order_billing
+            # via `id` on both sides (uncommon shape, but the
+            # heuristic must handle it).
+            store.write_canonical_join(
+                CanonicalJoin(
+                    name="same_name_join",
+                    description="",
+                    source_entity="order",
+                    target_entity="customer",
+                    on=(
+                        JoinColumnPair(
+                            source_column="user_id",
+                            target_column="user_id",
+                        ),
+                    ),
+                    cardinality="many_to_one",
+                ),
+                source_connection_id=SOURCE,
+            )
+            # Add a customer-anchored metric for the reverse-direction
+            # traversal target.
+            store.write_metric(
+                Metric(
+                    name="customer_volume",
+                    description="",
+                    entity="customer",
+                    measure=MetricMeasure(agg="count", column="id"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="customer_volume",
+                group_by=("order.created_at",),
+                via=("same_name_join",),
+            )
+        # The plan must flip the stored many_to_one to one_to_many for
+        # the chain-direction traversal (customer → order).
+        assert len(plan.joins) == 1
+        traversed = plan.joins[0]
+        assert traversed.canonical_name == "same_name_join"
+        assert traversed.cardinality == "one_to_many"
+        # And the fan-out detector must surface it.
+        assert "same_name_join" in plan.fan_out_join_names
 
 
 class TestMalformedInputs:
