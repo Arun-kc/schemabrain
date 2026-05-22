@@ -217,6 +217,10 @@ def _migrate_v13_to_v14(conn: sqlite3.Connection) -> None:
     in the caller. Wrapped in the caller's `with conn:` block so a
     crash mid-migration rolls back the partial state.
     """
+    # `{table}` is interpolated from the hardcoded tuple below — no
+    # user input ever reaches the SQL string. The three nosec
+    # suppressions mirror the `# nosec B608` pattern used in
+    # `profiler/postgres.py` for identifier-only f-string assembly.
     for table in ("entities", "metrics", "canonical_joins"):
         # `DEFAULT 'manually_authored'` satisfies the CHECK so existing
         # rows land in a valid initial state; the UPDATE below
@@ -224,19 +228,19 @@ def _migrate_v13_to_v14(conn: sqlite3.Connection) -> None:
         # SQLite ALTER TABLE ADD COLUMN supports CHECK constraints
         # since 3.25 — well under any version Python supports.
         conn.execute(
-            f"ALTER TABLE {table} ADD COLUMN inference_method TEXT NOT NULL "
+            f"ALTER TABLE {table} ADD COLUMN inference_method TEXT NOT NULL "  # nosec B608
             f"DEFAULT 'manually_authored' "
             f"CHECK (inference_method IN ("
             f"'manually_authored', 'llm_suggested', 'fk_constraint', "
             f"'dbt_import', 'observed_in_query_log'))"
         )
         conn.execute(
-            f"ALTER TABLE {table} ADD COLUMN validation_state TEXT NOT NULL "
+            f"ALTER TABLE {table} ADD COLUMN validation_state TEXT NOT NULL "  # nosec B608
             f"DEFAULT 'applied' "
             f"CHECK (validation_state IN ('draft', 'applied', 'confirmed'))"
         )
         conn.execute(
-            f"UPDATE {table} SET "
+            f"UPDATE {table} SET "  # nosec B608
             f"  inference_method = CASE origin "
             f"    WHEN 'manual' THEN 'manually_authored' "
             f"    WHEN 'suggested' THEN 'llm_suggested' "
