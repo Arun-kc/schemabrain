@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `str(int)` / `repr(float)`. SQL injection surface closed by
   construction. New module `schemabrain.semantic.compiler.measure_expression`.
 - **Compile-time `unknown_measure_column` envelope.** Parallel to
-  PR-6h.3's `unknown_group_by_column` / `unknown_filter_column` —
+  the existing `unknown_group_by_column` / `unknown_filter_column` —
   every column the measure references is now validated against the
   anchor entity's table at compile time. Closes a typo-becomes-
   `internal_error` gap that existed even for v1 bare-column measures
@@ -46,8 +46,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`schemabrain/metrics/fixtures/ecommerce/total_revenue_real.yaml`:**
   bundled composite-expression metric over the demo's `order_item`
   entity. Computes line-level revenue as
-  `SUM(unit_price_cents * quantity)` — closes the v1 DSL gap Claude
-  diagnosed during the PR-6h.3 Layer-B Claude Desktop smoke.
+  `SUM(unit_price_cents * quantity)` — closes a v1 DSL gap where
+  a metric anchored on `order_item` couldn't express revenue
+  derived from the line-item columns themselves.
+- **Charter v1.2: 2D trust signal — `Provenance.inference_method`
+  + `Provenance.validation_state`.** Replaces the v1.1 era's
+  hardcoded `confidence="HIGH"` on every entity / metric / join
+  producer with a derived label computed from two orthogonal axes:
+  HOW was the fact derived (`manually_authored`, `llm_suggested`,
+  `fk_constraint`, `dbt_import`, `observed_in_query_log`) and HOW
+  VALIDATED is it (`draft`, `applied`, `confirmed`). `derive_
+  confidence(method, state)` is the matrix; `derive_provenance_
+  source(method)` keeps the v1.0 `Provenance.source` field
+  consistent so old clients see a sensible value. Additive
+  charter bump — v1.1 / v1.0 clients still deserialize cleanly.
+  Per-row signal lands on the Pydantic summaries (`EntitySummary`,
+  `MetricSummary`, `JoinSummary`, `EntityDetail`,
+  `CanonicalJoinInfo`, `MetricResult`).
+- **Store schema bump 13 → 14: `inference_method` +
+  `validation_state` columns on entities, metrics, and
+  canonical_joins.** First real in-place migration:
+  `_migrate_v13_to_v14` ALTERs the three tables, backfills from
+  the existing `origin` column (`manual` → `manually_authored` +
+  `confirmed`; `suggested` → `llm_suggested` + `applied`;
+  `dbt_import` → `dbt_import` + `applied`), and stamps version to
+  14. Pre-v13 stores still raise `SchemaVersionMismatchError`.
+- **FK-inferred cardinality at suggest time.** `joins suggest`
+  now infers `many_to_one` / `one_to_one` / `one_to_many` from FK
+  + PK info via `_infer_fk_cardinality`. Removes the spurious
+  fan-out warning the prior `cardinality=None`-default suggester
+  produced on every typical OLTP FK chain.
+- **Direction-aware effective cardinality on `ResolvedJoin`.**
+  The resolver flips the stored cardinality via
+  `core.join.flip_cardinality` when BFS walks a canonical join in
+  reverse of its stored direction. The fan-out detector now reads
+  the EFFECTIVE value verbatim — multi-hop chains whose reverse
+  hop multiplied anchor rows used to be missed.
+- **`schemabrain inspect <name>` drills through metrics and
+  joins.** Adds `MetricDetail` + `JoinDetail` data builders and
+  parallel renderers; `_cmd_inspect` resolves `name` as
+  entity → metric → join in priority. The pre-fix surface returned
+  `no entity named <X>` for a metric or join name, breaking the
+  summary view's "Drill into one" link.
+- **MCP server `icons` + `website_url`.** FastMCP `initialize`
+  response now carries three icon sizes (32 / 64 / 512 PNG) and
+  the project repo URL so hosts that render server cards (Claude
+  Desktop, Cursor) display the schemabrain mark instead of a
+  generic placeholder.
+- **Init wizard installs `--pii-block contact` by default.** The
+  Claude Desktop snippet `build_snippet` writes the categories
+  passed via `WizardConfig.pii_block`; the default
+  (`("contact",)`) ensures the firewall is active on a fresh
+  install. Operators with development / synthetic-data sources
+  can opt out.
+
+### Changed
+- **MCP `CHARTER_VERSION` bumps `1.1` → `1.2`.** Wire-compatible
+  with v1.1 / v1.0 clients; `confidence` is now a derivation
+  rather than a hardcoded HIGH.
+
+### Fixed
+- **`schemabrain metrics list` empty-state hint.** Mirrors the
+  MCP `list_metrics` tool's empty-state shape — the CLI now tells
+  the operator the next command instead of dead-ending with a
+  parenthetical.
 
 ### Changed
 - **YAML measure schema:** `measure.expression` is now a valid
