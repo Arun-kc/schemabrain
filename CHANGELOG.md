@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Non-e-commerce-domain PII coverage.** Five new rules in
+  `schemabrain.pii.classifier` extend the heuristic taxonomy to medical
+  and blockchain-analytics schemas without relying on operator overlays.
+  `RULE_COUNT` 41 → 46.
+  - Medical: `encounter_id` / `visit_id` / `admission_id` /
+    `discharge_id` → `health` (a clinical interaction occurring is
+    HIPAA-sensitive even without clinical detail); `insurance_member_id`
+    / `insurance_subscriber_id` → `health`; `npi` / `provider_npi` /
+    `dea_number` → `government_id` (HHS / DEA-issued professional
+    identifiers).
+  - Blockchain: `wallet_address` / `blockchain_address` /
+    `crypto_address` → `online_identifier` (pseudonymous on-chain
+    identifier; matched in union with the existing `address` contact
+    rule per the over-tag posture); `private_key` / `seed_phrase` /
+    `mnemonic_phrase` / `mnemonic` → `credential` (key material whose
+    disclosure is catastrophic).
 - **Composite-expression measures via a strict whitelist grammar.**
   `MetricMeasure` now accepts `expression: str` alongside `column: str`
   (XOR: exactly one set). Composite expressions like `unit_price *
@@ -58,6 +74,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   + inline forward link). The after-wizard bullet for the Anthropic
   SDK path is reduced to a one-line pointer so the same proof doesn't
   appear twice. No code change.
+- **Domain-agnostic LLM system prompts.** The entity-suggestion and
+  metric-suggestion system prompts now use placeholder column / table
+  names in their grammar examples instead of consumer-data-shaped
+  examples (`customer` / `public.users` / `email`, `order_item` /
+  `unit_price_cents` / `quantity`). Rule text references cross-domain
+  examples (`patient_id`, `wallet_address`, `mrn` for entity `pii_hints`;
+  `success_rate` / `interest_rate` / `mortality_rate` for the metric
+  percentage/ratio rule) to make it explicit that the same grammar
+  applies to clinical, financial, legal, commerce, and blockchain-
+  analytics schemas. No behavioural change for e-commerce-shaped
+  schemas; reduces consumer-data prompt bias for non-commerce schemas.
+- **`schemabrain/profiler/postgres.py` module docstring** now documents
+  the v1 non-goal of JSONB-path decomposition explicitly, with
+  workarounds (normalized views / dbt importer) for operators with
+  JSONB-heavy schemas. No code change.
 
 ### Fixed
 - **Measure-expression parser rejects non-finite float literals.**

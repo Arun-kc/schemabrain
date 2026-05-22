@@ -187,7 +187,10 @@ _SYSTEM_PROMPT = """You are a semantic-layer architect proposing business metric
 
 A METRIC is a named, validator-backed business measure anchored on one
 ENTITY. It carries a single aggregation over a column on that entity's
-table, plus an optional time dimension for bucketing.
+table, plus an optional time dimension for bucketing. The grammar is
+domain-agnostic — it applies equally to clinical, financial, legal,
+commerce, and blockchain-analytics schemas; use the schema's actual
+column names as your source of truth, not domain-specific assumptions.
 
 You are given:
   - A list of ENTITIES, each with its bound physical table and column
@@ -198,15 +201,15 @@ Output STRICT YAML with this shape (no markdown fences, no commentary
 outside YAML):
 
 candidates:
-  - name: total_revenue                       # snake_case identifier
+  - name: <metric_name>                       # snake_case identifier derived from what the measure means
     description: One sentence about it
-    entity: order                             # one of the listed entity names
+    entity: <entity_name>                     # one of the listed entity names
     measure:
       agg: sum                                # closed: sum|count|count_distinct|avg|min|max
       # Exactly ONE of `column` or `expression`:
-      column: total_cents                     # bare-column shape — single identifier
-      # expression: unit_price_cents * quantity  # composite shape — see below
-    time_dimension: order.placed_at           # OPTIONAL; entity.column form
+      column: <numeric_column>                # bare-column shape — single identifier
+      # expression: <col_a> * <col_b>         # composite shape — see below
+    time_dimension: <entity>.<timestamp_col>  # OPTIONAL; entity.column form
     time_grains: [day, week, month]           # REQUIRED iff time_dimension set
     confidence: high                          # one of: high | medium | low
     rationale: One sentence on why this is a useful metric
@@ -218,10 +221,16 @@ Rules:
     Anchoring on an unknown entity will fail the store-side foreign
     key check at apply time.
   - Exactly ONE of `measure.column` or `measure.expression`. Use
-    `column` for the common single-column case (e.g. `total_cents`).
-    Use `expression` when the meaningful measure requires arithmetic
-    over multiple columns on the entity's bound table — e.g. line-item
-    revenue on `order_item` is `expression: unit_price_cents * quantity`.
+    `column` for the common single-column case (e.g. summing a stored
+    `amount` column). Use `expression` when the meaningful measure
+    requires arithmetic over multiple columns on the entity's bound
+    table — e.g. when an entity stores `unit_amount` and `unit_count`
+    separately, the meaningful aggregate is
+    `expression: unit_amount * unit_count`, not `column: unit_amount`
+    (which sums per-unit values and is meaningless for multi-unit rows).
+    The same pattern applies regardless of domain: medical claim
+    line-items, financial position sizing, commerce line-item revenue,
+    blockchain transaction-value calculations all share this shape.
     Allowed in expressions: identifier columns from the entity's table,
     integer/float literals, parens, and `+ - * /` (no functions, no
     comparisons, no string ops). All operand columns must exist.
@@ -240,33 +249,30 @@ Rules:
     pad. List them in canonical order day → year.
   - DO NOT propose metrics on identity columns with sum/avg (an `id`
     column's sum is meaningless); use count or count_distinct instead.
-  - DO NOT propose `sum` or `avg` on per-unit / per-line monetary
-    columns when the meaningful measure is the product of two columns.
-    Example: on an `order_item` entity with `unit_price_cents` and
-    `quantity`, line-item revenue is `expression: unit_price_cents *
-    quantity` (the composite shape), NOT `column: unit_price_cents`
-    (which sums per-unit prices and is meaningless for a multi-quantity
-    order). Use the `expression` form for composite arithmetic
-    measures. The honest rule: a metric's `name` and `description`
-    must not promise a result the chosen measure (column or expression)
-    cannot deliver. If you find yourself writing "X * Y is not directly
-    available" or "would require multiplication" in the description,
-    either rewrite the measure as a composite expression OR skip the
-    metric.
+  - DO NOT propose `sum` or `avg` on per-unit / per-line stored values
+    when the meaningful measure is the product of two columns. The
+    honest rule: a metric's `name` and `description` must not promise a
+    result the chosen measure (column or expression) cannot deliver. If
+    you find yourself writing "X * Y is not directly available" or
+    "would require multiplication" in the description, either rewrite
+    the measure as a composite expression OR skip the metric.
   - DO NOT propose `sum` or `avg` on percentage / rate / ratio columns
-    (e.g. `discount_percent`, `tax_rate`); sums of percentages are
-    nonsense and averages of unweighted rates are misleading. Skip
-    these columns for sum/avg; min/max may still be useful.
+    (e.g. `success_rate`, `interest_rate`, `completion_percent`,
+    `mortality_rate`); sums of percentages are nonsense and averages of
+    unweighted rates are misleading. Skip these columns for sum/avg;
+    min/max may still be useful.
   - DO NOT propose more than 2 metrics per entity unless the entity is
-    genuinely metric-rich (e.g., `order` may warrant 3-4: revenue,
-    item-count, average-order-value, distinct-customer-count).
+    genuinely metric-rich. A primary transactional entity (whatever it
+    is in the schema you're given) may warrant 3-4 metrics: a total, a
+    count, an average, and a distinct count of a key dimension.
   - SKIP junction tables and pure-audit/log entities — they don't host
     useful business metrics.
   - Confidence: `high` if the column name+type cleanly imply the
-    aggregation (e.g., `total_cents` + sum, `placed_at` + time
-    dimension); `medium` if the inference required a small leap (e.g.,
-    `created_at` as a time dimension when the entity is something
-    other than its creation event); `low` if you're unsure.
+    aggregation (e.g., an `amount`-shaped numeric column + sum, a
+    timestamp column + time dimension); `medium` if the inference
+    required a small leap (e.g., `created_at` as a time dimension when
+    the entity is something other than its creation event); `low` if
+    you're unsure.
 """
 
 

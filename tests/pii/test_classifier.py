@@ -88,6 +88,15 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("patient_name", frozenset({"health", "contact"})),
     ("insurance_id", frozenset({"health"})),
     ("health_record_id", frozenset({"health"})),
+    # encounter / visit / admission / discharge IDs reveal that a
+    # clinical interaction took place — HIPAA-sensitive on their own.
+    ("encounter_id", frozenset({"health"})),
+    ("visit_id", frozenset({"health"})),
+    ("admission_id", frozenset({"health"})),
+    ("discharge_id", frozenset({"health"})),
+    # Health-insurance member identifiers
+    ("insurance_member_id", frozenset({"health"})),
+    ("insurance_subscriber_id", frozenset({"health"})),
     # genetic
     ("genome", frozenset({"genetic"})),
     ("genotype", frozenset({"genetic"})),
@@ -121,6 +130,12 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("gaid", frozenset({"online_identifier"})),
     ("aid", frozenset({"online_identifier"})),
     ("advertising_aid", frozenset({"online_identifier"})),
+    # Blockchain wallet addresses — note that `address` also matches
+    # via the contact rule, so the result is the union {online_identifier,
+    # contact}. We assert the online_identifier piece is present.
+    ("wallet_address", frozenset({"online_identifier"})),
+    ("blockchain_address", frozenset({"online_identifier"})),
+    ("crypto_address", frozenset({"online_identifier"})),
     # credential
     ("password", frozenset({"credential"})),
     ("passwd", frozenset({"credential"})),
@@ -133,6 +148,12 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("session_id", frozenset({"credential"})),
     ("pass_hash", frozenset({"credential"})),
     ("pw_hash", frozenset({"credential"})),
+    # Crypto key material — catastrophic if disclosed; treated as
+    # credentials alongside passwords and API keys.
+    ("private_key", frozenset({"credential"})),
+    ("seed_phrase", frozenset({"credential"})),
+    ("mnemonic", frozenset({"credential"})),
+    ("mnemonic_phrase", frozenset({"credential"})),
     # government_id
     ("ssn", frozenset({"government_id"})),
     ("tin", frozenset({"government_id"})),
@@ -149,6 +170,10 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("aadhaar", frozenset({"government_id"})),
     ("voter_id", frozenset({"government_id"})),
     ("ein", frozenset({"government_id"})),
+    # US healthcare provider identifiers — government-issued.
+    ("npi", frozenset({"government_id"})),
+    ("provider_npi", frozenset({"government_id"})),
+    ("dea_number", frozenset({"government_id"})),
     # location
     ("lat", frozenset({"location"})),
     ("latitude", frozenset({"location"})),
@@ -294,8 +319,16 @@ class TestRuleTableInvariants:
         #   - Other extensions (face_embedding, drivers_license
         #     plurals, age) widened existing rules rather than adding
         #     new ones: net 0.
-        # Total: 40 + 1 = 41.
-        assert RULE_COUNT == 41
+        # Subtotal: 40 + 1 = 41.
+        #
+        # Non-e-commerce-domain coverage (2026-05-22):
+        #   - +1 health encounter/visit/admission/discharge_id rule
+        #   - +1 health insurance_member_id/insurance_subscriber_id rule
+        #   - +1 online_identifier wallet_address/blockchain_address rule
+        #   - +1 credential private_key/seed_phrase/mnemonic rule
+        #   - +1 government_id npi/provider_npi/dea_number rule
+        # Total: 41 + 5 = 46.
+        assert RULE_COUNT == 46
 
     def test_every_category_has_at_least_one_rule(self) -> None:
         # Every category in PII_CATEGORIES must be producible by at

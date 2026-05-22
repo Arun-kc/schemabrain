@@ -13,6 +13,33 @@ Output is fully deterministic: sample queries use `ORDER BY 1` so two
 profiles of an unchanged table produce byte-identical `ColumnStats`. This
 is a hard requirement for the content-addressable fingerprint cache built
 on top of these stats.
+
+## Known limitation: JSONB path decomposition not performed
+
+JSONB columns are profiled as a single opaque value cast to ``::text`` for
+sampling. The profiler does NOT decompose JSONB into individual paths
+(``$.user.email`` etc.) — each JSONB column produces one set of stats and
+one set of sample exemplars, regardless of internal structure.
+
+This matters most for schemas where the bulk of business meaning lives
+INSIDE JSONB blobs rather than in normalized columns — common in
+event-stream tables (blockchain on-chain events, IoT telemetry, audit
+logs that serialize the changed-fields as JSONB) and in some clinical
+information systems that store lab-result panels as JSONB. On such
+schemas the LLM-driven entity and metric suggestion will produce less
+detailed candidates than on a normalized schema with the same content.
+
+Workarounds for operators with JSONB-heavy schemas:
+  - Create a normalized view that extracts the JSONB paths into columns
+    and index that view as a "table" (Postgres treats views as relations
+    for reflection purposes when explicitly selected).
+  - Use `--from-dbt` so dbt's own JSONB-aware modelling is the source
+    of truth for entities and metrics; Schema Brain inherits the
+    normalized shape via the dbt manifest importer.
+
+JSONB-path decomposition is a deliberate v1 non-goal — adding it requires
+a stats-shape change (per-path stats vs per-column) and changes the
+fingerprint cache key strategy.
 """
 
 from __future__ import annotations
