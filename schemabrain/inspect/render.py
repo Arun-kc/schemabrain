@@ -118,14 +118,13 @@ def render_summary(
         f"{summary.join_count} join"
         f"{'' if summary.join_count == 1 else 's'}"
     )
-    # Smoke 2026-05-19: when the store holds data from more than one
-    # source-id (typically: pre-existing rows from an older
-    # schemabrain version's `_canonical_url` plus fresh rows from
-    # the current version), surface a banner so the operator can
-    # tell why the counts above are larger than they expected from
-    # a single `init` run. The renderer already dedupes names
-    # cross-source, so this banner is the ONLY visual signal a
-    # second source-id exists in the store.
+    # When the store holds data from more than one source-id (typically:
+    # pre-existing rows from an older schemabrain version's
+    # `_canonical_url` plus fresh rows from the current version),
+    # surface a banner so the operator can tell why the counts above
+    # are larger than they expected from a single `init` run. The
+    # renderer already dedupes names cross-source, so this banner is
+    # the ONLY visual signal a second source-id exists in the store.
     if len(summary.source_connection_ids) > 1:
         console.print(
             f"[yellow]⚠[/] store has data from "

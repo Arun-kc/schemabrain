@@ -2289,11 +2289,11 @@ class SQLiteStore:
         silently drift from the upstream dbt repo on the next
         `schemabrain import dbt --include-metrics`.
 
-        Used by `schemabrain metrics audit --fix` (PR-6h.3 fold) to
-        remove already-applied anti-pattern metrics whose descriptions
-        admit the metric doesn't compute what its name implies. The
-        deletion is `with conn:` wrapped so a concurrent reader can't
-        observe a partial state.
+        Used by `schemabrain metrics audit --fix` to remove
+        already-applied anti-pattern metrics whose descriptions admit
+        the metric doesn't compute what its name implies. The deletion
+        is `with conn:` wrapped so a concurrent reader can't observe
+        a partial state.
         """
         conn = self._require_conn()
         with conn:

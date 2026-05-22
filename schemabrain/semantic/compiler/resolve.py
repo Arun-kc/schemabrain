@@ -591,11 +591,11 @@ def _find_canonical_chain(
     """
     if anchor not in graph or target not in graph:
         # If EITHER endpoint has no edges in the canonical-join graph,
-        # no path exists. (The original PR-6h.1 guard used `and`, which
-        # was a strict subset of correct unreachability: an anchor with
-        # no edges still triggers an empty BFS that returns the same
+        # no path exists. An earlier guard used `and`, which was a
+        # strict subset of correct unreachability: an anchor with no
+        # edges still triggers an empty BFS that returns the same
         # UnreachableEntityError downstream, but the early-out is more
-        # honest about what we know up-front.)
+        # honest about what we know up-front.
         raise UnreachableEntityError(anchor_entity=anchor, target_entity=target)
 
     # Pass 1 — structural BFS over entity pairs.

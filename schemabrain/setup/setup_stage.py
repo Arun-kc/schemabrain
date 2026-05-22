@@ -83,10 +83,10 @@ DEMO_CONTAINER_NAME = "sb-demo-pg"
 
 # Bundled basename for the ecommerce fixture. Resolved to an absolute
 # path at call time via `schemabrain.eval.bundled.resolve_bundled_path`
-# — the same helper that backs `schemabrain fixture-path`. The 2026-05-21
-# manual smoke surfaced the prior bug: a repo-relative path joined against
-# `Path.cwd()` broke for every `pip install schemabrain` user because the
-# fixture lives inside the wheel, not at `$(pwd)/schemabrain/...`.
+# — the same helper that backs `schemabrain fixture-path`. A repo-
+# relative path joined against `Path.cwd()` breaks for every
+# `pip install schemabrain` user because the fixture lives inside
+# the wheel, not at `$(pwd)/schemabrain/...`.
 DEMO_FIXTURE_BUNDLED_NAME = "ecommerce.sql"
 
 

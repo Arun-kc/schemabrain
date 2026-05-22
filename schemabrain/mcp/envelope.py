@@ -204,11 +204,10 @@ ErrorKind = Literal[
 # Closed-grammar reasons for `status="degraded"` envelopes. Parallel
 # to `ErrorKind` but for the partial-success path: the tool ran and
 # returned `data`, but with a structured caveat the agent should
-# surface to the user (or branch on programmatically). Today's set
-# covers the two reasons surfaced by the 2026-05-21 smoke; new kinds
-# are added by appending here AND wiring the producer at the
-# degradation point. Closed grammar so agents can switch on the value
-# without parsing free-form text.
+# surface to the user (or branch on programmatically). New kinds are
+# added by appending here AND wiring the producer at the degradation
+# point. Closed grammar so agents can switch on the value without
+# parsing free-form text.
 DegradationReason = Literal[
     # `MetricPlan.fan_out_join_names` is non-empty: at least one
     # `one_to_many` / `many_to_many` (or unspecified-cardinality)

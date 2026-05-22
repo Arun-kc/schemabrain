@@ -10,9 +10,9 @@ philosophy: the agent gets name + the entity pair it connects, and
 calls `resolve_join(entity_a, entity_b)` (or passes `name=` to
 disambiguate) when it needs the actual SQL skeleton.
 
-Closes the day-one discovery gap surfaced by the 2026-05-21 manual
-smoke alongside `list_metrics`: five canonical joins lived in the
-store, the agent had no way to enumerate them.
+Closes a discovery gap alongside `list_metrics`: when canonical
+joins live in the store but the agent has no way to enumerate
+them, deep-joins-required questions hit a dead end.
 """
 
 from __future__ import annotations

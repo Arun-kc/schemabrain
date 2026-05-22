@@ -1333,7 +1333,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_metrics_audit = metrics_sub.add_parser(
         "audit",
         help="Scan applied metrics for anti-pattern descriptions and "
-        "optionally remove them. Counterpart to PR-6h.2's suggest-time "
+        "optionally remove them. Counterpart to the suggest-time "
         "anti-pattern filter for stores written before that filter shipped.",
     )
     p_metrics_audit.add_argument(
@@ -1685,9 +1685,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Path to the JSONL events file written by `schemabrain serve`. "
         f"Default: $SCHEMABRAIN_EVENTS_PATH or {_DEFAULT_EVENTS_PATH}.",
     )
-    # Smoke 2026-05-19: operators reflexively pass `--store-path` to
-    # `tail` (every other subcommand accepts it). Accept it here so the
-    # CLI doesn't surface a hostile `unrecognized arguments` error.
+    # Operators reflexively pass `--store-path` to `tail` (every other
+    # subcommand accepts it). Accept it here so the CLI doesn't
+    # surface a hostile `unrecognized arguments` error.
     # The events JSONL is decoupled from the SQLite store by default
     # (events go to `~/.schemabrain/events.jsonl`, store goes wherever
     # the operator chose), so `--store-path` is only used as a
@@ -2675,14 +2675,14 @@ def _cmd_serve(
                 tracer=tracer,
             )
     except SchemaVersionMismatchError as exc:
-        # Smoke 2026-05-19 surfaced this: a Claude Desktop launch
-        # against a store written by an older schemabrain version
-        # crashed with a raw Python traceback to MCP stderr. Claude
-        # Desktop's UI then just showed "Server disconnected" with
-        # no actionable hint. Match the inspect/check/doctor pattern
-        # and emit a guided block instead — the operator-facing
-        # remediation is identical across all four subcommands so
-        # operators only have to learn the message once.
+        # A Claude Desktop launch against a store written by an older
+        # schemabrain version would otherwise crash with a raw Python
+        # traceback to MCP stderr — Claude Desktop's UI then just
+        # shows "Server disconnected" with no actionable hint. Match
+        # the inspect/check/doctor pattern and emit a guided block
+        # instead — the operator-facing remediation is identical across
+        # all four subcommands so operators only have to learn the
+        # message once.
         _render_guided(
             GuidedError(
                 kind="serve_schema_version_mismatch",
@@ -4330,8 +4330,8 @@ def _cmd_metrics_audit(
     url_env: str | None,
     fix: bool,
 ) -> int:
-    """Scan applied metrics for the anti-pattern phrases PR-6h.2 blocks
-    at suggest-time, optionally deleting them.
+    """Scan applied metrics for the anti-pattern phrases that
+    `metrics suggest` blocks at suggest-time, optionally deleting them.
 
     Read-only without `--fix`: list every flagged metric with the
     matched phrase, exit 0 if clean / 1 if any flagged. CI can fail a
@@ -5950,9 +5950,9 @@ def _format_path_for_terminal(path: Path, *, max_width: int = 60) -> str:
 # Stages whose handlers commonly take long enough to need a visible
 # "I'm working" cue. Stages 1, 5 are fast enough that a spinner
 # would flash and clear before the eye registers it; stages 2, 3, 4
-# routinely take 5-60s on real schemas. Smoke 2026-05-19 surfaced
-# stage 4 looking frozen for ~56s without the spinner — adding
-# `metrics` here restores symmetry with stage 3.
+# routinely take 5-60s on real schemas. Without the `metrics`
+# entry stage 4 can look frozen for ~minute on a real schema; the
+# spinner restores symmetry with stage 3.
 _SPINNER_STAGES: frozenset[str] = frozenset({"index", "entities", "metrics"})
 
 
@@ -6056,10 +6056,10 @@ def _wizard_stage_context(stage: object) -> Iterator[None]:
     # `__exit__`) and direct `.start()` / `.stop()` calls. The wizard's
     # interactive prompt code pauses the spinner via the latter — see
     # `_ui.pause_active_spinner` and `setup.wizard._prompt_llm_confirmation`.
-    # Smoke 2026-05-19 surfaced a UX bug where the spinner kept
-    # rendering during `input()` and read as "stage is already running";
-    # registering the active spinner here gives the prompt a handle to
-    # pause it during the wait.
+    # Without registration the spinner kept rendering during
+    # `input()` and read as "stage is already running"; registering
+    # the active spinner here gives the prompt a handle to pause it
+    # during the wait.
     #
     # Cleanup ordering note: in `with A, B:`, Python exits B first,
     # then A. Here that means `register_active_spinner.__exit__` runs

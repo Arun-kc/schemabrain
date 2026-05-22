@@ -518,7 +518,7 @@ class Store(Protocol):
         Used by `schemabrain metrics audit --fix` to remove
         LLM-suggested metrics whose descriptions admit the metric does
         not actually compute what its name implies (the
-        `total_order_item_revenue` footgun pattern from PR-6h.2).
+        `total_order_item_revenue` footgun pattern).
         """
         ...
 

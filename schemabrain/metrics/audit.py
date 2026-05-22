@@ -1,12 +1,12 @@
-"""Audit applied metrics for the anti-pattern phrases PR-6h.2 now blocks
-at suggest-time.
+"""Audit applied metrics for the anti-pattern phrases that
+`metrics suggest` now blocks at suggest-time.
 
-PR-6h.2 (#88) tightened `metrics suggest` to reject candidates whose
-descriptions admit the metric doesn't compute what its name implies
-(the `total_order_item_revenue = sum(unit_price_cents)` footgun).
-That's a forward-only fix — it prevents the LLM from RE-SUGGESTING
-the pattern, but stores that received an anti-pattern metric BEFORE
-PR-6h.2 shipped still have the bad metric persisted.
+`metrics suggest` is tightened to reject candidates whose descriptions
+admit the metric doesn't compute what its name implies (the
+`total_order_item_revenue = sum(unit_price_cents)` footgun). That's
+a forward-only fix — it prevents the LLM from RE-SUGGESTING the
+pattern, but stores that received an anti-pattern metric BEFORE the
+suggester was tightened still have the bad metric persisted.
 
 This module powers `schemabrain metrics audit [--fix]`:
 
@@ -21,7 +21,7 @@ anti-pattern is about MEANING, not structure. `sum(unit_price_cents)`
 is perfectly valid as a price-mix indicator if the description names
 it as such; it's only a footgun when the description ADMITS the
 shape doesn't match the name. The LLM's own description is the most
-honest signal — the same one PR-6h.2 reads at suggest-time.
+honest signal — the same one the suggester reads at suggest-time.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def find_anti_pattern_metrics(
     """Return every metric whose description contains an anti-pattern phrase.
 
     Reads via the protocol's `list_metrics`. The lookup is
-    case-insensitive on the description, matching PR-6h.2's
+    case-insensitive on the description, matching the suggester's
     suggest-time check at `_parse_candidate`. `source_connection_id=
     None` scans across every source (the CLI default; pass an explicit
     source to narrow to one indexed schema).

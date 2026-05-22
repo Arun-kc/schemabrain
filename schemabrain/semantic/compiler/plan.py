@@ -96,9 +96,9 @@ class UnknownGroupByColumnError(MetricCompilerError):
 
     Carries the requested entity + column + the actual column list on
     that entity so the MCP layer can populate `recovery` with the
-    allowed names. The 2026-05-21 stress test caught the silent-failure
-    path (`user.bogus_column` → `internal_error`); this error class
-    closes it.
+    allowed names. Closes the silent-failure path where a typo'd
+    column (`user.bogus_column`) used to surface only as a generic
+    `internal_error`.
     """
 
     entity: str

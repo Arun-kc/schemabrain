@@ -86,8 +86,8 @@ _SAMPLE_RAW_CAP = 1000
 # Postgres types that have no built-in equality operator. `COUNT(DISTINCT col)`
 # against any of these raises SQLSTATE 42883 (UndefinedFunction). The list is
 # narrow and well-defined; expand only when a real schema surfaces a new gap.
-# Documented as a 2026-05-18 production-DB smoke finding against AdventureWorks
-# (xml columns in humanresources.jobcandidate.resume etc.).
+# Documented against real AdventureWorks-shaped schemas (xml columns in
+# humanresources.jobcandidate.resume etc.).
 #
 # `"null"` is included to cover SQLAlchemy's `NullType` fallback: when the
 # dialect doesn't have a Python-side equivalent for a Postgres type (xml,

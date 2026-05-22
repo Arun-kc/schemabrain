@@ -412,11 +412,12 @@ def console_render_width(console: Console, *, cap: int = _DEFAULT_DESIGN_WIDTH) 
 # Active-spinner registry — pause Rich Status during interactive prompts.
 # ---------------------------------------------------------------------------
 #
-# Smoke 2026-05-19 surfaced a UX bug: when the wizard reached stage 3
-# (Curate entities), Rich's ``console.status(...)`` was active in the
-# background while ``input()`` waited on the user's Enter. The spinner
-# kept rendering on the same line as the prompt, so the user read it as
-# "stage is already running" rather than "waiting on your confirmation".
+# UX bug pattern: when the wizard reaches stage 3 (Curate entities),
+# Rich's ``console.status(...)`` is active in the background while
+# ``input()`` waits on the user's Enter. Without pausing the spinner
+# it keeps rendering on the same line as the prompt, so the user
+# reads it as "stage is already running" rather than "waiting on
+# your confirmation".
 #
 # Pausing the spinner around ``input()`` is the right fix, but the
 # ``_prompt_llm_confirmation`` callsite in ``setup.wizard`` doesn't

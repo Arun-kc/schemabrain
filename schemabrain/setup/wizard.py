@@ -446,12 +446,11 @@ def _prompt_llm_confirmation(*, stage_label: str, cost_cap_usd: float) -> bool:
 
     The CLI's ``_wizard_stage_context`` registers the active Rich
     spinner before the stage handler runs; ``pause_active_spinner``
-    stops it for the duration of the ``input()`` call. Smoke
-    2026-05-19 surfaced the bug this fixes — the spinner kept
-    rendering during the prompt and the user read it as "stage is
-    already running" rather than "waiting on Enter". When there's no
-    active spinner (non-spinner stages, test fixtures, ``--quiet``)
-    the helper is a no-op.
+    stops it for the duration of the ``input()`` call. Without the
+    pause the spinner keeps rendering during the prompt and the user
+    reads it as "stage is already running" rather than "waiting on
+    Enter". When there's no active spinner (non-spinner stages, test
+    fixtures, ``--quiet``) the helper is a no-op.
     """
     if not sys.stdin.isatty():
         return True

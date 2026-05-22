@@ -348,9 +348,9 @@ RULE_COUNT: Final[int] = len(_RULES)
 # with `_name`. The classifier suppresses the `_NAME_RULE_PATTERN`
 # match for columns of shape `^<prefix>_name$`. Other rule matches
 # on the same column still fire — e.g. `country_name` still matches
-# the `country` rule (contact). The S1 fix targets the specific
-# false-positive shape the production smoke surfaced (`product_name`
-# in catalog tables), not the broader question of table-level context.
+# the `country` rule (contact). The fix targets the specific
+# false-positive shape (`product_name` in catalog tables), not the
+# broader question of table-level context.
 # Deliberately CONSERVATIVE — only prefixes that are unambiguously
 # non-person attributes across HR / CRM / SaaS schemas. Words that
 # can legitimately denote a person's attribute in some context have
@@ -417,13 +417,13 @@ _NON_PII_NAME_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
-# Table-level extension of the S1 denylist. The S1 fix above suppresses
+# Table-level extension of the denylist. The fix above suppresses
 # the name rule for `<noun>_name` shapes — but bare `name` columns on
 # tables NAMED after a denylist noun (e.g. `products.name`,
 # `categories.name`) were still slipping through and getting tagged as
-# `contact`. The Layer-B smoke from 2026-05-21 caught this: a query
-# grouped by `product.name` came back with `pii_categories=['contact']`,
-# even though no contact info was touched anywhere in the SQL.
+# `contact`. A query grouped by `product.name` would come back with
+# `pii_categories=['contact']` even though no contact info was touched
+# anywhere in the SQL.
 #
 # We accept both singular and plural forms because real schemas use
 # both (`product` vs `products`, `category` vs `categories`). English
@@ -574,10 +574,9 @@ def classify_column(
             the non-PII-noun denylist OR when `column_name == "name"`
             AND `table_name` is in the non-PII table-name denylist,
             the bare-name / `<x>_name` contact rule is skipped. Other
-            rule matches still fire. The table-level extension was
-            added in PR-6h.4 after the 2026-05-21 Layer-B smoke
-            surfaced `products.name` and `categories.name` getting
-            tagged `contact` despite zero contact information.
+            rule matches still fire. Catches `products.name` and
+            `categories.name` getting tagged `contact` despite zero
+            contact information in the column.
 
           * S2 guard — when `column_type` is integer-like AND
             `column_name` matches the `<token>_id` FK shape AND
