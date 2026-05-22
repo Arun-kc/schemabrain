@@ -135,6 +135,54 @@ if TYPE_CHECKING:
 _DEFAULT_LIMIT = 10
 _DEFAULT_MAX_HOPS = 6
 _SERVER_NAME = "schemabrain"
+
+# Server-level branding surfaced via the MCP `initialize` response.
+# Hosts that render server cards (Claude Desktop, Cursor) use these
+# to give the operator a visual confirmation that the server they
+# wired is the right one. `website_url` doubles as the "where do
+# I learn more?" link some hosts surface in the server-detail UI.
+_SERVER_WEBSITE_URL = "https://github.com/Arun-kc/schemabrain"
+# Multiple sizes so a host can pick the closest fit without
+# down-/up-scaling. URLs point at the `main` branch of the public
+# repo so a deployed wheel produces a stable icon URL without
+# bundling the binary in the wheel — keeps the install size
+# unaffected and avoids version-pinning the icon to the wheel.
+_SERVER_ICON_BASE = (
+    "https://raw.githubusercontent.com/Arun-kc/schemabrain/main/docs/assets"
+)
+
+
+def _server_icons() -> list[Any]:
+    """Construct the `Icon` list for the FastMCP `initialize` response.
+
+    Local import keeps the `mcp.types` symbol off this module's
+    load path for environments where the SDK version doesn't yet
+    export `Icon` (older 1.x). Empty list on import failure so the
+    server still starts without branding.
+    """
+    try:
+        from mcp.types import Icon  # type: ignore[import-not-found]
+    except ImportError:  # pragma: no cover — older SDK
+        return []
+    return [
+        Icon(
+            src=f"{_SERVER_ICON_BASE}/schemabrain-mark-32.png",
+            mimeType="image/png",
+            sizes=["32x32"],
+        ),
+        Icon(
+            src=f"{_SERVER_ICON_BASE}/schemabrain-mark-64.png",
+            mimeType="image/png",
+            sizes=["64x64"],
+        ),
+        Icon(
+            src=f"{_SERVER_ICON_BASE}/schemabrain-mark-512.png",
+            mimeType="image/png",
+            sizes=["512x512"],
+        ),
+    ]
+
+
 _SERVER_INSTRUCTIONS = (
     "Schema Brain — semantic understanding of an indexed database. "
     "Physical-schema tools: `find_relevant_tables` to discover tables, "
@@ -453,6 +501,8 @@ def build_server(
     app = _StrictArgsFastMCP(
         _SERVER_NAME,
         instructions=_SERVER_INSTRUCTIONS,
+        website_url=_SERVER_WEBSITE_URL,
+        icons=_server_icons() or None,
         on_rejected=_on_rejected_call,
     )
 
