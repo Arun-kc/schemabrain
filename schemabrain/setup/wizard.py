@@ -212,6 +212,14 @@ class WizardConfig:
     no_joins: bool = False
     from_dbt: Path | None = None
     skip_llm_confirm: bool = False
+    # Default `--pii-block` categories written into the host snippet.
+    # `("contact",)` is the safe default — blocks the most universally
+    # sensitive PII (email, phone, address) without surprising the
+    # operator with over-broad refusals on benign columns. `()` opts
+    # out entirely (no `--pii-block` flag added to the snippet, server
+    # runs with enforcement off — useful for development databases
+    # or fully synthetic fixtures).
+    pii_block: tuple[str, ...] = ("contact",)
 
     def __post_init__(self) -> None:
         if self.host not in _VALID_HOSTS:
@@ -2459,6 +2467,7 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
                 source_url=cfg.source_url,
                 store_path=cfg.store_path,
                 env_var_name=cfg.env_var_name,
+                pii_block=cfg.pii_block,
             )
         except InitRefusal as refusal:
             return _failed_from_refusal(stage=6, name="wire_host", error=refusal.error)
@@ -2520,6 +2529,7 @@ def _stage_wire_host(ctx: WizardContext) -> StageOutcome:
             env_var_name=cfg.env_var_name,
             skip_index=True,
             assume_yes=effective_assume_yes,
+            pii_block=cfg.pii_block,
         )
     except InitRefusal as refusal:
         return _failed_from_refusal(stage=6, name="wire_host", error=refusal.error)
