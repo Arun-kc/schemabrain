@@ -1196,3 +1196,40 @@ class TestResolveJoinNoCanonical:
         # like `order` survive Postgres paste.
         assert 'JOIN "public"."users" AS "customer"' in structured["data"]["sql_skeleton"]
         assert '"order"."user_id" = "customer"."id"' in structured["data"]["sql_skeleton"]
+
+
+# ----- MCP server branding (icons + website_url) -----------------------------
+
+
+class TestServerBranding:
+    """Charter v1.2-adjacent: the FastMCP `initialize` response carries
+    `icons` + `website_url` so hosts that render server cards (Claude
+    Desktop, Cursor) show the schemabrain mark instead of a generic
+    placeholder. Tests pin the icon URLs + size set so a renamer in
+    `docs/assets/` surfaces here rather than as a broken Claude
+    Desktop avatar in the wild.
+    """
+
+    def test_server_icons_three_sizes(self) -> None:
+        from schemabrain.mcp.server import _server_icons
+
+        icons = _server_icons()
+        # 32 / 64 / 512 — sizes the rendering hosts ask for.
+        assert len(icons) == 3
+        sizes = [icon.sizes[0] for icon in icons]
+        assert sizes == ["32x32", "64x64", "512x512"]
+
+    def test_server_icons_point_at_repo_raw_urls(self) -> None:
+        from schemabrain.mcp.server import _server_icons
+
+        icons = _server_icons()
+        for icon in icons:
+            assert icon.src.startswith(
+                "https://raw.githubusercontent.com/Arun-kc/schemabrain/"
+            )
+            assert icon.mimeType == "image/png"
+
+    def test_website_url_is_repo(self) -> None:
+        from schemabrain.mcp.server import _SERVER_WEBSITE_URL
+
+        assert _SERVER_WEBSITE_URL == "https://github.com/Arun-kc/schemabrain"

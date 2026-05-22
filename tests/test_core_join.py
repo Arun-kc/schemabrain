@@ -277,3 +277,42 @@ class TestCanonicalJoinCardinality:
         a = _make_join()
         b = _make_join(cardinality=None)
         assert a == b
+
+
+# ----- flip_cardinality ------------------------------------------------------
+
+
+class TestFlipCardinality:
+    """`flip_cardinality(c)` mirrors a stored cardinality across the
+    reverse-traversal axis. Load-bearing for the BFS-traversal-aware
+    fan-out detector — a stored `many_to_one` traversed in reverse
+    actually multiplies anchor rows in the chain's direction.
+    """
+
+    def test_one_to_many_flips_to_many_to_one(self) -> None:
+        from schemabrain.core.join import flip_cardinality
+
+        assert flip_cardinality("one_to_many") == "many_to_one"
+
+    def test_many_to_one_flips_to_one_to_many(self) -> None:
+        from schemabrain.core.join import flip_cardinality
+
+        assert flip_cardinality("many_to_one") == "one_to_many"
+
+    def test_one_to_one_is_symmetric(self) -> None:
+        from schemabrain.core.join import flip_cardinality
+
+        assert flip_cardinality("one_to_one") == "one_to_one"
+
+    def test_many_to_many_is_symmetric(self) -> None:
+        from schemabrain.core.join import flip_cardinality
+
+        assert flip_cardinality("many_to_many") == "many_to_many"
+
+    def test_none_passes_through(self) -> None:
+        # `None` propagates so the worst-case "treat as many_to_many"
+        # downstream behaves identically regardless of traversal
+        # direction.
+        from schemabrain.core.join import flip_cardinality
+
+        assert flip_cardinality(None) is None
