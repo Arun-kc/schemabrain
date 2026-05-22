@@ -23,7 +23,7 @@ import dataclasses
 import re
 from typing import Any, Literal
 
-from schemabrain.core.join import CanonicalJoin, JoinColumnPair
+from schemabrain.core.join import CanonicalJoin, JoinColumnPair, flip_cardinality
 from schemabrain.core.metric import Metric, TimeGrain
 from schemabrain.core.store_protocol import Store
 from schemabrain.semantic.compiler.plan import (
@@ -320,6 +320,19 @@ def resolve_metric_plan(
                 if predecessor == metric.entity
                 else resolved_joins[predecessor].target_alias
             )
+            # Cardinality reported on `ResolvedJoin` is the EFFECTIVE
+            # value in the chain's traversal direction, not the
+            # stored direction. When the BFS walked the canonical
+            # join from target→source (reverse of stored
+            # source→target), the cardinality flips so downstream
+            # consumers (fan-out detector, plan emitter) see the
+            # shape that actually applies to the SQL they emit.
+            traversed_reversed = edge.on_pairs_in_chain_direction != edge.join.on
+            effective_cardinality = (
+                flip_cardinality(edge.join.cardinality)
+                if traversed_reversed
+                else edge.join.cardinality
+            )
             resolved_joins[edge.target_entity_in_chain] = ResolvedJoin(
                 canonical_name=edge.join.name,
                 source_alias=source_alias,
@@ -327,7 +340,7 @@ def resolve_metric_plan(
                 target_table=target_table,
                 target_alias=_alias_for(edge.target_entity_in_chain),
                 on_pairs=edge.on_pairs_in_chain_direction,
-                cardinality=edge.join.cardinality,
+                cardinality=effective_cardinality,
             )
         # Final ResolvedJoin for the requested entity is now cached.
         join = resolved_joins[entity_name]

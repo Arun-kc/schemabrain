@@ -59,6 +59,33 @@ _VALID_ORIGINS: frozenset[str] = frozenset(get_args(JoinOrigin))
 Cardinality = Literal["one_to_one", "one_to_many", "many_to_one", "many_to_many"]
 _VALID_CARDINALITIES: frozenset[str] = frozenset(get_args(Cardinality))
 
+
+def flip_cardinality(c: Cardinality | None) -> Cardinality | None:
+    """Return the cardinality observed when a join is traversed in the
+    reverse of its stored direction.
+
+    Stored `one_to_many` (1 source : N targets) becomes `many_to_one`
+    in reverse (N targets : 1 source). The `one_to_one` and
+    `many_to_many` shapes are symmetric and unchanged. `None`
+    propagates as `None` so the worst-case fallback at the consumer
+    behaves identically regardless of which direction the chain
+    traversed it.
+
+    Load-bearing for fan-out detection in multi-hop chains: when the
+    compiler walks a canonical join in reverse, the stored
+    `many_to_one` actually multiplies anchor rows in the chain's
+    direction, so a naive read of the stored value would miss the
+    fan-out risk.
+    """
+    if c is None:
+        return None
+    return {
+        "one_to_many": "many_to_one",
+        "many_to_one": "one_to_many",
+        "one_to_one": "one_to_one",
+        "many_to_many": "many_to_many",
+    }[c]
+
 # v14 / charter v1.2: 2D trust signal mirrors `core/entity.py`. For
 # canonical joins specifically the `fk_constraint` vs `llm_suggested`
 # distinction is load-bearing — an FK-derived join is DB-validated;

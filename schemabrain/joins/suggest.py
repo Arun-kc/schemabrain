@@ -35,8 +35,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 from schemabrain.core.entity import Entity
-from schemabrain.core.join import CanonicalJoin, JoinColumnPair, JoinOrigin
-from schemabrain.core.models import ForeignKey
+from schemabrain.core.join import Cardinality, CanonicalJoin, JoinColumnPair, JoinOrigin
+from schemabrain.core.models import ForeignKey, Table
 from schemabrain.core.store_protocol import Store
 from schemabrain.joins.mining import (
     AggregatedJoin,
@@ -76,6 +76,13 @@ class JoinCandidate:
     fk_name: str | None
     query_log_frequency: int
     rationale: str
+    # v14: cardinality inferred from FK + PK info at suggestion time.
+    # `None` when the FK is query-log-only (no constraint to inspect)
+    # or when the FK columns + target PK don't match a recognisable
+    # shape. Carried through to the persisted `CanonicalJoin` so the
+    # fan-out detector + planner see a precise signal rather than
+    # the conservative "treat unknown as many_to_many" default.
+    cardinality: Cardinality | None = None
 
     def __post_init__(self) -> None:
         # Every code path in `_merge_evidence_sources` produces at
@@ -105,7 +112,20 @@ class JoinCandidate:
         `"manual"` instead. Typed as `JoinOrigin` so the type checker
         rejects any caller passing a bare `str` that isn't one of the
         three valid values.
+
+        v14: derives the charter-v1.2 `inference_method` from the
+        evidence tags. An FK-backed candidate (with or without
+        query-log corroboration) writes `fk_constraint` — the join
+        is DB-validated. A query-log-only candidate writes
+        `observed_in_query_log` — the join is inferred from observed
+        SQL, not a declared constraint. `validation_state` lands on
+        `applied` for both: the operator's `--apply` gesture stored
+        the row, but no human-confirmation step has happened yet.
         """
+        if "foreign_key" in self.evidence:
+            inference_method = "fk_constraint"
+        else:
+            inference_method = "observed_in_query_log"
         return CanonicalJoin(
             name=self.name,
             description="",  # suggester leaves description blank; user fills in
@@ -113,6 +133,9 @@ class JoinCandidate:
             target_entity=self.target_entity,
             on=self.on,
             origin=origin,
+            cardinality=self.cardinality,
+            inference_method=inference_method,
+            validation_state="applied",
         )
 
 
@@ -124,6 +147,7 @@ class _FkSeed:
     source_entity: str
     target_entity: str
     on: tuple[JoinColumnPair, ...]
+    cardinality: Cardinality | None = None
 
 
 @dataclass(frozen=True)
@@ -169,7 +193,12 @@ def suggest_canonical_joins(
         return []
 
     fk_rows = store.list_all_foreign_keys(source_connection_id=source_connection_id)
-    fk_seeds = _build_fk_seeds(fk_rows, table_to_entity)
+    fk_seeds = _build_fk_seeds(
+        fk_rows,
+        table_to_entity,
+        store=store,
+        source_connection_id=source_connection_id,
+    )
 
     aggregated_predicates = _load_aggregated_query_log(
         store, source_connection_id=source_connection_id
@@ -234,10 +263,32 @@ def _build_table_to_entity_map(entities: Sequence[Entity]) -> dict[str, str]:
 def _build_fk_seeds(
     fk_rows: Sequence[tuple[str, str, ForeignKey]],
     table_to_entity: dict[str, str],
+    *,
+    store: Store,
+    source_connection_id: str,
 ) -> list[_FkSeed]:
     """Map each FK to its entity-level seed, dropping FKs whose endpoints
     don't both back an entity.
+
+    Cardinality is inferred from FK + PK info: when `fk.target_columns`
+    match the target table's primary-key column set exactly, the target
+    is uniquely identified by the FK and the join is `many_to_one`
+    (the typical OLTP shape — `orders.user_id` → `users.id`).
+    `one_to_one` requires both sides to be unique. Falls back to `None`
+    when table info is unavailable or the column shape doesn't match
+    a recognisable pattern.
     """
+    # Cache table lookups so multi-FK tables don't re-fetch.
+    table_cache: dict[str, Table | None] = {}
+
+    def _table(schema: str, name: str) -> Table | None:
+        key = f"{schema}.{name}"
+        if key not in table_cache:
+            table_cache[key] = store.get_table(
+                schema, name, source_connection_id=source_connection_id
+            )
+        return table_cache[key]
+
     seeds: list[_FkSeed] = []
     for source_schema, source_table, fk in fk_rows:
         source_qn = f"{source_schema}.{source_table}"
@@ -274,15 +325,68 @@ def _build_fk_seeds(
             JoinColumnPair(source_column=src, target_column=tgt)
             for src, tgt in zip(fk.source_columns, fk.target_columns, strict=True)
         )
+        cardinality = _infer_fk_cardinality(
+            fk=fk,
+            source_table=_table(source_schema, source_table),
+            target_table=_table(fk.target_schema, fk.target_table),
+        )
         seeds.append(
             _FkSeed(
                 fk_name=fk.name,
                 source_entity=source_entity,
                 target_entity=target_entity,
                 on=pairs,
+                cardinality=cardinality,
             )
         )
     return seeds
+
+
+def _infer_fk_cardinality(
+    *,
+    fk: ForeignKey,
+    source_table: Table | None,
+    target_table: Table | None,
+) -> Cardinality | None:
+    """Best-effort cardinality from FK columns + primary-key info.
+
+    Pragmatic rules (UNIQUE-index info isn't surfaced through the Store
+    Protocol yet, so PK is the proxy for "uniquely identified"):
+
+      - Target FK columns == target table's PK column set → target
+        side is unique → at most ONE target row per source row.
+      - Source FK columns == source table's PK column set → source
+        side is unique → at most ONE source row per target row.
+      - Both unique → `one_to_one` (supertype/subtype pattern).
+      - Only target unique → `many_to_one` (typical OLTP FK).
+      - Only source unique → `one_to_many` (rare — usually the FK
+        is on the "many" side, but a 1:1+ shape can land here).
+      - Neither side recognisable → `None` (defensive).
+
+    Returning `None` keeps the v1 worst-case behavior — the fan-out
+    detector still flags the join — rather than guessing wrong. Most
+    real-world FKs land on the `many_to_one` branch which removes a
+    spurious fan-out warning.
+    """
+    if target_table is None:
+        return None
+    target_pk = frozenset(target_table.primary_key_columns())
+    target_fk_cols = frozenset(fk.target_columns)
+    target_unique = bool(target_pk) and target_pk == target_fk_cols
+
+    source_unique: bool = False
+    if source_table is not None:
+        source_pk = frozenset(source_table.primary_key_columns())
+        source_fk_cols = frozenset(fk.source_columns)
+        source_unique = bool(source_pk) and source_pk == source_fk_cols
+
+    if target_unique and source_unique:
+        return "one_to_one"
+    if target_unique:
+        return "many_to_one"
+    if source_unique:
+        return "one_to_many"
+    return None
 
 
 # ----- query-log aggregation -------------------------------------------------
@@ -462,6 +566,7 @@ def _merge_evidence_sources(
                 fk_name=seed.fk_name,
                 query_log_frequency=frequency,
                 rationale=rationale,
+                cardinality=seed.cardinality,
             )
         )
 
@@ -490,6 +595,7 @@ def _merge_evidence_sources(
                 fk_name=None,
                 query_log_frequency=ql.frequency,
                 rationale=rationale,
+                cardinality=None,
             )
         )
 

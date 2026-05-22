@@ -602,10 +602,26 @@ class MetricPlan:
 
     @property
     def fan_out_join_names(self) -> tuple[str, ...]:
-        """Subset of `required_join_names` with one_to_many /
-        many_to_many cardinality (or unspecified, treated as
-        worst-case). The MCP envelope surfaces these as fan-out
-        warnings."""
+        """Subset of `required_join_names` whose effective cardinality
+        multiplies rows on the anchor side of the chain.
+
+        Cardinality on `ResolvedJoin` is direction-aware (the resolver
+        flips the stored value when BFS walked the canonical join in
+        reverse), so this check reads it verbatim:
+
+          - `one_to_many` — the source side (already in the chain,
+            carrying anchor rows) has 1 row per N target rows; adding
+            target multiplies anchor rows. Fan-out.
+          - `many_to_many` — always multiplies. Fan-out.
+          - `None` — unknown, defensive worst case. Fan-out.
+          - `many_to_one` — N source rows per 1 target row; adding
+            target preserves source-side row count. NOT fan-out.
+          - `one_to_one` — symmetric; NOT fan-out.
+
+        The MCP envelope surfaces these as the `fan_out_join`
+        degradation reason so the agent can switch to `count_distinct`
+        on an identity column when the metric requires it.
+        """
         return tuple(
             j.canonical_name
             for j in self.joins
