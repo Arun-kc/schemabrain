@@ -4288,7 +4288,17 @@ def _cmd_metrics_list(
         return 2
 
     if not metrics:
+        # Mirror the MCP `list_metrics` tool's empty-state hint: tell
+        # the operator how to populate the surface rather than dead-
+        # ending with a parenthetical. The CLI used to print only
+        # `(no metrics in the store)` and the operator had to guess
+        # the next command.
         print("(no metrics in the store)")
+        print(
+            "  next: run `schemabrain metrics suggest --out-dir ./metrics` "
+            "to propose metrics from the indexed entities, then "
+            "`schemabrain metrics apply ./metrics` to persist."
+        )
         return 0
 
     for metric in metrics:
@@ -6812,8 +6822,12 @@ def _cmd_inspect(
     from schemabrain.core.store import SchemaVersionMismatchError
     from schemabrain.inspect import (
         build_entity_detail,
+        build_join_detail,
+        build_metric_detail,
         build_summary,
         render_entity_detail,
+        render_join_detail,
+        render_metric_detail,
         render_summary,
     )
 
@@ -6854,25 +6868,27 @@ def _cmd_inspect(
                 render_summary(summary, console=console, store_path=store_path)
                 return 0
 
-            # Drill mode. If no `--source` filter was supplied we walk
-            # every source in the store and render every match. This
-            # keeps the operator UX simple in the common one-source
-            # case (no flag required) while still surfacing
-            # multi-source matches when they exist.
+            # Drill mode resolves `name` as entity → metric → join in
+            # that priority. The summary view lists all three kinds
+            # alongside each other with no namespace, so callers like
+            # the summary's "Drill into one: `schemabrain inspect <name>`"
+            # link must work for any of them.
             if source_id is not None:
                 candidate_sources = [source_id]
             else:
-                # `list_entities()` with no filter walks every source.
-                # We dedupe to the unique source set via the entity
-                # rows' implicit source-id grouping. The
-                # `Store.list_entities` Protocol returns just Entity
-                # rows without exposing `source_connection_id`, so
-                # we fall back to the raw store-private path: enumerate
-                # via the table list and walk by entity name.
-                source_ids = _list_source_ids_with_entity(store, name)
+                # Union the source-id sets across the three name spaces
+                # — a name that lives only as a metric (or join) still
+                # gets a non-empty candidate set so the drill below can
+                # find it. Sorted for determinism in the rendered output.
+                source_ids = sorted(
+                    set(_list_source_ids_with_entity(store, name))
+                    | set(_list_source_ids_with_metric(store, name))
+                    | set(_list_source_ids_with_join(store, name))
+                )
                 if not source_ids:
                     print(
-                        f"error: no entity named {name!r} in {store_path!r}",
+                        f"error: no entity, metric, or join named "
+                        f"{name!r} in {store_path!r}",
                         file=sys.stderr,
                     )
                     return 1
@@ -6880,21 +6896,49 @@ def _cmd_inspect(
 
             rendered = False
             for sid in candidate_sources:
-                detail = build_entity_detail(
+                # Priority: entity → metric → join. A name that exists
+                # as both an entity and a metric (rare; the identifiers
+                # share the same alphabet but the operator typically
+                # avoids the collision) drills as the entity, and the
+                # operator can disambiguate by passing the metric/join
+                # name verbatim when it differs.
+                entity_detail = build_entity_detail(
                     store=store,
                     entity_name=name,
                     source_connection_id=sid,
                 )
-                if detail is None:
+                if entity_detail is not None:
+                    if rendered:
+                        console.print()
+                    render_entity_detail(entity_detail, console=console)
+                    rendered = True
                     continue
-                if rendered:
-                    console.print()
-                render_entity_detail(detail, console=console)
-                rendered = True
+                metric_detail = build_metric_detail(
+                    store=store,
+                    metric_name=name,
+                    source_connection_id=sid,
+                )
+                if metric_detail is not None:
+                    if rendered:
+                        console.print()
+                    render_metric_detail(metric_detail, console=console)
+                    rendered = True
+                    continue
+                join_detail = build_join_detail(
+                    store=store,
+                    join_name=name,
+                    source_connection_id=sid,
+                )
+                if join_detail is not None:
+                    if rendered:
+                        console.print()
+                    render_join_detail(join_detail, console=console)
+                    rendered = True
 
             if not rendered:
                 print(
-                    f"error: no entity named {name!r} in {store_path!r}",
+                    f"error: no entity, metric, or join named "
+                    f"{name!r} in {store_path!r}",
                     file=sys.stderr,
                 )
                 return 1
@@ -6951,6 +6995,37 @@ def _list_source_ids_with_entity(store: SQLiteStore, entity_name: str) -> list[s
         rows = conn.execute(
             "SELECT DISTINCT source_connection_id FROM entities WHERE name = ?",
             (entity_name,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [r[0] for r in rows]
+
+
+def _list_source_ids_with_metric(store: SQLiteStore, metric_name: str) -> list[str]:
+    """Cross-source variant of `_list_source_ids_with_entity` for metrics.
+
+    Same partial-migration tolerance: a store missing the `metrics`
+    table (pre-v10) returns an empty list rather than crashing, so
+    the caller's "name not found" path still renders cleanly.
+    """
+    conn = store._require_conn()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT source_connection_id FROM metrics WHERE name = ?",
+            (metric_name,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [r[0] for r in rows]
+
+
+def _list_source_ids_with_join(store: SQLiteStore, join_name: str) -> list[str]:
+    """Cross-source variant of `_list_source_ids_with_entity` for joins."""
+    conn = store._require_conn()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT source_connection_id FROM canonical_joins WHERE name = ?",
+            (join_name,),
         ).fetchall()
     except sqlite3.OperationalError:
         return []

@@ -24,9 +24,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, get_args
 
-from schemabrain.core.entity import Entity
-from schemabrain.core.join import Cardinality
-from schemabrain.core.metric import AggFunction
+from schemabrain.core.entity import Entity, InferenceMethod, ValidationState
+from schemabrain.core.join import CanonicalJoin, Cardinality
+from schemabrain.core.metric import AggFunction, Metric
 from schemabrain.core.store_protocol import Store
 from schemabrain.pii.categories import Sensitivity
 
@@ -116,6 +116,38 @@ class EntityDetail:
     columns: tuple[EntityColumnDetail, ...]
     related_entities: tuple[RelatedEntity, ...]
     anchored_metrics: tuple[AnchoredMetric, ...]
+
+
+@dataclass(frozen=True)
+class MetricDetail:
+    """Inspect drill view for one metric.
+
+    Carries the full `Metric` plus the anchor entity row (`anchor`) so
+    the renderer can show "anchored on customer (public.customers)"
+    without a second round-trip. `anchor` is None only when the
+    metric's anchor entity has been deleted out from under it — a
+    corruption case the dataclass surfaces honestly so the operator
+    sees the orphaned row instead of a misleading silent omission.
+    """
+
+    metric: Metric
+    anchor: Entity | None
+
+
+@dataclass(frozen=True)
+class JoinDetail:
+    """Inspect drill view for one canonical join.
+
+    Carries the full `CanonicalJoin` plus both entity ends so the
+    renderer can show the bound tables. Either end being `None`
+    indicates a corrupt store (FK CASCADE should have swept this
+    join when the entity was deleted); the renderer surfaces the
+    inconsistency rather than hiding it.
+    """
+
+    join: CanonicalJoin
+    source: Entity | None
+    target: Entity | None
 
 
 @dataclass(frozen=True)
@@ -318,6 +350,45 @@ def build_entity_detail(
         related_entities=related_entities,
         anchored_metrics=anchored_metrics,
     )
+
+
+def build_metric_detail(
+    *,
+    store: Store,
+    metric_name: str,
+    source_connection_id: str,
+) -> MetricDetail | None:
+    """Return a `MetricDetail` for `metric_name`, or `None` if absent.
+
+    Anchor entity is fetched alongside so the renderer can surface
+    the bound table without a second drill — answers "what does
+    this metric measure, and where does that column live?" in one
+    look.
+    """
+    metric = store.get_metric(metric_name, source_connection_id=source_connection_id)
+    if metric is None:
+        return None
+    anchor = store.get_entity(metric.entity, source_connection_id=source_connection_id)
+    return MetricDetail(metric=metric, anchor=anchor)
+
+
+def build_join_detail(
+    *,
+    store: Store,
+    join_name: str,
+    source_connection_id: str,
+) -> JoinDetail | None:
+    """Return a `JoinDetail` for `join_name`, or `None` if absent."""
+    join = store.get_canonical_join(join_name, source_connection_id=source_connection_id)
+    if join is None:
+        return None
+    source_entity = store.get_entity(
+        join.source_entity, source_connection_id=source_connection_id
+    )
+    target_entity = store.get_entity(
+        join.target_entity, source_connection_id=source_connection_id
+    )
+    return JoinDetail(join=join, source=source_entity, target=target_entity)
 
 
 def _resolve_related_entities(

@@ -41,6 +41,8 @@ from schemabrain.inspect.engine import (
     AnchoredMetric,
     EntityColumnDetail,
     EntityDetail,
+    JoinDetail,
+    MetricDetail,
     RelatedEntity,
     StoreSummary,
 )
@@ -424,4 +426,146 @@ def _render_metrics(
     console.print(table)
 
 
-__all__ = ["render_entity_detail", "render_summary"]
+def render_metric_detail(detail: MetricDetail, *, console: Console) -> None:
+    """Render the drill view for one metric.
+
+    Shape:
+
+        ◆ metric:total_revenue · entity:order (public.orders) · origin suggested
+
+        Description:  Sum of order totals.
+
+        Measure:      sum(total_cents)
+        Time:         order.created_at — grains: day, week, month
+        Trust:        llm_suggested · applied (MEDIUM)
+
+    The brand line leads with `metric:<name>` mirroring the entity
+    drill's `entity:<name>` so the operator sees the same shape
+    regardless of which kind they drilled into. Anchor table is
+    surfaced in parentheses next to the anchor entity name — answers
+    "where does the measure column live?" without a second drill.
+    """
+    metric = detail.metric
+    text = Text()
+    text.append(GLYPH_BRAND, style="cyan")
+    text.append(" ")
+    text.append(f"metric:{metric.name}", style="bold")
+    text.append(f" {GLYPH_SEP} ", style="bright_black")
+    anchor_label = f"entity:{metric.entity}"
+    if detail.anchor is not None:
+        anchor_label = f"{anchor_label} ({detail.anchor.qualified_table})"
+    else:
+        anchor_label = f"{anchor_label} [red](orphaned)[/]"
+    text.append(anchor_label, style="green")
+    if metric.origin != "manual":
+        text.append(f" {GLYPH_SEP} ", style="bright_black")
+        text.append(f"origin {metric.origin}", style="dim")
+    console.print(text)
+    console.print()
+    if metric.description:
+        console.print(f"[dim]Description:[/]  {metric.description}")
+        console.print()
+
+    measure_body = (
+        metric.measure.column
+        if metric.measure.column is not None
+        else metric.measure.expression
+    )
+    console.print(f"[bold]Measure:[/]      [dim]{metric.measure.agg}({measure_body})[/]")
+    if metric.time_dimension is not None:
+        grain_str = ", ".join(metric.time_grains) if metric.time_grains else "[dim]none[/]"
+        console.print(
+            f"[bold]Time:[/]         {metric.time_dimension} "
+            f"[dim]grains: {grain_str}[/]"
+        )
+    else:
+        console.print("[bold]Time:[/]         [dim]non-temporal[/]")
+    _render_trust_line(
+        inference_method=metric.inference_method,
+        validation_state=metric.validation_state,
+        console=console,
+    )
+
+
+def render_join_detail(detail: JoinDetail, *, console: Console) -> None:
+    """Render the drill view for one canonical join.
+
+    Shape:
+
+        ◆ join:customer_orders · order ← customer · cardinality many_to_one
+
+        Description:  ...
+
+        On:           order.user_id = customer.id
+        Trust:        fk_constraint · applied (HIGH)
+    """
+    join = detail.join
+    text = Text()
+    text.append(GLYPH_BRAND, style="cyan")
+    text.append(" ")
+    text.append(f"join:{join.name}", style="bold")
+    text.append(f" {GLYPH_SEP} ", style="bright_black")
+    text.append(f"{join.source_entity} → {join.target_entity}", style="green")
+    if join.cardinality is not None:
+        text.append(f" {GLYPH_SEP} ", style="bright_black")
+        text.append(f"cardinality {join.cardinality}", style="dim")
+    if join.origin != "manual":
+        text.append(f" {GLYPH_SEP} ", style="bright_black")
+        text.append(f"origin {join.origin}", style="dim")
+    console.print(text)
+    console.print()
+    if join.description:
+        console.print(f"[dim]Description:[/]  {join.description}")
+        console.print()
+
+    pretty_on = "  AND  ".join(
+        f"{join.source_entity}.{p.source_column} = {join.target_entity}.{p.target_column}"
+        for p in join.on
+    )
+    console.print(f"[bold]On:[/]           {pretty_on}")
+    if detail.source is not None and detail.target is not None:
+        console.print(
+            f"[bold]Tables:[/]       {detail.source.qualified_table} ↔ "
+            f"{detail.target.qualified_table}"
+        )
+    _render_trust_line(
+        inference_method=join.inference_method,
+        validation_state=join.validation_state,
+        console=console,
+    )
+
+
+def _render_trust_line(
+    *,
+    inference_method: str,
+    validation_state: str,
+    console: Console,
+) -> None:
+    """Render the Charter v1.2 2D trust signal as a single labelled line.
+
+    Computes the derived confidence label so the operator sees both
+    the raw 2D signal (`fk_constraint · applied`) AND the bucket the
+    MCP envelope would report (`HIGH`). Import is local because the
+    envelope module pulls in Pydantic transitively — keeping it
+    off the module-load path of the otherwise-light inspect renderer.
+    """
+    from schemabrain.mcp.envelope import derive_confidence
+
+    confidence = derive_confidence(inference_method, validation_state)  # type: ignore[arg-type]
+    confidence_style = {
+        "HIGH": "green",
+        "MEDIUM": "yellow",
+        "LOW": "red",
+    }.get(confidence, "")
+    console.print(
+        f"[bold]Trust:[/]        {inference_method} {GLYPH_SEP} {validation_state} "
+        f"[{confidence_style}]({confidence})[/]"
+    )
+
+
+__all__ = [
+    "render_entity_detail",
+    "render_join_detail",
+    "render_metric_detail",
+    "render_summary",
+]
