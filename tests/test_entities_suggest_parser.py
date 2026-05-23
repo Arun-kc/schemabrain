@@ -56,7 +56,7 @@ candidates:
         # MEDIUM via `derive_confidence`) from FK-derived joins and
         # hand-authored YAMLs (→ HIGH). Without this, every
         # wizard-curated entity collapses to flat HIGH on the wire and
-        # the F28 differentiation is invisible.
+        # the 2D signal silently degrades to a single bucket.
         assert candidate.entity.inference_method == "llm_suggested"
         assert candidate.confidence == "high"
         assert candidate.rationale.startswith("users has")

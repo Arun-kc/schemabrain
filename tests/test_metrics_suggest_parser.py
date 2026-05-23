@@ -58,7 +58,7 @@ candidates:
     # classification that distinguishes LLM-guessed metrics (→ MEDIUM
     # via `derive_confidence`) from hand-authored YAMLs (→ HIGH).
     # Without this, every wizard-curated metric collapses to flat HIGH
-    # on the wire and the F28 differentiation is invisible.
+    # on the wire and the 2D signal silently degrades to a single bucket.
     assert metric.inference_method == "llm_suggested"
     assert metric.description == "Total revenue summed across all orders."
 

@@ -795,7 +795,7 @@ class TestEnvelopeMapping:
         assert structured["error"]["kind"] == "ambiguous_time_dimension"
         recovery = structured["error"]["recovery"]
         assert recovery["suggested_tool"] == "get_metric"
-        # F44: `recovery.suggested_args` must be populated so a
+        # `recovery.suggested_args` must be populated so a
         # programmatic agent acting on the structured recovery contract
         # can re-call get_metric without parsing the human-readable
         # message. The value names one valid candidate; the agent
@@ -815,7 +815,7 @@ class TestEnvelopeMapping:
         )
 
     def test_time_dimension_arg_disambiguates_at_mcp_boundary(self, tmp_path: Path) -> None:
-        """F44 positive case: re-calling get_metric with the
+        """Positive case: re-calling get_metric with the
         `time_dimension` arg from the prior refusal envelope's
         `recovery.suggested_args` actually succeeds and the inherited
         dimension matches the requested one. Closes the
@@ -1097,8 +1097,8 @@ class TestEnvelopeMapping:
     def test_pii_blocked_envelope_populates_anchor_in_recovery_args(
         self, tmp_path: Path
     ) -> None:
-        """F44 PII surface: when get_metric refuses on PII policy, the
-        envelope's `recovery.suggested_args` carries the metric's
+        """PII refusal surface: when get_metric refuses on PII policy,
+        the envelope's `recovery.suggested_args` carries the metric's
         anchor entity name so an agent can pivot directly to
         `describe_entity(name=<anchor>)` and enumerate non-PII columns.
         Closes the structured-recovery gap on the firewall property #3
@@ -1167,8 +1167,8 @@ class TestEnvelopeMapping:
         assert structured["error"]["kind"] == "pii_blocked"
         recovery = structured["error"]["recovery"]
         assert recovery["suggested_tool"] == "describe_entity"
-        # F44: `suggested_args.name` must name the metric's anchor so
-        # the agent's follow-up describe_entity call lands on the right
+        # `suggested_args.name` must name the metric's anchor so the
+        # agent's follow-up describe_entity call lands on the right
         # entity. Without this, an agent following the structured
         # contract has to fall back to parsing the message string.
         assert recovery["suggested_args"] == {"name": "user"}

@@ -338,7 +338,8 @@ def _parse_candidate(raw: Any, *, index: int) -> EntityCandidate:
     # ride the `llm_suggested` rail (→ MEDIUM confidence) rather than
     # the dataclass-default `manually_authored` (→ HIGH). Without this,
     # `derive_confidence(method, state)` collapses to HIGH everywhere
-    # on the wizard happy path and the F28 differentiation is invisible.
+    # on the wizard happy path and the 2D trust signal silently
+    # degrades to a flat 1D HIGH that operators can't reason about.
     try:
         entity = Entity(
             name=name,

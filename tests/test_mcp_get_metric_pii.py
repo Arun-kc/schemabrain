@@ -234,8 +234,8 @@ class TestPiiBlockedRefusal:
                 )
             assert exc_info.value.attempted_categories == ("contact",)
             assert exc_info.value.blocked_categories == ("contact",)
-            # F44: the exception carries the metric's anchor entity so
-            # the MCP envelope wrapper can populate
+            # The exception carries the metric's anchor entity so the
+            # MCP envelope wrapper can populate
             # `recovery.suggested_args.name` — an agent following the
             # structured-recovery contract gets `describe_entity(name=
             # <anchor>)` pre-filled and can enumerate non-PII columns
