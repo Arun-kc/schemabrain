@@ -22,7 +22,7 @@
 
 > **The agent never writes SQL. Schema Brain does, from definitions you control.**
 
-A pluggable semantic + SQL firewall for AI agents on Postgres. Your agent only ever sees twelve read-only MCP tools — none of which can write — and Schema Brain compiles and runs the parameterized SQL on its side. Refused calls return a structured `recovery` block agents act on programmatically; every call lands in a tamper-evident audit log.
+Your agent gets twelve read-only MCP tools — none of which can write. Schema Brain compiles the parameterized SQL from definitions you control and runs it on its side. Refused calls return a structured `recovery` block agents act on programmatically; every call lands in a tamper-evident audit log.
 
 - **One command from `pip install` to wired agent** — bare `schemabrain init` walks the 7-stage activation wizard end-to-end. Auto-detects a dbt project and routes through the importer when one is present.
 - **Validated metrics, not invented SQL** — entities, metrics, and canonical joins compile to parameterized SQL the agent never sees.
