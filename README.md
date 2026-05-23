@@ -16,14 +16,19 @@
   <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-compatible-3ECF8E?style=flat-square&labelColor=0A0A0A" alt="MCP compatible"></a>
 </p>
 
+<p align="center">
+  <strong>The SQL firewall between AI agents and your production database.</strong>
+</p>
+
 > **The agent never writes SQL. Schema Brain does, from definitions you control.**
 
-A pluggable semantic + SQL firewall for AI agents on Postgres. Your agent only ever sees twelve read-only MCP tools — entity lookup, validated metrics, canonical-join resolution, PII-aware refusal — and Schema Brain compiles and runs the parameterized SQL on its side. Every call lands in a tamper-evident audit log.
+A pluggable semantic + SQL firewall for AI agents on Postgres. Your agent only ever sees twelve read-only MCP tools — none of which can write — and Schema Brain compiles and runs the parameterized SQL on its side. Refused calls return a structured `recovery` block agents act on programmatically; every call lands in a tamper-evident audit log.
 
 - **One command from `pip install` to wired agent** — bare `schemabrain init` walks the 7-stage activation wizard end-to-end. Auto-detects a dbt project and routes through the importer when one is present.
 - **Validated metrics, not invented SQL** — entities, metrics, and canonical joins compile to parameterized SQL the agent never sees.
+- **Read-only by architecture, not configuration** — no `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database. Stage 1 of `init` pins `default_transaction_read_only=on` on the source connection as belt-and-suspenders.
+- **Failure is a contract, not a string** — refused calls return structured `recovery.suggested_args` agents act on programmatically. PII blocks ship the entity name to retry; ambiguous time dimensions ship the candidate to pick.
 - **Pluggable into any agent loop** — Claude Desktop, Claude Code, Cursor, or your own Anthropic / OpenAI / LangGraph loop over MCP stdio. 230-LOC drop-in proof at [`examples/anthropic_demo.py`](examples/anthropic_demo.py).
-- **Watch what the agent does** — `schemabrain tail` streams every tool call live; every call lands in an append-only `mcp_audit` table with a sha256 chain.
 
 ```bash
 pip install schemabrain
@@ -122,7 +127,7 @@ After the wizard, `schemabrain inspect` shows what the agent has and `schemabrai
   </picture>
 </p>
 
-Four properties Schema Brain enforces at the SQL boundary today — plus one that keeps them portable:
+Six properties Schema Brain enforces at the SQL boundary today:
 
 <table>
 <tr>
@@ -137,16 +142,36 @@ Entities, metrics, and canonical joins compile to parameterized SQL Schema Brain
 </td>
 <td width="50%" valign="top">
 
-### 2. Read-only enforced at the source
+### 2. Read-only by architecture, not configuration
 
-Stage 1 of `schemabrain init` opens the source with `default_transaction_read_only=on` and verifies the session honors it. A Postgres that won't enforce read-only is refused at activation, not at runtime.
+The MCP surface exposes twelve tools — none of which can write. There is no `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database, regardless of session state. Stage 1 of `init` additionally pins `default_transaction_read_only=on` on the source connection and refuses activation against a Postgres that won't honor it. Belt and suspenders.
 
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 
-### 3. PII-aware refusal at the tool boundary
+### 3. Failure is a contract, not a string
+
+Refused and degraded calls return a structured `recovery.suggested_args` block — not a message agents have to parse. PII blocks ship the entity name to retry; ambiguous time dimensions ship the candidate to pick; unknown joins ship the next tool to call. Agents act on the contract programmatically.
+
+```json
+{
+  "status": "refused",
+  "kind": "ambiguous_time_dimension",
+  "recovery": {
+    "suggested_tool": "get_metric",
+    "suggested_args": {"time_dimension": "order.placed_at"}
+  }
+}
+```
+
+[Charter v1.2 envelope reference →](docs/agent-ux-charter.md#3-errors-are-prompts-for-the-next-tool-call)
+
+</td>
+<td width="50%" valign="top">
+
+### 4. PII-aware refusal at the tool boundary
 
 Any `get_metric` touching a blocked PII category returns a `refused` envelope; the compiled SQL never runs and the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`. `describe_entity` enforces the same policy at the column level — the agent still sees the entity and its non-PII columns, but blocked columns ship with `redacted=True` and the LLM-enriched description cleared. `schemabrain init` writes `--pii-block contact` into the Claude Desktop snippet by default so email / phone / address columns are blocked on a fresh install; widen with `--pii-block contact,health` and other categories as needed.
 
@@ -159,11 +184,13 @@ Twelve categories from GDPR, CCPA/CPRA, HIPAA, PCI DSS, ISO 27018 — tagged per
 [PII classification →](docs/observability.md#pii-classification-alpha)
 
 </td>
+</tr>
+<tr>
 <td width="50%" valign="top">
 
-### 4. Tamper-evident audit log
+### 5. Tamper-evident audit log
 
-Every tool call under `schemabrain serve` writes one row to an append-only `mcp_audit` table with a per-row sha256 chain. Rewrite past rows and the chain breaks; `audit verify` catches it.
+Every tool call under `schemabrain serve` writes one row to an append-only `mcp_audit` table — PII categories per row, content-addressable fingerprints, sha256 hash chain. `audit verify` re-walks the chain and exits non-zero if any past row was rewritten. Every claim is verifiable end-to-end against the bundled fixture.
 
 ```bash
 schemabrain audit verify   # exit 0 = chain clean
@@ -172,22 +199,25 @@ schemabrain audit verify   # exit 0 = chain clean
 [Tamper-evident audit log →](docs/observability.md#audit-log-alpha)
 
 </td>
-</tr>
-</table>
+<td width="50%" valign="top">
 
-And one property that keeps those four portable:
+### 6. Pluggable into any agent loop
 
-**5. Pluggable into any agent loop.** The same MCP stdio surface Claude Desktop sees is exposed to any host that speaks MCP — your own Anthropic, OpenAI, or LangGraph loop included. [`examples/anthropic_demo.py`](examples/anthropic_demo.py) is a 230-LOC drop-in that wires Claude Haiku 4.5 to `schemabrain serve` and prints exactly which tools the agent chose to call:
+The same MCP stdio surface Claude Desktop sees is exposed to any host that speaks MCP — your own Anthropic, OpenAI, or LangGraph loop included. [`examples/anthropic_demo.py`](examples/anthropic_demo.py) is a 230-LOC drop-in that wires Claude Haiku 4.5 to `schemabrain serve` and prints exactly which tools the agent chose to call.
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
 python examples/anthropic_demo.py \
     --url-env DATABASE_URL \
-    --store-path ./schemabrain.db \
-    --question "Which tables describe customer orders?"
+    --question "..."
 ```
 
-~$0.005–0.02 per run on Haiku 4.5, bounded by `--max-turns`. ([Anthropic SDK walkthrough](docs/setup.md#path-2--anthropic-sdk-demo-no-claude-desktop-required))
+~$0.005–0.02 per run on Haiku 4.5, bounded by `--max-turns`.
+
+[Anthropic SDK walkthrough →](docs/setup.md#path-2--anthropic-sdk-demo-no-claude-desktop-required)
+
+</td>
+</tr>
+</table>
 
 ---
 
@@ -232,7 +262,7 @@ Schema Brain is being built as the **SQL-boundary safety layer for AI agents** �
 
 That layer needs a semantic substrate underneath it. You can't refuse "this query touches PII" without knowing which columns are PII. You can't rewrite "join through this junction" without canonical-join definitions. You can't validate a metric without knowing its grain.
 
-So the engineering order is **schema intelligence → semantic substrate → safety primitives.** The first two are shipped (v0.5 + v1); the third — `validate_query` for agent-emitted SQL and `execute` with hard caps — is the next major milestone. Today the product gives you PII-aware refusal at the `get_metric` boundary plus tamper-evident audit, both running against parameterized SQL the agent never sees. If you need parse-before-execute over arbitrary agent-emitted SQL, track the roadmap.
+So the engineering order is **schema intelligence → semantic substrate → safety primitives.** The first two are shipped (v0.5 + v1); the third — `validate_query` for agent-emitted SQL and `execute` with hard caps — is the next major milestone. Today the product gives you PII-aware refusal at the `get_metric` boundary, structured recovery on every refused or degraded call, and tamper-evident audit — all running against parameterized SQL the agent never sees. If you need parse-before-execute over arbitrary agent-emitted SQL, track the roadmap.
 
 ---
 
