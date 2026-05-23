@@ -522,6 +522,13 @@ def _dispatch(argv: list[str] | None) -> int:
                 url_env=args.url_env,
                 fix=args.fix,
             )
+        if args.metrics_action == "show":
+            return _cmd_metrics_show(
+                name=args.name,
+                store_path=args.store_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+            )
         parser.error(f"unknown metrics action: {args.metrics_action}")  # pragma: no cover
     # argparse `required=True` on subparsers prevents reaching here, but
     # leaving an explicit branch is cheaper than a guarded assertion.
@@ -1360,6 +1367,36 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Delete every flagged metric (excluding dbt-owned ones). "
         "Without this flag, audit is read-only — lists findings and "
         "exits non-zero if any were found.",
+    )
+
+    p_metrics_show = metrics_sub.add_parser(
+        "show",
+        help="Drill into one metric by name. Namespaced shortcut for "
+        "`schemabrain inspect <name>` that resolves only against the "
+        "metrics namespace — useful when a name collides with an "
+        "entity or join.",
+    )
+    p_metrics_show.add_argument(
+        "name",
+        help="Metric name to drill into. Run `schemabrain metrics list` to see what's available.",
+    )
+    p_metrics_show.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_metrics_show.add_argument(
+        "--source",
+        default=None,
+        help="Filter to one source. Without this flag, walks every "
+        "source the store knows about and renders each match.",
+    )
+    p_metrics_show.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL.",
     )
 
     p_metrics_suggest = metrics_sub.add_parser(
@@ -4429,6 +4466,124 @@ def _cmd_metrics_audit(
         print(
             f"error: failed to read metrics from {store_path!r}: store appears corrupt ({exc})",
             file=sys.stderr,
+        )
+        return 2
+
+
+def _cmd_metrics_show(
+    *,
+    name: str,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """Drill into one metric by name — namespaced shortcut for `inspect`.
+
+    `inspect <name>` already resolves entity → metric → join in priority,
+    so a metric whose name collides with an entity is shadowed. `metrics
+    show` skips the cascade and resolves only against metrics, so the
+    operator who already knows they want a metric gets the right drill
+    every time.
+
+    Without `--source` / `--url-env` the handler walks every source the
+    store knows about and renders each match — same cross-source posture
+    as `inspect`. Exit codes mirror `inspect`'s drill mode:
+      - 0: at least one metric rendered
+      - 1: no metric with that name in any source the store knows about
+      - 2: structural refusal (missing/corrupt store, URL conflict)
+    """
+    from schemabrain.core.store import SchemaVersionMismatchError
+    from schemabrain.inspect import build_metric_detail, render_metric_detail
+
+    source_id: str | None = None
+    if positional_url is not None or url_env is not None:
+        source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+        if source_url is None:
+            return 2
+        if _resolve_url(source_url) is None:  # pragma: no cover — defensive
+            return 2
+        source_id = _make_source_id(source_url)
+
+    store_p = Path(store_path)
+    if not store_p.exists():
+        _render_guided(
+            GuidedError(
+                kind="metrics_show_store_missing",
+                message=f"store not found at {store_path}",
+                why="`schemabrain metrics show` reads from the local SQLite "
+                "store; without a store there is nothing to drill into",
+                fix=f"run `schemabrain index --url-env DBURL --store-path "
+                f"{store_path}` to populate it",
+                next_step="re-run `schemabrain metrics show` after `index` "
+                "and `metrics apply` complete",
+            )
+        )
+        return 2
+
+    console = _stderr_console()
+    try:
+        with SQLiteStore(store_p) as store:
+            if source_id is not None:
+                candidate_sources = [source_id]
+            else:
+                candidate_sources = _list_source_ids_with_metric(store, name)
+                if not candidate_sources:
+                    print(
+                        f"error: no metric named {name!r} in {store_path!r}\n"
+                        f"  next: run `schemabrain metrics list` to see what "
+                        f"is curated, or `schemabrain inspect {name}` to "
+                        f"search across entities, metrics, and joins.",
+                        file=sys.stderr,
+                    )
+                    return 1
+
+            rendered = False
+            for sid in candidate_sources:
+                metric_detail = build_metric_detail(
+                    store=store,
+                    metric_name=name,
+                    source_connection_id=sid,
+                )
+                if metric_detail is None:
+                    continue
+                if rendered:  # pragma: no cover — same-name-in-many-sources separator
+                    console.print()
+                render_metric_detail(metric_detail, console=console)
+                rendered = True
+
+            if not rendered:
+                print(
+                    f"error: no metric named {name!r} in {store_path!r}\n"
+                    f"  next: run `schemabrain metrics list` to see what "
+                    f"is curated, or `schemabrain inspect {name}` to "
+                    f"search across entities, metrics, and joins.",
+                    file=sys.stderr,
+                )
+                return 1
+            return 0
+    except SchemaVersionMismatchError as exc:  # pragma: no cover — same recovery as inspect
+        _render_guided(
+            GuidedError(
+                kind="metrics_show_schema_version_mismatch",
+                message=str(exc),
+                why="the local store was written by a different schemabrain version",
+                fix="delete the store file and re-run `schemabrain index`, "
+                "or downgrade to a matching schemabrain version",
+                next_step=f"rm {store_path} && schemabrain index ...",
+            )
+        )
+        return 2
+    except sqlite3.OperationalError as exc:  # pragma: no cover — partial-migration variant
+        _render_guided(
+            GuidedError(
+                kind="metrics_show_store_inconsistent",
+                message=f"sqlite3.OperationalError: {exc}",
+                why="the local store passed the schema-version check but "
+                "a required table or column is missing — likely a "
+                "partial migration or hand-edited store",
+                fix="delete the store file and re-run `schemabrain index` to rebuild from scratch",
+                next_step=f"rm {store_path} && schemabrain index ...",
+            )
         )
         return 2
 
