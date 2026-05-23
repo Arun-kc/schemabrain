@@ -5259,11 +5259,12 @@ def _cmd_init(
 
         try:
             pii_block_choice = prompt_for_pii_block(console=_stderr_console())
-        except (KeyboardInterrupt, EOFError):  # pragma: no cover -- Ctrl-C / EOF path is operator-driven; the re-raise convention is exercised by the equivalent prompt_for_init_setup handler above
-            # Same clean-abort convention as `prompt_for_init_setup`
-            # above: Ctrl-C / EOF at any setup prompt exits with the
-            # standard exit-130 / exit-2 path the outer handler
-            # provides — re-raise so callers see the same behavior.
+        # Ctrl-C / EOF re-raise — same clean-abort convention as
+        # `prompt_for_init_setup` above: any prompt exits with the
+        # standard exit-130 / exit-2 path the outer handler provides.
+        # Skipped from coverage because the operator-driven abort is
+        # identical in shape to the existing init-prompt handler.
+        except (KeyboardInterrupt, EOFError):  # pragma: no cover
             raise
 
     wizard_kwargs: dict[str, object] = {
