@@ -34,8 +34,11 @@ from schemabrain.pii.categories import ColumnPiiTag
 
 
 @runtime_checkable
-class Store(Protocol):
+class Store(Protocol):  # pragma: no cover
     """The persistence boundary for Schema Brain.
+
+    Protocol class — method bodies are ellipses, never executed at
+    runtime; coverage tracks the concrete `SQLiteStore` instead.
 
     See module docstring for the broader rationale. Method docs are
     kept terse here because the concrete implementation
@@ -84,10 +87,10 @@ class Store(Protocol):
         `canonical_joins` — any row in any of those tables counts as
         "the store has data for this source". Used by `inspect`'s
         summary view to detect orphan data from a previous schemabrain
-        version (smoke 2026-05-19 surfaced an operator with two
-        source-id partitions in the same store and no way to tell
-        from the rendered output). Returns an empty list for a fresh
-        store with no rows yet.
+        version — i.e. when two `source_connection_id` partitions
+        coexist in the same store and the rendered output would
+        otherwise silently double-count. Returns an empty list for a
+        fresh store with no rows yet.
         """
         ...
 
@@ -503,6 +506,22 @@ class Store(Protocol):
         `source_connection_id=None` lists across sources. The CLI
         `metrics list` command depends on alphabetical ordering for
         stable output across runs.
+        """
+        ...
+
+    def delete_metric(self, name: str, *, source_connection_id: str) -> bool:
+        """Idempotent: delete the metric row for `(source_connection_id, name)`.
+
+        Returns `True` if a row was deleted, `False` if no row existed.
+        Same dbt-owned guard shape as `write_metric` — a metric with
+        `origin='dbt_import'` is refused (raises `DbtOwnedMetricError`)
+        because manual deletion of a dbt-managed row would silently
+        drift from the upstream dbt repo on the next import.
+
+        Used by `schemabrain metrics audit --fix` to remove
+        LLM-suggested metrics whose descriptions admit the metric does
+        not actually compute what its name implies (the
+        `total_order_item_revenue` footgun pattern).
         """
         ...
 

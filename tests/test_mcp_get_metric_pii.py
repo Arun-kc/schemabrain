@@ -127,6 +127,46 @@ class TestPropagationAttachedToMetricResult:
         finally:
             store.close()
 
+    def test_composite_expression_unions_all_operand_categories(self, tmp_path: Path) -> None:
+        """Composite-expression measure unions PII categories across
+        every operand column — without this, a tagged operand silently
+        bypasses `--pii-block` because the v1 code only collected
+        `measure.column` (a single string, now None for composites)."""
+        store = SQLiteStore(tmp_path / "sb.db")
+        try:
+            _seed_table_and_entity(store)
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                tags={"email": ("pii", frozenset({"contact"}))},
+            )
+            # `email * amount` is silly but structurally permitted —
+            # the parser only checks shape, not semantic sanity. We
+            # use this shape to assert PII propagation walks BOTH
+            # operands. amount is untagged → empty contribution;
+            # email is tagged contact → contact in the propagated set.
+            store.write_metric(
+                Metric(
+                    name="weird_metric",
+                    description="",
+                    entity="user",
+                    measure=MetricMeasure(agg="sum", expression="email * amount"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SRC,
+            )
+            executor = _FakeExecutor()
+            result = get_metric_impl(
+                store=store,
+                executor=executor,
+                source_connection_id=SRC,
+                name="weird_metric",
+            )
+            assert result.pii_categories == ("contact",)
+        finally:
+            store.close()
+
     def test_metric_on_untagged_column_has_empty_categories(self, tmp_path: Path) -> None:
         store = SQLiteStore(tmp_path / "sb.db")
         try:
@@ -194,6 +234,13 @@ class TestPiiBlockedRefusal:
                 )
             assert exc_info.value.attempted_categories == ("contact",)
             assert exc_info.value.blocked_categories == ("contact",)
+            # The exception carries the metric's anchor entity so the
+            # MCP envelope wrapper can populate
+            # `recovery.suggested_args.name` — an agent following the
+            # structured-recovery contract gets `describe_entity(name=
+            # <anchor>)` pre-filled and can enumerate non-PII columns
+            # without parsing the human-readable message.
+            assert exc_info.value.anchor_entity == "user"
             # CRITICAL: emit_sql + executor.execute must NOT have run.
             # The refusal happens pre-emission so the SQL is never
             # compiled, logged, or executed — verified by the empty

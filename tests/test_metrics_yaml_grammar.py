@@ -79,6 +79,49 @@ class TestHappyPath:
         assert metric.time_dimension == "order.created_at"
         assert metric.time_grains == ("day", "week", "month")
 
+    def test_composite_expression_yaml_round_trips(self) -> None:
+        text = """
+version: 1
+name: line_revenue
+description: SUM of line-item totals.
+entity: order_item
+measure:
+  agg: sum
+  expression: unit_price * quantity
+""".strip()
+        metric = parse_metric_yaml(text)
+        assert metric.name == "line_revenue"
+        assert metric.entity == "order_item"
+        assert metric.measure.agg == "sum"
+        assert metric.measure.column is None
+        assert metric.measure.expression == "unit_price * quantity"
+        assert metric.measure.measure_columns == frozenset({"unit_price", "quantity"})
+
+    def test_composite_expression_with_arithmetic(self) -> None:
+        text = """
+version: 1
+name: net_revenue
+entity: order
+measure:
+  agg: sum
+  expression: (price - discount) * qty
+""".strip()
+        metric = parse_metric_yaml(text)
+        assert metric.measure.expression == "(price - discount) * qty"
+        assert metric.measure.measure_columns == frozenset({"price", "discount", "qty"})
+
+    def test_malformed_expression_rejected_at_parse(self) -> None:
+        text = """
+version: 1
+name: bad_metric
+entity: order
+measure:
+  agg: sum
+  expression: abs(x)
+""".strip()
+        with pytest.raises(MetricYamlError, match="malformed measure expression"):
+            parse_metric_yaml(text)
+
     def test_explicit_origin_carries_through(self) -> None:
         text = """
 version: 1
@@ -222,6 +265,30 @@ measure:
   agg: sum
 """.strip()
         with pytest.raises(MetricYamlError, match=missing_measure_key):
+            parse_metric_yaml(text)
+
+    def test_measure_with_neither_column_nor_expression_rejected(self) -> None:
+        text = """
+version: 1
+name: total_revenue
+entity: order
+measure:
+  agg: sum
+""".strip()
+        with pytest.raises(MetricYamlError, match=r"column.*expression|expression.*column"):
+            parse_metric_yaml(text)
+
+    def test_measure_with_both_column_and_expression_rejected(self) -> None:
+        text = """
+version: 1
+name: total_revenue
+entity: order
+measure:
+  agg: sum
+  column: total_amount
+  expression: unit_price * quantity
+""".strip()
+        with pytest.raises(MetricYamlError, match="exactly one"):
             parse_metric_yaml(text)
 
     def test_empty_yaml_rejected(self) -> None:

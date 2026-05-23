@@ -22,21 +22,36 @@ from schemabrain.inspect.engine import (
     AnchoredMetric,
     EntityColumnDetail,
     EntityDetail,
+    JoinDetail,
+    MetricDetail,
     RelatedEntity,
     StoreSummary,
     build_entity_detail,
+    build_join_detail,
+    build_metric_detail,
     build_summary,
 )
-from schemabrain.inspect.render import render_entity_detail, render_summary
+from schemabrain.inspect.render import (
+    render_entity_detail,
+    render_join_detail,
+    render_metric_detail,
+    render_summary,
+)
 
 __all__ = [
     "AnchoredMetric",
     "EntityColumnDetail",
     "EntityDetail",
+    "JoinDetail",
+    "MetricDetail",
     "RelatedEntity",
     "StoreSummary",
     "build_entity_detail",
+    "build_join_detail",
+    "build_metric_detail",
     "build_summary",
     "render_entity_detail",
+    "render_join_detail",
+    "render_metric_detail",
     "render_summary",
 ]

@@ -124,8 +124,9 @@ class TestImplHappyPath:
         assert id_col.nullable is False
 
     def test_pii_sensitivity_defaults_to_public(self, tmp_path: Path) -> None:
-        """Today hardcodes all columns to pii_sensitivity='public';
-        future PII work will populate real values from classification."""
+        """Columns without stored PII classification default to
+        `("public", frozenset())` — the propagation helper's empty-input
+        contract carries through to the wire shape."""
         with SQLiteStore(tmp_path / "s.db") as store:
             store.write_table(_users_table(), source_connection_id="sid")
             store.write_entity(_customer_entity(), source_connection_id="sid")
@@ -135,6 +136,34 @@ class TestImplHappyPath:
                 name="customer",
             )
         assert all(c.pii_sensitivity == "public" for c in detail.columns)
+        assert all(c.pii_categories == () for c in detail.columns)
+        assert all(c.redacted is False for c in detail.columns)
+
+    def test_pii_classification_propagates_when_stored(self, tmp_path: Path) -> None:
+        """Charter v1.2 column-granular firewall: stored PII tags
+        propagate through to `EntityColumn.pii_sensitivity` +
+        `pii_categories`."""
+        with SQLiteStore(tmp_path / "s.db") as store:
+            store.write_table(_users_table(), source_connection_id="sid")
+            store.write_entity(_customer_entity(), source_connection_id="sid")
+            store.write_column_pii_tags(
+                qualified_table="public.users",
+                tags={
+                    "email": ("pii", frozenset({"contact"})),
+                },
+                source_connection_id="sid",
+            )
+            detail = describe_entity_impl(
+                store=store,
+                source_connection_id="sid",
+                name="customer",
+            )
+        email_col = next(c for c in detail.columns if c.name == "email")
+        assert email_col.pii_sensitivity == "pii"
+        assert email_col.pii_categories == ("contact",)
+        # No pii_block set → no redaction even though the column is PII.
+        assert email_col.redacted is False
+        assert detail.redacted_columns == ()
 
     def test_column_descriptions_empty_when_no_enrichment(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "s.db") as store:
@@ -364,3 +393,125 @@ class TestEnvelopeErrors:
         assert envelope.status == "error"
         assert envelope.error is not None
         assert envelope.error.kind == "malformed_name"
+
+
+class TestPiiBlockColumnRedaction:
+    """Charter v1.2 column-granular firewall: when `--pii-block` is set
+    on the server, columns whose stored PII categories intersect the
+    blocked set are marked `redacted=True` with descriptions cleared.
+    The agent still sees the column exists (no entity-level refusal);
+    the policy applies at the column level only.
+    """
+
+    def _build_with_pii_block(
+        self, tmp_path: Path, blocked: frozenset[str]
+    ) -> tuple[object, SQLiteStore]:
+        store = SQLiteStore(tmp_path / "s.db")
+        store.write_table(_users_table(), source_connection_id="sid")
+        store.write_entity(_customer_entity(), source_connection_id="sid")
+        store.write_column_pii_tags(
+            qualified_table="public.users",
+            tags={
+                "email": ("pii", frozenset({"contact"})),
+                "id": ("public", frozenset()),
+            },
+            source_connection_id="sid",
+        )
+        store.write_table_descriptions(
+            schema_name="public",
+            name="users",
+            source_connection_id="sid",
+            descriptions={
+                "email": ColumnDescription(
+                    text="Primary contact email",
+                    model="m",
+                    prompt_version="v",
+                    input_tokens=1,
+                    cached_input_tokens=0,
+                    output_tokens=1,
+                    cost_usd=0.0,
+                ),
+            },
+        )
+        server = build_server(
+            store=store,
+            source_connection_id="sid",
+            embedder=_StubEmbedder(),
+            pii_block=blocked,  # type: ignore[arg-type]
+        )
+        return server, store
+
+    def test_blocked_column_marked_redacted(self, tmp_path: Path) -> None:
+        """The PII-tagged column ships with `redacted=True` and its
+        description is cleared. The non-PII column is untouched.
+        """
+        server, store = self._build_with_pii_block(tmp_path, frozenset({"contact"}))
+        try:
+            _content, structured = asyncio.run(
+                server.call_tool("describe_entity", {"name": "customer"})
+            )
+            envelope = ToolResponse.model_validate(structured)
+        finally:
+            store.close()
+        assert envelope.status == "success"
+        assert envelope.data is not None
+        cols_by_name = {c["name"]: c for c in envelope.data["columns"]}
+        assert cols_by_name["email"]["redacted"] is True
+        assert cols_by_name["email"]["description"] == ""
+        assert cols_by_name["id"]["redacted"] is False
+        assert envelope.data["redacted_columns"] == ["email"]
+
+    def test_unrelated_pii_block_no_redaction(self, tmp_path: Path) -> None:
+        """A `pii_block` set that doesn't intersect any column's tags
+        leaves every column unredacted — and the description survives.
+        """
+        server, store = self._build_with_pii_block(tmp_path, frozenset({"financial"}))
+        try:
+            _content, structured = asyncio.run(
+                server.call_tool("describe_entity", {"name": "customer"})
+            )
+            envelope = ToolResponse.model_validate(structured)
+        finally:
+            store.close()
+        cols_by_name = {c["name"]: c for c in envelope.data["columns"]}
+        assert cols_by_name["email"]["redacted"] is False
+        assert cols_by_name["email"]["description"] == "Primary contact email"
+        assert envelope.data["redacted_columns"] == []
+
+    def test_confidence_capped_at_medium_when_redacted(self, tmp_path: Path) -> None:
+        """When at least one column is redacted, envelope `confidence`
+        is capped at MEDIUM — the agent saw a partial view of the
+        entity, so even a hand-confirmed entity row cannot report HIGH.
+        """
+        server, store = self._build_with_pii_block(tmp_path, frozenset({"contact"}))
+        try:
+            _content, structured = asyncio.run(
+                server.call_tool("describe_entity", {"name": "customer"})
+            )
+            envelope = ToolResponse.model_validate(structured)
+        finally:
+            store.close()
+        assert envelope.confidence == "MEDIUM"
+
+    def test_impl_supports_pii_block_kwarg(self, tmp_path: Path) -> None:
+        """The pure-function `describe_entity_impl` accepts `pii_block`
+        directly — used by callers that build their own server scaffold
+        (e.g. dry-run tooling, tests).
+        """
+        with SQLiteStore(tmp_path / "s.db") as store:
+            store.write_table(_users_table(), source_connection_id="sid")
+            store.write_entity(_customer_entity(), source_connection_id="sid")
+            store.write_column_pii_tags(
+                qualified_table="public.users",
+                tags={"email": ("pii", frozenset({"contact"}))},
+                source_connection_id="sid",
+            )
+            detail = describe_entity_impl(
+                store=store,
+                source_connection_id="sid",
+                name="customer",
+                pii_block=frozenset({"contact"}),
+            )
+        email_col = next(c for c in detail.columns if c.name == "email")
+        assert email_col.redacted is True
+        assert detail.redacted_columns == ("email",)

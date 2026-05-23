@@ -83,6 +83,21 @@ _VALID_ORIGINS: frozenset[str] = frozenset(get_args(MetricOrigin))
 _VALID_AGGS: frozenset[str] = frozenset(get_args(AggFunction))
 _VALID_GRAINS: frozenset[str] = frozenset(get_args(TimeGrain))
 
+# v14 / charter v1.2: 2D trust signal mirrors the `entity` module.
+# Re-imported here rather than aliased so a caller `from
+# schemabrain.core.metric import InferenceMethod` works without an
+# entity-side dependency surfacing in the public surface.
+from schemabrain.core.entity import (  # noqa: E402
+    _VALID_INFERENCE_METHODS,
+    _VALID_VALIDATION_STATES,
+)
+from schemabrain.core.entity import (  # noqa: E402
+    InferenceMethod as InferenceMethod,
+)
+from schemabrain.core.entity import (  # noqa: E402
+    ValidationState as ValidationState,
+)
+
 # Canonical ordering for `time_grains`. Without a fixed order, two
 # YAMLs with the same set of grains in different listing orders would
 # round-trip as inequal `Metric` instances and break fingerprint
@@ -121,24 +136,124 @@ class DbtOwnedMetricError(ValueError):
 
 
 @dataclass(frozen=True)
-class MetricMeasure:
-    """The aggregation + column pair that defines a metric's value.
+class MalformedMetricRowError(ValueError):
+    """Raised when a `metrics` row can't be reconstructed into a `Metric`.
 
-    `agg` is one of the six closed-grammar `AggFunction` values;
-    `column` is a bare identifier on the anchored entity's table.
-    Composite expressions (`case when ... then x end`) are deferred to
-    v2's expression layer — at v1 the column is a single identifier
-    on the entity's bound table.
+    A row may pass the SQLite-level CHECK constraints (e.g. the
+    `measure_column XOR measure_expression` invariant) but still fail
+    the Python-side validation in `MetricMeasure.__post_init__` —
+    typically because the row's `measure_expression` was written via
+    direct SQL with content that fails the whitelist parser. Without
+    this named class, callers would see only a generic `ValueError`
+    and the metric name would be buried inside the wrapped exception
+    chain.
+
+    The `name` field preserves the offending metric name so resilient
+    consumers (e.g. `Store.list_metrics`, which logs + skips bad rows
+    rather than failing the whole listing) can attribute the failure
+    to a specific row. Subclass of `ValueError` so broad-catch callers
+    continue to work unchanged.
+
+    Frozen-dataclass shape mirrors the compiler error classes in
+    `semantic/compiler/plan.py` — the dataclass-default `__init__`
+    accepts positional args, which lets the explicit `__reduce__` use
+    the same positional-args reconstructor pattern those classes use.
+    """
+
+    name: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        super().__init__(f"metric row {self.name!r} cannot be reconstructed: {self.reason}")
+
+    def __reduce__(self) -> tuple[type, tuple[str, str]]:
+        return (self.__class__, (self.name, self.reason))
+
+
+@dataclass(frozen=True)
+class MetricMeasure:
+    """The aggregation + column-or-expression pair that defines a metric's value.
+
+    `agg` is one of the six closed-grammar `AggFunction` values.
+    Exactly one of `column` or `expression` is populated:
+
+      - `column` (str): a bare identifier on the anchor entity's table.
+        Used for the common `SUM(amount)` / `COUNT(id)` shapes.
+      - `expression` (str): a composite arithmetic expression over
+        multiple columns on the anchor entity's table — `unit_price *
+        quantity` for line-item revenue. Parsed via the whitelist
+        grammar in `semantic.compiler.measure_expression`. Anything
+        outside arithmetic (function calls, comparisons, subqueries)
+        is rejected at parse time so the emitter never sees free-form
+        text.
+
+    Mutual exclusion is enforced in `__post_init__`. Setting both, or
+    neither, raises `ValueError`.
+
+    The `measure_columns` property returns the set of column names the
+    measure references — one for the `column=` case, possibly many for
+    the `expression=` case. PII propagation + compile-time column
+    validation iterate this set, so both paths get the same
+    security/correctness guarantees by construction.
     """
 
     agg: AggFunction
-    column: str
+    column: str | None = None
+    expression: str | None = None
 
     def __post_init__(self) -> None:
         if self.agg not in _VALID_AGGS:
             raise ValueError(f"agg must be one of {sorted(_VALID_AGGS)} (got {self.agg!r})")
-        if not _IDENT_RE.fullmatch(self.column):
+        # XOR: exactly one of column / expression must be set. The
+        # `(a is None) == (b is None)` form catches both "both set" and
+        # "neither set" in one branch.
+        if (self.column is None) == (self.expression is None):
+            raise ValueError(
+                "measure must set exactly one of `column` or `expression` "
+                f"(got column={self.column!r}, expression={self.expression!r})"
+            )
+        if self.column is not None and not _IDENT_RE.fullmatch(self.column):
             raise ValueError(f"column must be an identifier (got {self.column!r})")
+        if self.expression is not None:
+            # Validate the expression against the whitelist grammar at
+            # construction time so a malformed expression fails fast at
+            # the same boundary as a malformed bare column. Re-raises as
+            # `ValueError` so callers that just want to catch "bad
+            # measure" don't need to import the parser module.
+            from schemabrain.semantic.compiler.measure_expression import (
+                MalformedMeasureExpressionError,
+                parse_measure_expression,
+            )
+
+            try:
+                parse_measure_expression(self.expression)
+            except MalformedMeasureExpressionError as exc:
+                raise ValueError(str(exc)) from exc
+
+    @property
+    def measure_columns(self) -> frozenset[str]:
+        """The set of column names this measure references on the anchor table.
+
+        Single element for the `column=` case, possibly many for the
+        `expression=` case. PII propagation + compile-time column
+        validation iterate this set so both paths cover all touched
+        columns symmetrically.
+
+        The expression is re-parsed on each access — `ast.parse` of a
+        short arithmetic expression is microseconds, and the hot path
+        (one `get_metric` call per request) calls this at most a
+        handful of times. Caching would require breaking the frozen
+        dataclass invariant.
+        """
+        if self.column is not None:
+            return frozenset({self.column})
+        # Mutual exclusion guarantees expression is not None here.
+        assert self.expression is not None
+        from schemabrain.semantic.compiler.measure_expression import (
+            parse_measure_expression,
+        )
+
+        return parse_measure_expression(self.expression).columns
 
 
 @dataclass(frozen=True)
@@ -166,6 +281,11 @@ class Metric:
     time_dimension: str | None
     time_grains: tuple[TimeGrain, ...]
     origin: MetricOrigin = "manual"
+    # v14 / charter v1.2: 2D trust signal — see `core/entity.py` for
+    # the design. Defaults match the hand-authored YAML construction
+    # path; LLM-suggest + dbt importers override explicitly.
+    inference_method: InferenceMethod = "manually_authored"
+    validation_state: ValidationState = "applied"
 
     def __post_init__(self) -> None:
         if not _IDENT_RE.fullmatch(self.name):
@@ -220,4 +340,14 @@ class Metric:
         if self.origin not in _VALID_ORIGINS:
             raise ValueError(
                 f"origin must be one of {sorted(_VALID_ORIGINS)} (got {self.origin!r})"
+            )
+        if self.inference_method not in _VALID_INFERENCE_METHODS:
+            raise ValueError(
+                f"inference_method must be one of "
+                f"{sorted(_VALID_INFERENCE_METHODS)} (got {self.inference_method!r})"
+            )
+        if self.validation_state not in _VALID_VALIDATION_STATES:
+            raise ValueError(
+                f"validation_state must be one of "
+                f"{sorted(_VALID_VALIDATION_STATES)} (got {self.validation_state!r})"
             )

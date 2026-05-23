@@ -45,22 +45,61 @@ SOURCE = "src_a"
 # ----- fixture helper --------------------------------------------------------
 
 
+# Columns each fixture table carries beyond `id`. PR-6h.3's compile-
+# time column-existence check now validates against the table's column
+# list; fixtures must declare every column the tests reference in
+# group_by / filter / order_by / time_dimension positions.
+_FIXTURE_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
+    "orders": (
+        ("user_id", "bigint"),
+        ("status", "text"),
+        ("created_at", "timestamptz"),
+        ("shipped_at", "timestamptz"),
+        ("refunded_at", "timestamptz"),
+        ("total_amount", "integer"),
+    ),
+    "users": (
+        ("region", "text"),
+        ("tier", "text"),
+    ),
+    # `customers` is the table TestJoins.test_composite_join uses
+    # under the `customer` entity name (a different binding from
+    # `_seed_total_revenue` which points the customer entity at the
+    # `users` table). Either table can hold the customer entity, so
+    # both column lists need to mirror what tests reference.
+    "customers": (
+        ("region", "text"),
+        ("tier", "text"),
+    ),
+}
+
+
 def _simple_table(name: str) -> Table:
-    return Table(
-        name=name,
-        schema_name="public",
-        columns=(
+    extras = _FIXTURE_COLUMNS.get(name, ())
+    columns: tuple[Column, ...] = (
+        Column(
+            name="id",
+            table_name=name,
+            schema_name="public",
+            data_type="bigint",
+            nullable=False,
+            ordinal_position=1,
+            is_primary_key=True,
+        ),
+        *(
             Column(
-                name="id",
+                name=col_name,
                 table_name=name,
                 schema_name="public",
-                data_type="bigint",
-                nullable=False,
-                ordinal_position=1,
-                is_primary_key=True,
-            ),
+                data_type=col_type,
+                nullable=True,
+                ordinal_position=2 + i,
+                is_primary_key=False,
+            )
+            for i, (col_name, col_type) in enumerate(extras)
         ),
     )
+    return Table(name=name, schema_name="public", columns=columns)
 
 
 def _seed_total_revenue(
@@ -315,6 +354,95 @@ class TestAggregations:
             )
             sql, _params = emit_sql(plan)
         assert 'count(DISTINCT "order"."user_id")' in sql
+
+
+class TestCompositeExpressionEmit:
+    """Composite expressions emit the parsed AST with double-quoting +
+    alias-prefix discipline applied to every column operand."""
+
+    def _seed_composite_revenue(
+        self, store: SQLiteStore, *, expression: str = "unit_price * quantity"
+    ) -> None:
+        # `orders` is the anchor table; we extend its fixture column
+        # list to include the two operand columns the expression
+        # references so the future column-validation pass (commit 4)
+        # won't reject this plan.
+        nonlocal_columns = _FIXTURE_COLUMNS.setdefault("orders", ())
+        if not any(c[0] == "unit_price" for c in nonlocal_columns):
+            _FIXTURE_COLUMNS["orders"] = (
+                *nonlocal_columns,
+                ("unit_price", "integer"),
+                ("quantity", "integer"),
+            )
+        store.write_table(_simple_table("orders"), source_connection_id=SOURCE)
+        store.write_entity(
+            Entity(
+                name="order",
+                description="",
+                binding=SingleTableBinding(qualified_table="public.orders"),
+                identity="id",
+            ),
+            source_connection_id=SOURCE,
+        )
+        store.write_metric(
+            Metric(
+                name="line_revenue",
+                description="",
+                entity="order",
+                measure=MetricMeasure(agg="sum", expression=expression),
+                time_dimension=None,
+                time_grains=(),
+            ),
+            source_connection_id=SOURCE,
+        )
+
+    def test_composite_multiplication_emits_quoted_operands(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            self._seed_composite_revenue(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="line_revenue",
+            )
+            sql, _params = emit_sql(plan)
+        assert 'sum(("order"."unit_price" * "order"."quantity"))' in sql
+
+    def test_composite_with_literal_emits_literal_inline(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            self._seed_composite_revenue(store, expression="unit_price - 100")
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="line_revenue",
+            )
+            sql, _params = emit_sql(plan)
+        assert 'sum(("order"."unit_price" - 100))' in sql
+
+    def test_composite_count_distinct(self, tmp_path: Path) -> None:
+        # count_distinct over a composite expression is unusual but
+        # structurally valid — the DSL doesn't forbid it. SQL idiom is
+        # `count(DISTINCT (a + b))`; emitter should produce exactly that.
+        with SQLiteStore(tmp_path / "store.db") as store:
+            self._seed_composite_revenue(store)
+            # Re-write the metric with count_distinct via the same fixture.
+            store.write_metric(
+                Metric(
+                    name="line_revenue",
+                    description="",
+                    entity="order",
+                    measure=MetricMeasure(agg="count_distinct", expression="unit_price * quantity"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="line_revenue",
+            )
+            sql, _params = emit_sql(plan)
+        assert 'count(DISTINCT ("order"."unit_price" * "order"."quantity"))' in sql
 
 
 # ----- filters ---------------------------------------------------------------

@@ -1,0 +1,30 @@
+# Composite-expression metric for the bundled Schema Brain ecommerce
+# demo. Computes line-level revenue as `SUM(unit_price_cents * quantity)`
+# — the actual revenue, not a pre-aggregated `total_cents` column.
+#
+# Closes the v1 DSL gap where bare-column measures couldn't express
+# `SUM(unit_price * quantity)`: asked "what is per-product revenue?",
+# a metric anchored on `order_item` with measure_column=total_cents
+# would be wrong (totals are stored at the order level, not the line
+# level). The composite-expression layer accepts arithmetic over the
+# anchor's columns; this fixture exercises it end-to-end.
+#
+# To apply:
+#   schemabrain metrics apply schemabrain/metrics/fixtures/ecommerce/total_revenue_real.yaml \
+#     --source $DATABASE_URL --store-path ./schemabrain.db
+#
+# Requires `order_item` entity to exist (created by stage 3 of
+# `schemabrain init` on the bundled ecommerce fixture).
+
+version: 1
+name: total_revenue_real
+description: |
+  SUM of line-item revenue (unit_price_cents x quantity, in cents).
+  Computed per line item, so handles multi-item orders correctly.
+  Use this instead of `total_revenue` when you need revenue derived
+  from the line items themselves (e.g. per-product or per-category
+  rollups via `group_by`).
+entity: order_item
+measure:
+  agg: sum
+  expression: unit_price_cents * quantity

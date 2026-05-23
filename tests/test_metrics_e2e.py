@@ -35,7 +35,18 @@ from schemabrain.semantic.compiler import (
 )
 
 _URL = "postgresql+psycopg://u:p@h/db"
-_EXPECTED_METRIC_NAMES = frozenset({"total_revenue", "order_count", "customer_count"})
+_EXPECTED_METRIC_NAMES = frozenset(
+    {"total_revenue", "total_revenue_real", "order_count", "customer_count"}
+)
+
+# Metrics that anchor on something other than `order`. `total_revenue_real`
+# is the composite-expression metric over line-item columns, anchored on
+# `order_item`. Every other bundled metric anchors on `order` so the
+# demo narrative stays tight (one anchor entity, three plain measures
+# + one composite over its child entity).
+_NON_ORDER_ANCHORED_METRICS: dict[str, str] = {
+    "total_revenue_real": "order_item",
+}
 
 
 # ----- bundled-fixture structure --------------------------------------------
@@ -52,15 +63,20 @@ class TestBundledMetricFixtures:
         names = {parse_metric_yaml_file(p).name for p in yaml_files}
         assert names == _EXPECTED_METRIC_NAMES
 
-    def test_all_metrics_anchor_on_order(self) -> None:
-        # Every bundled metric is anchored on `order` so the demo
-        # narrative stays tight (one entity, three measures of it).
+    def test_metrics_anchor_per_entity_map(self) -> None:
+        # Most bundled metrics anchor on `order`; `total_revenue_real`
+        # (composite expression over line-item columns) anchors on
+        # `order_item`. The demo narrative stays tight: one parent entity
+        # with three plain measures + one composite measure on its child.
         path = bundled_metrics_fixture_dir()
         for yaml_file in path.iterdir():
             if yaml_file.suffix != ".yaml":
                 continue  # pragma: no cover — only YAMLs in fixture dir
             metric = parse_metric_yaml_file(yaml_file)
-            assert metric.entity == "order"
+            expected_anchor = _NON_ORDER_ANCHORED_METRICS.get(metric.name, "order")
+            assert metric.entity == expected_anchor, (
+                f"metric {metric.name!r} anchors on {metric.entity!r}, expected {expected_anchor!r}"
+            )
 
     def test_total_revenue_measures_total_cents(self) -> None:
         # Lock the measure column to the schema in ecommerce.sql —
@@ -85,6 +101,19 @@ class TestBundledMetricFixtures:
         metric = parse_metric_yaml_file(path / "customer_count.yaml")
         assert metric.measure.agg == "count_distinct"
         assert metric.measure.column == "user_id"
+
+    def test_total_revenue_real_uses_composite_expression(self) -> None:
+        # The composite-expression demo metric is the v2 DSL shape —
+        # SUM over `unit_price_cents * quantity` on the line items.
+        # Lock the field shape (bare-column is None, expression is set)
+        # so the YAML can't accidentally regress to the v1 shape.
+        path = bundled_metrics_fixture_dir()
+        metric = parse_metric_yaml_file(path / "total_revenue_real.yaml")
+        assert metric.entity == "order_item"
+        assert metric.measure.agg == "sum"
+        assert metric.measure.column is None
+        assert metric.measure.expression == "unit_price_cents * quantity"
+        assert metric.measure.measure_columns == frozenset({"unit_price_cents", "quantity"})
 
 
 class TestBundledJoinCardinality:
@@ -154,15 +183,78 @@ def _orders_table() -> Table:
     )
 
 
+def _order_items_table() -> Table:
+    """Companion table for `_orders_table()` — line items with the two
+    columns the composite-expression metric `total_revenue_real`
+    references (`unit_price_cents`, `quantity`).
+    """
+    return Table(
+        name="order_items",
+        schema_name="public",
+        columns=(
+            Column(
+                name="id",
+                table_name="order_items",
+                schema_name="public",
+                data_type="bigint",
+                nullable=False,
+                ordinal_position=1,
+                is_primary_key=True,
+            ),
+            Column(
+                name="order_id",
+                table_name="order_items",
+                schema_name="public",
+                data_type="bigint",
+                nullable=False,
+                ordinal_position=2,
+                is_primary_key=False,
+            ),
+            Column(
+                name="unit_price_cents",
+                table_name="order_items",
+                schema_name="public",
+                data_type="integer",
+                nullable=False,
+                ordinal_position=3,
+                is_primary_key=False,
+            ),
+            Column(
+                name="quantity",
+                table_name="order_items",
+                schema_name="public",
+                data_type="integer",
+                nullable=False,
+                ordinal_position=4,
+                is_primary_key=False,
+            ),
+        ),
+        foreign_keys=(),
+    )
+
+
 def _seed_order_entity_for_url(store_path: Path) -> str:
     source_id = _make_source_id(_URL)
     with SQLiteStore(store_path) as store:
         store.write_table(_orders_table(), source_connection_id=source_id)
+        store.write_table(_order_items_table(), source_connection_id=source_id)
         store.write_entity(
             Entity(
                 name="order",
                 description="",
                 binding=SingleTableBinding(qualified_table="public.orders"),
+                identity="id",
+            ),
+            source_connection_id=source_id,
+        )
+        # `order_item` is the anchor for the composite-expression
+        # `total_revenue_real` metric. Bundled fixture-driven test
+        # needs both entities present so every metric can land.
+        store.write_entity(
+            Entity(
+                name="order_item",
+                description="",
+                binding=SingleTableBinding(qualified_table="public.order_items"),
                 identity="id",
             ),
             source_connection_id=source_id,
@@ -215,19 +307,33 @@ class TestCliRoundTrip:
             ]
         )
 
+        # Per-metric time-grain to pass to `resolve_metric_plan`.
+        # `customer_count` declares only week + month grains.
+        # `total_revenue_real` is non-temporal in v1 (cross-entity
+        # time dimensions land in v2).
+        _GRAIN_FOR: dict[str, str | None] = {
+            "customer_count": "week",
+            "total_revenue_real": None,
+        }
         with SQLiteStore(store_path) as store:
             for name in _EXPECTED_METRIC_NAMES:
+                grain = _GRAIN_FOR.get(name, "month")
                 plan = resolve_metric_plan(
                     store=store,
                     source_connection_id=source_id,
                     metric_name=name,
-                    time_grain="month" if name != "customer_count" else "week",
+                    time_grain=grain,
                 )
                 sql, params = emit_sql(plan)
                 assert ";" not in sql
                 assert "LIMIT :p_limit" in sql
-                # `p_limit` is always bound — exercises the params dict
                 assert "p_limit" in params
+                # Composite-expression metrics emit the expression
+                # inline in the agg call, not a bare column reference.
+                if name == "total_revenue_real":
+                    assert (
+                        'sum(("order_item"."unit_price_cents" * "order_item"."quantity"))'
+                    ) in sql
 
     def test_metrics_list_after_apply(self, tmp_path: Path, monkeypatch, capsys) -> None:
         # The verification path after `metrics apply`. The list

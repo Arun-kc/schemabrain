@@ -85,6 +85,96 @@ class UnknownColumnError(MetricCompilerError):
 
 
 @dataclass(frozen=True)
+class UnknownGroupByColumnError(MetricCompilerError):
+    """Raised when `group_by=['<entity>.<column>']` references an entity
+    that exists but a column that does NOT exist on that entity's table.
+
+    Without this check the compiler used to emit `"<entity>"."<column>"`
+    verbatim and let Postgres surface `UndefinedColumn` at execution
+    time, which the MCP layer wrapped as `internal_error` — a useless
+    response for an agent that just made a typo.
+
+    Carries the requested entity + column + the actual column list on
+    that entity so the MCP layer can populate `recovery` with the
+    allowed names. Closes the silent-failure path where a typo'd
+    column (`user.bogus_column`) used to surface only as a generic
+    `internal_error`.
+    """
+
+    entity: str
+    column: str
+    allowed_columns: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        super().__init__(
+            f"group_by column {self.entity!r}.{self.column!r} does not "
+            f"exist on entity {self.entity!r}. Allowed columns: "
+            f"{list(self.allowed_columns)}"
+        )
+
+    def __reduce__(self) -> tuple[type, tuple[str, str, tuple[str, ...]]]:
+        return (self.__class__, (self.entity, self.column, self.allowed_columns))
+
+
+@dataclass(frozen=True)
+class UnknownFilterColumnError(MetricCompilerError):
+    """Raised when a `filters` entry references an entity that exists
+    but a column that does NOT exist on that entity's table.
+
+    Parallel to `UnknownGroupByColumnError` — same compile-time check
+    moved earlier in the pipeline so the agent gets a clean envelope
+    instead of an `internal_error` masking a Postgres UndefinedColumn.
+    """
+
+    entity: str
+    column: str
+    allowed_columns: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        super().__init__(
+            f"filter column {self.entity!r}.{self.column!r} does not "
+            f"exist on entity {self.entity!r}. Allowed columns: "
+            f"{list(self.allowed_columns)}"
+        )
+
+    def __reduce__(self) -> tuple[type, tuple[str, str, tuple[str, ...]]]:
+        return (self.__class__, (self.entity, self.column, self.allowed_columns))
+
+
+@dataclass(frozen=True)
+class UnknownMeasureColumnError(MetricCompilerError):
+    """Raised when a metric's measure references an entity that exists
+    but a column that does NOT exist on that entity's table.
+
+    Parallel to `UnknownGroupByColumnError` / `UnknownFilterColumnError`.
+    Covers BOTH the v1 bare-column path (single `measure.column`) AND
+    the v2 composite-expression path (every column referenced inside
+    `measure.expression`) — composite expressions reference multiple
+    operands, any of which can be a typo. Without this check, a typo
+    surfaces only at Postgres execution time as `UndefinedColumn`,
+    which the MCP layer wraps as `internal_error`.
+
+    Carries the entity + the offending column + the actual allowed set
+    so the MCP layer can populate `recovery.suggested_args.allowed_columns`
+    for a mechanical retry.
+    """
+
+    entity: str
+    column: str
+    allowed_columns: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        super().__init__(
+            f"measure column {self.entity!r}.{self.column!r} does not "
+            f"exist on entity {self.entity!r}. Allowed columns: "
+            f"{list(self.allowed_columns)}"
+        )
+
+    def __reduce__(self) -> tuple[type, tuple[str, str, tuple[str, ...]]]:
+        return (self.__class__, (self.entity, self.column, self.allowed_columns))
+
+
+@dataclass(frozen=True)
 class UnreachableEntityError(MetricCompilerError):
     """Raised when a group_by or filter column targets an entity that
     has no canonical join from the metric's anchor.
@@ -257,6 +347,52 @@ class InvalidTimeGrainError(MetricCompilerError):
 
 
 @dataclass(frozen=True)
+class AmbiguousTimeDimensionError(MetricCompilerError):
+    """Raised when a metric has no `time_dimension` of its own and 2+
+    reachable entities (via canonical-join chains) carry a candidate
+    timestamp column, so the resolver can't pick one without the agent
+    being explicit.
+
+    `candidates` is a tuple of `(<entity>.<column>, via_join_names)`
+    pairs the agent can pass back as `time_dimension=` on `get_metric`
+    to disambiguate. Recovery contract: future `get_metric` calls
+    accept an explicit `time_dimension` override that supersedes
+    inference.
+
+    Distinct from `InvalidTimeGrainError`: that fires when the grain
+    isn't supported; this fires when the grain is supported but the
+    timestamp column to bucket on cannot be uniquely identified.
+    """
+
+    anchor_entity: str
+    candidates: tuple[tuple[str, tuple[str, ...]], ...]
+
+    def __post_init__(self) -> None:
+        # Bound the message echo to the first 4 candidates so a
+        # pathological canonical-join graph cannot balloon the error
+        # text. The recovery contract still lets the agent walk the
+        # full set via the structured field.
+        shown = self.candidates[:4]
+        more = f" (+{len(self.candidates) - 4} more)" if len(self.candidates) > 4 else ""
+        rendered = ", ".join(f"{column} (via {list(via)})" for column, via in shown)
+        first_column = shown[0][0] if shown else ""
+        super().__init__(
+            f"metric anchored on {self.anchor_entity!r} has no "
+            f"`time_dimension` declared and multiple timestamp columns "
+            f"are reachable via canonical joins: {rendered}{more}. "
+            f"Pass `time_dimension={first_column!r}` (or another "
+            f"candidate) on `get_metric` to disambiguate."
+        )
+
+    def __reduce__(
+        self,
+    ) -> tuple[
+        type, tuple[str, tuple[tuple[str, tuple[str, ...]], ...]]
+    ]:  # pragma: no cover — pickling helper used by multiprocessing / RPC paths not exercised in tests
+        return (self.__class__, (self.anchor_entity, self.candidates))
+
+
+@dataclass(frozen=True)
 class UnknownOrderByColumnError(MetricCompilerError):
     """Raised when an `order_by` entry references a column that is
     neither the metric's name (the SELECT-aliased measure) nor any of
@@ -311,6 +447,14 @@ class PiiBlockedError(MetricCompilerError):
     Both kwargs are required — defaulting to empty tuples would let
     a future caller silently produce a malformed audit row (refused
     status with empty pii_categories).
+
+    `anchor_entity` is the metric's anchor entity name when the
+    error fires during a `get_metric` call. The MCP envelope wrapper
+    populates `recovery.suggested_args.name` from this so an agent
+    consuming the structured recovery contract can pivot directly to
+    `describe_entity(name=<anchor>)` to enumerate non-PII columns.
+    Defaults to None for callers that don't have an anchor in scope
+    (the existing field-set stays backwards compatible).
     """
 
     def __init__(
@@ -319,10 +463,12 @@ class PiiBlockedError(MetricCompilerError):
         *,
         attempted_categories: tuple[PIICategory, ...],
         blocked_categories: tuple[PIICategory, ...],
+        anchor_entity: str | None = None,
     ) -> None:
         super().__init__(message)
         self.attempted_categories = attempted_categories
         self.blocked_categories = blocked_categories
+        self.anchor_entity = anchor_entity
 
 
 # ----- IR --------------------------------------------------------------------
@@ -504,6 +650,27 @@ class MetricPlan:
     # without the new kwarg.
     order_by_clauses: tuple[ResolvedOrderBy, ...] = field(default=())
 
+    # Time-dimension resolution outcome:
+    #   "local"       — `metric.time_dimension` was set and lives on the
+    #                   anchor entity (the v1 default). The emitter
+    #                   buckets against `anchor_alias`.
+    #   "inherited"   — `metric.time_dimension` was None (or on a
+    #                   non-anchor entity) and the resolver inferred /
+    #                   used a reachable timestamp column. The
+    #                   `inherited_time_dimension` field carries the
+    #                   `<entity>.<column>` form and
+    #                   `time_dimension_inherited_via` lists the chain
+    #                   of canonical joins traversed. The emitter
+    #                   buckets against the joined entity's alias.
+    #   "unavailable" — `time_grain` was passed but no candidate
+    #                   timestamp column is reachable. The plan ships
+    #                   with `time_bucket=None`; the MCP layer surfaces
+    #                   `time_dimension_unavailable` as a degradation
+    #                   reason rather than failing.
+    time_dimension_resolution: Literal["local", "inherited", "unavailable"] = field(default="local")
+    inherited_time_dimension: str | None = field(default=None)
+    time_dimension_inherited_via: tuple[str, ...] = field(default=())
+
     @property
     def required_join_names(self) -> tuple[str, ...]:
         """Canonical-join names, for the result envelope's
@@ -512,10 +679,26 @@ class MetricPlan:
 
     @property
     def fan_out_join_names(self) -> tuple[str, ...]:
-        """Subset of `required_join_names` with one_to_many /
-        many_to_many cardinality (or unspecified, treated as
-        worst-case). The MCP envelope surfaces these as fan-out
-        warnings."""
+        """Subset of `required_join_names` whose effective cardinality
+        multiplies rows on the anchor side of the chain.
+
+        Cardinality on `ResolvedJoin` is direction-aware (the resolver
+        flips the stored value when BFS walked the canonical join in
+        reverse), so this check reads it verbatim:
+
+          - `one_to_many` — the source side (already in the chain,
+            carrying anchor rows) has 1 row per N target rows; adding
+            target multiplies anchor rows. Fan-out.
+          - `many_to_many` — always multiplies. Fan-out.
+          - `None` — unknown, defensive worst case. Fan-out.
+          - `many_to_one` — N source rows per 1 target row; adding
+            target preserves source-side row count. NOT fan-out.
+          - `one_to_one` — symmetric; NOT fan-out.
+
+        The MCP envelope surfaces these as the `fan_out_join`
+        degradation reason so the agent can switch to `count_distinct`
+        on an identity column when the metric requires it.
+        """
         return tuple(
             j.canonical_name
             for j in self.joins

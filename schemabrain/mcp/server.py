@@ -35,7 +35,9 @@ from mcp.server.fastmcp.exceptions import ToolError as FastMCPToolError
 from mcp.types import ContentBlock, ToolAnnotations
 from pydantic import Field
 
+from schemabrain import __version__ as _SCHEMABRAIN_VERSION
 from schemabrain.audit.writer import AuditWriter
+from schemabrain.core.metric import MalformedMetricRowError
 from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
 from schemabrain.mcp._helpers import _MAX_IDENT_LEN
@@ -43,11 +45,16 @@ from schemabrain.mcp.describe_column import describe_column_impl
 from schemabrain.mcp.describe_entity import describe_entity_impl
 from schemabrain.mcp.describe_table import describe_table_impl
 from schemabrain.mcp.envelope import (
+    Confidence,
     DegradationReason,
+    InferenceMethod,
     Provenance,
     Recovery,
     ToolError,
     ToolResponse,
+    ValidationState,
+    derive_confidence,
+    derive_provenance_source,
 )
 from schemabrain.mcp.find_relevant_entities import find_relevant_entities_impl
 from schemabrain.mcp.find_relevant_tables import find_relevant_tables_impl
@@ -110,10 +117,14 @@ from schemabrain.semantic.compiler import (
     AmbiguousPathError as CompilerAmbiguousPathError,
 )
 from schemabrain.semantic.compiler import (
+    AmbiguousTimeDimensionError,
     InvalidTimeGrainError,
     MalformedColumnError,
     PiiBlockedError,
     UnknownColumnError,
+    UnknownFilterColumnError,
+    UnknownGroupByColumnError,
+    UnknownMeasureColumnError,
     UnknownMetricError,
     UnknownOrderByColumnError,
     UnknownViaJoinError,
@@ -126,6 +137,52 @@ if TYPE_CHECKING:
 _DEFAULT_LIMIT = 10
 _DEFAULT_MAX_HOPS = 6
 _SERVER_NAME = "schemabrain"
+
+# Server-level branding surfaced via the MCP `initialize` response.
+# Hosts that render server cards (Claude Desktop, Cursor) use these
+# to give the operator a visual confirmation that the server they
+# wired is the right one. `website_url` doubles as the "where do
+# I learn more?" link some hosts surface in the server-detail UI.
+_SERVER_WEBSITE_URL = "https://github.com/Arun-kc/schemabrain"
+# Multiple sizes so a host can pick the closest fit without
+# down-/up-scaling. URLs point at the `main` branch of the public
+# repo so a deployed wheel produces a stable icon URL without
+# bundling the binary in the wheel — keeps the install size
+# unaffected and avoids version-pinning the icon to the wheel.
+_SERVER_ICON_BASE = "https://raw.githubusercontent.com/Arun-kc/schemabrain/main/docs/assets"
+
+
+def _server_icons() -> list[Any]:
+    """Construct the `Icon` list for the FastMCP `initialize` response.
+
+    Local import keeps the `mcp.types` symbol off this module's
+    load path for environments where the SDK version doesn't yet
+    export `Icon` (older 1.x). Empty list on import failure so the
+    server still starts without branding.
+    """
+    try:
+        from mcp.types import Icon  # type: ignore[import-not-found]
+    except ImportError:  # pragma: no cover — older SDK
+        return []
+    return [
+        Icon(
+            src=f"{_SERVER_ICON_BASE}/schemabrain-mark-32.png",
+            mimeType="image/png",
+            sizes=["32x32"],
+        ),
+        Icon(
+            src=f"{_SERVER_ICON_BASE}/schemabrain-mark-64.png",
+            mimeType="image/png",
+            sizes=["64x64"],
+        ),
+        Icon(
+            src=f"{_SERVER_ICON_BASE}/schemabrain-mark-512.png",
+            mimeType="image/png",
+            sizes=["512x512"],
+        ),
+    ]
+
+
 _SERVER_INSTRUCTIONS = (
     "Schema Brain — semantic understanding of an indexed database. "
     "Physical-schema tools: `find_relevant_tables` to discover tables, "
@@ -147,7 +204,7 @@ _SERVER_INSTRUCTIONS = (
     "you can `group_by` an entity that's reachable via any chain of "
     "joins, not just one hop. Every tool returns a `ToolResponse` "
     "envelope (status / data / error / confidence / follow_up_hints) "
-    "per the agent-UX charter v1.1."
+    "per the agent-UX charter v1.2."
 )
 
 _logger = logging.getLogger(__name__)
@@ -175,6 +232,78 @@ def _confidence_from_score(score: float) -> str:
     if score >= _CONFIDENCE_MEDIUM_FLOOR:
         return "MEDIUM"
     return "LOW"
+
+
+_CONFIDENCE_RANK: dict[Confidence, int] = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+
+
+def _aggregate_signal(
+    items: object,
+) -> tuple[InferenceMethod, ValidationState]:
+    """Return the worst-case `(inference_method, validation_state)`
+    over a non-empty iterable of items.
+
+    The "worst" item is the one whose derived `Confidence` is lowest;
+    ties are broken by first-seen order. Charter v1.2 producers use
+    this for list-shaped tools (`list_entities`, `list_metrics`,
+    `list_joins`) so the envelope-level `confidence` reflects the
+    weakest signal in the set — an agent listing 10 metrics where 9
+    are hand-confirmed and 1 is LLM-suggested sees `MEDIUM`, not the
+    misleading `HIGH` the 9 majority would imply.
+
+    Caller MUST ensure the iterable is non-empty (empty list
+    responses route to `status="empty"` with `confidence=None`
+    before this helper would be called).
+
+    Each item must expose `inference_method` and `validation_state`
+    attributes — works for the core dataclasses (`Entity`, `Metric`,
+    `CanonicalJoin`) and for the v1.2-extended Pydantic summaries.
+    """
+    worst_item: object | None = None
+    worst_rank = 99  # higher than any rank
+    for item in items:  # type: ignore[union-attr]
+        rank = _CONFIDENCE_RANK[derive_confidence(item.inference_method, item.validation_state)]
+        if rank < worst_rank:
+            worst_item = item
+            worst_rank = rank
+    if worst_item is None:  # pragma: no cover — defensive empty-input fallback
+        return ("manually_authored", "applied")
+    return (worst_item.inference_method, worst_item.validation_state)
+
+
+def _min_confidence(a: Confidence, b: Confidence) -> Confidence:
+    """Return the LOWER of two `Confidence` labels.
+
+    Used by `get_metric` to combine the 2D-derived signal with a
+    degradation-induced cap (`fan_out_join` and `missing_order_by_
+    with_limit` cap the envelope at MEDIUM). When both inputs are
+    HIGH the result is HIGH; one MEDIUM caps the pair at MEDIUM;
+    any LOW dominates.
+    """
+    if _CONFIDENCE_RANK[a] <= _CONFIDENCE_RANK[b]:
+        return a  # pragma: no cover — exercised only when both inputs share the lower rank; the production caller paths land on the `return b` side
+    return b
+
+
+def _provenance_from_signal(
+    inference_method: InferenceMethod,
+    validation_state: ValidationState,
+    *,
+    model: str | None = None,
+) -> Provenance:
+    """Build a Charter v1.2 `Provenance` from the 2D trust signal.
+
+    Computes `source` via `derive_provenance_source(inference_method)`
+    so v1.0 / v1.1 clients that only read `provenance.source` see a
+    sensible value derived from the same signal that drives the new
+    `inference_method` field.
+    """
+    return Provenance(
+        source=derive_provenance_source(inference_method),
+        model=model,
+        inference_method=inference_method,
+        validation_state=validation_state,
+    )
 
 
 def _safe_table_part(qualified_name: str) -> str | None:
@@ -369,8 +498,16 @@ def build_server(
     app = _StrictArgsFastMCP(
         _SERVER_NAME,
         instructions=_SERVER_INSTRUCTIONS,
+        website_url=_SERVER_WEBSITE_URL,
+        icons=_server_icons() or None,
         on_rejected=_on_rejected_call,
     )
+    # FastMCP doesn't accept a `version` kwarg, so the underlying
+    # low-level Server defaults `server_version` to the `mcp` package
+    # version (e.g. "1.27.1") in the `initialize` response. Pin it to
+    # Schema Brain's own version string so MCP clients see the
+    # right server identity instead of the SDK's internal version.
+    app._mcp_server.version = _SCHEMABRAIN_VERSION
 
     def _trace(name: str):
         return instrument(
@@ -508,7 +645,7 @@ def build_server(
                 query=query,
                 limit=limit,
             )
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover — defensive catch-all wraps unexpected errors as internal_error
             return _wrap_internal_error(exc)
         if not hits:
             # Two sub-cases under `empty`, distinguished by hint routing
@@ -800,11 +937,16 @@ def build_server(
             )
         except Exception as exc:
             return _wrap_internal_error(exc)
+        # FK-derived paths: the join columns come from declared
+        # foreign-key constraints (information_schema is the source of
+        # truth), not stored entity/metric/join rows. Mark as
+        # `fk_constraint` + `applied` so the agent gets the strong
+        # signal "this is DB-validated".
         return ToolResponse[SuggestJoinsResult](
             status="success",
             data=result,
             confidence="HIGH",
-            provenance=Provenance(source="schema"),
+            provenance=_provenance_from_signal("fk_constraint", "applied"),
             follow_up_hints=["describe_table"],
         )
 
@@ -829,7 +971,7 @@ def build_server(
                 store=store,
                 source_connection_id=source_connection_id,
             )
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover — defensive catch-all wraps unexpected errors as internal_error
             return _wrap_internal_error(exc)
         if not summaries:
             # Charter Principle 1: an indexed store with no defined
@@ -842,11 +984,16 @@ def build_server(
                 confidence=None,
                 follow_up_hints=["find_relevant_tables"],
             )
+        # Charter v1.2: derive the 2D trust signal from the rows
+        # rather than hardcoding HIGH+schema. A list with even one
+        # LLM-suggested entity downgrades the aggregate confidence
+        # so the agent sees that not every row is hand-confirmed.
+        method, state = _aggregate_signal(summaries)
         return ToolResponse[list[EntitySummary]](
             status="success",
             data=summaries,
-            confidence="HIGH",
-            provenance=Provenance(source="schema"),
+            confidence=derive_confidence(method, state),
+            provenance=_provenance_from_signal(method, state),
             follow_up_hints=["describe_entity"],
         )
 
@@ -885,11 +1032,17 @@ def build_server(
                 confidence=None,
                 follow_up_hints=["list_entities"],
             )
+        # Charter v1.2: derive aggregate confidence from per-metric
+        # trust signal so an LLM-suggested metric and an FK-derived
+        # metric report distinct labels (MEDIUM and HIGH respectively)
+        # rather than both reporting the hardcoded HIGH of the v1.1
+        # era. Aggregate reflects the weakest member.
+        method, state = _aggregate_signal(summaries)
         return ToolResponse[list[MetricSummary]](
             status="success",
             data=summaries,
-            confidence="HIGH",
-            provenance=Provenance(source="schema"),
+            confidence=derive_confidence(method, state),
+            provenance=_provenance_from_signal(method, state),
             # `describe_entity` is the natural drill — `MetricSummary`
             # exposes `measure_column` as an opaque identifier; the
             # agent needs the anchor entity's full column shape to
@@ -936,11 +1089,16 @@ def build_server(
                 confidence=None,
                 follow_up_hints=["find_relevant_tables"],
             )
+        # Charter v1.2: per-join trust signal so the agent sees
+        # `fk_constraint` (DB-validated) vs `llm_suggested` (model
+        # proposed) on each join, and the aggregate envelope-level
+        # confidence reflects the weakest member.
+        method, state = _aggregate_signal(summaries)
         return ToolResponse[list[JoinSummary]](
             status="success",
             data=summaries,
-            confidence="HIGH",
-            provenance=Provenance(source="schema"),
+            confidence=derive_confidence(method, state),
+            provenance=_provenance_from_signal(method, state),
             follow_up_hints=["resolve_join"],
         )
 
@@ -977,6 +1135,7 @@ def build_server(
                 store=store,
                 source_connection_id=source_connection_id,
                 name=name,
+                pii_block=pii_block,
             )
         except ValueError as exc:
             return _malformed_name_response(
@@ -989,13 +1148,23 @@ def build_server(
                 suggested_tool="list_entities",
                 suggested_args=None,
             )
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover — defensive catch-all wraps unexpected errors as internal_error
             return _wrap_internal_error(exc)
+        # Charter v1.2: pull the 2D trust signal from the single
+        # entity row so `confidence` reflects whether this specific
+        # entity is hand-confirmed (HIGH) or LLM-suggested (MEDIUM).
+        # When columns were redacted under `--pii-block`, cap
+        # confidence at MEDIUM (the agent saw a partial view of the
+        # entity). The data-layer `redacted_columns` field carries
+        # the precise list.
+        confidence = derive_confidence(detail.inference_method, detail.validation_state)
+        if detail.redacted_columns:
+            confidence = _min_confidence(confidence, "MEDIUM")
         return ToolResponse[EntityDetail](
             status="success",
             data=detail,
-            confidence="HIGH",
-            provenance=Provenance(source="schema"),
+            confidence=confidence,
+            provenance=_provenance_from_signal(detail.inference_method, detail.validation_state),
             follow_up_hints=["describe_table", "describe_column"],
         )
 
@@ -1118,11 +1287,16 @@ def build_server(
             )
         except Exception as exc:
             return _wrap_internal_error(exc)
+        # Charter v1.2: the load-bearing FK-vs-LLM-guess distinction
+        # shows up here. A `(fk_constraint, applied)` join reports
+        # HIGH and the agent can trust the on-clause blindly; an
+        # `(llm_suggested, applied)` join reports MEDIUM and the
+        # agent should consider verifying before relying on it.
         return ToolResponse[CanonicalJoinInfo](
             status="success",
             data=info,
-            confidence="HIGH",
-            provenance=Provenance(source="schema"),
+            confidence=derive_confidence(info.inference_method, info.validation_state),
+            provenance=_provenance_from_signal(info.inference_method, info.validation_state),
             follow_up_hints=["describe_entity"],
         )
 
@@ -1189,6 +1363,22 @@ def build_server(
                 ),
             ),
         ] = None,
+        time_dimension: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Disambiguates time-dimension inheritance when a "
+                    "metric carries no local `time_dimension` and 2+ "
+                    "timestamp columns are reachable via canonical "
+                    "joins. Pass `<entity>.<column>` form chosen from "
+                    "the `ambiguous_time_dimension` error's candidate "
+                    "list (also visible in the error message). "
+                    "Silently ignored when the metric has its own "
+                    "declared `time_dimension` — that always wins. "
+                    "Defaults null (no disambiguation)."
+                ),
+            ),
+        ] = None,
         limit: Annotated[
             int,
             Field(
@@ -1235,10 +1425,11 @@ def build_server(
                     "'desc'}]`). The compiler auto-appends a tie-breaking "
                     "secondary key (first group_by column ASC) so equal "
                     "measure values produce identical row order across "
-                    "runs. Empty tuple = no ORDER BY (database-default "
-                    "row order; the envelope surfaces "
-                    "`missing_order_by_with_limit` as a degradation "
-                    "reason if `limit` is set + `group_by` is non-empty)."
+                    "runs. Empty tuple + non-empty `group_by` defaults "
+                    "to ASC on every group column so the LIMIT N slice "
+                    "stays deterministic without the caller having to "
+                    "construct one; override by passing any explicit "
+                    "clause."
                 ),
             ),
         ] = (),
@@ -1265,18 +1456,31 @@ def build_server(
                 group_by=group_by,
                 filters=filters,
                 time_grain=time_grain,
+                time_dimension=time_dimension,
                 limit=limit,
                 via=via,
                 order_by=order_by,
                 pii_block=pii_block,
             )
         except PiiBlockedError as exc:
+            # Populate `suggested_args` so an agent consuming the
+            # structured recovery contract can pivot directly to
+            # `describe_entity(name=<anchor>)` and enumerate non-PII
+            # columns without re-parsing the human-readable message.
+            # `anchor_entity` is None only for callers that bypass
+            # `get_metric_impl` (no production path); guard regardless.
+            recovery_args: dict[str, Any] | None = None
+            if exc.anchor_entity is not None:  # pragma: no branch
+                recovery_args = {"name": exc.anchor_entity}
             return ToolResponse(
                 status="refused",
                 error=ToolError(
                     kind="pii_blocked",
                     message=str(exc),
-                    recovery=Recovery(suggested_tool="describe_entity"),
+                    recovery=Recovery(
+                        suggested_tool="describe_entity",
+                        suggested_args=recovery_args,
+                    ),
                     pii_categories=exc.attempted_categories,
                 ),
             )
@@ -1388,6 +1592,61 @@ def build_server(
                     ),
                 ),
             )
+        except UnknownGroupByColumnError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="unknown_group_by_column",
+                    message=str(exc),
+                    recovery=Recovery(
+                        # `describe_entity` is the right next step
+                        # because the agent already knows the entity
+                        # but typo'd the column — describe lists every
+                        # column on that entity with PII flags and
+                        # data types so the retry uses a real name.
+                        suggested_tool="describe_entity",
+                        suggested_args={
+                            "name": exc.entity,
+                            "allowed_columns": exc.allowed_columns,
+                        },
+                    ),
+                ),
+            )
+        except UnknownFilterColumnError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="unknown_filter_column",
+                    message=str(exc),
+                    recovery=Recovery(
+                        suggested_tool="describe_entity",
+                        suggested_args={
+                            "name": exc.entity,
+                            "allowed_columns": exc.allowed_columns,
+                        },
+                    ),
+                ),
+            )
+        except UnknownMeasureColumnError as exc:
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="unknown_measure_column",
+                    message=str(exc),
+                    # `describe_entity` is the right next step — the
+                    # measure column lives on the metric's anchor entity,
+                    # and `allowed_columns` carries the actual column set
+                    # to retry against (or to use as a hint that the
+                    # metric definition itself needs fixing).
+                    recovery=Recovery(
+                        suggested_tool="describe_entity",
+                        suggested_args={
+                            "name": exc.entity,
+                            "allowed_columns": exc.allowed_columns,
+                        },
+                    ),
+                ),
+            )
         except InvalidTimeGrainError as exc:
             return ToolResponse(
                 status="error",
@@ -1397,41 +1656,97 @@ def build_server(
                     recovery=Recovery(suggested_tool="get_metric"),
                 ),
             )
+        except AmbiguousTimeDimensionError as exc:
+            # Charter v1.2: 2+ candidate timestamp columns were reachable
+            # from the metric's anchor via canonical-join chains and the
+            # caller didn't disambiguate. Recovery is for the agent to
+            # re-call with an explicit time_dimension (or remove
+            # time_grain to bucket-less aggregate). Populate
+            # `suggested_args` with the first candidate so a programmatic
+            # agent can act on the structured recovery contract without
+            # parsing the human-readable message. Picking
+            # `candidates[0]` is informational — the agent should pick
+            # whichever candidate semantically matches the user's
+            # question (the full list lives in the message text).
+            time_dim_args: dict[str, Any] | None = None
+            if exc.candidates:  # pragma: no branch
+                time_dim_args = {"time_dimension": exc.candidates[0][0]}
+            return ToolResponse(
+                status="error",
+                error=ToolError(
+                    kind="ambiguous_time_dimension",
+                    message=str(exc),
+                    recovery=Recovery(
+                        suggested_tool="get_metric",
+                        suggested_args=time_dim_args,
+                    ),
+                ),
+            )
+        except MalformedMetricRowError as exc:
+            # The row passed the store's CHECK constraints but its
+            # `measure_expression` (or another field) fails the
+            # Python-side validation — typically because someone wrote
+            # the row via direct SQL with content the whitelist parser
+            # can't accept. Surfaces as `internal_error` (the metric IS
+            # in the store, but corrupted) with the offending name in
+            # the message so operators can locate + repair it.
+            return _wrap_internal_error(
+                RuntimeError(
+                    f"metric {exc.name!r} is stored with a malformed measure: {exc.reason}"
+                )
+            )
         except RuntimeError as exc:
             return _wrap_internal_error(exc)
         except Exception as exc:  # pragma: no cover — defensive
             return _wrap_internal_error(exc)
-        # Degradation precedence: fan_out_join takes priority over
-        # missing_order_by_with_limit because fan-out is a correctness
-        # concern (rows may be inflated) while missing-order-by is a
-        # determinism concern (rows may be ordered randomly). Both are
-        # signals worth surfacing, but if forced to pick one
-        # `degradation_reason` we surface the more load-bearing one.
-        # The PR-6.5 polish bundle considers structured multi-reason
-        # support; for v1 a single enum keeps the contract tight.
+        # Degradation precedence: fan_out_join (correctness concern,
+        # rows may be inflated) over time_dimension_unavailable
+        # (caller asked for time_grain but no reachable timestamp).
+        # `missing_order_by_with_limit` is no longer emitted from this
+        # chain — the resolver auto-fills ORDER BY with the group
+        # columns when the caller didn't supply order_by, so the
+        # determinism gap that justified the degradation no longer
+        # exists on the default path. The `DegradationReason` literal
+        # still includes the value for backwards-compat with audit
+        # rows shipped by earlier versions, but new envelopes never
+        # emit it.
         degradation: DegradationReason | None = None
         if result.fan_out_join_names:
             degradation = "fan_out_join"
-        elif group_by and not order_by:
-            # `limit` is always set (defaults to 1000, hard cap 10_000)
-            # — so any non-empty group_by without order_by produces a
-            # potentially non-deterministic slice. Surface it even when
-            # the caller used the default limit.
-            degradation = "missing_order_by_with_limit"
+        elif result.time_dimension_resolution == "unavailable":
+            # Caller passed time_grain but the resolver couldn't find a
+            # reachable timestamp column via canonical-join chains. The
+            # plan ran unbucketed; surface the degradation so the agent
+            # can decide whether to widen the metric definition or drop
+            # the grain.
+            degradation = "time_dimension_unavailable"
+        # Charter v1.2: take the worst of (the 2D trust signal from
+        # the metric + its traversed joins) AND the degradation-
+        # induced MEDIUM cap. A fan-out plan can never report HIGH
+        # even if every input signal is strong; a clean plan whose
+        # metric is `llm_suggested` reports MEDIUM regardless of
+        # degradation.
+        signal_confidence = derive_confidence(
+            result.aggregate_inference_method, result.aggregate_validation_state
+        )
+        provenance = _provenance_from_signal(
+            result.aggregate_inference_method, result.aggregate_validation_state
+        )
         if degradation is not None:
+            capped = _min_confidence(signal_confidence, "MEDIUM")
             return ToolResponse[MetricResult](
                 status="degraded",
                 data=result,
-                confidence="MEDIUM",
-                provenance=Provenance(source="schema"),
+                confidence=capped,
+                provenance=provenance,
                 follow_up_hints=["describe_entity"],
                 degradation_reason=degradation,
             )
         return ToolResponse[MetricResult](
             status="success",
             data=result,
-            confidence="HIGH",
-            provenance=Provenance(source="schema"),
+            confidence=signal_confidence,
+            provenance=provenance,
             follow_up_hints=["describe_entity"],
         )
 
@@ -1604,5 +1919,7 @@ def run_stdio(
             )
         )
         bus.close()
-        if audit_writer is not None:
+        if (
+            audit_writer is not None
+        ):  # pragma: no cover — shutdown path; audit_writer presence depends on serve invocation config
             audit_writer.close()

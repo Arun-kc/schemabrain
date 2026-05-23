@@ -43,6 +43,24 @@ from typing import Literal, get_args
 Origin = Literal["manual", "suggested", "dbt_import"]
 _VALID_ORIGINS: frozenset[str] = frozenset(get_args(Origin))
 
+# v14 / charter v1.2: 2D trust signal. `Origin` conflates "how was this
+# derived?" (FK constraint vs LLM guess) with "how validated is it?"
+# (draft vs applied vs operator-confirmed). The two new fields below
+# split those axes; `Origin` stays for back-compat + the dbt-guard.
+# Both literals stay in lock-step with the SQL CHECK constraints in
+# `core/store.py::_DDL_STATEMENTS`.
+InferenceMethod = Literal[
+    "manually_authored",
+    "llm_suggested",
+    "fk_constraint",
+    "dbt_import",
+    "observed_in_query_log",
+]
+_VALID_INFERENCE_METHODS: frozenset[str] = frozenset(get_args(InferenceMethod))
+
+ValidationState = Literal["draft", "applied", "confirmed"]
+_VALID_VALIDATION_STATES: frozenset[str] = frozenset(get_args(ValidationState))
+
 # Postgres unquoted identifier shape: letter/underscore lead,
 # letters/digits/underscores/`$` after. Matches the column-name regex
 # in `mcp/_helpers.py` so an entity whose `identity` column references
@@ -112,6 +130,14 @@ class Entity:
     binding: SingleTableBinding
     identity: str
     origin: Origin = "manual"
+    # v14 / charter v1.2: 2D trust signal. Defaults match the most
+    # common construction path (hand-authored YAML loaded into the
+    # store via `entities apply` — the operator typed it, so
+    # `manually_authored` + `applied`). Callers that know better
+    # (LLM-suggest writer, dbt importer, FK-derived join writer)
+    # override these explicitly.
+    inference_method: InferenceMethod = "manually_authored"
+    validation_state: ValidationState = "applied"
 
     def __post_init__(self) -> None:
         if not _IDENT_RE.fullmatch(self.name):
@@ -124,6 +150,16 @@ class Entity:
         if self.origin not in _VALID_ORIGINS:
             raise ValueError(
                 f"origin must be one of {sorted(_VALID_ORIGINS)} (got {self.origin!r})"
+            )
+        if self.inference_method not in _VALID_INFERENCE_METHODS:
+            raise ValueError(
+                f"inference_method must be one of "
+                f"{sorted(_VALID_INFERENCE_METHODS)} (got {self.inference_method!r})"
+            )
+        if self.validation_state not in _VALID_VALIDATION_STATES:
+            raise ValueError(
+                f"validation_state must be one of "
+                f"{sorted(_VALID_VALIDATION_STATES)} (got {self.validation_state!r})"
             )
 
     @property
