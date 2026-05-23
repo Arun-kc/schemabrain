@@ -20,7 +20,7 @@
   <strong>The SQL firewall between AI agents and your production database.</strong>
 </p>
 
-> **The agent never writes SQL. Schema Brain does, from definitions you control.**
+> **The agent never writes SQL against your database. Schema Brain does, from definitions you control.**
 
 Your agent gets twelve read-only MCP tools — none of which can write. Schema Brain compiles the parameterized SQL from definitions you control and runs it on its side. Refused calls return a structured `recovery` block agents act on programmatically; every call lands in a tamper-evident audit log.
 
@@ -36,7 +36,7 @@ schemabrain init
 # then ask your MCP host: "list the entities Schema Brain knows about"
 ```
 
-**Cost.** ~$0.01 to index the bundled 7-table demo (30 columns) · ~$0.03 for a 87-column Pagila sample · **$0** to re-index unchanged schemas. Bounded by per-stage cost caps; runs on Claude Haiku 4.5.
+**Cost.** ~$0.03 to index + curate the bundled 7-table demo (30 columns, 6 entities + 10 metrics) · ~$0.03 for a 87-column Pagila sample · **$0** to re-index unchanged schemas. Bounded by per-stage cost caps; index step runs on Claude Haiku 4.5, curation on Claude Sonnet 4.6.
 
 **Status: 0.3.0 (alpha).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap. The longer-term position is the SQL-boundary safety layer for AI agents — see [Where it's going](#where-its-going).
 
