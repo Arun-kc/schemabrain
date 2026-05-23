@@ -332,7 +332,13 @@ def _parse_candidate(raw: Any, *, index: int) -> EntityCandidate:
 
     # Construct the Entity — its __post_init__ runs identifier-shape +
     # origin-enum checks. Re-wrap as SuggestionParseError so the CLI
-    # surface stays uniform.
+    # surface stays uniform. `inference_method="llm_suggested"` is the
+    # load-bearing 2D trust-signal classification: every candidate
+    # parsed here came from an LLM's YAML output, so the entity must
+    # ride the `llm_suggested` rail (→ MEDIUM confidence) rather than
+    # the dataclass-default `manually_authored` (→ HIGH). Without this,
+    # `derive_confidence(method, state)` collapses to HIGH everywhere
+    # on the wizard happy path and the F28 differentiation is invisible.
     try:
         entity = Entity(
             name=name,
@@ -340,6 +346,7 @@ def _parse_candidate(raw: Any, *, index: int) -> EntityCandidate:
             binding=binding,
             identity=identity,
             origin="suggested",
+            inference_method="llm_suggested",
         )
     except ValueError as exc:
         raise SuggestionParseError(f"candidate #{index}: {exc}") from exc

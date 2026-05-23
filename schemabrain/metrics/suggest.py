@@ -499,7 +499,13 @@ def _parse_candidate(raw: Any, *, index: int) -> MetricCandidate:
     # Construct the Metric — its __post_init__ runs identifier-shape +
     # paired-emptiness + canonical-grain-order + origin-enum checks.
     # Re-wrap as MetricSuggestionParseError so the CLI surface stays
-    # uniform.
+    # uniform. `inference_method="llm_suggested"` is the load-bearing
+    # 2D trust-signal classification: every candidate parsed here came
+    # from an LLM's YAML output, so the metric must ride the
+    # `llm_suggested` rail (→ MEDIUM confidence) rather than the
+    # dataclass-default `manually_authored` (→ HIGH). Without this,
+    # `derive_confidence(method, state)` collapses to HIGH everywhere
+    # on the wizard happy path and the F28 differentiation is invisible.
     try:
         metric = Metric(
             name=name,
@@ -509,6 +515,7 @@ def _parse_candidate(raw: Any, *, index: int) -> MetricCandidate:
             time_dimension=time_dimension,
             time_grains=time_grains,
             origin="suggested",
+            inference_method="llm_suggested",
         )
     except ValueError as exc:
         raise MetricSuggestionParseError(f"candidate #{index}: {exc}") from exc

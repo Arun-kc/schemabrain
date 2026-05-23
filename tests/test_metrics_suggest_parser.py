@@ -54,6 +54,12 @@ candidates:
     assert metric.time_dimension == "order.placed_at"
     assert metric.time_grains == ("day", "week", "month")
     assert metric.origin == "suggested"
+    # `inference_method="llm_suggested"` is the 2D trust-signal
+    # classification that distinguishes LLM-guessed metrics (→ MEDIUM
+    # via `derive_confidence`) from hand-authored YAMLs (→ HIGH).
+    # Without this, every wizard-curated metric collapses to flat HIGH
+    # on the wire and the F28 differentiation is invisible.
+    assert metric.inference_method == "llm_suggested"
     assert metric.description == "Total revenue summed across all orders."
 
 

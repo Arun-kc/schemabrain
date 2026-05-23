@@ -51,6 +51,13 @@ candidates:
         # the LLM doesn't need to specify it (and shouldn't be able to
         # forge "dbt_import" by accident).
         assert candidate.entity.origin == "suggested"
+        # And inference_method="llm_suggested" — the 2D trust-signal
+        # classification that distinguishes LLM-guessed entities (→
+        # MEDIUM via `derive_confidence`) from FK-derived joins and
+        # hand-authored YAMLs (→ HIGH). Without this, every
+        # wizard-curated entity collapses to flat HIGH on the wire and
+        # the F28 differentiation is invisible.
+        assert candidate.entity.inference_method == "llm_suggested"
         assert candidate.confidence == "high"
         assert candidate.rationale.startswith("users has")
         assert candidate.pii_hints == {"email": "pii"}
