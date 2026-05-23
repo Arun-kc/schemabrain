@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Wizard-curated entities and metrics were tagged
+  `inference_method="manually_authored"` instead of `"llm_suggested"`,
+  silently collapsing the charter v1.2 2D trust signal on the wizard
+  happy path.** The suggest-YAML parsers in `entities/suggest.py` and
+  `metrics/suggest.py` constructed `Entity` / `Metric` objects without
+  passing `inference_method`, so the dataclass default
+  (`"manually_authored"`) was applied to every LLM-suggested row.
+  Combined with `validation_state="applied"`, that collapsed
+  `derive_confidence()` to HIGH everywhere — entities, joins, AND
+  metrics all reported flat HIGH on the wire, making the 2D
+  differentiation indistinguishable from a 1D HIGH. Now both parsers
+  explicitly set `inference_method="llm_suggested"` at construction.
+  Hand-authored YAMLs flowing through `yaml_grammar.py` still default
+  to `"manually_authored"` (correct); `joins/suggest.py` was already
+  setting the right `fk_constraint` / `observed_in_query_log` based
+  on evidence. New regression tests assert the round-trip parser
+  carries the right value.
+- **MCP refusal envelopes carried a `recovery.suggested_tool` but
+  left `recovery.suggested_args` null even when the message text
+  named a structured arg the agent should pass back.** Two surfaces
+  fixed: `ambiguous_time_dimension` now populates
+  `{"time_dimension": <first_candidate>}`; `pii_blocked` now
+  populates `{"name": <anchor_entity>}` so the follow-up
+  `describe_entity` lands on the right entity. An agent acting on
+  the structured recovery contract no longer has to parse the
+  human-readable message to extract a retry arg. `PiiBlockedError`
+  gained an optional `anchor_entity` field (kwarg defaults to `None`;
+  existing callers unaffected).
 - **`serverInfo.version` in the MCP `initialize` response leaked the
   underlying `mcp` SDK package version (e.g. `1.27.1`) instead of
   Schema Brain's own version string.** FastMCP doesn't accept a
@@ -55,6 +83,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TestReverseTraversalCardinalityFlip::test_same_name_fk_reverse_traversal_flips_cardinality`.
 
 ### Added
+- **`get_metric` accepts a `time_dimension` argument to disambiguate
+  inheritance.** When a metric carries no local `time_dimension` and
+  the resolver finds 2+ reachable timestamp columns via canonical-
+  join chains, the agent now re-calls with
+  `time_dimension="<entity>.<column>"` chosen from the
+  `ambiguous_time_dimension` error envelope's candidate list. A
+  value not in the candidate set falls through to the same error
+  with the full valid list preserved so the next retry has real
+  choices. Silently ignored when the metric has its own declared
+  `time_dimension` (declared dimension always wins). New
+  `time_dimension` parameter threaded through `get_metric_impl` and
+  `resolve_metric_plan`; new tool-schema description on the MCP
+  `get_metric` registration.
+- **`schemabrain inspect <entity>` now renders the same trust line
+  as the metric and join drill views** — `Trust: <inference_method>
+  · <validation_state> (<CONF>)` at the bottom of the entity drill.
+  Operators previously got no surface signal for whether an
+  entity's identity/binding was LLM-suggested, FK-derived, or
+  hand-authored even though the data was present in the dataclass.
+- **The init wizard now prompts the operator to choose PII-block
+  categories** before constructing the host snippet. Three options:
+  recommended (`contact` — email/phone/address), all v1 categories,
+  or none (dev/synthetic databases). Default = the prior silent
+  behavior so the zero-effort path is unchanged. Non-interactive
+  flows (`--yes`, piped stderr) skip the prompt and use the same
+  `("contact",)` default.
+
 - **`entities list`, `joins list`, and `metrics list` CLI commands
   now surface the charter v1.2 2D trust signal.** Each rendered row
   now ends with `trust=<inference_method> · <validation_state>
@@ -215,6 +270,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can opt out.
 
 ### Changed
+- **`get_metric` auto-fills `ORDER BY` with the group columns when
+  the caller passes `group_by` without `order_by`.** The
+  `missing_order_by_with_limit` degradation reason fired on every
+  grouped query without an explicit sort — agents do that
+  constantly because LIMIT defaults to 1000 and the first call
+  rarely cares about row order. Combined with the MEDIUM cap from
+  PII redaction and other paths, this trained agents to ignore
+  `degraded` status entirely. The determinism concern was real;
+  the right fix is to make the default deterministic instead of
+  flagging every call. The resolver now auto-fills `order_by` with
+  every group column ASC when `order_by == () and group_by != ()`;
+  the LIMIT slice stays deterministic on the default path.
+  Server-side `missing_order_by_with_limit` branch removed; the
+  `DegradationReason` Literal still includes the value for
+  audit-row backwards compatibility, but new envelopes never emit
+  it. Callers wanting a specific sort pass `order_by` explicitly,
+  unchanged.
+- **`MetricResult.fingerprint` docstring now documents the
+  privacy-by-construction behavior (ADR 0001).** Fingerprints
+  deliberately repeat across calls with similar AST shape + PII
+  tags + cost class — the hash explicitly excludes row content and
+  identifying schema info. Operators reading `audit list` who saw
+  the same prefix across distinct queries were misreading the
+  privacy guarantee as a hash-collision bug.
+- **`serverInfo.instructions` (MCP) + `ToolError` docstring
+  (envelope) say `charter v1.2`.** The substrate
+  (`schemabrain/mcp/shapes.py`) already advertised `v14 / charter
+  v1.2` in 7+ sites; two cosmetic docstring lag-sites cleaned up.
 - **MCP `CHARTER_VERSION` bumps `1.1` → `1.2`.** Wire-compatible
   with v1.1 / v1.0 clients; `confidence` is now a derivation
   rather than a hardcoded HIGH.

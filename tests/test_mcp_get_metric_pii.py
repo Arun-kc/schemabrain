@@ -234,6 +234,13 @@ class TestPiiBlockedRefusal:
                 )
             assert exc_info.value.attempted_categories == ("contact",)
             assert exc_info.value.blocked_categories == ("contact",)
+            # The exception carries the metric's anchor entity so the
+            # MCP envelope wrapper can populate
+            # `recovery.suggested_args.name` — an agent following the
+            # structured-recovery contract gets `describe_entity(name=
+            # <anchor>)` pre-filled and can enumerate non-PII columns
+            # without parsing the human-readable message.
+            assert exc_info.value.anchor_entity == "user"
             # CRITICAL: emit_sql + executor.execute must NOT have run.
             # The refusal happens pre-emission so the SQL is never
             # compiled, logged, or executed — verified by the empty

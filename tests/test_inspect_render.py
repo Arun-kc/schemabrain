@@ -267,6 +267,48 @@ class TestRenderEntityDetailEdgeCases:
         assert "via" in out
         assert "customer_orders" in out
 
+    def test_entity_drill_renders_trust_line(self) -> None:
+        """O4-P1: `inspect <entity>` must render the 2D trust line at
+        the bottom of the drill view, symmetric with `inspect <metric>`
+        and `inspect <join>`. Without it operators got no surface
+        signal for whether the entity was LLM-suggested vs FK-derived
+        vs hand-authored even when the data was present.
+        """
+        entity = Entity(
+            name="customer",
+            description="A buyer.",
+            binding=SingleTableBinding(qualified_table="public.users"),
+            identity="id",
+            origin="suggested",
+            inference_method="llm_suggested",
+            validation_state="applied",
+        )
+        detail = EntityDetail(
+            entity=entity,
+            columns=(
+                EntityColumnDetail(
+                    name="id",
+                    data_type="bigint",
+                    nullable=False,
+                    is_primary_key=True,
+                    is_identity=True,
+                    pii_sensitivity="public",
+                    pii_categories=(),
+                ),
+            ),
+            related_entities=(),
+            anchored_metrics=(),
+        )
+        out = _capture(render_entity_detail, detail)
+        # Single Trust line carrying inference_method, validation_state,
+        # and the derived bucket — same shape as metric + join drills.
+        assert "Trust:" in out
+        assert "llm_suggested" in out
+        assert "applied" in out
+        # `derive_confidence("llm_suggested", "applied")` → MEDIUM per
+        # charter v1.2 — the bucket the MCP envelope would report.
+        assert "(MEDIUM)" in out
+
     def test_entity_without_description_skips_description_line(self) -> None:
         # Empty `description` field — the renderer skips the
         # "Description:" line entirely rather than rendering an

@@ -79,6 +79,7 @@ def get_metric_impl(
     group_by: tuple[str, ...] = (),
     filters: tuple[MetricFilterArg, ...] = (),
     time_grain: str | None = None,
+    time_dimension: str | None = None,
     limit: int = 1000,
     via: tuple[str, ...] = (),
     order_by: tuple[MetricOrderByArg, ...] = (),
@@ -99,6 +100,15 @@ def get_metric_impl(
     seam instead of failing several layers down inside the resolver.
     The compiler's `_check_time_grain` is the second layer of
     defense (against programmatic callers that bypass MCP).
+
+    `time_dimension` is the v1.2 disambiguator for time-dim inheritance:
+    when a metric carries no local `time_dimension` and 2+ timestamp
+    columns are reachable via canonical-join chains, the resolver
+    raises `AmbiguousTimeDimensionError` listing the candidates.
+    The agent re-calls with `time_dimension="<entity>.<column>"`
+    chosen from that list. The arg is silently ignored when the
+    metric has a local `time_dimension` (the metric's own declared
+    dimension always wins — overriding it would shift semantics).
 
     `pii_block` is the server-level `--pii-block` policy set. After
     plan resolution, the compiler looks up the PII tags of every
@@ -138,6 +148,7 @@ def get_metric_impl(
         group_by=group_by,
         filters=compiler_filters,
         time_grain=narrowed_grain,
+        time_dimension=time_dimension,
         limit=limit,
         via=via,
         order_by=compiler_order_by,
@@ -363,6 +374,7 @@ def _resolve_pii_categories(
                 f"{list(attempted_tuple)} that this server policy blocks",
                 attempted_categories=attempted_tuple,
                 blocked_categories=blocked_tuple,
+                anchor_entity=plan.metric.entity,
             )
 
     return cast(tuple[PIICategory, ...], tuple(sorted(propagated)))

@@ -220,6 +220,69 @@ def _handle_own_db_path(*, console: Console) -> str | None:
     )
 
 
+def prompt_for_pii_block(*, console: Console) -> tuple[str, ...]:
+    """Show the PII-block-category choice prompt and return the selected
+    categories.
+
+    Runs from ``_cmd_init`` when stderr is a TTY AND ``--yes`` was NOT
+    passed. The caller is responsible for gating on both conditions.
+    Returns the categories that will be written as ``--pii-block`` into
+    the host snippet, or ``()`` for "no PII enforcement".
+
+    Default is ``contact`` because it covers the most universally
+    sensitive PII (email, phone, address) without surprising the
+    operator with refusals on benign business-domain columns. The
+    "all" option enumerates the v1 closed set so the operator sees
+    exactly what's in scope; "none" is the development-database
+    escape hatch.
+
+    ``KeyboardInterrupt`` propagates verbatim so Ctrl-C aborts the
+    setup; non-interactive callers (or ``--yes`` paths) should not
+    reach this helper and instead apply the ``("contact",)`` default
+    directly.
+    """
+    from rich.prompt import Prompt
+
+    with pause_active_spinner():
+        console.print()
+        console.print("  [bold]Block PII categories from agent queries?[/]")
+        console.print(
+            "  [bright_black]Refuses get_metric calls that touch the selected categories — "
+            "agents can still describe the schema but cannot aggregate PII columns.[/]"
+        )
+        console.print()
+        console.print(
+            f"    [bright_black]{GLYPH_ACTIVE} 1. Recommended: contact (email, phone, address)[/]"
+        )
+        console.print(
+            f"    [bright_black]{GLYPH_ACTIVE} 2. All categories "
+            "(contact, financial, payment_card, health, government_id, ...)[/]"
+        )
+        console.print(
+            f"    [bright_black]{GLYPH_ACTIVE} 3. None "
+            "(dev/synthetic data only — agent sees all PII columns)[/]"
+        )
+        console.print()
+        choice = Prompt.ask(
+            "  [cyan]Choice[/]",
+            console=console,
+            choices=["1", "2", "3"],
+            default="1",
+            show_default=True,
+            show_choices=False,
+        )
+    if choice == "1":
+        return ("contact",)
+    if choice == "2":
+        # The closed v1 set imported locally — keeps the prompt
+        # default-driven and avoids forcing the operator to type the
+        # full enum. Sorted for stable host-snippet output.
+        from schemabrain.pii.categories import PII_CATEGORIES
+
+        return tuple(sorted(PII_CATEGORIES))
+    return ()
+
+
 # D2: subprocess timeouts. Tight enough to surface a stuck Docker
 # daemon quickly; loose enough that a slow first-run image pull
 # (~30s for postgres:16-alpine on a fresh machine) completes inside

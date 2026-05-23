@@ -795,6 +795,172 @@ class TestEnvelopeMapping:
         assert structured["error"]["kind"] == "ambiguous_time_dimension"
         recovery = structured["error"]["recovery"]
         assert recovery["suggested_tool"] == "get_metric"
+        # `recovery.suggested_args` must be populated so a
+        # programmatic agent acting on the structured recovery contract
+        # can re-call get_metric without parsing the human-readable
+        # message. The value names one valid candidate; the agent
+        # picks among alternatives based on the user's question.
+        assert recovery["suggested_args"] is not None
+        assert "time_dimension" in recovery["suggested_args"]
+        # Whichever candidate landed first, it must be a real
+        # `<entity>.<column>` reference from a reachable timestamp
+        # column — orders has both placed_at + created_at, signed_users
+        # has signup_at. All three are valid first picks; only the
+        # specific BFS ordering decides which one.
+        suggested = recovery["suggested_args"]["time_dimension"]
+        assert suggested in (
+            "order.placed_at",
+            "order.created_at",
+            "signed_user.signup_at",
+        )
+
+    def test_time_dimension_arg_disambiguates_at_mcp_boundary(self, tmp_path: Path) -> None:
+        """Positive case: re-calling get_metric with the
+        `time_dimension` arg from the prior refusal envelope's
+        `recovery.suggested_args` actually succeeds and the inherited
+        dimension matches the requested one. Closes the
+        ambiguity-error-then-retry loop end-to-end at the MCP seam.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            # Same fixture shape as the ambiguity test above.
+            store.write_table(
+                Table(
+                    name="order_items",
+                    schema_name="public",
+                    columns=(
+                        Column(
+                            name="id",
+                            table_name="order_items",
+                            schema_name="public",
+                            data_type="bigint",
+                            nullable=False,
+                            ordinal_position=1,
+                            is_primary_key=True,
+                        ),
+                        Column(
+                            name="order_id",
+                            table_name="order_items",
+                            schema_name="public",
+                            data_type="bigint",
+                            nullable=False,
+                            ordinal_position=2,
+                        ),
+                        Column(
+                            name="quantity",
+                            table_name="order_items",
+                            schema_name="public",
+                            data_type="integer",
+                            nullable=False,
+                            ordinal_position=3,
+                        ),
+                    ),
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_table(_orders_table(), source_connection_id=SOURCE)
+            store.write_table(
+                Table(
+                    name="signed_users",
+                    schema_name="public",
+                    columns=(
+                        Column(
+                            name="id",
+                            table_name="signed_users",
+                            schema_name="public",
+                            data_type="bigint",
+                            nullable=False,
+                            ordinal_position=1,
+                            is_primary_key=True,
+                        ),
+                        Column(
+                            name="signup_at",
+                            table_name="signed_users",
+                            schema_name="public",
+                            data_type="timestamptz",
+                            nullable=False,
+                            ordinal_position=2,
+                        ),
+                    ),
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_entity(
+                Entity(
+                    name="order_item",
+                    description="",
+                    binding=SingleTableBinding(qualified_table="public.order_items"),
+                    identity="id",
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_entity(
+                Entity(
+                    name="order",
+                    description="",
+                    binding=SingleTableBinding(qualified_table="public.orders"),
+                    identity="id",
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_entity(
+                Entity(
+                    name="signed_user",
+                    description="",
+                    binding=SingleTableBinding(qualified_table="public.signed_users"),
+                    identity="id",
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_canonical_join(
+                CanonicalJoin(
+                    name="order_item_order",
+                    description="",
+                    source_entity="order_item",
+                    target_entity="order",
+                    on=(JoinColumnPair(source_column="order_id", target_column="id"),),
+                    cardinality="many_to_one",
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_canonical_join(
+                CanonicalJoin(
+                    name="order_signed_user",
+                    description="",
+                    source_entity="order",
+                    target_entity="signed_user",
+                    on=(JoinColumnPair(source_column="user_id", target_column="id"),),
+                    cardinality="many_to_one",
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_metric(
+                Metric(
+                    name="units_sold",
+                    description="",
+                    entity="order_item",
+                    measure=MetricMeasure(agg="sum", column="quantity"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            executor = _StubExecutor()
+            app = _build(store, executor)
+            _content, structured = _call(
+                app,
+                {
+                    "name": "units_sold",
+                    "time_grain": "month",
+                    "time_dimension": "order.created_at",
+                },
+            )
+        # Disambiguation succeeded — no error, inherited dimension
+        # matches the requested one, resolution flips from
+        # "unavailable"/ambiguous to "inherited".
+        assert structured["status"] == "success"
+        data = structured["data"]
+        assert data["time_dimension_resolution"] == "inherited"
+        assert data["inherited_time_dimension"] == "order.created_at"
 
     def test_fan_out_join_maps_to_degraded(self, store_with_fan_out: SQLiteStore) -> None:
         # one_to_many join → SQL still executes but envelope status
@@ -815,15 +981,18 @@ class TestEnvelopeMapping:
         # so agents can switch on the value without parsing text.
         assert structured["degradation_reason"] == "fan_out_join"
 
-    def test_missing_order_by_with_limit_maps_to_degraded(
+    def test_group_by_without_order_by_auto_fills_and_stays_success(
         self, store_with_seed: SQLiteStore
     ) -> None:
-        """PR-6h.2 Gap #2 + Gap #6: when the caller asks for `group_by`
-        but no `order_by`, the LIMIT N slice is non-deterministic. The
-        envelope surfaces `degradation_reason='missing_order_by_with_limit'`
-        so the agent knows to add `order_by=` before relying on row order.
+        """When the caller asks for `group_by` but no `order_by`,
+        the resolver auto-fills ORDER BY with the group columns (ASC)
+        so the LIMIT N slice is deterministic. The envelope reports
+        `success`, NOT `degraded` — the prior
+        `missing_order_by_with_limit` degradation was firing on every
+        grouped query without an explicit sort, eroding the meaning of
+        `degraded`. Determinism is now built in, no signal needed.
         """
-        executor = _StubExecutor(rows=[{"total_revenue": 100}])
+        executor = _StubExecutor(rows=[{"group_col_0": "2024-01-01", "total_revenue": 100}])
         app = _build(store_with_seed, executor)
         _content, structured = _call(
             app,
@@ -832,8 +1001,12 @@ class TestEnvelopeMapping:
                 "group_by": ["order.placed_at"],
             },
         )
-        assert structured["status"] == "degraded"
-        assert structured["degradation_reason"] == "missing_order_by_with_limit"
+        assert structured["status"] == "success"
+        assert structured["degradation_reason"] is None
+        # SQL must contain ORDER BY — proves auto-fill happened, not
+        # that the degradation was just silenced. Without ORDER BY the
+        # LIMIT slice would be database-default-ordered.
+        assert "ORDER BY" in structured["data"]["sql_skeleton"]
 
     def test_order_by_clears_missing_order_by_degradation(
         self, store_with_seed: SQLiteStore
@@ -920,6 +1093,83 @@ class TestEnvelopeMapping:
         assert structured["status"] == "degraded"
         assert structured["degradation_reason"] == "time_dimension_unavailable"
         assert structured["data"]["time_dimension_resolution"] == "unavailable"
+
+    def test_pii_blocked_envelope_populates_anchor_in_recovery_args(self, tmp_path: Path) -> None:
+        """PII refusal surface: when get_metric refuses on PII policy,
+        the envelope's `recovery.suggested_args` carries the metric's
+        anchor entity name so an agent can pivot directly to
+        `describe_entity(name=<anchor>)` and enumerate non-PII columns.
+        Closes the structured-recovery gap on the firewall property #3
+        path the README leads with.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            users = Table(
+                name="users",
+                schema_name="public",
+                columns=(
+                    Column(
+                        name="id",
+                        table_name="users",
+                        schema_name="public",
+                        data_type="bigint",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                    Column(
+                        name="email",
+                        table_name="users",
+                        schema_name="public",
+                        data_type="text",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                ),
+            )
+            store.write_table(users, source_connection_id=SOURCE)
+            store.write_entity(
+                Entity(
+                    name="user",
+                    description="",
+                    binding=SingleTableBinding(qualified_table="public.users"),
+                    identity="id",
+                ),
+                source_connection_id=SOURCE,
+            )
+            store.write_column_pii_tags(
+                source_connection_id=SOURCE,
+                qualified_table="public.users",
+                tags={"email": ("pii", frozenset({"contact"}))},
+            )
+            store.write_metric(
+                Metric(
+                    name="email_count",
+                    description="",
+                    entity="user",
+                    measure=MetricMeasure(agg="count", column="email"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            executor = _StubExecutor()
+            app = build_server(
+                store=store,
+                source_connection_id=SOURCE,
+                embedder=_FakeEmbedder(),  # type: ignore[arg-type]
+                metric_executor=executor,
+                pii_block=frozenset({"contact"}),  # type: ignore[arg-type]
+            )
+            _content, structured = _call(app, {"name": "email_count"})
+        assert structured["status"] == "refused"
+        assert structured["error"]["kind"] == "pii_blocked"
+        recovery = structured["error"]["recovery"]
+        assert recovery["suggested_tool"] == "describe_entity"
+        # `suggested_args.name` must name the metric's anchor so the
+        # agent's follow-up describe_entity call lands on the right
+        # entity. Without this, an agent following the structured
+        # contract has to fall back to parsing the message string.
+        assert recovery["suggested_args"] == {"name": "user"}
 
     def test_no_executor_returns_internal_error(self, store_with_seed: SQLiteStore) -> None:
         # Build without an executor — get_metric is registered but

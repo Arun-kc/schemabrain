@@ -447,6 +447,14 @@ class PiiBlockedError(MetricCompilerError):
     Both kwargs are required — defaulting to empty tuples would let
     a future caller silently produce a malformed audit row (refused
     status with empty pii_categories).
+
+    `anchor_entity` is the metric's anchor entity name when the
+    error fires during a `get_metric` call. The MCP envelope wrapper
+    populates `recovery.suggested_args.name` from this so an agent
+    consuming the structured recovery contract can pivot directly to
+    `describe_entity(name=<anchor>)` to enumerate non-PII columns.
+    Defaults to None for callers that don't have an anchor in scope
+    (the existing field-set stays backwards compatible).
     """
 
     def __init__(
@@ -455,10 +463,12 @@ class PiiBlockedError(MetricCompilerError):
         *,
         attempted_categories: tuple[PIICategory, ...],
         blocked_categories: tuple[PIICategory, ...],
+        anchor_entity: str | None = None,
     ) -> None:
         super().__init__(message)
         self.attempted_categories = attempted_categories
         self.blocked_categories = blocked_categories
+        self.anchor_entity = anchor_entity
 
 
 # ----- IR --------------------------------------------------------------------
