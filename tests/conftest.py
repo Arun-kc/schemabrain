@@ -39,6 +39,16 @@ def seeded_pg_url(pg_url: str) -> str:
                                      PARTITION BY LIST (region))
         partitioning.events_us (PARTITION OF events_by_region FOR VALUES IN ('us'))
         partitioning.events_eu (PARTITION OF events_by_region FOR VALUES IN ('eu'))
+      partitioning.orders_by_region (id BIGINT, region TEXT, user_id BIGINT,
+                                     composite PK, PARTITION BY LIST (region))
+        partitioning.orders_by_region_us (PARTITION OF orders_by_region FOR
+                                          VALUES IN ('us'); FK declared
+                                          ON THE CHILD: user_id REFERENCES
+                                          public.users(id) — the Pagila
+                                          pattern where FKs sit on
+                                          partitions, not the parent)
+        partitioning.orders_by_region_eu (PARTITION OF orders_by_region FOR
+                                          VALUES IN ('eu'); no FK)
     """
     engine = create_engine(pg_url)
     try:
@@ -110,6 +120,55 @@ def seeded_pg_url(pg_url: str) -> str:
                 text(
                     "CREATE TABLE partitioning.events_eu "
                     "PARTITION OF partitioning.events_by_region FOR VALUES IN ('eu');"
+                )
+            )
+            # Pagila-pattern partition family: FK declared on the partition
+            # CHILD instead of the parent. Reflecting the parent via
+            # `inspector.get_foreign_keys()` returns an empty list — the
+            # connector must peek at a child to surface the relationship.
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE partitioning.orders_by_region (
+                        id BIGINT NOT NULL,
+                        region TEXT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        PRIMARY KEY (id, region)
+                    ) PARTITION BY LIST (region);
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE TABLE partitioning.orders_by_region_us "
+                    "PARTITION OF partitioning.orders_by_region FOR VALUES IN ('us');"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE TABLE partitioning.orders_by_region_eu "
+                    "PARTITION OF partitioning.orders_by_region FOR VALUES IN ('eu');"
+                )
+            )
+            # FK declared ON THE CHILD only (Pagila pattern). Postgres
+            # does NOT propagate child-only FKs up to the parent. Real
+            # Pagila adds the same FK to every partition via a script,
+            # so the fixture matches: identical FK on BOTH children.
+            # The connector's first-child heuristic + de-dup of the
+            # already-present FK on the parent path both rely on this
+            # uniformity.
+            conn.execute(
+                text(
+                    "ALTER TABLE partitioning.orders_by_region_us "
+                    "ADD CONSTRAINT orders_by_region_us_user_fk "
+                    "FOREIGN KEY (user_id) REFERENCES public.users(id);"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE partitioning.orders_by_region_eu "
+                    "ADD CONSTRAINT orders_by_region_eu_user_fk "
+                    "FOREIGN KEY (user_id) REFERENCES public.users(id);"
                 )
             )
     finally:
