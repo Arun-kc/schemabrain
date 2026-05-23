@@ -34,6 +34,7 @@ entry + empty store).
 
 from __future__ import annotations
 
+import importlib.metadata
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -445,9 +446,47 @@ def init(
 # ----- runner resolution -----------------------------------------------------
 
 
+def _is_pypi_install() -> bool:
+    """Whether the running schemabrain was installed from PyPI.
+
+    Uses PEP 610 ``direct_url.json``: pip writes this file when installing
+    from a non-index source (``file://`` wheel path, VCS URL, editable
+    checkout). A vanilla ``pip install schemabrain`` from PyPI leaves the
+    file absent — so absent means PyPI, present means local/editable/git.
+
+    This matters because the wizard's default ``uvx`` runner pins
+    ``schemabrain==<__version__>`` in the host snippet, and ``uvx``
+    always fetches that version from PyPI. If the local install was
+    built from a checkout whose substrate (store schema, charter
+    version) has drifted from PyPI's published wheel of the same
+    version, ``uvx``-launched ``serve`` will refuse the local store.
+    For non-PyPI installs we therefore fall back to the absolute-path
+    runner so Claude Desktop launches the same code that ran the
+    wizard.
+    """
+    try:
+        dist = importlib.metadata.distribution("schemabrain")
+    except importlib.metadata.PackageNotFoundError:
+        # Running uninstalled (e.g., from a checkout via ``python -m
+        # schemabrain``). Definitely not PyPI-resolvable.
+        return False
+    return dist.read_text("direct_url.json") is None
+
+
 def _resolve_runner() -> str:
-    """Pick `uvx` if available, else fall back to the installed entrypoint."""
-    if shutil.which("uvx") is not None:
+    """Pick the right runner for the host snippet.
+
+    Default to ``uvx`` when the local install is from PyPI *and* ``uvx``
+    is on PATH. Restarts then reproduce the wizard-time substrate
+    regardless of venv changes.
+
+    Fall back to the absolute path of the installed ``schemabrain``
+    entrypoint when (a) ``uvx`` is not on PATH, or (b) the local install
+    is *not* from PyPI. Case (b) avoids the version-skew brick where
+    ``uvx schemabrain==<__version__>`` fetches an older PyPI substrate
+    than the local wheel that wrote the store.
+    """
+    if _is_pypi_install() and shutil.which("uvx") is not None:
         return "uvx"
     fallback = shutil.which("schemabrain")
     if fallback is not None:

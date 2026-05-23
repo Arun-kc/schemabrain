@@ -96,10 +96,21 @@ def fresh_store(tmp_path: Path) -> Iterator[Path]:
 
 @pytest.fixture
 def stub_uvx(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Pretend uvx is on PATH so init's tooling validation passes."""
+    """Pretend uvx is on PATH AND the install looks like PyPI.
+
+    `_resolve_runner` requires both signals to pick `"uvx"` as the
+    runner. Tests under this fixture want the uvx-pin happy path, so
+    we stub both — the actual install in the test environment is an
+    editable checkout (direct_url.json present), which would otherwise
+    fall back to the absolute-path runner.
+    """
     monkeypatch.setattr(
         "shutil.which",
         lambda n: "/usr/local/bin/uvx" if n == "uvx" else None,
+    )
+    monkeypatch.setattr(
+        "schemabrain.setup.init_flow._is_pypi_install",
+        lambda: True,
     )
     yield
 
@@ -977,6 +988,10 @@ class TestPeekClaudeDesktopOverwrite:
             "shutil.which",
             lambda n: "/usr/local/bin/uvx" if n == "uvx" else None,
         )
+        monkeypatch.setattr(
+            "schemabrain.setup.init_flow._is_pypi_install",
+            lambda: True,
+        )
         cfg = tmp_path / "claude_desktop_config.json"
         cfg.write_text(
             json.dumps(
@@ -1162,3 +1177,146 @@ class TestFormatMcpEntryDiff:
             config_path=tmp_path / "x.json",
         )
         assert diff == ""
+
+
+# ----- _is_pypi_install + _resolve_runner (FC1 — version-skew protection) ---
+
+
+class TestIsPypiInstall:
+    """`_is_pypi_install()` decides whether the wizard's uvx pin is safe.
+
+    True → `pip install schemabrain` from PyPI; PyPI's published wheel of
+        the same version matches the locally-installed substrate, so
+        uvx-launched serve will read the same store schema the wizard
+        wrote.
+    False → local wheel / editable / VCS install; PyPI's published wheel
+        of the same package version may have an older substrate (store
+        schema, charter version) and uvx-launched serve would refuse the
+        local store. Caller should use absolute-path runner instead.
+    """
+
+    def test_returns_true_when_direct_url_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # PEP 610: pip omits direct_url.json when installing from an
+        # index. PyPI is the canonical index.
+        class _Stub:
+            def read_text(self, _name: str) -> str | None:
+                return None
+
+        monkeypatch.setattr(
+            "importlib.metadata.distribution",
+            lambda _name: _Stub(),
+        )
+        from schemabrain.setup.init_flow import _is_pypi_install
+
+        assert _is_pypi_install() is True
+
+    def test_returns_false_when_direct_url_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # direct_url.json is written for file://, VCS, and editable
+        # installs. Any of those means the local substrate may diverge
+        # from PyPI's published wheel of the same version.
+        class _Stub:
+            def read_text(self, _name: str) -> str | None:
+                return '{"url": "file:///tmp/schemabrain-0.3.0.whl", "archive_info": {}}'
+
+        monkeypatch.setattr(
+            "importlib.metadata.distribution",
+            lambda _name: _Stub(),
+        )
+        from schemabrain.setup.init_flow import _is_pypi_install
+
+        assert _is_pypi_install() is False
+
+    def test_returns_false_when_package_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Edge case: running uninstalled (e.g., from a checkout via
+        # `python -m schemabrain`). The package isn't on PyPI under
+        # this exact version either; treat as non-PyPI.
+        import importlib.metadata as md
+
+        def _raise(_name: str) -> object:
+            raise md.PackageNotFoundError("schemabrain")
+
+        monkeypatch.setattr("importlib.metadata.distribution", _raise)
+        from schemabrain.setup.init_flow import _is_pypi_install
+
+        assert _is_pypi_install() is False
+
+
+class TestResolveRunnerPypiDetection:
+    """`_resolve_runner` picks uvx only when the local install is PyPI-style.
+
+    The default `uvx schemabrain==<__version__>` pin is reproducible
+    across host restarts only when PyPI publishes a wheel with the same
+    version AND the same substrate. For local wheel / editable / VCS
+    installs that share the same package version but a newer substrate,
+    `uvx` would fetch an older PyPI substrate that can't read the local
+    store. The resolver falls back to the absolute-path runner so the
+    host launches the same code that ran the wizard.
+    """
+
+    def test_uses_uvx_when_pypi_install_and_uvx_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "schemabrain.setup.init_flow._is_pypi_install",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda n: "/usr/local/bin/uvx" if n == "uvx" else None,
+        )
+        from schemabrain.setup.init_flow import _resolve_runner
+
+        assert _resolve_runner() == "uvx"
+
+    def test_uses_absolute_path_when_local_wheel_even_if_uvx_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The FC1 case: local wheel install, uvx is on PATH, but uvx
+        # would fetch PyPI's older substrate. Resolver MUST fall back
+        # to absolute path even though uvx is available.
+        monkeypatch.setattr(
+            "schemabrain.setup.init_flow._is_pypi_install",
+            lambda: False,
+        )
+
+        def _which(n: str) -> str | None:
+            if n == "uvx":
+                return "/usr/local/bin/uvx"
+            if n == "schemabrain":
+                return "/private/tmp/venv/bin/schemabrain"
+            return None
+
+        monkeypatch.setattr("shutil.which", _which)
+        from schemabrain.setup.init_flow import _resolve_runner
+
+        assert _resolve_runner() == "/private/tmp/venv/bin/schemabrain"
+
+    def test_uses_absolute_path_when_uvx_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # uvx not on PATH at all (containers / minimal envs). Falls
+        # back to the local entrypoint regardless of install source.
+        monkeypatch.setattr(
+            "schemabrain.setup.init_flow._is_pypi_install",
+            lambda: True,
+        )
+
+        def _which(n: str) -> str | None:
+            return "/usr/local/bin/schemabrain" if n == "schemabrain" else None
+
+        monkeypatch.setattr("shutil.which", _which)
+        from schemabrain.setup.init_flow import _resolve_runner
+
+        assert _resolve_runner() == "/usr/local/bin/schemabrain"
+
+    def test_raises_when_neither_uvx_nor_schemabrain_on_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "schemabrain.setup.init_flow._is_pypi_install",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda _n: None)
+        from schemabrain.setup.init_flow import InitRefusal, _resolve_runner
+
+        with pytest.raises(InitRefusal) as exc_info:
+            _resolve_runner()
+        assert exc_info.value.error.kind == "init_runner_missing"

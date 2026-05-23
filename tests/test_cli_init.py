@@ -66,9 +66,18 @@ def seeded_store(tmp_path: Path) -> Iterator[Path]:
 
 @pytest.fixture
 def stub_uvx(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    # Stub `_is_pypi_install` to True alongside `shutil.which` so the
+    # resolver picks the uvx path. The actual test environment is an
+    # editable checkout (PEP 610 `direct_url.json` present), which the
+    # resolver would otherwise treat as non-PyPI and fall through to the
+    # absolute-path runner.
     monkeypatch.setattr(
         "shutil.which",
         lambda n: "/usr/local/bin/uvx" if n == "uvx" else None,
+    )
+    monkeypatch.setattr(
+        "schemabrain.setup.init_flow._is_pypi_install",
+        lambda: True,
     )
     yield
 
