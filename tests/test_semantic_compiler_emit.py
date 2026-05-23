@@ -34,6 +34,10 @@ from schemabrain.semantic.compiler import (
     emit_sql,
     resolve_metric_plan,
 )
+from schemabrain.semantic.compiler.plan import (
+    MetricPlan,
+    ResolvedJoin,
+)
 
 SOURCE = "src_a"
 
@@ -41,22 +45,61 @@ SOURCE = "src_a"
 # ----- fixture helper --------------------------------------------------------
 
 
+# Columns each fixture table carries beyond `id`. PR-6h.3's compile-
+# time column-existence check now validates against the table's column
+# list; fixtures must declare every column the tests reference in
+# group_by / filter / order_by / time_dimension positions.
+_FIXTURE_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
+    "orders": (
+        ("user_id", "bigint"),
+        ("status", "text"),
+        ("created_at", "timestamptz"),
+        ("shipped_at", "timestamptz"),
+        ("refunded_at", "timestamptz"),
+        ("total_amount", "integer"),
+    ),
+    "users": (
+        ("region", "text"),
+        ("tier", "text"),
+    ),
+    # `customers` is the table TestJoins.test_composite_join uses
+    # under the `customer` entity name (a different binding from
+    # `_seed_total_revenue` which points the customer entity at the
+    # `users` table). Either table can hold the customer entity, so
+    # both column lists need to mirror what tests reference.
+    "customers": (
+        ("region", "text"),
+        ("tier", "text"),
+    ),
+}
+
+
 def _simple_table(name: str) -> Table:
-    return Table(
-        name=name,
-        schema_name="public",
-        columns=(
+    extras = _FIXTURE_COLUMNS.get(name, ())
+    columns: tuple[Column, ...] = (
+        Column(
+            name="id",
+            table_name=name,
+            schema_name="public",
+            data_type="bigint",
+            nullable=False,
+            ordinal_position=1,
+            is_primary_key=True,
+        ),
+        *(
             Column(
-                name="id",
+                name=col_name,
                 table_name=name,
                 schema_name="public",
-                data_type="bigint",
-                nullable=False,
-                ordinal_position=1,
-                is_primary_key=True,
-            ),
+                data_type=col_type,
+                nullable=True,
+                ordinal_position=2 + i,
+                is_primary_key=False,
+            )
+            for i, (col_name, col_type) in enumerate(extras)
         ),
     )
+    return Table(name=name, schema_name="public", columns=columns)
 
 
 def _seed_total_revenue(
@@ -313,6 +356,95 @@ class TestAggregations:
         assert 'count(DISTINCT "order"."user_id")' in sql
 
 
+class TestCompositeExpressionEmit:
+    """Composite expressions emit the parsed AST with double-quoting +
+    alias-prefix discipline applied to every column operand."""
+
+    def _seed_composite_revenue(
+        self, store: SQLiteStore, *, expression: str = "unit_price * quantity"
+    ) -> None:
+        # `orders` is the anchor table; we extend its fixture column
+        # list to include the two operand columns the expression
+        # references so the future column-validation pass (commit 4)
+        # won't reject this plan.
+        nonlocal_columns = _FIXTURE_COLUMNS.setdefault("orders", ())
+        if not any(c[0] == "unit_price" for c in nonlocal_columns):
+            _FIXTURE_COLUMNS["orders"] = (
+                *nonlocal_columns,
+                ("unit_price", "integer"),
+                ("quantity", "integer"),
+            )
+        store.write_table(_simple_table("orders"), source_connection_id=SOURCE)
+        store.write_entity(
+            Entity(
+                name="order",
+                description="",
+                binding=SingleTableBinding(qualified_table="public.orders"),
+                identity="id",
+            ),
+            source_connection_id=SOURCE,
+        )
+        store.write_metric(
+            Metric(
+                name="line_revenue",
+                description="",
+                entity="order",
+                measure=MetricMeasure(agg="sum", expression=expression),
+                time_dimension=None,
+                time_grains=(),
+            ),
+            source_connection_id=SOURCE,
+        )
+
+    def test_composite_multiplication_emits_quoted_operands(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            self._seed_composite_revenue(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="line_revenue",
+            )
+            sql, _params = emit_sql(plan)
+        assert 'sum(("order"."unit_price" * "order"."quantity"))' in sql
+
+    def test_composite_with_literal_emits_literal_inline(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            self._seed_composite_revenue(store, expression="unit_price - 100")
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="line_revenue",
+            )
+            sql, _params = emit_sql(plan)
+        assert 'sum(("order"."unit_price" - 100))' in sql
+
+    def test_composite_count_distinct(self, tmp_path: Path) -> None:
+        # count_distinct over a composite expression is unusual but
+        # structurally valid — the DSL doesn't forbid it. SQL idiom is
+        # `count(DISTINCT (a + b))`; emitter should produce exactly that.
+        with SQLiteStore(tmp_path / "store.db") as store:
+            self._seed_composite_revenue(store)
+            # Re-write the metric with count_distinct via the same fixture.
+            store.write_metric(
+                Metric(
+                    name="line_revenue",
+                    description="",
+                    entity="order",
+                    measure=MetricMeasure(agg="count_distinct", expression="unit_price * quantity"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="line_revenue",
+            )
+            sql, _params = emit_sql(plan)
+        assert 'count(DISTINCT ("order"."unit_price" * "order"."quantity"))' in sql
+
+
 # ----- filters ---------------------------------------------------------------
 
 
@@ -562,3 +694,46 @@ class TestParameterisationInvariant:
         # The integer value itself must NOT appear in the SQL text.
         assert "12345" not in sql
         assert params["p_filter_0"] == 12345
+
+
+# ----- Round-2 fold: topological-order invariant defense -------------------
+
+
+class TestTopologicalOrderDefense:
+    """Round-2 fold (silent-failure-hunter F6): `MetricPlan.joins` is
+    contracted to be in topological chain order. If a future refactor
+    or a programmatic caller violates that, the emitter would silently
+    produce SQL that references an alias before it's introduced — a
+    runtime database error several layers away from the bug. The
+    emitter now asserts each join's source_alias is already known.
+    """
+
+    def test_emit_raises_on_non_topological_plan(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_total_revenue(store)
+            # Construct a deliberately non-topological MetricPlan: a
+            # ResolvedJoin whose source_alias is "not_yet_introduced"
+            # but no prior join introduces that alias.
+            anchor_metric = store.get_metric("total_revenue", source_connection_id=SOURCE)
+            assert anchor_metric is not None
+            bogus_join = ResolvedJoin(
+                canonical_name="forward_reference",
+                source_alias="not_yet_introduced",
+                target_entity="ghost",
+                target_table="public.ghost",
+                target_alias="ghost",
+                on_pairs=(JoinColumnPair(source_column="ghost_id", target_column="id"),),
+                cardinality="many_to_one",
+            )
+            plan = MetricPlan(
+                metric=anchor_metric,
+                anchor_table="public.orders",
+                anchor_alias="order",
+                group_by_columns=(),
+                time_bucket=None,
+                filter_predicates=(),
+                limit=1000,
+                joins=(bogus_join,),
+            )
+            with pytest.raises(RuntimeError, match="not topologically ordered"):
+                emit_sql(plan)

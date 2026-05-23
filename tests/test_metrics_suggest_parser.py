@@ -54,7 +54,80 @@ candidates:
     assert metric.time_dimension == "order.placed_at"
     assert metric.time_grains == ("day", "week", "month")
     assert metric.origin == "suggested"
+    # `inference_method="llm_suggested"` is the 2D trust-signal
+    # classification that distinguishes LLM-guessed metrics (→ MEDIUM
+    # via `derive_confidence`) from hand-authored YAMLs (→ HIGH).
+    # Without this, every wizard-curated metric collapses to flat HIGH
+    # on the wire and the 2D signal silently degrades to a single bucket.
+    assert metric.inference_method == "llm_suggested"
     assert metric.description == "Total revenue summed across all orders."
+
+
+def test_parse_suggestions_composite_expression() -> None:
+    # LLM-suggested composite-expression metric (the v2 measure shape).
+    # Parser must accept `expression` as an alternative to `column`,
+    # mirroring the YAML grammar's XOR contract.
+    text = """
+candidates:
+  - name: line_revenue
+    description: SUM of line-item revenue (unit_price_cents x quantity).
+    entity: order_item
+    measure:
+      agg: sum
+      expression: unit_price_cents * quantity
+    confidence: high
+    rationale: Per-line revenue captures the actual order economics.
+"""
+    candidates = parse_suggestions(text)
+    assert len(candidates) == 1
+    metric = candidates[0].metric
+    assert metric.name == "line_revenue"
+    assert metric.entity == "order_item"
+    assert metric.measure.agg == "sum"
+    assert metric.measure.column is None
+    assert metric.measure.expression == "unit_price_cents * quantity"
+
+
+def test_parse_suggestions_rejects_both_column_and_expression() -> None:
+    text = """
+candidates:
+  - name: bad_metric
+    entity: order
+    measure:
+      agg: sum
+      column: total_cents
+      expression: total_cents * 1
+    confidence: low
+"""
+    with pytest.raises(MetricSuggestionParseError, match="exactly one"):
+        parse_suggestions(text)
+
+
+def test_parse_suggestions_rejects_neither_column_nor_expression() -> None:
+    text = """
+candidates:
+  - name: bad_metric
+    entity: order
+    measure:
+      agg: sum
+    confidence: low
+"""
+    with pytest.raises(MetricSuggestionParseError, match=r"column.*expression|expression.*column"):
+        parse_suggestions(text)
+
+
+def test_parse_suggestions_rejects_malformed_expression() -> None:
+    text = """
+candidates:
+  - name: bad_metric
+    entity: order
+    measure:
+      agg: sum
+      expression: abs(total_cents)
+    confidence: low
+"""
+    with pytest.raises(MetricSuggestionParseError, match="malformed measure expression"):
+        parse_suggestions(text)
 
 
 def test_parse_suggestions_non_temporal_metric() -> None:
@@ -279,12 +352,14 @@ candidates:
         parse_suggestions(text)
 
 
-def test_parse_suggestions_rejects_missing_measure_fields() -> None:
+def test_parse_suggestions_rejects_missing_agg() -> None:
+    # `agg` is the only required key now; `column` and `expression`
+    # are XOR'd by `_parse_measure` after the required-key check.
     text = """
 candidates:
   - name: rev
     entity: order
-    measure: {agg: sum}
+    measure: {column: total_cents}
     confidence: high
 """
     with pytest.raises(MetricSuggestionParseError, match="missing required field"):
@@ -506,3 +581,61 @@ candidates:
 """
     with pytest.raises(MetricSuggestionParseError, match=r"entity\.column"):
         parse_suggestions(text)
+
+
+# ----- description anti-pattern validation (Gap #5 belt-and-suspenders) ------
+
+
+def test_parse_suggestions_rejects_admits_aggregation_cannot_deliver() -> None:
+    """Gap #5 regression — 2026-05-21 smoke surfaced a metric where the
+    LLM admitted in its own description that the aggregation couldn't
+    deliver what the name promised: `total_order_item_revenue` with
+    measure `sum(unit_price_cents)` and description "unit_price_cents
+    * quantity is not directly available, but unit_price_cents summed
+    gives a price-mix signal". The system prompt now forbids this, but
+    parse-time validation is the belt to that suspenders.
+    """
+    text = """
+candidates:
+  - name: total_order_item_revenue
+    description: >-
+      Sum of line-item revenue (unit_price_cents * quantity is not
+      directly available, but unit_price_cents summed gives a
+      price-mix signal) across all order items.
+    entity: order_item
+    measure: {agg: sum, column: unit_price_cents}
+    confidence: medium
+"""
+    with pytest.raises(MetricSuggestionParseError, match="anti-pattern"):
+        parse_suggestions(text)
+
+
+def test_parse_suggestions_rejects_would_require_multiplication() -> None:
+    text = """
+candidates:
+  - name: total_revenue
+    description: True line revenue would require multiplication of unit_price * quantity.
+    entity: order_item
+    measure: {agg: sum, column: unit_price_cents}
+    confidence: low
+"""
+    with pytest.raises(MetricSuggestionParseError, match="anti-pattern"):
+        parse_suggestions(text)
+
+
+def test_parse_suggestions_accepts_honest_description() -> None:
+    """A metric description that's honest about what it measures (no
+    anti-pattern phrases) MUST still parse cleanly. Regression guard
+    against the validator over-rejecting innocent descriptions.
+    """
+    text = """
+candidates:
+  - name: total_items_sold
+    description: Sum of quantities sold across all order line items.
+    entity: order_item
+    measure: {agg: sum, column: quantity}
+    confidence: high
+"""
+    candidates = parse_suggestions(text)
+    assert len(candidates) == 1
+    assert candidates[0].metric.name == "total_items_sold"

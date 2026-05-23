@@ -173,33 +173,39 @@ Identify domain entities the schema represents. An ENTITY is a named,
 single-table concept that:
   - Maps to exactly one physical table (multi-table entities are out of scope)
   - Has an identity column that uniquely identifies one instance
-  - Represents a real domain concept (customer, order, product), not a
-    technical artifact (audit log, association/junction table)
+  - Represents a real domain concept derived from the schema's own
+    vocabulary (e.g. patient/encounter/medication in a clinical schema,
+    account/transaction/security in a financial schema, customer/order
+    in a commerce schema, case/filing/party in a legal schema) —
+    NOT a technical artifact (audit log, association/junction table)
 
 Output STRICT YAML with this shape (no markdown fences, no commentary
 outside YAML):
 
 candidates:
-  - name: customer                          # snake_case identifier
+  - name: <entity_name>                     # snake_case identifier derived from the table's domain meaning
     description: One sentence about it
     binding:
-      single_table: public.users            # schema.table — must exist in the schema
-    identity: id                            # PK column on the bound table
+      single_table: <schema>.<table>        # schema.table — must exist in the schema
+    identity: <pk_column>                   # PK column on the bound table
     confidence: high                        # one of: high | medium | low
     rationale: One sentence on why this is an entity
     pii_hints:                              # OPTIONAL: column -> sensitivity
-      email: pii                            # one of: public | internal | confidential | pii
+      <column_name>: pii                    # one of: public | internal | confidential | pii
 
 Rules:
   - `name` and `identity` must match ^[A-Za-z_][A-Za-z0-9_$]*$
   - `binding.single_table` must be exactly "schema.table" (one dot)
   - Skip junction tables (composite PK whose every column is part of an FK)
   - Skip pure-audit/log tables
-  - For pii_hints, infer from column names + types:
-    email/phone/ssn/full_name -> pii
-    addresses/zip/dob -> confidential
-    internal_id/tenant_id -> internal
-    timestamps/booleans/counts -> public
+  - For pii_hints, infer from column names + types. The taxonomy is
+    domain-agnostic — apply it to whatever schema you see:
+      Direct personal identifiers (email, phone, full_name, ssn,
+        national_id, dob, mrn, patient_id, wallet_address, ip) -> pii
+      Operational tenancy keys (tenant_id, organization_id,
+        workspace_id) -> internal
+      Aggregates and metadata (timestamps, booleans, counts,
+        flags) -> public
   - Confidence: `high` if PK + multiple referencing FKs;
     `medium` if PK + clear semantic name; `low` otherwise.
 """
@@ -326,7 +332,14 @@ def _parse_candidate(raw: Any, *, index: int) -> EntityCandidate:
 
     # Construct the Entity — its __post_init__ runs identifier-shape +
     # origin-enum checks. Re-wrap as SuggestionParseError so the CLI
-    # surface stays uniform.
+    # surface stays uniform. `inference_method="llm_suggested"` is the
+    # load-bearing 2D trust-signal classification: every candidate
+    # parsed here came from an LLM's YAML output, so the entity must
+    # ride the `llm_suggested` rail (→ MEDIUM confidence) rather than
+    # the dataclass-default `manually_authored` (→ HIGH). Without this,
+    # `derive_confidence(method, state)` collapses to HIGH everywhere
+    # on the wizard happy path and the 2D trust signal silently
+    # degrades to a flat 1D HIGH that operators can't reason about.
     try:
         entity = Entity(
             name=name,
@@ -334,6 +347,7 @@ def _parse_candidate(raw: Any, *, index: int) -> EntityCandidate:
             binding=binding,
             identity=identity,
             origin="suggested",
+            inference_method="llm_suggested",
         )
     except ValueError as exc:
         raise SuggestionParseError(f"candidate #{index}: {exc}") from exc

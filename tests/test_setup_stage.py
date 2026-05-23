@@ -31,6 +31,7 @@ from schemabrain.setup.setup_stage import (
     DEMO_FIXTURE_LOAD_COMMAND,
     detect_docker,
     prompt_for_init_setup,
+    prompt_for_pii_block,
 )
 
 
@@ -55,6 +56,51 @@ class TestDetectDocker:
         # Must mention the fallback so the user knows they're not
         # dead-ended.
         assert "option 1" in explanation
+
+
+class TestPromptForPiiBlock:
+    """The interactive PII-block prompt added by the init wizard.
+
+    Prior behavior was to silently bake ("contact",) into the host
+    snippet without asking. The prompt surfaces the choice so an
+    operator can opt into the full v1 category set OR opt out
+    entirely for dev/synthetic databases — without scripted flows
+    (-y / piped stderr) ever blocking on stdin.
+    """
+
+    def test_default_recommended_returns_contact(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Pressing Enter at the prompt selects the recommended default —
+        # `contact` only, matching the pre-prompt silent default so the
+        # zero-effort path is unchanged for operators who don't read
+        # prompt copy carefully.
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: "1")
+        result = prompt_for_pii_block(console=make_console(file=io.StringIO()))
+        assert result == ("contact",)
+
+    def test_all_categories_returns_full_v1_enum(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Option 2 fans out to every v1 PIICategory the classifier can
+        # tag. Sorted output keeps the host-snippet shape deterministic
+        # across machines (otherwise the comma-joined arg order would
+        # flap based on frozenset iteration).
+        from schemabrain.pii.categories import PII_CATEGORIES
+
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: "2")
+        result = prompt_for_pii_block(console=make_console(file=io.StringIO()))
+        assert result == tuple(sorted(PII_CATEGORIES))
+        # Must include the universally-sensitive category (`contact`)
+        # AND at least one rarer category (`government_id`) so a
+        # future enum addition that misses sorting/inclusion surfaces
+        # here rather than silently shipping a partial set.
+        assert "contact" in result
+        assert "government_id" in result
+
+    def test_none_choice_returns_empty_tuple(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Option 3 = dev/synthetic database escape hatch. Empty tuple
+        # signals "no `--pii-block` flag in the host snippet"; the
+        # server then runs with PII enforcement off.
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: "3")
+        result = prompt_for_pii_block(console=make_console(file=io.StringIO()))
+        assert result == ()
 
 
 class TestPromptForInitSetup:
@@ -613,15 +659,27 @@ class TestWaitForPostgresReady:
 class TestDockerLoadFixture:
     """D2: `_docker_load_fixture` — psql shell-out + fixture-path check."""
 
-    def test_returns_false_when_fixture_file_missing(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    def test_returns_false_when_bundled_fixture_unresolvable(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Operator ran init from outside the repo. Helper must
-        # surface a helpful message instead of issuing a docker
-        # subprocess that would fail with a less helpful error.
+        # `resolve_bundled_path` fails when the wheel is broken (or
+        # someone monkeypatched the bundled-dirs out of existence).
+        # The helper must print a helpful message — pointing at
+        # `pip install --force-reinstall` — and refuse to fire a
+        # docker subprocess that would error with a less helpful
+        # signal. PR-6h: replaced the CWD-relative path check with
+        # `resolve_bundled_path`, so the failure surface flipped
+        # from "file not found at $CWD" to "no bundled fixture
+        # named X".
         from schemabrain.setup import setup_stage
 
-        monkeypatch.setattr("pathlib.Path.cwd", lambda: tmp_path)  # type: ignore[arg-type,return-value]
+        monkeypatch.setattr(
+            setup_stage,
+            "resolve_bundled_path",
+            lambda name: (_ for _ in ()).throw(
+                FileNotFoundError(f"no bundled fixture named {name!r}; available: []")
+            ),
+        )
         # Guard: no real subprocess should fire.
         monkeypatch.setattr(
             setup_stage,
@@ -638,18 +696,26 @@ class TestDockerLoadFixture:
             )
             is False
         )
-        assert "Fixture not found" in buf.getvalue()
-        assert "from the repo root" in buf.getvalue()
+        output = buf.getvalue()
+        assert "Couldn't resolve bundled ecommerce fixture" in output
+        assert "force-reinstall" in output
 
     def test_returns_true_when_psql_subprocess_exits_zero(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
         from subprocess import CompletedProcess
 
         from schemabrain.setup import setup_stage
 
-        # Bypass the fixture-exists check by pretending any path exists.
-        monkeypatch.setattr("pathlib.Path.exists", lambda self: True)
+        # Patch `resolve_bundled_path` directly — the prior
+        # `pathlib.Path.exists` monkeypatch was a stale guard from
+        # the pre-PR-6h `Path.cwd()`-based implementation that had
+        # zero effect on the new code path (resolve_bundled_path
+        # uses `.is_file()`, not `.exists()`). Test then passed only
+        # because the real wheel happens to contain ecommerce.sql.
+        fake_fixture = tmp_path / "ecommerce.sql"
+        fake_fixture.write_text("-- stub\n")
+        monkeypatch.setattr(setup_stage, "resolve_bundled_path", lambda name: fake_fixture)
         argv_log: list[list[str]] = []
 
         def fake_safe_subprocess(argv, *, timeout_s):  # type: ignore[no-untyped-def]
@@ -675,7 +741,7 @@ class TestDockerLoadFixture:
         assert any("ecommerce.sql" in a for a in argv)
 
     def test_returns_false_when_psql_subprocess_exits_non_zero(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
         # Connection refused / fixture syntax error → non-zero exit.
         # Surface the stderr first line.
@@ -683,7 +749,11 @@ class TestDockerLoadFixture:
 
         from schemabrain.setup import setup_stage
 
-        monkeypatch.setattr("pathlib.Path.exists", lambda self: True)
+        # Same fix as the sibling success test — patch the resolver,
+        # not `Path.exists` which the new code path never calls.
+        fake_fixture = tmp_path / "ecommerce.sql"
+        fake_fixture.write_text("-- stub\n")
+        monkeypatch.setattr(setup_stage, "resolve_bundled_path", lambda name: fake_fixture)
         monkeypatch.setattr(
             setup_stage,
             "_safe_subprocess",

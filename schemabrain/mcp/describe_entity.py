@@ -3,12 +3,16 @@
 Surfaces the full shape of one confirmed entity — its YAML-grammar
 fields (name, description, binding, identity, origin) plus the
 columns of the bound table with their LLM-enriched descriptions and
-PII sensitivity classifications.
+column-granular PII classifications.
 
-At this release every column carries the inert
-`pii_sensitivity="public"` default — the shape is locked so future
-PII-redaction work can populate real values without retrofitting
-the envelope.
+Charter v1.2 column-granular firewall: each column carries its real
+`pii_sensitivity` from the `column_pii_tags` store layer plus the
+specific `pii_categories` it was classified as. Columns whose
+categories intersect the server's `--pii-block` set are marked
+`redacted=True` with the LLM-enriched semantic description cleared.
+The agent still sees the column exists (name, data_type, nullable)
+but cannot read the model-generated semantics — moving refusal from
+"whole entity blocked" to "specific columns redacted".
 
 The bound-table lookup relies on the store-side FK invariant: an
 entity can only reference an indexed table, so a non-None entity
@@ -25,6 +29,7 @@ from schemabrain.mcp.shapes import (
     EntityDetail,
     EntityNotFoundError,
 )
+from schemabrain.pii import PIICategory
 
 
 def describe_entity_impl(
@@ -32,6 +37,7 @@ def describe_entity_impl(
     store: Store,
     source_connection_id: str,
     name: str,
+    pii_block: frozenset[PIICategory] = frozenset(),
 ) -> EntityDetail:
     """Return the full `EntityDetail` for `name`.
 
@@ -45,6 +51,12 @@ def describe_entity_impl(
     at this release). Per-column descriptions come from the same
     store layer that backs `describe_table`, so an entity inherits
     whatever enrichment its bound table has received.
+
+    `pii_block` is the server-policy frozenset of categories the
+    operator forbade. Each column's `pii_categories` is checked for
+    intersection — when non-empty, the column is marked redacted and
+    its description is cleared so the agent cannot read the model-
+    generated semantics for a policy-blocked column.
     """
     _validate_ident(name, role="entity")
 
@@ -74,18 +86,44 @@ def describe_entity_impl(
         source_connection_id=source_connection_id,
     )
 
-    columns = [
-        EntityColumn(
-            name=col.name,
-            data_type=col.data_type,
-            nullable=col.nullable,
-            description=(descriptions[col.name].text if col.name in descriptions else ""),
-            # Hardcoded inert default; a future release will populate
-            # from real per-column PII classification.
-            pii_sensitivity="public",
+    # Column-granular PII: bulk fetch tags for every column on the
+    # bound table. The store returns one row per (qualified_table,
+    # column_name) tuple that was classified; columns with no row
+    # default to `("public", frozenset())` per the propagation
+    # helper's empty-input contract.
+    pii_tags = store.get_column_pii_tags(
+        source_connection_id=source_connection_id,
+        qualified_table=entity.qualified_table,
+        columns=[col.name for col in table.columns],
+    )
+
+    columns: list[EntityColumn] = []
+    redacted_names: list[str] = []
+    for col in table.columns:
+        sensitivity, categories = pii_tags.get(col.name, ("public", frozenset()))
+        sorted_categories = tuple(sorted(categories))
+        # A column is redacted when ANY of its tagged PII categories
+        # appears in the server's blocked set. The intersection is the
+        # smallest possible check — even one matching category warrants
+        # redaction because the operator's intent is "do not expose
+        # this kind of data to the agent regardless of column".
+        is_redacted = bool(categories & pii_block)
+        if is_redacted:
+            redacted_names.append(col.name)
+        description = (
+            "" if is_redacted else (descriptions[col.name].text if col.name in descriptions else "")
         )
-        for col in table.columns
-    ]
+        columns.append(
+            EntityColumn(
+                name=col.name,
+                data_type=col.data_type,
+                nullable=col.nullable,
+                description=description,
+                pii_sensitivity=sensitivity,
+                pii_categories=sorted_categories,
+                redacted=is_redacted,
+            )
+        )
 
     partial = EntityDetail(
         name=entity.name,
@@ -95,5 +133,8 @@ def describe_entity_impl(
         origin=entity.origin,
         columns=columns,
         token_estimate=0,  # placeholder; `_with_token_estimate` rebuilds
+        inference_method=entity.inference_method,
+        validation_state=entity.validation_state,
+        redacted_columns=tuple(redacted_names),
     )
     return _with_token_estimate(partial)

@@ -373,8 +373,12 @@ class TestToolResponseSerialization:
 
 
 class TestCharterV11WireVersion:
-    def test_charter_version_is_eleven(self) -> None:
-        assert CHARTER_VERSION == "1.1"
+    def test_charter_version_is_twelve(self) -> None:
+        # v1.2 additive minor bump: adds `Provenance.inference_method`
+        # + `Provenance.validation_state` and changes `confidence`
+        # semantics from "always HIGH" to "derived from the 2D
+        # trust signal". Wire-compatible with v1.1 / v1.0 clients.
+        assert CHARTER_VERSION == "1.2"
 
 
 class TestStatusV11Refused:
@@ -649,3 +653,140 @@ class TestMinLengthGuards:
 
         with pytest.raises(ValidationError):
             WideningHint(scope_requested="pii:contact", would_unblock=False, reason="")
+
+
+# ----- degradation_reason invariant (PR-6h.2 Gap #2) -------------------------
+
+
+class TestDegradationReasonInvariant:
+    def test_degraded_status_with_reason_accepted(self) -> None:
+        from schemabrain.mcp.envelope import ToolResponse
+
+        resp = ToolResponse[dict](
+            status="degraded",
+            data={"key": "value"},
+            degradation_reason="fan_out_join",
+        )
+        assert resp.degradation_reason == "fan_out_join"
+
+    def test_success_status_with_reason_rejected(self) -> None:
+        """`degradation_reason` is only meaningful for status='degraded'.
+        Setting it on success is a producer bug — refuse at construction
+        so the failure surfaces at the right layer.
+        """
+        from schemabrain.mcp.envelope import ToolResponse
+
+        with pytest.raises(ValidationError, match="forbids `degradation_reason`"):
+            ToolResponse[dict](
+                status="success",
+                data={"key": "value"},
+                degradation_reason="fan_out_join",
+            )
+
+    def test_degraded_status_without_reason_accepted(self) -> None:
+        """`degradation_reason` is optional — older callers that
+        emit degraded without setting it continue to work (backward
+        compatible). Future PR may make it required.
+        """
+        from schemabrain.mcp.envelope import ToolResponse
+
+        resp = ToolResponse[dict](status="degraded", data={"key": "value"})
+        assert resp.degradation_reason is None
+
+
+# ----- Charter v1.2 — 2D trust signal -----------------------------------------
+
+
+class TestDeriveConfidence:
+    """`derive_confidence(inference_method, validation_state)` maps the
+    2D trust signal to the 1D `Confidence` label. The matrix is
+    intentionally conservative: an LLM-suggested fact the operator
+    merely `applied` (without explicitly confirming) is MEDIUM, not
+    HIGH — the precise asymmetry charter v1.2 introduces.
+    """
+
+    def test_confirmed_always_high_regardless_of_method(self) -> None:
+        from schemabrain.mcp.envelope import derive_confidence
+
+        for method in (
+            "manually_authored",
+            "llm_suggested",
+            "fk_constraint",
+            "dbt_import",
+            "observed_in_query_log",
+        ):
+            assert derive_confidence(method, "confirmed") == "HIGH", method
+
+    def test_strong_methods_with_applied_are_high(self) -> None:
+        from schemabrain.mcp.envelope import derive_confidence
+
+        for method in ("manually_authored", "fk_constraint", "dbt_import"):
+            assert derive_confidence(method, "applied") == "HIGH", method
+
+    def test_weak_methods_with_applied_are_medium(self) -> None:
+        from schemabrain.mcp.envelope import derive_confidence
+
+        for method in ("llm_suggested", "observed_in_query_log"):
+            assert derive_confidence(method, "applied") == "MEDIUM", method
+
+    def test_strong_methods_with_draft_are_medium(self) -> None:
+        from schemabrain.mcp.envelope import derive_confidence
+
+        for method in ("manually_authored", "fk_constraint", "dbt_import"):
+            assert derive_confidence(method, "draft") == "MEDIUM", method
+
+    def test_weak_methods_with_draft_are_low(self) -> None:
+        from schemabrain.mcp.envelope import derive_confidence
+
+        for method in ("llm_suggested", "observed_in_query_log"):
+            assert derive_confidence(method, "draft") == "LOW", method
+
+
+class TestDeriveProvenanceSource:
+    """`derive_provenance_source(method)` keeps the v1.0
+    `Provenance.source` field consistent with the v1.2 2D signal so
+    old clients still see a sensible 1D value.
+    """
+
+    def test_fk_and_manual_and_dbt_map_to_schema(self) -> None:
+        from schemabrain.mcp.envelope import derive_provenance_source
+
+        for method in ("fk_constraint", "manually_authored", "dbt_import"):
+            assert derive_provenance_source(method) == "schema", method
+
+    def test_llm_suggested_maps_to_llm(self) -> None:
+        from schemabrain.mcp.envelope import derive_provenance_source
+
+        assert derive_provenance_source("llm_suggested") == "llm"
+
+    def test_observed_in_query_log_maps_to_inferred(self) -> None:
+        from schemabrain.mcp.envelope import derive_provenance_source
+
+        assert derive_provenance_source("observed_in_query_log") == "inferred"
+
+
+class TestProvenanceV12Fields:
+    """`Provenance` accepts the v1.2 `inference_method` +
+    `validation_state` fields and serialises them on the wire so
+    new clients can read the 2D signal directly.
+    """
+
+    def test_v12_fields_optional_for_backcompat(self) -> None:
+        from schemabrain.mcp.envelope import Provenance
+
+        # v1.0/v1.1 construction without the new fields still works.
+        p = Provenance(source="schema")
+        assert p.inference_method is None
+        assert p.validation_state is None
+
+    def test_v12_fields_serialise_on_wire(self) -> None:
+        from schemabrain.mcp.envelope import Provenance
+
+        p = Provenance(
+            source="llm",
+            inference_method="llm_suggested",
+            validation_state="applied",
+        )
+        dumped = p.model_dump()
+        assert dumped["inference_method"] == "llm_suggested"
+        assert dumped["validation_state"] == "applied"

@@ -19,14 +19,23 @@ from typing import Any
 from rich.console import Console
 
 from schemabrain.core.entity import Entity, SingleTableBinding
+from schemabrain.core.join import CanonicalJoin, JoinColumnPair
+from schemabrain.core.metric import Metric, MetricMeasure
 from schemabrain.inspect.engine import (
     AnchoredMetric,
     EntityColumnDetail,
     EntityDetail,
+    JoinDetail,
+    MetricDetail,
     RelatedEntity,
     StoreSummary,
 )
-from schemabrain.inspect.render import render_entity_detail, render_summary
+from schemabrain.inspect.render import (
+    render_entity_detail,
+    render_join_detail,
+    render_metric_detail,
+    render_summary,
+)
 
 
 def _capture(callable_: Callable[..., None], *args: Any, **kwargs: Any) -> str:
@@ -258,6 +267,48 @@ class TestRenderEntityDetailEdgeCases:
         assert "via" in out
         assert "customer_orders" in out
 
+    def test_entity_drill_renders_trust_line(self) -> None:
+        """O4-P1: `inspect <entity>` must render the 2D trust line at
+        the bottom of the drill view, symmetric with `inspect <metric>`
+        and `inspect <join>`. Without it operators got no surface
+        signal for whether the entity was LLM-suggested vs FK-derived
+        vs hand-authored even when the data was present.
+        """
+        entity = Entity(
+            name="customer",
+            description="A buyer.",
+            binding=SingleTableBinding(qualified_table="public.users"),
+            identity="id",
+            origin="suggested",
+            inference_method="llm_suggested",
+            validation_state="applied",
+        )
+        detail = EntityDetail(
+            entity=entity,
+            columns=(
+                EntityColumnDetail(
+                    name="id",
+                    data_type="bigint",
+                    nullable=False,
+                    is_primary_key=True,
+                    is_identity=True,
+                    pii_sensitivity="public",
+                    pii_categories=(),
+                ),
+            ),
+            related_entities=(),
+            anchored_metrics=(),
+        )
+        out = _capture(render_entity_detail, detail)
+        # Single Trust line carrying inference_method, validation_state,
+        # and the derived bucket — same shape as metric + join drills.
+        assert "Trust:" in out
+        assert "llm_suggested" in out
+        assert "applied" in out
+        # `derive_confidence("llm_suggested", "applied")` → MEDIUM per
+        # charter v1.2 — the bucket the MCP envelope would report.
+        assert "(MEDIUM)" in out
+
     def test_entity_without_description_skips_description_line(self) -> None:
         # Empty `description` field — the renderer skips the
         # "Description:" line entirely rather than rendering an
@@ -289,6 +340,50 @@ class TestRenderEntityDetailEdgeCases:
         # Design brand line still names the bound table.
         assert "public.users" in out
 
+    def test_bridge_edge_never_truncates_long_join_name(self) -> None:
+        """Bridge join names (`<a>_<b>_via_<junction>`) are typically
+        long and used to ellipsis-truncate on narrow terminals. The
+        `overflow="fold"` setting on the `On` column must let the name
+        wrap across rows instead of dropping characters.
+        """
+        buf = io.StringIO()
+        # Narrow width forces Rich to size columns aggressively, which
+        # is the exact scenario where ellipsis truncation kicked in.
+        console = Console(file=buf, force_terminal=False, width=70)
+        long_bridge = "category_film_via_film_category_with_extras"
+        detail = EntityDetail(
+            entity=_entity(),
+            columns=(
+                EntityColumnDetail(
+                    name="id",
+                    data_type="bigint",
+                    nullable=False,
+                    is_primary_key=True,
+                    is_identity=True,
+                    pii_sensitivity="public",
+                    pii_categories=(),
+                ),
+            ),
+            related_entities=(
+                RelatedEntity(
+                    name="category",
+                    direction="outgoing",
+                    join_name=long_bridge,
+                    on=(("id", "film_id"),),
+                    cardinality="many_to_many",
+                    via_junction="film_category",
+                ),
+            ),
+            anchored_metrics=(),
+        )
+        render_entity_detail(detail, console=console)
+        out = buf.getvalue()
+        # The full bridge name must survive; rendering can fold across
+        # lines but must never replace characters with an ellipsis.
+        normalized = out.replace("\n", "").replace(" ", "")
+        assert long_bridge in normalized
+        assert "…" not in out
+
     def test_anchored_metric_without_time_dimension_renders_non_temporal(
         self,
     ) -> None:
@@ -312,6 +407,7 @@ class TestRenderEntityDetailEdgeCases:
                     description="",
                     agg="count",
                     column="id",
+                    expression=None,
                     time_dimension=None,
                     time_grains=(),
                 ),
@@ -320,6 +416,47 @@ class TestRenderEntityDetailEdgeCases:
         out = _capture(render_entity_detail, detail)
         assert "customer_count" in out
         assert "non-temporal" in out
+
+    def test_composite_expression_metric_renders_expression_body(self) -> None:
+        # When `column` is None and `expression` is populated, the
+        # renderer should show the expression inside the agg call
+        # rather than `sum(None)`.
+        detail = EntityDetail(
+            entity=Entity(
+                name="order_item",
+                description="",
+                binding=SingleTableBinding(qualified_table="public.order_items"),
+                identity="id",
+            ),
+            columns=(
+                EntityColumnDetail(
+                    name="id",
+                    data_type="bigint",
+                    nullable=False,
+                    is_primary_key=True,
+                    is_identity=True,
+                    pii_sensitivity="public",
+                    pii_categories=(),
+                ),
+            ),
+            related_entities=(),
+            anchored_metrics=(
+                AnchoredMetric(
+                    name="line_revenue",
+                    description="",
+                    agg="sum",
+                    column=None,
+                    expression="unit_price_cents * quantity",
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+            ),
+        )
+        out = _capture(render_entity_detail, detail)
+        assert "line_revenue" in out
+        assert "sum(unit_price_cents * quantity)" in out
+        # The string `None` must never appear inside the agg cell.
+        assert "sum(None)" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -564,3 +701,134 @@ class TestNonManualEntityOrigin:
         )
         out = _capture(render_entity_detail, detail)
         assert "origin suggested" in out
+
+
+def _anchor_entity() -> Entity:
+    return Entity(
+        name="order",
+        description="A purchase placed by one customer.",
+        binding=SingleTableBinding(qualified_table="public.orders"),
+        identity="id",
+    )
+
+
+class TestRenderMetricDetail:
+    """`render_metric_detail` branches not exercised by the CLI happy-path
+    fixture (which uses origin=manual, no description, no time_dimension).
+    """
+
+    def test_orphaned_metric_renders_orphan_marker(self) -> None:
+        # A metric whose anchor entity was deleted out from under it:
+        # the renderer must surface the orphan marker rather than
+        # silently omitting it.
+        metric = Metric(
+            name="total_revenue",
+            description="",
+            entity="order",
+            measure=MetricMeasure(agg="sum", column="total_cents"),
+            time_dimension=None,
+            time_grains=(),
+        )
+        detail = MetricDetail(metric=metric, anchor=None)
+        out = _capture(render_metric_detail, detail)
+        assert "(orphaned)" in out
+
+    def test_metric_origin_suggested_renders_origin_segment(self) -> None:
+        # Metric authored by the LLM-suggest pipeline carries
+        # origin="suggested"; the brand line surfaces the provenance.
+        metric = Metric(
+            name="total_revenue",
+            description="",
+            entity="order",
+            measure=MetricMeasure(agg="sum", column="total_cents"),
+            time_dimension=None,
+            time_grains=(),
+            origin="suggested",
+        )
+        detail = MetricDetail(metric=metric, anchor=_anchor_entity())
+        out = _capture(render_metric_detail, detail)
+        assert "origin suggested" in out
+
+    def test_metric_with_time_dimension_renders_grains(self) -> None:
+        # Temporal metric renders the time_dimension + ordered grain
+        # list; non-temporal metrics render "non-temporal" instead.
+        metric = Metric(
+            name="total_revenue",
+            description="Sum of order subtotals.",
+            entity="order",
+            measure=MetricMeasure(agg="sum", column="total_cents"),
+            time_dimension="order.placed_at",
+            time_grains=("day", "week", "month"),
+        )
+        detail = MetricDetail(metric=metric, anchor=_anchor_entity())
+        out = _capture(render_metric_detail, detail)
+        assert "Description:" in out
+        assert "order.placed_at" in out
+        assert "day, week, month" in out
+
+
+class TestRenderJoinDetail:
+    """`render_join_detail` branches not exercised by the CLI happy-path
+    fixture (which uses origin=manual, empty description, and provides
+    both `source` + `target` entities).
+    """
+
+    def test_join_origin_suggested_renders_origin_segment(self) -> None:
+        # Joins surfaced by `joins suggest` land with origin="suggested";
+        # the brand line surfaces the provenance so the operator knows
+        # to hand-verify before depending on the chain.
+        join = CanonicalJoin(
+            name="customer_orders",
+            description="Joins customers to their orders.",
+            source_entity="customer",
+            target_entity="order",
+            on=(JoinColumnPair(source_column="id", target_column="user_id"),),
+            cardinality="one_to_many",
+            origin="suggested",
+        )
+        customer = Entity(
+            name="customer",
+            description="",
+            binding=SingleTableBinding(qualified_table="public.users"),
+            identity="id",
+        )
+        order = Entity(
+            name="order",
+            description="",
+            binding=SingleTableBinding(qualified_table="public.orders"),
+            identity="id",
+        )
+        detail = JoinDetail(join=join, source=customer, target=order)
+        out = _capture(render_join_detail, detail)
+        # Origin segment + description line both render.
+        assert "origin suggested" in out
+        assert "Description:" in out
+        # Tables: line renders only when BOTH source and target are
+        # resolvable — pinning the branch.
+        assert "Tables:" in out
+        assert "public.users" in out
+        assert "public.orders" in out
+
+    def test_join_without_cardinality_skips_cardinality_segment(self) -> None:
+        # Joins authored before the cardinality column shipped carry
+        # cardinality=None; the brand line must skip the segment
+        # rather than render `cardinality None`.
+        join = CanonicalJoin(
+            name="customer_orders",
+            description="",
+            source_entity="customer",
+            target_entity="order",
+            on=(JoinColumnPair(source_column="id", target_column="user_id"),),
+            cardinality=None,
+        )
+        detail = JoinDetail(join=join, source=None, target=None)
+        out = _capture(render_join_detail, detail)
+        # Brand line carries the join name + entity arrow but no
+        # `cardinality ...` segment.
+        assert "customer_orders" in out
+        assert "customer → order" in out
+        assert "cardinality" not in out
+        # When EITHER end is unresolved, the Tables: line is omitted
+        # so the operator sees only what the store can actually
+        # reconstruct.
+        assert "Tables:" not in out

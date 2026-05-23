@@ -1,0 +1,996 @@
+"""Tests for multi-hop canonical-join resolution in the metric compiler.
+
+Locks the contract introduced in PR-6h.1:
+
+  - group_by on an entity 2+ hops from anchor resolves via BFS over
+    the canonical-join graph; intermediate hops appear as ResolvedJoins
+    in TOPOLOGICAL chain order.
+  - A canonical join traversed in the REVERSE of its stored direction
+    emits with SWAPPED on-pair columns so the SQL skeleton remains
+    valid regardless of which side the metric is anchored on.
+  - Two group_by columns whose chains share an intermediate (e.g.
+    both transit `order`) produce ONE shared JOIN for the intermediate.
+  - Two equal-length paths refuse with `AmbiguousPathError`, listing
+    candidate paths in canonical-name-sorted form.
+  - `via=(join_name, ...)` constrains the chain to traverse those
+    joins. Unknown via raises `UnknownViaJoinError`.
+  - Single-edge parallel-join ambiguity inside a multi-hop chain
+    still raises `AmbiguousJoinError` (preserves the v1 contract for
+    that case).
+
+Closes the day-one product gap surfaced by the 2026-05-21 live smoke:
+`get_metric(name="total_items_sold", group_by=["user.email"])` against
+the order_item-anchored metric must traverse
+`order_item → order → user` instead of refusing as unreachable.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from schemabrain.core.entity import Entity, SingleTableBinding
+from schemabrain.core.join import CanonicalJoin, JoinColumnPair
+from schemabrain.core.metric import Metric, MetricMeasure
+from schemabrain.core.models import Column, Table
+from schemabrain.core.store import SQLiteStore
+from schemabrain.semantic.compiler import (
+    AmbiguousJoinError,
+    AmbiguousPathError,
+    UnknownViaJoinError,
+    UnreachableEntityError,
+    emit_sql,
+    resolve_metric_plan,
+)
+
+SOURCE = "src_a"
+
+
+# ----- fixtures --------------------------------------------------------------
+
+
+def _id_col(table: str) -> Column:
+    return Column(
+        name="id",
+        table_name=table,
+        schema_name="public",
+        data_type="bigint",
+        nullable=False,
+        ordinal_position=1,
+        is_primary_key=True,
+    )
+
+
+def _extra_col(table: str, name: str, *, ordinal: int) -> Column:
+    return Column(
+        name=name,
+        table_name=table,
+        schema_name="public",
+        data_type="text",
+        nullable=True,
+        ordinal_position=ordinal,
+        is_primary_key=False,
+    )
+
+
+# Columns each fixture table carries beyond `id`. Centralised so the
+# `_seed_*` fixtures stay in sync with what the compiler's column-
+# existence validation (PR-6h.3) now checks against. Adding a column
+# referenced by a test means adding it to this map AND any fixture
+# that owns the table.
+_FIXTURE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "order_items": ("quantity", "product_id"),
+    "orders": ("placed_at", "user_id"),
+    "users": ("email", "full_name"),
+    "addresses": ("country",),
+    "products": ("name",),
+    "categories": ("name",),
+    "category_aliases": ("name",),
+}
+
+
+def _table(name: str) -> Table:
+    """Build a fixture Table with `id` + every column in `_FIXTURE_COLUMNS[name]`.
+
+    The compiler validates group_by / filter columns against the
+    table's column list (PR-6h.3). Fixture tables only had `id` before
+    that change; calling tests now go through the same validation path
+    real callers do, so the fixture must declare every column the
+    tests reference.
+    """
+    extras = _FIXTURE_COLUMNS.get(name, ())
+    cols: tuple[Column, ...] = (
+        _id_col(name),
+        *(_extra_col(name, col_name, ordinal=2 + i) for i, col_name in enumerate(extras)),
+    )
+    return Table(name=name, schema_name="public", columns=cols)
+
+
+def _seed_two_hop_chain(store: SQLiteStore) -> None:
+    """`order_item → order → user`. Mirrors the live-smoke schema.
+
+    Metric `total_items_sold` is anchored on `order_item`; `user` is
+    only reachable through `order`.
+    """
+    store.write_table(_table("order_items"), source_connection_id=SOURCE)
+    store.write_table(_table("orders"), source_connection_id=SOURCE)
+    store.write_table(_table("users"), source_connection_id=SOURCE)
+    for name, table in (
+        ("order_item", "public.order_items"),
+        ("order", "public.orders"),
+        ("user", "public.users"),
+    ):
+        store.write_entity(
+            Entity(
+                name=name,
+                description="",
+                binding=SingleTableBinding(qualified_table=table),
+                identity="id",
+            ),
+            source_connection_id=SOURCE,
+        )
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="order_items_order_id",
+            description="",
+            source_entity="order_item",
+            target_entity="order",
+            on=(JoinColumnPair(source_column="order_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="orders_user_id",
+            description="",
+            source_entity="order",
+            target_entity="user",
+            on=(JoinColumnPair(source_column="user_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    store.write_metric(
+        Metric(
+            name="total_items_sold",
+            description="",
+            entity="order_item",
+            measure=MetricMeasure(agg="sum", column="quantity"),
+            time_dimension=None,
+            time_grains=(),
+        ),
+        source_connection_id=SOURCE,
+    )
+
+
+def _seed_diamond_paths(store: SQLiteStore) -> None:
+    """Diamond: `order_item → order → (billing_address | shipping_address) → user`.
+
+    Both 3-hop chains reach `user`; without `via=` this is an
+    AmbiguousPathError.
+    """
+    for name in ("order_items", "orders", "addresses", "users"):
+        store.write_table(
+            _table(name),
+            source_connection_id=SOURCE,
+        )
+    entity_bindings = (
+        ("order_item", "public.order_items"),
+        ("order", "public.orders"),
+        ("billing_address", "public.addresses"),
+        ("shipping_address", "public.addresses"),
+        ("user", "public.users"),
+    )
+    for name, table in entity_bindings:
+        store.write_entity(
+            Entity(
+                name=name,
+                description="",
+                binding=SingleTableBinding(qualified_table=table),
+                identity="id",
+            ),
+            source_connection_id=SOURCE,
+        )
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="order_items_order_id",
+            description="",
+            source_entity="order_item",
+            target_entity="order",
+            on=(JoinColumnPair(source_column="order_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    # Two parallel canonical joins from order — one to billing, one to
+    # shipping. Then each address links to a user via a separate join
+    # name. Total: 5 canonical joins forming a diamond.
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="orders_billing_address",
+            description="",
+            source_entity="order",
+            target_entity="billing_address",
+            on=(JoinColumnPair(source_column="billing_address_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="orders_shipping_address",
+            description="",
+            source_entity="order",
+            target_entity="shipping_address",
+            on=(JoinColumnPair(source_column="shipping_address_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="billing_address_users",
+            description="",
+            source_entity="billing_address",
+            target_entity="user",
+            on=(JoinColumnPair(source_column="user_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="shipping_address_users",
+            description="",
+            source_entity="shipping_address",
+            target_entity="user",
+            on=(JoinColumnPair(source_column="user_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    store.write_metric(
+        Metric(
+            name="total_items_sold",
+            description="",
+            entity="order_item",
+            measure=MetricMeasure(agg="sum", column="quantity"),
+            time_dimension=None,
+            time_grains=(),
+        ),
+        source_connection_id=SOURCE,
+    )
+
+
+def _seed_parallel_single_edge(store: SQLiteStore) -> None:
+    """`order_item → order → user` with TWO parallel canonical joins
+    on the `order → user` hop (e.g. placing user vs. fulfilment user).
+
+    Single-edge ambiguity inside a multi-hop chain — must raise the
+    existing AmbiguousJoinError, not AmbiguousPathError, because the
+    issue is a single hop with multiple canonical joins, not multiple
+    paths.
+    """
+    for name in ("order_items", "orders", "users"):
+        store.write_table(
+            _table(name),
+            source_connection_id=SOURCE,
+        )
+    for name, table in (
+        ("order_item", "public.order_items"),
+        ("order", "public.orders"),
+        ("user", "public.users"),
+    ):
+        store.write_entity(
+            Entity(
+                name=name,
+                description="",
+                binding=SingleTableBinding(qualified_table=table),
+                identity="id",
+            ),
+            source_connection_id=SOURCE,
+        )
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="order_items_order_id",
+            description="",
+            source_entity="order_item",
+            target_entity="order",
+            on=(JoinColumnPair(source_column="order_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="orders_placing_user",
+            description="",
+            source_entity="order",
+            target_entity="user",
+            on=(JoinColumnPair(source_column="user_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="orders_fulfilment_user",
+            description="",
+            source_entity="order",
+            target_entity="user",
+            on=(JoinColumnPair(source_column="fulfilment_user_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    store.write_metric(
+        Metric(
+            name="total_items_sold",
+            description="",
+            entity="order_item",
+            measure=MetricMeasure(agg="sum", column="quantity"),
+            time_dimension=None,
+            time_grains=(),
+        ),
+        source_connection_id=SOURCE,
+    )
+
+
+def _seed_tangent_parallel_off_chain(store: SQLiteStore) -> None:
+    """Mirror the real ecommerce demo store shape: `order_item → order → user`
+    is the resolution chain we care about, with `order → address` carrying
+    TWO parallel canonical joins (billing + shipping) hanging off `order`
+    as a TANGENT — not on any structural path to `user`.
+
+    This is the exact shape that exposed the PR-6h.1 regression bug: the
+    BFS over-rejected, raising `AmbiguousJoinError` on the tangent
+    `order → address` pair even though the resolver never needed to
+    traverse it to reach `user`.
+    """
+    for name in ("order_items", "orders", "users", "addresses", "products"):
+        store.write_table(
+            _table(name),
+            source_connection_id=SOURCE,
+        )
+    for entity_name, table in (
+        ("order_item", "public.order_items"),
+        ("order", "public.orders"),
+        ("user", "public.users"),
+        ("address", "public.addresses"),
+        ("product", "public.products"),
+    ):
+        store.write_entity(
+            Entity(
+                name=entity_name,
+                description="",
+                binding=SingleTableBinding(qualified_table=table),
+                identity="id",
+            ),
+            source_connection_id=SOURCE,
+        )
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="order_items_order_id",
+            description="",
+            source_entity="order_item",
+            target_entity="order",
+            on=(JoinColumnPair(source_column="order_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="orders_user_id",
+            description="",
+            source_entity="order",
+            target_entity="user",
+            on=(JoinColumnPair(source_column="user_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    # Second tangent off the anchor (mirrors real ecommerce schema):
+    # `order_item → product` is a dead-end branch off `order_item` that
+    # never leads to `user` and must not interfere with BFS reaching
+    # `user` through `order`. Orthogonal to the parallel-canonical bug,
+    # but rounds out fixture fidelity to the real demo store.
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="order_items_product_id",
+            description="",
+            source_entity="order_item",
+            target_entity="product",
+            on=(JoinColumnPair(source_column="product_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    # Tangent: TWO parallel canonical joins on the `order → address` hop.
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="orders_billing_address_id",
+            description="",
+            source_entity="order",
+            target_entity="address",
+            on=(JoinColumnPair(source_column="billing_address_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    store.write_canonical_join(
+        CanonicalJoin(
+            name="orders_shipping_address_id",
+            description="",
+            source_entity="order",
+            target_entity="address",
+            on=(JoinColumnPair(source_column="shipping_address_id", target_column="id"),),
+            cardinality="many_to_one",
+        ),
+        source_connection_id=SOURCE,
+    )
+    store.write_metric(
+        Metric(
+            name="total_items_sold",
+            description="",
+            entity="order_item",
+            measure=MetricMeasure(agg="sum", column="quantity"),
+            time_dimension=None,
+            time_grains=(),
+        ),
+        source_connection_id=SOURCE,
+    )
+
+
+# ----- 2-hop happy path ------------------------------------------------------
+
+
+class TestTwoHopChain:
+    def test_two_hop_resolves_with_intermediate_join(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop_chain(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="total_items_sold",
+                group_by=("user.email",),
+            )
+        # Two ResolvedJoins, in chain order: anchor → order, order → user.
+        assert plan.required_join_names == (
+            "order_items_order_id",
+            "orders_user_id",
+        )
+        # First hop: anchor on the left.
+        first = plan.joins[0]
+        assert first.source_alias == "order_item"
+        assert first.target_alias == "order"
+        # Second hop: previous hop's alias on the left.
+        second = plan.joins[1]
+        assert second.source_alias == "order"
+        assert second.target_alias == "user"
+
+    def test_two_hop_emits_chained_sql(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop_chain(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="total_items_sold",
+                group_by=("user.email",),
+            )
+            sql_text, _params = emit_sql(plan)
+        # Order matters: the order_item→order JOIN must precede
+        # order→user JOIN, because the second JOIN references "order"
+        # on its left side.
+        first_join_pos = sql_text.find('JOIN "public"."orders"')
+        second_join_pos = sql_text.find('JOIN "public"."users"')
+        assert first_join_pos != -1, sql_text
+        assert second_join_pos != -1, sql_text
+        assert first_join_pos < second_join_pos, sql_text
+        # Second JOIN's ON clause references "order" on the left, not
+        # the anchor "order_item" — the bug PR-6h.1 fixes.
+        on_clause_for_users = sql_text[second_join_pos:]
+        assert '"order"."user_id" = "user"."id"' in on_clause_for_users, on_clause_for_users
+        # First JOIN's ON clause references the anchor.
+        on_clause_for_orders = sql_text[first_join_pos:second_join_pos]
+        assert '"order_item"."order_id" = "order"."id"' in on_clause_for_orders, (
+            on_clause_for_orders
+        )
+
+    def test_shared_intermediate_dedupes(self, tmp_path: Path) -> None:
+        """group_by on two columns whose chains share the same
+        intermediate (`order`) must produce ONE JOIN to that
+        intermediate, not duplicate it."""
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop_chain(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="total_items_sold",
+                # `user.email` requires the order_item→order→user chain;
+                # `order.placed_at` requires just order_item→order.
+                # The intermediate `order` JOIN must be shared.
+                group_by=("user.email", "order.placed_at"),
+            )
+        names = plan.required_join_names
+        # Exactly 2 distinct canonical joins — order_items_order_id
+        # and orders_user_id. NO duplication of order_items_order_id
+        # even though both chains start with it.
+        assert names.count("order_items_order_id") == 1
+        assert names.count("orders_user_id") == 1
+
+
+# ----- reverse-direction traversal ------------------------------------------
+
+
+class TestReverseDirectionEmit:
+    def test_reverse_traversal_swaps_on_pairs(self, tmp_path: Path) -> None:
+        """`order_item → order` is stored as source=order_item,
+        target=order, on=(order_id, id). A metric anchored on `order`
+        joining to `order_item` traverses the SAME canonical join in
+        REVERSE direction — emit must produce
+        `order.id = order_item.order_id`, not the literal stored
+        column orientation.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop_chain(store)
+            # Add a metric anchored on `order` (the reverse-side of
+            # `order_items_order_id`).
+            store.write_metric(
+                Metric(
+                    name="order_count",
+                    description="",
+                    entity="order",
+                    measure=MetricMeasure(agg="count", column="id"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="order_count",
+                group_by=("order_item.product_id",),
+            )
+            sql_text, _params = emit_sql(plan)
+        join = plan.joins[0]
+        assert join.source_alias == "order"
+        assert join.target_alias == "order_item"
+        # on_pairs are swapped relative to the stored direction.
+        assert join.on_pairs[0].source_column == "id"  # was "order_id" stored
+        assert join.on_pairs[0].target_column == "order_id"  # was "id" stored
+        assert '"order"."id" = "order_item"."order_id"' in sql_text
+
+
+# ----- path-level ambiguity --------------------------------------------------
+
+
+class TestPathAmbiguity:
+    def test_two_equal_paths_raises_ambiguous_path(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_diamond_paths(store)
+            with pytest.raises(AmbiguousPathError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    group_by=("user.email",),
+                )
+        assert exc_info.value.anchor_entity == "order_item"
+        assert exc_info.value.target_entity == "user"
+        # Both 3-hop paths surfaced — each starts with
+        # `order_items_order_id`, then diverges through the address pair.
+        path_names = {tuple(p) for p in exc_info.value.candidate_paths}
+        assert (
+            "order_items_order_id",
+            "orders_billing_address",
+            "billing_address_users",
+        ) in path_names
+        assert (
+            "order_items_order_id",
+            "orders_shipping_address",
+            "shipping_address_users",
+        ) in path_names
+
+    def test_via_constrains_path(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_diamond_paths(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="total_items_sold",
+                group_by=("user.email",),
+                via=("orders_billing_address",),
+            )
+        # Exactly the billing path resolved.
+        assert plan.required_join_names == (
+            "order_items_order_id",
+            "orders_billing_address",
+            "billing_address_users",
+        )
+
+    def test_via_unknown_name_raises(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_diamond_paths(store)
+            with pytest.raises(UnknownViaJoinError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    group_by=("user.email",),
+                    via=("nonexistent_join",),
+                )
+        assert "nonexistent_join" in exc_info.value.requested_via
+        assert exc_info.value.anchor_entity == "order_item"
+
+    def test_caller_ambiguous_via_with_multiple_parallel_matches_raises(
+        self, tmp_path: Path
+    ) -> None:
+        """When the parallel-edge branch finds 2+ via names matching
+        the candidate joins (e.g. caller passes BOTH `placing_user`
+        AND `fulfilment_user` at the same hop), the resolver refuses
+        with `AmbiguousJoinError` rather than picking one — caller's
+        constraint is itself ambiguous, recovery shape stays
+        single-edge-shaped.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_parallel_single_edge(store)
+            with pytest.raises(AmbiguousJoinError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    group_by=("user.email",),
+                    via=("orders_placing_user", "orders_fulfilment_user"),
+                )
+        # Both names surface as candidates (the caller selected both).
+        assert set(exc_info.value.candidate_join_names) == {
+            "orders_placing_user",
+            "orders_fulfilment_user",
+        }
+
+
+# ----- empty-graph guard ----------------------------------------------------
+
+
+class TestEmptyJoinGraph:
+    def test_unreachable_when_store_has_no_canonical_joins(self, tmp_path: Path) -> None:
+        """Both endpoints absent from the join graph (store has zero
+        canonical joins) → `UnreachableEntityError` from the early
+        guard, not from BFS exhaustion.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            # Seed the two-hop schema but DELIBERATELY skip the
+            # `write_canonical_join` calls so the graph is empty.
+            store.write_table(_table("order_items"), source_connection_id=SOURCE)
+            store.write_table(_table("users"), source_connection_id=SOURCE)
+            for name, table in (
+                ("order_item", "public.order_items"),
+                ("user", "public.users"),
+            ):
+                store.write_entity(
+                    Entity(
+                        name=name,
+                        description="",
+                        binding=SingleTableBinding(qualified_table=table),
+                        identity="id",
+                    ),
+                    source_connection_id=SOURCE,
+                )
+            store.write_metric(
+                Metric(
+                    name="total_items_sold",
+                    description="",
+                    entity="order_item",
+                    measure=MetricMeasure(agg="sum", column="quantity"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            with pytest.raises(UnreachableEntityError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    group_by=("user.email",),
+                )
+        assert exc_info.value.anchor_entity == "order_item"
+        assert exc_info.value.target_entity == "user"
+
+
+# ----- shared intermediate to different targets -----------------------------
+
+
+class TestSharedIntermediateToDifferentTargets:
+    def test_two_chains_share_intermediate_dedupe_at_iteration(self, tmp_path: Path) -> None:
+        """Two group_by columns reaching DIFFERENT final targets but
+        through the SAME intermediate (`order_item → order → A` and
+        `order_item → order → B`). The second chain's iteration must
+        hit the cache-hit branch for the intermediate (`order`) and
+        skip re-building its ResolvedJoin, producing one join entry
+        for `order`, one for each final target — three total, not
+        four.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_diamond_paths(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="total_items_sold",
+                group_by=("billing_address.country", "shipping_address.country"),
+            )
+        names = plan.required_join_names
+        # `order_items_order_id` must appear exactly once even though
+        # both chains transit it.
+        assert names.count("order_items_order_id") == 1
+        # Both address-side joins resolved, one per chain.
+        assert "orders_billing_address" in names
+        assert "orders_shipping_address" in names
+        # 3 joins total: one shared intermediate + two leaf hops.
+        assert len(plan.joins) == 3
+
+
+# ----- single-edge parallel inside multi-hop --------------------------------
+
+
+class TestParallelInsideMultiHop:
+    def test_parallel_canonical_joins_raise_ambiguous_join(self, tmp_path: Path) -> None:
+        """Two canonical joins between `order` and `user` (placing vs.
+        fulfilment user) — when the chain reaches `order` and needs
+        to step to `user`, the single-edge ambiguity surfaces.
+        AmbiguousJoinError, not AmbiguousPathError: the ambiguity is
+        at a single hop, not between distinct paths.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_parallel_single_edge(store)
+            with pytest.raises(AmbiguousJoinError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    group_by=("user.email",),
+                )
+        assert set(exc_info.value.candidate_join_names) == {
+            "orders_placing_user",
+            "orders_fulfilment_user",
+        }
+
+    def test_via_resolves_parallel_edge(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_parallel_single_edge(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="total_items_sold",
+                group_by=("user.email",),
+                via=("orders_placing_user",),
+            )
+        assert plan.required_join_names == (
+            "order_items_order_id",
+            "orders_placing_user",
+        )
+
+
+# ----- unreachable -----------------------------------------------------------
+
+
+class TestUnreachableNoPath:
+    def test_disconnected_entity_unreachable(self, tmp_path: Path) -> None:
+        """An entity that exists but has no canonical-join edges
+        connecting it to the anchor's component must surface
+        `UnreachableEntityError` even with BFS — BFS proves no path
+        exists, single-hop just couldn't see the edge anyway.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop_chain(store)
+            store.write_table(
+                _table("products"),
+                source_connection_id=SOURCE,
+            )
+            store.write_entity(
+                Entity(
+                    name="product",
+                    description="",
+                    binding=SingleTableBinding(qualified_table="public.products"),
+                    identity="id",
+                ),
+                source_connection_id=SOURCE,
+            )
+            with pytest.raises(UnreachableEntityError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    group_by=("product.name",),
+                )
+        assert exc_info.value.anchor_entity == "order_item"
+        assert exc_info.value.target_entity == "product"
+
+
+# ----- PR-6h.1.1 regression: tangent parallel canonicals off-chain ----------
+
+
+class TestTangentParallelJoinsOffChain:
+    """Regression for the PR-6h.1 bug where the BFS over-rejected on
+    parallel canonical joins lying on a TANGENT (an edge off any path
+    from anchor to target). The real ecommerce demo store has
+    `order → address` carrying billing+shipping parallels; that edge
+    is not on the chain `order_item → order → user`, so it must not
+    block resolution.
+    """
+
+    def test_tangent_parallel_does_not_block_unrelated_target(self, tmp_path: Path) -> None:
+        """Target `user`: chain is `order_item → order → user`. The
+        `order → address` tangent (billing+shipping parallels) is NOT
+        on this path and must be inert. Pre-fix this raised
+        `AmbiguousJoinError(order, address, ...)` during BFS expansion;
+        post-fix it resolves cleanly.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_tangent_parallel_off_chain(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="total_items_sold",
+                group_by=("user.email",),
+            )
+        assert plan.required_join_names == (
+            "order_items_order_id",
+            "orders_user_id",
+        )
+        # Topological alias chain: anchor → first hop's target → second
+        # hop's target. Each hop's source_alias references the previous
+        # hop's target (or the anchor for the first hop).
+        joins = plan.joins
+        assert joins[0].source_alias == plan.anchor_alias == "order_item"
+        assert joins[0].target_alias == "order"
+        assert joins[1].source_alias == "order"
+        assert joins[1].target_alias == "user"
+
+    def test_tangent_parallel_emits_chained_sql(self, tmp_path: Path) -> None:
+        """The emitted SQL must reference `order` (not the anchor) on
+        the left of the second JOIN, proving the topological order
+        invariant is honored.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_tangent_parallel_off_chain(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="total_items_sold",
+                group_by=("user.email",),
+            )
+        sql_text, _params = emit_sql(plan)
+        assert 'JOIN "public"."orders" AS "order"' in sql_text
+        assert 'ON "order_item"."order_id" = "order"."id"' in sql_text
+        assert 'JOIN "public"."users" AS "user"' in sql_text
+        # The critical assertion: the second JOIN's left side must be
+        # `order`, NOT the anchor `order_item`. Pre-fix this would have
+        # never been reached (BFS aborted on the tangent); the failure
+        # mode also covered by emit's runtime topological-order check.
+        assert 'ON "order"."user_id" = "user"."id"' in sql_text
+
+    def test_target_is_parallel_tangent_pair_raises_ambiguous_join(self, tmp_path: Path) -> None:
+        """When the parallel-canonical pair IS the chain (target =
+        address, parallels are billing/shipping), the v1 single-hop
+        ambiguity contract still applies: AmbiguousJoinError listing
+        the candidate names. This proves the fix only IGNORES tangents
+        — it doesn't silently pick one when the parallels are on the
+        traversed hop.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_tangent_parallel_off_chain(store)
+            with pytest.raises(AmbiguousJoinError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    group_by=("address.id",),
+                )
+        assert exc_info.value.anchor_entity == "order"
+        assert exc_info.value.target_entity == "address"
+        assert set(exc_info.value.candidate_join_names) == {
+            "orders_billing_address_id",
+            "orders_shipping_address_id",
+        }
+
+    def test_via_resolves_parallel_when_target_is_address(self, tmp_path: Path) -> None:
+        """The recovery path from the previous test: caller passes
+        `via=("orders_billing_address_id",)` and gets a clean chain.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_tangent_parallel_off_chain(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="total_items_sold",
+                group_by=("address.id",),
+                via=("orders_billing_address_id",),
+            )
+        assert plan.required_join_names == (
+            "order_items_order_id",
+            "orders_billing_address_id",
+        )
+
+    def test_target_in_graph_but_disconnected_component_unreachable(self, tmp_path: Path) -> None:
+        """Both anchor and target have canonical-join edges in the
+        graph (so the empty-graph early-out at the top of
+        `_find_canonical_chain` does NOT fire), but the two endpoints
+        live in disconnected components. BFS exhausts its frontier
+        without finding the target and pass 1 returns `[]`. The
+        post-BFS guard then raises `UnreachableEntityError`. Covers
+        the `if not structural_paths` branch in `_find_canonical_chain`
+        and the BFS-exhaustion fall-through in
+        `_structural_shortest_paths`.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_tangent_parallel_off_chain(store)
+            # Add a second, fully disconnected component: `category`
+            # plus `category_alias` with one canonical join between
+            # them. Both entities are in the graph (have edges), but
+            # no edge reaches them from `order_item`'s component.
+            for table_name in ("categories", "category_aliases"):
+                store.write_table(_table(table_name), source_connection_id=SOURCE)
+            for entity_name, table in (
+                ("category", "public.categories"),
+                ("category_alias", "public.category_aliases"),
+            ):
+                store.write_entity(
+                    Entity(
+                        name=entity_name,
+                        description="",
+                        binding=SingleTableBinding(qualified_table=table),
+                        identity="id",
+                    ),
+                    source_connection_id=SOURCE,
+                )
+            store.write_canonical_join(
+                CanonicalJoin(
+                    name="category_aliases_category_id",
+                    description="",
+                    source_entity="category_alias",
+                    target_entity="category",
+                    on=(JoinColumnPair(source_column="category_id", target_column="id"),),
+                    cardinality="many_to_one",
+                ),
+                source_connection_id=SOURCE,
+            )
+            with pytest.raises(UnreachableEntityError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    group_by=("category.id",),
+                )
+        assert exc_info.value.anchor_entity == "order_item"
+        assert exc_info.value.target_entity == "category"
+
+    def test_via_tangent_join_for_unrelated_target_raises_unknown(self, tmp_path: Path) -> None:
+        """An agent who picks a tangent canonical-join name from
+        `list_joins` (e.g. `orders_billing_address_id`) and passes it
+        as `via=` for an unrelated target (group_by `user.email`)
+        gets a structured `UnknownViaJoinError` — the via= name does
+        not lie on any structural path to `user`, so it filters every
+        path out. The `available_join_names` payload lists the names
+        on the actual chain to `user`, giving the agent a discoverable
+        recovery hint.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_tangent_parallel_off_chain(store)
+            with pytest.raises(UnknownViaJoinError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    group_by=("user.email",),
+                    via=("orders_billing_address_id",),
+                )
+        assert exc_info.value.anchor_entity == "order_item"
+        assert exc_info.value.target_entity == "user"
+        assert "orders_billing_address_id" in exc_info.value.requested_via
+        assert "order_items_order_id" in exc_info.value.available_join_names
+        assert "orders_user_id" in exc_info.value.available_join_names

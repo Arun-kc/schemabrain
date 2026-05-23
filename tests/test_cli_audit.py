@@ -242,7 +242,36 @@ class TestAuditList:
         SQLiteStore(store_path).close()
         exit_code = cli_main(["audit", "list", "--store-path", str(store_path)])
         assert exit_code == 0
-        assert "no audit rows" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        # Differentiated empty-state: zero rows in the table maps to the
+        # "no MCP traffic yet" branch with a discovery hint, not the
+        # ambiguous filter-mismatch line.
+        assert "audit log is empty" in out
+        assert "next:" in out
+
+    def test_filters_excluding_all_rows_show_total_and_widen_hint(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """When the table has rows but filters exclude them all, the
+        message must show the total row count and suggest widening
+        filters — distinct from the "audit log is empty" branch."""
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=2)
+        exit_code = cli_main(
+            [
+                "audit",
+                "list",
+                "--store-path",
+                str(store_path),
+                "--tool",
+                "nonexistent_tool_name",
+            ]
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "no audit rows matched the filters" in out
+        assert "2 rows total" in out
+        assert "--since" in out or "widen" in out
 
     def test_filter_by_tool_name(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         store_path = tmp_path / "store.db"

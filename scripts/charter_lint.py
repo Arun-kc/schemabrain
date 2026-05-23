@@ -65,6 +65,8 @@ _SIBLING_TOOLS = frozenset(
         "suggest_joins",
         "get_example_queries",
         "list_entities",
+        "list_joins",
+        "list_metrics",
         "describe_entity",
         "resolve_join",
         "get_metric",
@@ -200,6 +202,11 @@ _HAPPY_PATH_ARGS: dict[str, dict[str, object]] = {
     # `unknown_name` error envelope. Both still validate cleanly
     # against `ToolResponse`.
     "list_entities": {},
+    # No metrics or canonical joins seeded → both return the `empty`
+    # envelope. The success path (with seeded data) is exercised by
+    # `tests/test_mcp_list_metrics.py` and `test_mcp_list_joins.py`.
+    "list_metrics": {},
+    "list_joins": {},
     "describe_entity": {"name": "customer"},
     # No canonical join seeded → returns the `unknown_name` envelope
     # (entity `customer` doesn't exist in the lint store). The

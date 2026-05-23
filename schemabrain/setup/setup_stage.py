@@ -48,7 +48,6 @@ from __future__ import annotations
 import shutil
 import subprocess
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from schemabrain._ui import (
@@ -61,6 +60,7 @@ from schemabrain._ui import (
     pause_active_spinner,
     prompt_for_url,
 )
+from schemabrain.eval.bundled import resolve_bundled_path
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -69,8 +69,8 @@ __all__ = [
     "DEMO_CONTAINER_NAME",
     "DEMO_DATABASE_URL",
     "DEMO_DOCKER_RUN_COMMAND",
+    "DEMO_FIXTURE_BUNDLED_NAME",
     "DEMO_FIXTURE_LOAD_COMMAND",
-    "DEMO_FIXTURE_RELATIVE_PATH",
     "detect_docker",
     "prompt_for_init_setup",
 ]
@@ -81,10 +81,13 @@ __all__ = [
 # duplicating the literal.
 DEMO_CONTAINER_NAME = "sb-demo-pg"
 
-# D2: fixture path is repo-relative. The fixture-load helper joins
-# this against the current working directory; tests can monkeypatch
-# `Path.cwd` to point at a synthetic repo.
-DEMO_FIXTURE_RELATIVE_PATH = "schemabrain/eval/fixtures/ecommerce.sql"
+# Bundled basename for the ecommerce fixture. Resolved to an absolute
+# path at call time via `schemabrain.eval.bundled.resolve_bundled_path`
+# — the same helper that backs `schemabrain fixture-path`. A repo-
+# relative path joined against `Path.cwd()` breaks for every
+# `pip install schemabrain` user because the fixture lives inside
+# the wheel, not at `$(pwd)/schemabrain/...`.
+DEMO_FIXTURE_BUNDLED_NAME = "ecommerce.sql"
 
 
 # The demo URL the wizard returns when the user picks the demo path.
@@ -112,11 +115,15 @@ DEMO_DOCKER_RUN_COMMAND = (
 
 # The fixture-load command the wizard shows after Postgres is up.
 # Uses `psql` via a one-off docker container so the user doesn't need
-# `psql` installed locally — matches the SQLAlchemy-load deferral
-# (PR-2 will do the load in-process, eliminating this command).
+# `psql` installed locally. The fixture path is resolved at run time
+# via the `schemabrain fixture-path` CLI — `$(pwd)/schemabrain/...`
+# only worked when the user was inside a cloned repo, but the
+# documented install path is `pip install schemabrain` where the
+# fixture lives inside the wheel. Constructed with an f-string so the
+# bundled basename has a single source of truth.
 DEMO_FIXTURE_LOAD_COMMAND = (
     "docker run --rm --network host "
-    "-v $(pwd)/schemabrain/eval/fixtures/ecommerce.sql:/f.sql:ro "
+    f"-v $(schemabrain fixture-path {DEMO_FIXTURE_BUNDLED_NAME}):/f.sql:ro "
     "-e PGPASSWORD=local postgres:16-alpine "
     "psql -h localhost -p 5433 -U postgres -d postgres -f /f.sql"
 )
@@ -211,6 +218,69 @@ def _handle_own_db_path(*, console: Console) -> str | None:
         console,
         purpose="(we'll wire Claude to this database)",
     )
+
+
+def prompt_for_pii_block(*, console: Console) -> tuple[str, ...]:
+    """Show the PII-block-category choice prompt and return the selected
+    categories.
+
+    Runs from ``_cmd_init`` when stderr is a TTY AND ``--yes`` was NOT
+    passed. The caller is responsible for gating on both conditions.
+    Returns the categories that will be written as ``--pii-block`` into
+    the host snippet, or ``()`` for "no PII enforcement".
+
+    Default is ``contact`` because it covers the most universally
+    sensitive PII (email, phone, address) without surprising the
+    operator with refusals on benign business-domain columns. The
+    "all" option enumerates the v1 closed set so the operator sees
+    exactly what's in scope; "none" is the development-database
+    escape hatch.
+
+    ``KeyboardInterrupt`` propagates verbatim so Ctrl-C aborts the
+    setup; non-interactive callers (or ``--yes`` paths) should not
+    reach this helper and instead apply the ``("contact",)`` default
+    directly.
+    """
+    from rich.prompt import Prompt
+
+    with pause_active_spinner():
+        console.print()
+        console.print("  [bold]Block PII categories from agent queries?[/]")
+        console.print(
+            "  [bright_black]Refuses get_metric calls that touch the selected categories — "
+            "agents can still describe the schema but cannot aggregate PII columns.[/]"
+        )
+        console.print()
+        console.print(
+            f"    [bright_black]{GLYPH_ACTIVE} 1. Recommended: contact (email, phone, address)[/]"
+        )
+        console.print(
+            f"    [bright_black]{GLYPH_ACTIVE} 2. All categories "
+            "(contact, financial, payment_card, health, government_id, ...)[/]"
+        )
+        console.print(
+            f"    [bright_black]{GLYPH_ACTIVE} 3. None "
+            "(dev/synthetic data only — agent sees all PII columns)[/]"
+        )
+        console.print()
+        choice = Prompt.ask(
+            "  [cyan]Choice[/]",
+            console=console,
+            choices=["1", "2", "3"],
+            default="1",
+            show_default=True,
+            show_choices=False,
+        )
+    if choice == "1":
+        return ("contact",)
+    if choice == "2":
+        # The closed v1 set imported locally — keeps the prompt
+        # default-driven and avoids forcing the operator to type the
+        # full enum. Sorted for stable host-snippet output.
+        from schemabrain.pii.categories import PII_CATEGORIES
+
+        return tuple(sorted(PII_CATEGORIES))
+    return ()
 
 
 # D2: subprocess timeouts. Tight enough to surface a stuck Docker
@@ -379,23 +449,32 @@ def _docker_load_fixture(*, console: Console) -> bool:
 
     Mirrors the shape of the pre-D2 manual command (uses
     ``--network host`` to reach 127.0.0.1:5433 from inside the
-    container). The fixture path is resolved against the current
-    working directory — same as the operator-visible recipe — so
-    running ``schemabrain init`` from the repo root works.
+    container). The fixture path is resolved through
+    ``schemabrain.eval.bundled.resolve_bundled_path`` — same helper
+    that backs the ``schemabrain fixture-path`` CLI — so the path
+    works whether the package is pip-installed or run from a cloned
+    repo.
 
     Returns False (with a printed explanation) when:
-    - the fixture file doesn't exist (operator ran init from outside
-      the repo — the manual recipe also wouldn't work in that case)
+    - ``resolve_bundled_path`` can't find the bundled fixture (means
+      the wheel is broken — a loud failure beats silently falling
+      back to the manual recipe)
     - the docker subprocess fails (most commonly: Postgres rejected
       the connection mid-load; less commonly: psql couldn't read the
       mounted file)
     """
-    fixture_path = Path.cwd() / DEMO_FIXTURE_RELATIVE_PATH
-    if not fixture_path.exists():
+    try:
+        fixture_path = resolve_bundled_path(DEMO_FIXTURE_BUNDLED_NAME)
+    except (OSError, ValueError) as exc:
+        # OSError covers FileNotFoundError (wheel missing the asset) and
+        # PermissionError (NFS, snap-confined Docker, macOS quarantine
+        # flags on extracted wheel files). Both surface to the user with
+        # the same recovery — the underlying message tells them which.
         console.print(
-            f"  [yellow]{GLYPH_WARN} Fixture not found at "
-            f"[cyan]{fixture_path}[/] — run [cyan]schemabrain init[/] "
-            "from the repo root, or load fixtures manually.[/]"
+            f"  [yellow]{GLYPH_WARN} Couldn't resolve bundled ecommerce "
+            f"fixture: {exc}. The installed wheel may be incomplete or "
+            "unreadable — re-run "
+            "[cyan]pip install --force-reinstall schemabrain[/].[/]"
         )
         return False
 
@@ -559,8 +638,12 @@ def _handle_demo_path(*, console: Console) -> str | None:
     console.print()
     console.print(
         "  [bright_black]Both commands take ~30s on first run "
-        "(image pull). Press Enter when both have finished.[/]"
+        "(image pull). If [cyan]schemabrain[/] is not on PATH in the "
+        "shell you paste this into (e.g. virtual environment not "
+        "activated), the fixture path expansion will be empty and "
+        "psql will load an empty file — activate the venv first.[/]"
     )
+    console.print("  [bright_black]Press Enter when both have finished.[/]")
 
     with pause_active_spinner():
         Prompt.ask(

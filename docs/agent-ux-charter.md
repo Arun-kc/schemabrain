@@ -1,9 +1,24 @@
-# Schema Brain MCP Charter v1.1.0
+# Schema Brain MCP Charter v1.2.0
 
 > **Status:** locked 2026-05-12 as the public design contract for Schema Brain's
 > MCP surface. Living document; version bumps governed by the Versioning section
 > below. All MCP tools shipped from v0.5 onward conform to this charter unless
 > explicitly noted in their docstring.
+>
+> **Minor v1.2.0 (2026-05-23):** additive — 2D trust signal. New optional
+> `Provenance.inference_method` Literal (closed: `manually_authored |
+> llm_suggested | fk_constraint | dbt_import | observed_in_query_log`)
+> names HOW each fact was derived. New optional `Provenance.validation_state`
+> Literal (closed: `draft | applied | confirmed`) names HOW VALIDATED that
+> fact is. The orthogonal axes replace the pre-1.2 behaviour where every
+> producer hardcoded `confidence="HIGH"` regardless of derivation (which
+> conflated FK-derived joins with LLM-guessed metrics on the same scale).
+> The `confidence` field stays — its value is now derived from the 2D
+> signal via `derive_confidence()`. Old clients reading only `confidence`
+> see a more honest 1D label; new clients can read the 2D signal directly.
+> All changes are backward-compatible with v1.0 / v1.1 clients. The wire
+> `charter_version` field bumps from `"1.1"` to `"1.2"`. Full type spec
+> in `schemabrain/mcp/envelope.py`.
 >
 > **Minor v1.1.0 (2026-05-15):** additive — three new ErrorKinds
 > (`pii_blocked`, `policy_blocked`, `allowlist_violation`); reserved
@@ -407,7 +422,7 @@ The charter follows semver:
 
 Every tool's metadata includes its `charter_version`. The wire field
 emits the **shape contract** version (`major.minor` only — e.g. `"1.0"`,
-`"1.1"`, `"2.0"`); patch bumps are documentation-only and do not change
+`"1.1"`, `"1.2"`, `"2.0"`); patch bumps are documentation-only and do not change
 the wire emission. A consumer pinning on `"1.0"` therefore receives all
 1.0.x doc clarifications transparently. Consumers can pin or negotiate.
 Schema Brain commits to maintaining the most-recent two major versions

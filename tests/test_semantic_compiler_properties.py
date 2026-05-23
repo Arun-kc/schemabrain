@@ -50,6 +50,29 @@ SOURCE = "src_a"
 # ----- fixture seed ----------------------------------------------------------
 
 
+# Columns each fixture table carries beyond `id`. PR-6h.3's compile-
+# time column-existence check now validates against the table's column
+# list; the property tests reference these via Hypothesis-generated
+# `entity.column` strings, so every referenced column must be present
+# on the seeded table.
+_FIXTURE_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
+    "orders": (
+        ("user_id", "bigint"),
+        ("product_id", "bigint"),
+        ("status", "text"),
+        ("region", "text"),
+        ("created_at", "timestamptz"),
+        ("refunded_at", "timestamptz"),
+        ("total_amount", "integer"),
+    ),
+    "customers": (
+        ("country", "text"),
+        ("tier", "text"),
+    ),
+    "products": (("category", "text"),),
+}
+
+
 def _seed(store: SQLiteStore) -> None:
     """A rich-enough store to exercise the compiler across input space.
 
@@ -58,22 +81,32 @@ def _seed(store: SQLiteStore) -> None:
     all 5 grains supported).
     """
     for table_name in ("orders", "customers", "products"):
-        store.write_table(
-            Table(
-                name=table_name,
+        extras = _FIXTURE_COLUMNS.get(table_name, ())
+        columns: tuple[Column, ...] = (
+            Column(
+                name="id",
+                table_name=table_name,
                 schema_name="public",
-                columns=(
-                    Column(
-                        name="id",
-                        table_name=table_name,
-                        schema_name="public",
-                        data_type="bigint",
-                        nullable=False,
-                        ordinal_position=1,
-                        is_primary_key=True,
-                    ),
-                ),
+                data_type="bigint",
+                nullable=False,
+                ordinal_position=1,
+                is_primary_key=True,
             ),
+            *(
+                Column(
+                    name=col_name,
+                    table_name=table_name,
+                    schema_name="public",
+                    data_type=col_type,
+                    nullable=True,
+                    ordinal_position=2 + i,
+                    is_primary_key=False,
+                )
+                for i, (col_name, col_type) in enumerate(extras)
+            ),
+        )
+        store.write_table(
+            Table(name=table_name, schema_name="public", columns=columns),
             source_connection_id=SOURCE,
         )
     store.write_entity(
@@ -390,21 +423,33 @@ def test_resolver_determinism(
 @given(
     group_by=st.lists(st.sampled_from(_GROUP_BY_OPTIONS), max_size=4).map(tuple),
 )
-def test_joins_sorted_by_canonical_name(
+def test_joins_follow_first_mention_order(
     shared_store: SQLiteStore,
     group_by: tuple[str, ...],
 ) -> None:
-    """`MetricPlan.joins` is always sorted alphabetically by canonical
-    name, regardless of group_by ordering. The emitter depends on
-    this for deterministic JOIN clause ordering."""
+    """`MetricPlan.joins` is emitted in topological chain order — for
+    this single-hop fixture (each entity reachable from anchor in one
+    hop), that maps to "first-mention order" in `group_by`. The
+    emitter relies on topological ordering so each JOIN can reference
+    the previous hop's alias on the left side; the previous v1
+    contract (alphabetical sort) no longer holds since PR-6h.1's
+    multi-hop work."""
     plan = resolve_metric_plan(
         store=shared_store,
         source_connection_id=SOURCE,
         metric_name="total_revenue",
         group_by=group_by,
     )
-    names = [j.canonical_name for j in plan.joins]
-    assert names == sorted(names)
+    # Reconstruct the expected first-mention order of non-anchor entities.
+    expected_entity_order: list[str] = []
+    for column_ref in group_by:
+        entity = column_ref.split(".", 1)[0]
+        if entity == "order":
+            continue  # anchor, no join needed
+        if entity not in expected_entity_order:
+            expected_entity_order.append(entity)
+    actual_entity_order = [j.target_entity for j in plan.joins]
+    assert actual_entity_order == expected_entity_order
 
 
 @settings(
