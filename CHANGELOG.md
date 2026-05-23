@@ -7,447 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **Wizard's `_resolve_runner` defaulted to `uvx schemabrain==<__version__>`
-  whenever uvx was on PATH, regardless of how the local install got
-  there.** For users who pip-installed schemabrain from PyPI this was
-  fine; for users with local wheel / editable / VCS installs whose
-  substrate had drifted from PyPI's published wheel of the same
-  package version, uvx fetched an older substrate that could not read
-  the local store. Claude Desktop's MCP server then refused to start
-  with a clear-but-fatal "Store schema version mismatch". `_resolve_runner`
-  now reads PEP 610 `direct_url.json` first: absent means installed
-  from a package index (default PyPI, safe to uvx-pin); present means
-  local / editable / VCS (fall back to the absolute path of the
-  installed entrypoint so the host launches the same code that ran
-  the wizard). Existing tests that wanted the uvx-pin happy path now
-  stub `_is_pypi_install` to True alongside the existing `shutil.which`
-  stub.
-- **`examples/anthropic_demo.py` spawned the MCP server via
-  `command="uv", args=["run", "schemabrain", "serve", ...]`** while the
-  documented user invocation is `python examples/anthropic_demo.py`
-  after a plain `pip install schemabrain`. For pip-only environments
-  without uv on PATH, the demo silently 127'd. Changed to
-  `command="schemabrain"` directly — works whenever the package is
-  importable, which is necessary for the demo to run anyway.
-- **README sample session referenced a `product_categories` junction
-  table that doesn't exist in the bundled fixture.** End-to-end
-  walkthrough against a fresh `pip install` showed `resolve_join(product,
-  category)` returns `kind: no_canonical_join` because no junction
-  exists in the schema. Sample session rewritten to match what Claude
-  actually does on the bundled fixture: probes the entity layer, hits
-  the structured refusal, verifies at the physical layer, refuses to
-  invent the missing junction, and pivots to a fully-resolvable
-  customer-spend query with the PII flag on `full_name` surfaced. The
-  differentiator paragraph now leads with refusal-not-fabrication as
-  the safety mechanism — backed by the concrete recovery envelope shape.
-
-### Changed
-- **README firewall property #4 narrowed to the `get_metric` tool
-  boundary.** The heading and body previously implied uniform PII
-  enforcement at "the tool boundary"; live walkthrough showed
-  lower-level tools (`describe_entity`, `resolve_join`, `describe_table`)
-  surface PII column names + JOIN skeletons as advisory metadata, not
-  enforced refusals. An agent that doesn't invoke `get_metric` can
-  compose PII-touching SQL from those outputs. Heading updated to
-  "PII-aware refusal at the `get_metric` tool boundary"; body adds an
-  "Enforcement scope" line acknowledging the current binding and
-  forward-linking to "Where it's going" where `validate_query` /
-  `execute` are the substrate for uniform SQL-layer enforcement.
-- **README lead-paragraph cost anchor `~$0.01 to index the bundled
-  7-table demo` corrected to `~$0.03`.** The headline undersold the
-  actual cost by 3.3x because it only counted column-description
-  enrichment (Haiku), not entity + metric curation (Sonnet). Both
-  models are now named explicitly in the cost line.
-- **README mechanism tagline gains a 3-word qualifier**: *"The agent
-  never writes SQL **against your database.** Schema Brain does, from
-  definitions you control."* End-to-end walkthrough showed an agent
-  can compose SQL strings from `describe_entity` column names +
-  `resolve_join` SQL skeletons in conversation context; the strings
-  just don't execute against the database (Schema Brain mediates
-  execution). The qualifier preserves the rhetorical punch without
-  falsifying the literal claim.
-
-### Fixed
-- **Wizard-curated entities and metrics were tagged
-  `inference_method="manually_authored"` instead of `"llm_suggested"`,
-  silently collapsing the charter v1.2 2D trust signal on the wizard
-  happy path.** The suggest-YAML parsers in `entities/suggest.py` and
-  `metrics/suggest.py` constructed `Entity` / `Metric` objects without
-  passing `inference_method`, so the dataclass default
-  (`"manually_authored"`) was applied to every LLM-suggested row.
-  Combined with `validation_state="applied"`, that collapsed
-  `derive_confidence()` to HIGH everywhere — entities, joins, AND
-  metrics all reported flat HIGH on the wire, making the 2D
-  differentiation indistinguishable from a 1D HIGH. Now both parsers
-  explicitly set `inference_method="llm_suggested"` at construction.
-  Hand-authored YAMLs flowing through `yaml_grammar.py` still default
-  to `"manually_authored"` (correct); `joins/suggest.py` was already
-  setting the right `fk_constraint` / `observed_in_query_log` based
-  on evidence. New regression tests assert the round-trip parser
-  carries the right value.
-- **MCP refusal envelopes carried a `recovery.suggested_tool` but
-  left `recovery.suggested_args` null even when the message text
-  named a structured arg the agent should pass back.** Two surfaces
-  fixed: `ambiguous_time_dimension` now populates
-  `{"time_dimension": <first_candidate>}`; `pii_blocked` now
-  populates `{"name": <anchor_entity>}` so the follow-up
-  `describe_entity` lands on the right entity. An agent acting on
-  the structured recovery contract no longer has to parse the
-  human-readable message to extract a retry arg. `PiiBlockedError`
-  gained an optional `anchor_entity` field (kwarg defaults to `None`;
-  existing callers unaffected).
-- **`serverInfo.version` in the MCP `initialize` response leaked the
-  underlying `mcp` SDK package version (e.g. `1.27.1`) instead of
-  Schema Brain's own version string.** FastMCP doesn't accept a
-  `version` kwarg and the low-level Server defaults `server_version`
-  to `pkg_version("mcp")`. Pinning the underlying server's `version`
-  attribute to `schemabrain.__version__` after construction makes MCP
-  clients see the right server identity (`0.3.0`) in the handshake.
-  New regression tests in `TestServerInfoVersion`.
-- **`schemabrain audit list` empty-state was ambiguous.** A bare
-  "no audit rows matched the filters" landed for both an empty audit
-  table AND a populated table whose rows didn't match the filters.
-  Operators couldn't tell whether the MCP server had never been
-  driven, or whether they had a filter typo. The empty-table branch
-  now prints "(audit log is empty — no MCP tool calls have run yet)"
-  with a `next:` hint pointing at the MCP client surfaces that
-  populate audit rows. The filtered-empty branch reports the total
-  row count and suggests widening with `--since` / dropping
-  `--status`/`--tool`. New regression test
-  `test_filters_excluding_all_rows_show_total_and_widen_hint`.
-- **Bridge join names truncated with an ellipsis on narrow terminals
-  in `schemabrain inspect <entity>`.** Synthesised bridge names
-  (`<a>_<b>_via_<junction>`) are typically long, and Rich's default
-  column overflow behaviour truncated the name with `…` when the
-  related-entities table sized down. Setting `overflow="fold"` on the
-  `On` column lets the bridge marker line wrap across visual rows
-  instead, preserving the full identifier. New regression test
-  `test_bridge_edge_never_truncates_long_join_name`.
-- **Reverse-traversal cardinality flip missed same-name FK joins —
-  silent over-counting on grouped aggregates.** The earlier fan-out
-  detector compared on-pair tuples against the stored `join.on` to
-  decide whether BFS had walked a canonical join in reverse. When the
-  FK source and target columns shared a name (extremely common: an FK
-  on `customer_id` between `rental.customer_id` and
-  `customer.customer_id`), the swapped pairs compared equal to the
-  stored pairs and the cardinality flip silently never fired. A
-  metric anchored on `customer` grouped by `rental.rental_date`
-  reported `cardinality=many_to_one` instead of the correct
-  `one_to_many`, `fan_out_join_names` came back empty, and the
-  envelope shipped `status="success"` with inflated counts. Replaced
-  the heuristic with an explicit `is_reverse_traversal: bool` flag
-  carried on `_ChainEdge` and set deterministically at graph-build
-  time. Surfaced by a Pagila re-test: 158 distinct customers per
-  rental timestamp were reported as 182 by the compiler before the
-  fix. New regression test
-  `TestReverseTraversalCardinalityFlip::test_same_name_fk_reverse_traversal_flips_cardinality`.
-
 ### Added
-- **`get_metric` accepts a `time_dimension` argument to disambiguate
-  inheritance.** When a metric carries no local `time_dimension` and
-  the resolver finds 2+ reachable timestamp columns via canonical-
-  join chains, the agent now re-calls with
-  `time_dimension="<entity>.<column>"` chosen from the
-  `ambiguous_time_dimension` error envelope's candidate list. A
-  value not in the candidate set falls through to the same error
-  with the full valid list preserved so the next retry has real
-  choices. Silently ignored when the metric has its own declared
-  `time_dimension` (declared dimension always wins). New
-  `time_dimension` parameter threaded through `get_metric_impl` and
-  `resolve_metric_plan`; new tool-schema description on the MCP
-  `get_metric` registration.
-- **`schemabrain inspect <entity>` now renders the same trust line
-  as the metric and join drill views** — `Trust: <inference_method>
-  · <validation_state> (<CONF>)` at the bottom of the entity drill.
-  Operators previously got no surface signal for whether an
-  entity's identity/binding was LLM-suggested, FK-derived, or
-  hand-authored even though the data was present in the dataclass.
-- **The init wizard now prompts the operator to choose PII-block
-  categories** before constructing the host snippet. Three options:
-  recommended (`contact` — email/phone/address), all v1 categories,
-  or none (dev/synthetic databases). Default = the prior silent
-  behavior so the zero-effort path is unchanged. Non-interactive
-  flows (`--yes`, piped stderr) skip the prompt and use the same
-  `("contact",)` default.
-
-- **`entities list`, `joins list`, and `metrics list` CLI commands
-  now surface the charter v1.2 2D trust signal.** Each rendered row
-  now ends with `trust=<inference_method> · <validation_state>
-  (<CONF>)` alongside the legacy `origin=` field, so the discovery
-  surface agrees with the `inspect <name>` drill view's vocabulary.
-  The 2D signal lived on the envelope and MCP responses but the CLI
-  list surfaces still printed only the 1D `origin=`, which made
-  operators rely on the v1.0 vocab even after the v1.2 charter
-  shipped. New helper `_format_trust(inference_method,
-  validation_state)` in `schemabrain.cli` lazily imports
-  `derive_confidence` to keep Pydantic off the import path of CLI
-  commands that don't render trust.
-- **Junction-table bridge synthesis on read.** `list_joins` and
-  `schemabrain inspect <entity>` now surface logical M:N bridges
-  through junction entities (e.g. `products <-> categories via
-  product_categories`) alongside direct canonical joins. Detection
-  reuses the existing `Table.is_junction_table()` heuristic
-  (composite PK whose columns are all FK sources to ≥2 distinct
-  targets); synthesis pairs the junction's canonical-join legs and
-  emits one `JoinSummary` per unordered endpoint pair with
-  `via_junction` + `via_joins` carrying the bridge mediation. No
-  schema change — bridges are computed fresh on every read so
-  follow-up edits to either leg reflect immediately. New module
-  `schemabrain.joins.bridges` (`find_junction_entities`,
-  `synthesize_bridges`, `synthesize_bridges_for_entity`,
-  `composed_on_pairs`). Bridge inference inherits the WORST signal
-  of its two legs — if either leg is `llm_suggested`, the bridge
-  is too, so the agent cannot trust the bridge more than its
-  weakest link. New optional `via_junction: str | None = None` +
-  `via_joins: tuple[str, ...] = ()` fields on `JoinSummary` carry
-  bridges over the wire; old clients that ignore them still see
-  the entity pair and provenance. `RelatedEntity` gains the same
-  `via_junction` field so `inspect` can mark mediated relationships
-  in the renderer.
-- **Charter v1.2 time-dimension inheritance via canonical-join
-  chains.** When a metric has no `time_dimension` of its own AND
-  the caller passes `time_grain`, the resolver BFSes the canonical-
-  join graph for reachable entities with timestamp-typed columns
-  over non-fan-out edges (`many_to_one` / `one_to_one` only) and
-  inherits the unique candidate. The plan ships with
-  `time_dimension_resolution="inherited"` and
-  `inherited_time_dimension="<entity>.<column>"`; the emitter
-  date_truncs against the joined entity's alias rather than the
-  anchor's. 2+ candidates raise the new
-  `AmbiguousTimeDimensionError`; 0 candidates ship unbucketed with
-  `time_dimension_resolution="unavailable"`. New ErrorKind
-  `ambiguous_time_dimension` (recovery contract: agent re-calls
-  with explicit `time_dimension` once the override path lands).
-  New DegradationReason `time_dimension_unavailable`. The fields
-  surface on `MetricResult` so the agent sees which column was
-  used and via which chain.
-- **Charter v1.2 column-granular PII redaction in
-  `describe_entity`.** Each column's real
-  `pii_sensitivity` and `pii_categories` now propagate from the
-  `column_pii_tags` store layer (previously hardcoded to
-  `"public"`). When the server-policy `--pii-block` set
-  intersects a column's categories, that column's
-  `EntityColumn.redacted` field is `True` and its LLM-enriched
-  semantic `description` is cleared — moving PII refusal from
-  "whole entity blocked" to "specific columns redacted". The
-  agent still sees the column exists; it just cannot read the
-  model-generated semantics for it. The `EntityDetail`-level
-  `redacted_columns: tuple[str, ...]` lists the redacted names
-  at a glance. Envelope `confidence` is capped at MEDIUM when
-  any redaction is applied so the agent knows it saw a partial
-  view. `describe_entity_impl` accepts a `pii_block` kwarg for
-  callers that build their own server scaffold.
-- **Non-e-commerce-domain PII coverage.** Five new rules in
-  `schemabrain.pii.classifier` extend the heuristic taxonomy to medical
-  and blockchain-analytics schemas without relying on operator overlays.
-  `RULE_COUNT` 41 → 46.
-  - Medical: `encounter_id` / `visit_id` / `admission_id` /
-    `discharge_id` → `health` (a clinical interaction occurring is
-    HIPAA-sensitive even without clinical detail); `insurance_member_id`
-    / `insurance_subscriber_id` → `health`; `npi` / `provider_npi` /
-    `dea_number` → `government_id` (HHS / DEA-issued professional
-    identifiers).
-  - Blockchain: `wallet_address` / `blockchain_address` /
-    `crypto_address` → `online_identifier` (pseudonymous on-chain
-    identifier; matched in union with the existing `address` contact
-    rule per the over-tag posture); `private_key` / `seed_phrase` /
-    `mnemonic_phrase` / `mnemonic` → `credential` (key material whose
-    disclosure is catastrophic).
-- **Composite-expression measures via a strict whitelist grammar.**
-  `MetricMeasure` now accepts `expression: str` alongside `column: str`
-  (XOR: exactly one set). Composite expressions like `unit_price *
-  quantity` parse through Python's stdlib `ast.parse(mode='eval')` with
-  a node-type whitelist — identifier-shaped columns, integer + float
-  literals, unary `-`, binary `+ - * /`, and parens. Anything outside
-  the whitelist (function calls, comparisons, attribute access, etc.)
-  raises `MalformedMeasureExpressionError` at parse time so the SQL
-  emitter never sees free-form text. The emitter renders each operand
-  with the same double-quoting + alias-prefix discipline as the
-  single-column path; numeric literals are formatted via
-  `str(int)` / `repr(float)`. SQL injection surface closed by
-  construction. New module `schemabrain.semantic.compiler.measure_expression`.
-- **Compile-time `unknown_measure_column` envelope.** Parallel to
-  the existing `unknown_group_by_column` / `unknown_filter_column` —
-  every column the measure references is now validated against the
-  anchor entity's table at compile time. Closes a typo-becomes-
-  `internal_error` gap that existed even for v1 bare-column measures
-  and would have widened sharply with composite expressions.
-- **`schemabrain/metrics/fixtures/ecommerce/total_revenue_real.yaml`:**
-  bundled composite-expression metric over the demo's `order_item`
-  entity. Computes line-level revenue as
-  `SUM(unit_price_cents * quantity)` — closes a v1 DSL gap where
-  a metric anchored on `order_item` couldn't express revenue
-  derived from the line-item columns themselves.
-- **Charter v1.2: 2D trust signal — `Provenance.inference_method`
-  + `Provenance.validation_state`.** Replaces the v1.1 era's
-  hardcoded `confidence="HIGH"` on every entity / metric / join
-  producer with a derived label computed from two orthogonal axes:
-  HOW was the fact derived (`manually_authored`, `llm_suggested`,
-  `fk_constraint`, `dbt_import`, `observed_in_query_log`) and HOW
-  VALIDATED is it (`draft`, `applied`, `confirmed`). `derive_
-  confidence(method, state)` is the matrix; `derive_provenance_
-  source(method)` keeps the v1.0 `Provenance.source` field
-  consistent so old clients see a sensible value. Additive
-  charter bump — v1.1 / v1.0 clients still deserialize cleanly.
-  Per-row signal lands on the Pydantic summaries (`EntitySummary`,
-  `MetricSummary`, `JoinSummary`, `EntityDetail`,
-  `CanonicalJoinInfo`, `MetricResult`).
-- **Store schema bump 13 → 14: `inference_method` +
-  `validation_state` columns on entities, metrics, and
-  canonical_joins.** First real in-place migration:
-  `_migrate_v13_to_v14` ALTERs the three tables, backfills from
-  the existing `origin` column (`manual` → `manually_authored` +
-  `confirmed`; `suggested` → `llm_suggested` + `applied`;
-  `dbt_import` → `dbt_import` + `applied`), and stamps version to
-  14. Pre-v13 stores still raise `SchemaVersionMismatchError`.
-- **FK-inferred cardinality at suggest time.** `joins suggest`
-  now infers `many_to_one` / `one_to_one` / `one_to_many` from FK
-  + PK info via `_infer_fk_cardinality`. Removes the spurious
-  fan-out warning the prior `cardinality=None`-default suggester
-  produced on every typical OLTP FK chain.
-- **Direction-aware effective cardinality on `ResolvedJoin`.**
-  The resolver flips the stored cardinality via
-  `core.join.flip_cardinality` when BFS walks a canonical join in
-  reverse of its stored direction. The fan-out detector now reads
-  the EFFECTIVE value verbatim — multi-hop chains whose reverse
-  hop multiplied anchor rows used to be missed.
-- **`schemabrain inspect <name>` drills through metrics and
-  joins.** Adds `MetricDetail` + `JoinDetail` data builders and
-  parallel renderers; `_cmd_inspect` resolves `name` as
-  entity → metric → join in priority. The pre-fix surface returned
-  `no entity named <X>` for a metric or join name, breaking the
-  summary view's "Drill into one" link.
-- **MCP server `icons` + `website_url`.** FastMCP `initialize`
-  response now carries three icon sizes (32 / 64 / 512 PNG) and
-  the project repo URL so hosts that render server cards (Claude
-  Desktop, Cursor) display the schemabrain mark instead of a
-  generic placeholder.
-- **Init wizard installs `--pii-block contact` by default.** The
-  Claude Desktop snippet `build_snippet` writes the categories
-  passed via `WizardConfig.pii_block`; the default
-  (`("contact",)`) ensures the firewall is active on a fresh
-  install. Operators with development / synthetic-data sources
-  can opt out.
+- `schemabrain metrics show <name>` — namespaced drill into one metric. Renders the same `MetricDetail` view that `inspect <name>` does, but skips the entity → metric → join priority cascade so an operator who knows they want a metric is not shadowed by an entity / join sharing the same name. Cross-source posture matches `inspect`: without `--source` walks every source the store knows about; missing name exits 1 with a next-step hint. ([#101])
+- Charter v1.2: 2D trust signal (`Provenance.inference_method` × `Provenance.validation_state`) replaces hardcoded `confidence="HIGH"` on every entity / metric / join producer; surfaces on Pydantic summaries, the `inspect` drill, and `entities` / `joins` / `metrics list`. ([#95])
+- Composite-expression measures via strict whitelist grammar — `MetricMeasure.expression` parses through `ast.parse` with a node-type whitelist; SQL injection surface closed by construction. Bundled `total_revenue_real.yaml` fixture. ([#91])
+- `get_metric` accepts a `time_dimension` arg to disambiguate inheritance; resolver BFSes the canonical-join graph for reachable timestamp columns over non-fan-out edges. ([#95], [#96])
+- Junction-table bridge synthesis on read — `list_joins` / `inspect` surface M:N bridges through junction entities. ([#95])
+- Column-granular PII redaction in `describe_entity` (was whole-entity); init wizard prompts the operator to choose PII-block categories (default `contact`). ([#95])
+- FK-inferred cardinality at `joins suggest` time + direction-aware effective cardinality on `ResolvedJoin` (reverse-walk hops flip cardinality correctly). ([#95])
+- 5 new PII-classifier rules for medical (`encounter_id`, `npi`, …) and blockchain (`wallet_address`, `private_key`, …) schemas; `RULE_COUNT` 41 → 46. ([#94])
+- `schemabrain inspect <name>` resolves entity → metric → join in priority and drills through metrics + joins. ([#95])
+- MCP server `icons` (32 / 64 / 512 PNG) + `website_url` in the `initialize` response. ([#95])
+- Compile-time `unknown_measure_column` envelope. ([#91])
+- Store schema bumps: 12 → 13 (composite-expression column with XOR CHECK) and 13 → 14 (`inference_method` + `validation_state`; first in-place migration). ([#91], [#95])
 
 ### Changed
-- **`get_metric` auto-fills `ORDER BY` with the group columns when
-  the caller passes `group_by` without `order_by`.** The
-  `missing_order_by_with_limit` degradation reason fired on every
-  grouped query without an explicit sort — agents do that
-  constantly because LIMIT defaults to 1000 and the first call
-  rarely cares about row order. Combined with the MEDIUM cap from
-  PII redaction and other paths, this trained agents to ignore
-  `degraded` status entirely. The determinism concern was real;
-  the right fix is to make the default deterministic instead of
-  flagging every call. The resolver now auto-fills `order_by` with
-  every group column ASC when `order_by == () and group_by != ()`;
-  the LIMIT slice stays deterministic on the default path.
-  Server-side `missing_order_by_with_limit` branch removed; the
-  `DegradationReason` Literal still includes the value for
-  audit-row backwards compatibility, but new envelopes never emit
-  it. Callers wanting a specific sort pass `order_by` explicitly,
-  unchanged.
-- **`MetricResult.fingerprint` docstring now documents the
-  privacy-by-construction behavior (ADR 0001).** Fingerprints
-  deliberately repeat across calls with similar AST shape + PII
-  tags + cost class — the hash explicitly excludes row content and
-  identifying schema info. Operators reading `audit list` who saw
-  the same prefix across distinct queries were misreading the
-  privacy guarantee as a hash-collision bug.
-- **`serverInfo.instructions` (MCP) + `ToolError` docstring
-  (envelope) say `charter v1.2`.** The substrate
-  (`schemabrain/mcp/shapes.py`) already advertised `v14 / charter
-  v1.2` in 7+ sites; two cosmetic docstring lag-sites cleaned up.
-- **MCP `CHARTER_VERSION` bumps `1.1` → `1.2`.** Wire-compatible
-  with v1.1 / v1.0 clients; `confidence` is now a derivation
-  rather than a hardcoded HIGH.
+- README sample session rewritten against the bundled fixture (refusal + pivot, not the fictional `product_categories` junction). ([#100])
+- README cost anchor corrected `~$0.01 → ~$0.03` (Haiku + Sonnet split named); firewall property #4 narrowed to the `get_metric` boundary; hero tagline gains "against your database" qualifier. ([#100])
+- README leads with SQL-firewall positioning and a 2×3 firewall property grid; `examples/anthropic_demo.py` promoted as the 5th firewall property. ([#90], [#97])
+- README lead paragraph tightened; `docs/mcp-tools.md` tool count synced `10 → 12`. ([#98])
+- Charter doc bumped 1.1.0 → 1.2.0; MCP `CHARTER_VERSION` 1.1 → 1.2 (wire-compatible with v1.1 / v1.0 clients). ([#95], [#99])
+- YAML grammar: `measure.expression` is a valid alternative to `measure.column` (XOR). MCP `MetricSummary.measure_column` becomes `str | None`; new `measure_expression: str | None` field. ([#91])
+- PII propagation walks every column the measure expression touches (was only `measure.column` — composite expressions previously bypassed `--pii-block` on tagged-but-unwalked operands). ([#91])
+- `get_metric` auto-fills `ORDER BY` with the group columns when caller omits `order_by`; `missing_order_by_with_limit` degradation removed from emit path. ([#96])
+- Domain-agnostic LLM system prompts (placeholder column / table names, cross-domain `pii_hints` examples). No behavioural change for e-commerce schemas; reduces consumer-data prompt bias for medical / financial / blockchain. ([#94])
+- Wizard `_resolve_runner` detects non-PyPI installs via PEP 610 `direct_url.json` and falls back to the absolute-path runner. ([#100])
+- `MetricResult.fingerprint` docstring documents ADR-0001 privacy-by-construction (repeat-prefix is by design, not a hash collision). ([#96])
 
 ### Fixed
-- **`schemabrain metrics list` empty-state hint.** Mirrors the
-  MCP `list_metrics` tool's empty-state shape — the CLI now tells
-  the operator the next command instead of dead-ending with a
-  parenthetical.
-
-### Changed
-- **YAML measure schema:** `measure.expression` is now a valid
-  alternative to `measure.column`; exactly one of the two must be set.
-- **`MetricSummary` MCP wire shape:** `measure_column` becomes
-  `str | None`; new `measure_expression: str | None` field. Discriminated
-  union — agents reading `list_metrics` branch on which field is
-  populated to decide bare-column vs composite handling.
-- **Store schema bump 12 → 13** for the composite-expression column on
-  the `metrics` table (nullable `measure_column`, new
-  `measure_expression`, table-level XOR CHECK). Pre-alpha contract:
-  operators with v12 stores re-index (re-indexing an unchanged schema
-  costs $0 — fingerprint dedup skips the LLM call).
-- **PII propagation across composite expressions:** every column the
-  measure touches contributes to the propagated category set —
-  previously only `measure.column` was harvested, which for composite
-  expressions would have silently bypassed `--pii-block` on any
-  tagged-but-unwalked operand.
-- **README: promote `examples/anthropic_demo.py` above the Quickstart
-  as the 5th firewall property.** The 230-LOC drop-in proof was buried
-  inside `## After the wizard > Plug into your own agent loop`; now
-  sits at the end of `## The firewall` with the same shape as the
-  four SQL-boundary properties (one-line claim + the actual command
-  + inline forward link). The after-wizard bullet for the Anthropic
-  SDK path is reduced to a one-line pointer so the same proof doesn't
-  appear twice. No code change.
-- **Domain-agnostic LLM system prompts.** The entity-suggestion and
-  metric-suggestion system prompts now use placeholder column / table
-  names in their grammar examples instead of consumer-data-shaped
-  examples (`customer` / `public.users` / `email`, `order_item` /
-  `unit_price_cents` / `quantity`). Rule text references cross-domain
-  examples (`patient_id`, `wallet_address`, `mrn` for entity `pii_hints`;
-  `success_rate` / `interest_rate` / `mortality_rate` for the metric
-  percentage/ratio rule) to make it explicit that the same grammar
-  applies to clinical, financial, legal, commerce, and blockchain-
-  analytics schemas. No behavioural change for e-commerce-shaped
-  schemas; reduces consumer-data prompt bias for non-commerce schemas.
-- **`schemabrain/profiler/postgres.py` module docstring** now documents
-  the v1 non-goal of JSONB-path decomposition explicitly, with
-  workarounds (normalized views / dbt importer) for operators with
-  JSONB-heavy schemas. No code change.
-
-### Fixed
-- **Measure-expression parser rejects non-finite float literals.**
-  `ast.parse("1e500", mode="eval")` silently overflows to
-  `ast.Constant(value=inf)`; without a guard the renderer's
-  `repr(inf)` would have written the bare token `inf` into the SQL
-  stream, which Postgres can't interpret as a numeric — surfacing as
-  `internal_error` at execute time instead of a clean
-  `MalformedMeasureExpressionError` at parse time. Same fix covers
-  `nan` (via `1e500 - 1e500`).
-- **Measure-expression parser rejects literal-only expressions.**
-  An expression like `100` or `1 + 2` passed validation but would
-  compile to `agg(100) AS "m"` — a constant per group. Reject at
-  parse time so a typo like `expression: "100"` (instead of
-  `column: "amount"`) surfaces immediately rather than as
-  constant-value results.
-- **`MetricMeasure.column is None`** is now handled at every consumer
-  site: `check/engine.py` (drift detection iterates `measure_columns`
-  so composite-expression operand drops show up as `measure_column_missing`
-  drifts with the right fix-hint), `inspect/engine.py` + `inspect/render.py`
-  (composite metrics render as `sum(unit_price * quantity)` instead of
-  `sum(None)`), and three `cli.py` paths (`metrics list`, `metrics audit`,
-  and the YAML body `metrics suggest --apply` writes so composite
-  candidates round-trip through the grammar parser).
-- **LLM-suggest path accepts composite-expression candidates.**
-  `_MEASURE_ALLOWED_KEYS` now includes `expression`; `_parse_measure`
-  enforces the column/expression XOR with dedicated error messages
-  matching the YAML grammar. System prompt updated with both the
-  output schema and a worked example showing when to reach for the
-  composite shape (line-item revenue on `order_item`).
-- **`MalformedMetricRowError`** preserves the offending metric name
-  when a store row's `measure_expression` (written via direct SQL
-  bypassing the dataclass invariants) fails the whitelist parser.
-  Previously the wrapped `ValueError` was caught by the MCP server's
-  defensive `except Exception` and reduced to a bare `internal_error`
-  envelope with no diagnostic; the new exception preserves
-  `name` + `reason` as structured fields, the server includes the
-  metric name in the envelope message, and the CLI's existing
-  `metrics list` exit-2 corrupt-store contract remains intact.
+- Reverse-traversal cardinality flip missed same-name-FK joins (e.g. `rental.customer_id ↔ customer.customer_id`), silently over-counting on grouped aggregates — Pagila re-test reported 182 customers where ground truth was 158. Replaced heuristic with explicit `is_reverse_traversal` flag on `_ChainEdge`. ([#95])
+- Wizard tagged LLM-suggested entities + metrics as `manually_authored`, collapsing the 2D trust signal to flat HIGH on the wizard happy path. ([#96])
+- MCP refusal envelopes left `recovery.suggested_args` null even when the message named a structured arg — now populated for `ambiguous_time_dimension` and `pii_blocked`. ([#96])
+- `serverInfo.version` leaked the `mcp` SDK package version (`1.27.1`) instead of `schemabrain.__version__`. ([#96])
+- `schemabrain audit list` empty-state was ambiguous (empty audit log vs filtered-out rows); empty branch now says so explicitly with a `next:` hint. ([#96])
+- Bridge join names truncated with `…` on narrow terminals in `inspect <entity>`; `On` column now wraps via `overflow="fold"`. ([#96])
+- Measure-expression parser rejects non-finite float literals (`1e500 → inf` / `nan`) and literal-only expressions (`100`, `1 + 2`) at parse time. ([#92])
+- `MetricMeasure.column is None` now handled at every consumer site (`check`, `inspect`, `cli metrics list` / `audit` / `suggest --apply`). ([#92])
+- LLM-suggest path accepts composite-expression candidates; `MalformedMetricRowError` preserves the metric name through the MCP envelope (was reduced to bare `internal_error`). ([#92])
+- `examples/anthropic_demo.py` spawned the MCP server via `uv run schemabrain serve` despite documented `pip install` path — changed to `command="schemabrain"` directly. ([#100])
+- `schemabrain metrics list` empty-state hint mirrors `list_metrics` (next-command hint, not dead-end). ([#91])
 
 ## [0.3.0] - 2026-05-20
 
@@ -1546,3 +1144,15 @@ First public preview. Live on PyPI as `schemabrain==0.1.0a1`.
 [0.3.0]: https://github.com/Arun-kc/schemabrain/compare/v0.2.0a1...v0.3.0
 [0.2.0a1]: https://github.com/Arun-kc/schemabrain/releases/tag/v0.2.0a1
 [0.1.0a1]: https://github.com/Arun-kc/schemabrain/releases/tag/v0.1.0a1
+
+[#90]: https://github.com/Arun-kc/schemabrain/pull/90
+[#91]: https://github.com/Arun-kc/schemabrain/pull/91
+[#92]: https://github.com/Arun-kc/schemabrain/pull/92
+[#94]: https://github.com/Arun-kc/schemabrain/pull/94
+[#95]: https://github.com/Arun-kc/schemabrain/pull/95
+[#96]: https://github.com/Arun-kc/schemabrain/pull/96
+[#97]: https://github.com/Arun-kc/schemabrain/pull/97
+[#98]: https://github.com/Arun-kc/schemabrain/pull/98
+[#99]: https://github.com/Arun-kc/schemabrain/pull/99
+[#100]: https://github.com/Arun-kc/schemabrain/pull/100
+[#101]: https://github.com/Arun-kc/schemabrain/pull/101
