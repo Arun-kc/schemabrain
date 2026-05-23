@@ -20,7 +20,7 @@
   <strong>The SQL firewall between AI agents and your production database.</strong>
 </p>
 
-> **The agent never writes SQL. Schema Brain does, from definitions you control.**
+> **The agent never writes SQL against your database. Schema Brain does, from definitions you control.**
 
 Your agent gets twelve read-only MCP tools — none of which can write. Schema Brain compiles the parameterized SQL from definitions you control and runs it on its side. Refused calls return a structured `recovery` block agents act on programmatically; every call lands in a tamper-evident audit log.
 
@@ -36,7 +36,7 @@ schemabrain init
 # then ask your MCP host: "list the entities Schema Brain knows about"
 ```
 
-**Cost.** ~$0.01 to index the bundled 7-table demo (30 columns) · ~$0.03 for a 87-column Pagila sample · **$0** to re-index unchanged schemas. Bounded by per-stage cost caps; runs on Claude Haiku 4.5.
+**Cost.** ~$0.03 to index + curate the bundled 7-table demo (30 columns, 6 entities + 10 metrics) · ~$0.03 for a 87-column Pagila sample · **$0** to re-index unchanged schemas. Bounded by per-stage cost caps; index step runs on Claude Haiku 4.5, curation on Claude Sonnet 4.6.
 
 **Status: 0.3.0 (alpha).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap. The longer-term position is the SQL-boundary safety layer for AI agents — see [Where it's going](#where-its-going).
 
@@ -171,7 +171,7 @@ Refused and degraded calls return a structured `recovery.suggested_args` block �
 </td>
 <td width="50%" valign="top">
 
-### 4. PII-aware refusal at the tool boundary
+### 4. PII-aware refusal at the `get_metric` tool boundary
 
 Any `get_metric` touching a blocked PII category returns a `refused` envelope; the compiled SQL never runs and the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`. `describe_entity` enforces the same policy at the column level — the agent still sees the entity and its non-PII columns, but blocked columns ship with `redacted=True` and the LLM-enriched description cleared. `schemabrain init` writes `--pii-block contact` into the Claude Desktop snippet by default so email / phone / address columns are blocked on a fresh install; widen with `--pii-block contact,health` and other categories as needed.
 
@@ -180,6 +180,8 @@ schemabrain serve --pii-block contact,health
 ```
 
 Twelve categories from GDPR, CCPA/CPRA, HIPAA, PCI DSS, ISO 27018 — tagged per-column at index time.
+
+**Enforcement scope:** binding is at the `get_metric` compile path today. Lower-level tools (`describe_entity`, `resolve_join`, `describe_table`) surface the `redacted=True` flag + `pii_categories` as advisory metadata so the agent can self-regulate, but they don't refuse. Uniform SQL-layer enforcement against agent-emitted SQL ships in v2 — see [Where it's going](#where-its-going).
 
 [PII classification →](docs/observability.md#pii-classification-alpha)
 
@@ -223,34 +225,44 @@ python examples/anthropic_demo.py \
 
 ## Sample session
 
-Real Claude Desktop session against the bundled e-commerce fixture (7 tables, 30 columns, indexed for ~$0.01):
+Real Claude Desktop session against the bundled e-commerce fixture (7 tables, 30 columns, 6 entities curated for **~$0.03**):
 
 > **You:** Using Schema Brain, write me a SQL query to compute each customer's total spend by product category.
 >
-> **Claude:** *(calls `describe_table` on users, products, orders, order_items, product_categories — in parallel)*
+> **Claude:** *(calls `describe_entity` for `order_item`, then chains `resolve_join` along `user → order → order_item → product`. Each FK-derived hop returns `inference_method: fk_constraint` / `confidence: HIGH`. The last hop — `resolve_join(product, category)` — refuses:)*
 >
-> Here's the query. Schema is fully verified via Schema Brain.
->
-> ```sql
-> SELECT u.id AS customer_id, u.full_name, c.name AS category_name,
->        SUM(oi.quantity * oi.unit_price_cents) / 100.0 AS total_spend
-> FROM   public.users u
-> JOIN   public.orders o              ON o.user_id     = u.id
-> JOIN   public.order_items oi        ON oi.order_id   = o.id
-> JOIN   public.products p            ON p.id          = oi.product_id
-> JOIN   public.product_categories pc ON pc.product_id = p.id
-> JOIN   public.categories c          ON c.id          = pc.category_id
-> GROUP BY u.id, u.full_name, c.name;
+> ```json
+> { "status": "error",
+>   "error": {
+>     "kind": "no_canonical_join",
+>     "message": "No canonical join exists between 'product' and 'category'...",
+>     "recovery": { "suggested_tool": "suggest_joins", ... } } }
 > ```
 >
-> Things you should know:
-> - **Facts (from the schema):** Prices live on `order_items.unit_price_cents`, not `orders`. `product_categories` is a many-to-many composite-PK join table.
-> - **Assumptions:** No status filter applied — `status` is free TEXT with default `'pending'`. `categories.parent_id` exists (nested categories) but I'm grouping by leaf — say if you want a recursive CTE for roll-up.
-> - **Caveat:** A product in N categories has its spend counted N times (per category). Per-customer cross-category sums will exceed actual spend if products are multi-category in your data.
+> *(Claude verifies at the physical layer — `describe_table(public.products)` returns zero foreign keys; `describe_table(public.categories)` has only `id, name, parent_id` self-ref; `find_relevant_tables` for "junction" returns empty.)*
+>
+> Verdict up front: I can't write that query correctly, and you shouldn't want me to — the data model can't answer it as it stands. `product` has no `category_id` and no junction table exists. So there is no relationship anywhere in the schema between a product and a category. "Total spend by category" is unanswerable until that link exists — and I'm not going to invent it.
+>
+> What I **can** give you — total spend per customer (this path is fully resolved: `user → order → order_item`, all `fk_constraint` joins, `confidence: HIGH`):
+>
+> ```sql
+> SELECT u.id                                            AS user_id,
+>        u.full_name                                     AS customer,     -- ⚠ pii / contact / redacted: true in the semantic layer
+>        SUM(oi.quantity * oi.unit_price_cents) / 100.0  AS total_spend   -- prices stored in integer cents
+> FROM   public.order_items oi
+> JOIN   public.orders      o ON oi.order_id = o.id
+> JOIN   public.users       u ON o.user_id   = u.id
+> GROUP BY u.id, u.full_name
+> ORDER BY total_spend DESC;
+> ```
+>
+> Two honest caveats:
+> - **Status filter omitted.** `orders.status` is free TEXT and I haven't inspected its values; this counts every order. If you only want paid/fulfilled spend, add `WHERE o.status = …` once you confirm the allowed values.
+> - **PII flag.** `full_name` is `pii_sensitivity: pii / categories: [contact] / redacted: true` in the semantic layer. Fine if you're running this yourself; not fine if it's flowing into an agent context.
 
-The caveats are the differentiator. None of them — M:N double-counting, recursive-CTE awareness, free-text-status flag — is hardcoded; they fall out of letting Claude reason over the indexed descriptions. Most LLM-over-database tools confidently invent a `payments` table or shoehorn the answer into `orders.total_cents`. Schema Brain doesn't.
+The differentiator is what *didn't* happen: most LLM-over-database tools, asked this exact question, would confidently emit `JOIN categories c ON p.category_id = c.id` and produce SQL that errors against a column that isn't there. Schema Brain refused — `resolve_join` returned `kind: no_canonical_join` with `recovery.suggested_tool: suggest_joins`, not prose. The agent **acted on the structured recovery contract programmatically** instead of fabricating a join. Refusal-not-fabrication is the safety mechanism, demonstrated live.
 
-**Cost.** ~$0.0003/column with Claude Haiku 4.5. The bundled 7-table fixture indexes for **~$0.01 in ~40s**. The Pagila DVD-rental sample (87 columns after partition deduplication) indexes for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
+**Cost.** ~$0.001/column with Claude Haiku 4.5 + Sonnet 4.6 (Sonnet for the structured curation prompt). The bundled 7-table fixture (30 columns, 6 entities + 10 metrics + 5 joins) indexes + curates for **~$0.03 in ~85s**. The Pagila DVD-rental sample (87 columns after partition deduplication) runs for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
 
 To verify Claude's SQL is mechanically correct (and that flagged caveats are the actual data behavior), see [Validating SQL Claude generates](docs/setup.md#validating-sql-claude-generates).
 

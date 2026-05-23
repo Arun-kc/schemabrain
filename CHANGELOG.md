@@ -8,6 +8,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Wizard's `_resolve_runner` defaulted to `uvx schemabrain==<__version__>`
+  whenever uvx was on PATH, regardless of how the local install got
+  there.** For users who pip-installed schemabrain from PyPI this was
+  fine; for users with local wheel / editable / VCS installs whose
+  substrate had drifted from PyPI's published wheel of the same
+  package version, uvx fetched an older substrate that could not read
+  the local store. Claude Desktop's MCP server then refused to start
+  with a clear-but-fatal "Store schema version mismatch". `_resolve_runner`
+  now reads PEP 610 `direct_url.json` first: absent means installed
+  from a package index (default PyPI, safe to uvx-pin); present means
+  local / editable / VCS (fall back to the absolute path of the
+  installed entrypoint so the host launches the same code that ran
+  the wizard). Existing tests that wanted the uvx-pin happy path now
+  stub `_is_pypi_install` to True alongside the existing `shutil.which`
+  stub.
+- **`examples/anthropic_demo.py` spawned the MCP server via
+  `command="uv", args=["run", "schemabrain", "serve", ...]`** while the
+  documented user invocation is `python examples/anthropic_demo.py`
+  after a plain `pip install schemabrain`. For pip-only environments
+  without uv on PATH, the demo silently 127'd. Changed to
+  `command="schemabrain"` directly — works whenever the package is
+  importable, which is necessary for the demo to run anyway.
+- **README sample session referenced a `product_categories` junction
+  table that doesn't exist in the bundled fixture.** End-to-end
+  walkthrough against a fresh `pip install` showed `resolve_join(product,
+  category)` returns `kind: no_canonical_join` because no junction
+  exists in the schema. Sample session rewritten to match what Claude
+  actually does on the bundled fixture: probes the entity layer, hits
+  the structured refusal, verifies at the physical layer, refuses to
+  invent the missing junction, and pivots to a fully-resolvable
+  customer-spend query with the PII flag on `full_name` surfaced. The
+  differentiator paragraph now leads with refusal-not-fabrication as
+  the safety mechanism — backed by the concrete recovery envelope shape.
+
+### Changed
+- **README firewall property #4 narrowed to the `get_metric` tool
+  boundary.** The heading and body previously implied uniform PII
+  enforcement at "the tool boundary"; live walkthrough showed
+  lower-level tools (`describe_entity`, `resolve_join`, `describe_table`)
+  surface PII column names + JOIN skeletons as advisory metadata, not
+  enforced refusals. An agent that doesn't invoke `get_metric` can
+  compose PII-touching SQL from those outputs. Heading updated to
+  "PII-aware refusal at the `get_metric` tool boundary"; body adds an
+  "Enforcement scope" line acknowledging the current binding and
+  forward-linking to "Where it's going" where `validate_query` /
+  `execute` are the substrate for uniform SQL-layer enforcement.
+- **README lead-paragraph cost anchor `~$0.01 to index the bundled
+  7-table demo` corrected to `~$0.03`.** The headline undersold the
+  actual cost by 3.3x because it only counted column-description
+  enrichment (Haiku), not entity + metric curation (Sonnet). Both
+  models are now named explicitly in the cost line.
+- **README mechanism tagline gains a 3-word qualifier**: *"The agent
+  never writes SQL **against your database.** Schema Brain does, from
+  definitions you control."* End-to-end walkthrough showed an agent
+  can compose SQL strings from `describe_entity` column names +
+  `resolve_join` SQL skeletons in conversation context; the strings
+  just don't execute against the database (Schema Brain mediates
+  execution). The qualifier preserves the rhetorical punch without
+  falsifying the literal claim.
+
+### Fixed
 - **Wizard-curated entities and metrics were tagged
   `inference_method="manually_authored"` instead of `"llm_suggested"`,
   silently collapsing the charter v1.2 2D trust signal on the wizard
