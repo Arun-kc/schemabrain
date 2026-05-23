@@ -34,13 +34,13 @@
   
     <rect x="300" y="138" width="300" height="138" fill="none" stroke="#FAFAF7" stroke-width="2"></rect>
     
-    <text x="314" y="162" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700" fill="#FAFAF7">10 read-only MCP tools</text>
+    <text x="314" y="162" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700" fill="#FAFAF7">12 read-only MCP tools</text>
     <text x="314" y="186" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#FAFAF7" fill-opacity="0.85">
-      <tspan x="314" dy="0">list_entities · describe_entity ·</tspan>
-      <tspan x="314" dy="17">find_relevant_* · resolve_join ·</tspan>
-      <tspan x="314" dy="17">get_metric · describe_table ·</tspan>
-      <tspan x="314" dy="17">describe_column · suggest_joins ·</tspan>
-      <tspan x="314" dy="17">get_example_queries</tspan>
+      <tspan x="314" dy="0">list_entities · list_metrics · list_joins ·</tspan>
+      <tspan x="314" dy="17">describe_entity · find_relevant_* ·</tspan>
+      <tspan x="314" dy="17">resolve_join · get_metric ·</tspan>
+      <tspan x="314" dy="17">describe_table · describe_column ·</tspan>
+      <tspan x="314" dy="17">suggest_joins · get_example_queries</tspan>
     </text>
   
     <line x1="450" y1="280" x2="450" y2="294" stroke="#FAFAF7" stroke-width="2"></line>

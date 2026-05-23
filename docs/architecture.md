@@ -149,23 +149,26 @@ text-to-SQL execution accuracy.
 
 ## What's validated
 
-As of v0.3.0 (2026-05-20), against two anchors: the bundled e-commerce
+As of v0.4.0 (2026-05-23), against two anchors: the bundled e-commerce
 fixture (7 tables / 30 columns) and the Pagila DVD-rental sample
 (15 tables / 87 columns after declarative-partition deduplication;
 22 / 129 raw):
 
 - ✅ Indexes Postgres 16 schema with FK-aware introspection (both anchors)
 - ✅ Partitioned tables are deduplicated; only the parent is enriched
+- ✅ Partition-parent FKs unioned from children (Pagila pattern) so
+  declaratively-partitioned tables aren't seen as relationship-less
 - ✅ Junction (M:N) tables are detected structurally; descriptions
-  explicitly warn that joining through them multiplies result rows
+  explicitly warn that joining through them multiplies result rows;
+  `list_joins` synthesises logical bridges across junctions
 - ✅ Generates LLM descriptions via Anthropic Claude (Haiku 4.5 default,
   Sonnet 4.6 for cryptic columns)
 - ✅ Local embeddings via `fastembed` (no second API vendor)
-- ✅ All 10 MCP tools tested via Claude Desktop AND headless Anthropic SDK,
-  on both anchors. The 10: `list_entities`, `describe_entity`,
-  `describe_table`, `describe_column`, `find_relevant_tables`,
-  `find_relevant_entities`, `suggest_joins`, `resolve_join`,
-  `get_example_queries`, `get_metric`
+- ✅ All 12 MCP tools tested via Claude Desktop AND headless Anthropic SDK,
+  on both anchors. The 12: `list_entities`, `list_metrics`, `list_joins`,
+  `describe_entity`, `describe_table`, `describe_column`,
+  `find_relevant_tables`, `find_relevant_entities`, `suggest_joins`,
+  `resolve_join`, `get_example_queries`, `get_metric`
 - ✅ Adversarial questions handled honestly ("not in indexed schema" with
   explicit qualifier) — Pagila negative-question test correctly distinguished
   internal `payment_id` from external payment-processor transaction IDs
@@ -176,7 +179,7 @@ fixture (7 tables / 30 columns) and the Pagila DVD-rental sample
 - ✅ Cache-aware re-index ($0 on unchanged schemas)
 - ✅ Fresh-machine quickstart works from a stripped shell
 - ✅ Continuous integration (lint + unit + integration with 99% coverage
-  gate; 4238 tests on `main` at the v0.3.0 cut)
+  gate; 4557 tests on `main` at the v0.4.0 cut)
 
 Not yet validated:
 

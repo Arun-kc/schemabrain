@@ -92,9 +92,11 @@ the version baked into the code, and:
   matching `schemabrain` version or wipe the store. No best-effort
   read; the schema is the contract.
 
-The current version is **12** (as of 0.3.0 — `column_pii_tags` table
-landed at v11→v12 in PR #36). Version bumps are visible in
-`schemabrain/persistence/store.py` and `CHANGELOG.md` together.
+The current version is **14** (as of 0.4.0 — `inference_method` +
+`validation_state` columns landed at v13→v14 in PR #95; composite-
+expression `measure_expression` landed at v12→v13 in PR #91). Version
+bumps are visible in `schemabrain/persistence/store.py` and
+`CHANGELOG.md` together.
 
 The `mcp_audit` reader paths (`audit list` / `audit verify`)
 deliberately open the store with raw `sqlite3.connect` so they can

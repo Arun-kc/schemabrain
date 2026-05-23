@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-23
+
+**Highlights** — 0.4.0 lands the charter v1.2 2D trust signal,
+composite-expression measures, junction-table bridges, column-granular
+PII redaction, partition-parent FK union (Pagila pattern), a dedicated
+`metrics show` CLI drill, and the README repositioning around the
+SQL-firewall framing. Install substrate hardened so the wizard launches
+the same code that ran it regardless of how schemabrain was installed
+(PyPI / wheel / editable / VCS).
+
 ### Added
 - `schemabrain metrics show <name>` — namespaced drill into one metric. Renders the same `MetricDetail` view that `inspect <name>` does, but skips the entity → metric → join priority cascade so an operator who knows they want a metric is not shadowed by an entity / join sharing the same name. Cross-source posture matches `inspect`: without `--source` walks every source the store knows about; missing name exits 1 with a next-step hint. ([#101])
 - Charter v1.2: 2D trust signal (`Provenance.inference_method` × `Provenance.validation_state`) replaces hardcoded `confidence="HIGH"` on every entity / metric / join producer; surfaces on Pydantic summaries, the `inspect` drill, and `entities` / `joins` / `metrics list`. ([#95])
@@ -1141,7 +1151,8 @@ First public preview. Live on PyPI as `schemabrain==0.1.0a1`.
 - MIT license; SSH-signed commits; CI on Python 3.11 + 3.12 (Linux
   unit) plus Docker Postgres integration with `--cov-fail-under=99`.
 
-[Unreleased]: https://github.com/Arun-kc/schemabrain/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Arun-kc/schemabrain/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Arun-kc/schemabrain/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Arun-kc/schemabrain/compare/v0.2.0a1...v0.3.0
 [0.2.0a1]: https://github.com/Arun-kc/schemabrain/releases/tag/v0.2.0a1
 [0.1.0a1]: https://github.com/Arun-kc/schemabrain/releases/tag/v0.1.0a1

@@ -2105,7 +2105,7 @@ wheels = [
 
 [[package]]
 name = "schemabrain"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -2157,7 +2157,7 @@ requires-dist = [
     { name = "rich", specifier = ">=13.0,<16.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6,<1.0" },
     { name = "sqlalchemy", specifier = ">=2.0,<3.0" },
-    { name = "sqlglot", specifier = ">=25.0,<27.0" },
+    { name = "sqlglot", specifier = ">=25.0,<31.0" },
     { name = "structlog", specifier = ">=24.0,<26.0" },
     { name = "testcontainers", extras = ["postgres"], marker = "extra == 'dev'", specifier = ">=4.0,<5.0" },
 ]

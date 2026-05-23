@@ -158,10 +158,10 @@ Notes:
 | Tag | Meaning |
 |---|---|
 | `:latest` | Latest published release (PyPI publish + Docker push together) |
-| `:0.3.0` | A specific version |
-| `:0.3` | The latest patch in the 0.3 minor line |
+| `:0.4.0` | A specific version |
+| `:0.4` | The latest patch in the 0.4 minor line |
 
-For production-style pinning, use a specific patch (`:0.3.0`) rather
+For production-style pinning, use a specific patch (`:0.4.0`) rather
 than `:latest`.
 
 ## 0.5. (Optional) Mine observed queries

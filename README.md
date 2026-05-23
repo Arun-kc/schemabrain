@@ -122,8 +122,8 @@ After the wizard, `schemabrain inspect` shows what the agent has and `schemabrai
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/schemabrain-architecture-dark.gif">
-    <img src="docs/assets/schemabrain-architecture-light.gif" alt="schemabrain architecture: agent talks to schemabrain over MCP stdio; schemabrain emits parameterized SQL to Postgres; the schemabrain boundary is the trust boundary. Mint pulse animates from agent through MCP tools, semantic layer, SQL emitter, and audit log to Postgres." width="900">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-architecture-dark.svg">
+    <img src="docs/assets/readme-architecture-light.svg" alt="schemabrain architecture: agent talks to schemabrain over MCP stdio (12 read-only tools); schemabrain emits parameterized SQL to Postgres; the schemabrain boundary is the trust boundary; audit log is tamper-evident." width="900">
   </picture>
 </p>
 
