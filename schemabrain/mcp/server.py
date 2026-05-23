@@ -204,7 +204,7 @@ _SERVER_INSTRUCTIONS = (
     "you can `group_by` an entity that's reachable via any chain of "
     "joins, not just one hop. Every tool returns a `ToolResponse` "
     "envelope (status / data / error / confidence / follow_up_hints) "
-    "per the agent-UX charter v1.1."
+    "per the agent-UX charter v1.2."
 )
 
 _logger = logging.getLogger(__name__)

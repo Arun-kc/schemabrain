@@ -371,11 +371,11 @@ class Recovery(BaseModel):
 
 class ToolError(BaseModel):
     """Structured error returned inside a `ToolResponse` with status='error'
-    or status='refused' (v1.1).
+    or status='refused' (charter v1.2).
 
-    `kind` is one of the fourteen registered kinds (charter v1.1: 7
-    from v1.0 + 3 refusal kinds + 4 canonical-join kinds added in a
-    later release). `message` is a single human-readable sentence.
+    `kind` is one of the fourteen registered kinds (7 from v1.0 + 3
+    refusal kinds + 4 canonical-join kinds added in a later release).
+    `message` is a single human-readable sentence.
     `recovery`
     carries the agent's next-move hint — never empty in practice, though
     `Recovery()` with no fields is structurally valid for kinds where no

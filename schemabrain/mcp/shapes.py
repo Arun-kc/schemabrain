@@ -725,6 +725,17 @@ class MetricResult(BaseModel):
     `--no-audit` CLI path), it carries `"fp-unset"` so consumers can
     distinguish "no audit row exists" from "audit row exists with hex".
 
+    Privacy-by-construction (per ADR 0001): the fingerprint hashes a
+    deliberately restricted set — SQL AST shape, PII categories
+    touched, refusal reason, cost class, rule id — and explicitly
+    excludes row content and identifying schema info. Two distinct
+    calls with similar AST shape + identical PII tags + identical
+    cost class therefore produce IDENTICAL fingerprints by design.
+    This is the intended aggregation primitive ("did anything that
+    looks like an unbounded scan run today?") and not a hash
+    collision bug; observers seeing repeated fingerprints across
+    different metric names are seeing the privacy guarantee at work.
+
     `fan_out_join_names` surfaces the canonical-join names whose
     cardinality means the result rows may be inflated by JOIN expansion
     (one_to_many or many_to_many from the metric anchor). Empty when

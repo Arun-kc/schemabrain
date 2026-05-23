@@ -304,6 +304,16 @@ def render_entity_detail(detail: EntityDetail, *, console: Console) -> None:
     _render_related(detail.related_entities, console=console, this_entity=entity.name)
     console.print()
     _render_metrics(detail.anchored_metrics, console=console)
+    console.print()
+    # Trust line at the bottom mirrors the metric + join drill views;
+    # without it, operators inspecting an entity got no surface signal
+    # for whether the entity's identity/binding was LLM-suggested vs
+    # FK-derived vs hand-authored — even though the data was present.
+    _render_trust_line(
+        inference_method=entity.inference_method,
+        validation_state=entity.validation_state,
+        console=console,
+    )
 
 
 def _compose_entity_brand_line(entity: Entity) -> Text:

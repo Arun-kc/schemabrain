@@ -5247,22 +5247,44 @@ def _cmd_init(
     # overwriting an existing host config) can pass
     # `--skip-llm-confirm` alone.
     effective_skip_llm_confirm = skip_llm_confirm or assume_yes
-    cfg = WizardConfig(
-        source_url=source_url,
-        store_path=Path(store_path),
-        host=effective_host,
-        env_var_name=env_var,
-        skip_index=skip_index,
-        no_entities=no_entities,
-        enrich=enrich,
-        entities_max_cost_usd=entities_max_cost_usd,
-        assume_yes=assume_yes,
-        no_metrics=no_metrics,
-        metrics_max_cost_usd=metrics_max_cost_usd,
-        no_joins=no_joins,
-        from_dbt=Path(from_dbt) if from_dbt else None,
-        skip_llm_confirm=effective_skip_llm_confirm,
-    )
+
+    # Surface the PII-block choice to the operator instead of silently
+    # baking ("contact",) into the host snippet. Interactive only:
+    # `--yes` (CI / scripted) and non-TTY stderr (piped output) both
+    # fall through to the wizard's `("contact",)` default — the prior
+    # silent behavior — so automation is unchanged.
+    pii_block_choice: tuple[str, ...] | None = None
+    if _stderr_is_interactive_tty() and not assume_yes:
+        from schemabrain.setup.setup_stage import prompt_for_pii_block
+
+        try:
+            pii_block_choice = prompt_for_pii_block(console=_stderr_console())
+        except (KeyboardInterrupt, EOFError):
+            # Same clean-abort convention as `prompt_for_init_setup`
+            # above: Ctrl-C / EOF at any setup prompt exits with the
+            # standard exit-130 / exit-2 path the outer handler
+            # provides — re-raise so callers see the same behavior.
+            raise
+
+    wizard_kwargs: dict[str, object] = {
+        "source_url": source_url,
+        "store_path": Path(store_path),
+        "host": effective_host,
+        "env_var_name": env_var,
+        "skip_index": skip_index,
+        "no_entities": no_entities,
+        "enrich": enrich,
+        "entities_max_cost_usd": entities_max_cost_usd,
+        "assume_yes": assume_yes,
+        "no_metrics": no_metrics,
+        "metrics_max_cost_usd": metrics_max_cost_usd,
+        "no_joins": no_joins,
+        "from_dbt": Path(from_dbt) if from_dbt else None,
+        "skip_llm_confirm": effective_skip_llm_confirm,
+    }
+    if pii_block_choice is not None:
+        wizard_kwargs["pii_block"] = pii_block_choice
+    cfg = WizardConfig(**wizard_kwargs)  # type: ignore[arg-type]
 
     host_display = _host_display_name(effective_host)
     console = _stderr_console()
