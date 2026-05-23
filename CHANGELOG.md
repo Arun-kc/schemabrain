@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `schemabrain metrics show <name>` — namespaced drill into one metric. Renders the same `MetricDetail` view that `inspect <name>` does, but skips the entity → metric → join priority cascade so an operator who knows they want a metric is not shadowed by an entity / join sharing the same name. Cross-source posture matches `inspect`: without `--source` walks every source the store knows about; missing name exits 1 with a next-step hint. ([#101])
 - Charter v1.2: 2D trust signal (`Provenance.inference_method` × `Provenance.validation_state`) replaces hardcoded `confidence="HIGH"` on every entity / metric / join producer; surfaces on Pydantic summaries, the `inspect` drill, and `entities` / `joins` / `metrics list`. ([#95])
 - Composite-expression measures via strict whitelist grammar — `MetricMeasure.expression` parses through `ast.parse` with a node-type whitelist; SQL injection surface closed by construction. Bundled `total_revenue_real.yaml` fixture. ([#91])
 - `get_metric` accepts a `time_dimension` arg to disambiguate inheritance; resolver BFSes the canonical-join graph for reachable timestamp columns over non-fan-out edges. ([#95], [#96])
@@ -1154,3 +1155,4 @@ First public preview. Live on PyPI as `schemabrain==0.1.0a1`.
 [#98]: https://github.com/Arun-kc/schemabrain/pull/98
 [#99]: https://github.com/Arun-kc/schemabrain/pull/99
 [#100]: https://github.com/Arun-kc/schemabrain/pull/100
+[#101]: https://github.com/Arun-kc/schemabrain/pull/101
