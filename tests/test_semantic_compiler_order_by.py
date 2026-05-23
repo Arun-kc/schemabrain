@@ -157,10 +157,16 @@ def _seed_two_hop(store: SQLiteStore) -> None:
 
 
 class TestOrderByDefault:
-    def test_no_order_by_produces_no_clause_in_sql(self, tmp_path: Path) -> None:
-        """Default `order_by=()` is the v0 behavior — backward
-        compatible with every existing caller. Emitter must NOT
-        produce an ORDER BY line.
+    def test_no_order_by_with_group_by_auto_fills_group_columns(
+        self, tmp_path: Path
+    ) -> None:
+        """When the caller passes `group_by` without `order_by`, the
+        resolver auto-fills ORDER BY with the group columns ASC so
+        the LIMIT N slice is deterministic. Without this, every
+        get_metric grouped query would surface
+        `missing_order_by_with_limit` as a degradation — a real
+        determinism concern, but firing on every grouped call eroded
+        the meaning of `degraded`.
         """
         with SQLiteStore(tmp_path / "store.db") as store:
             _seed_two_hop(store)
@@ -169,6 +175,30 @@ class TestOrderByDefault:
                 source_connection_id=SOURCE,
                 metric_name="total_items_sold",
                 group_by=("user.email",),
+            )
+        # Auto-filled: one ResolvedOrderBy per group column, ASC, NOT
+        # flagged as tie-break (the tie-break path is for the EXPLICIT
+        # order_by + group_by combo).
+        assert len(plan.order_by_clauses) == 1
+        assert plan.order_by_clauses[0] == ResolvedOrderBy(
+            expression="group_col_0",
+            direction="asc",
+            auto_appended_tie_break=False,
+        )
+        sql_text, _ = emit_sql(plan)
+        assert 'ORDER BY "group_col_0" ASC' in sql_text
+
+    def test_no_order_by_no_group_by_emits_no_clause(self, tmp_path: Path) -> None:
+        """Single-row aggregate (no group_by, no order_by) — auto-fill
+        only kicks in when there's something to order by. With no
+        group columns, no ORDER BY line is emitted.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="total_items_sold",
             )
         assert plan.order_by_clauses == ()
         sql_text, _ = emit_sql(plan)

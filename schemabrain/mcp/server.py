@@ -1425,10 +1425,11 @@ def build_server(
                     "'desc'}]`). The compiler auto-appends a tie-breaking "
                     "secondary key (first group_by column ASC) so equal "
                     "measure values produce identical row order across "
-                    "runs. Empty tuple = no ORDER BY (database-default "
-                    "row order; the envelope surfaces "
-                    "`missing_order_by_with_limit` as a degradation "
-                    "reason if `limit` is set + `group_by` is non-empty)."
+                    "runs. Empty tuple + non-empty `group_by` defaults "
+                    "to ASC on every group column so the LIMIT N slice "
+                    "stays deterministic without the caller having to "
+                    "construct one; override by passing any explicit "
+                    "clause."
                 ),
             ),
         ] = (),
@@ -1698,14 +1699,17 @@ def build_server(
             return _wrap_internal_error(exc)
         except Exception as exc:  # pragma: no cover — defensive
             return _wrap_internal_error(exc)
-        # Degradation precedence: fan_out_join takes priority over
-        # missing_order_by_with_limit because fan-out is a correctness
-        # concern (rows may be inflated) while missing-order-by is a
-        # determinism concern (rows may be ordered randomly). Both are
-        # signals worth surfacing, but if forced to pick one
-        # `degradation_reason` we surface the more load-bearing one.
-        # The PR-6.5 polish bundle considers structured multi-reason
-        # support; for v1 a single enum keeps the contract tight.
+        # Degradation precedence: fan_out_join (correctness concern,
+        # rows may be inflated) over time_dimension_unavailable
+        # (caller asked for time_grain but no reachable timestamp).
+        # `missing_order_by_with_limit` is no longer emitted from this
+        # chain — the resolver auto-fills ORDER BY with the group
+        # columns when the caller didn't supply order_by, so the
+        # determinism gap that justified the degradation no longer
+        # exists on the default path. The `DegradationReason` literal
+        # still includes the value for backwards-compat with audit
+        # rows shipped by earlier versions, but new envelopes never
+        # emit it.
         degradation: DegradationReason | None = None
         if result.fan_out_join_names:
             degradation = "fan_out_join"
@@ -1714,16 +1718,8 @@ def build_server(
             # reachable timestamp column via canonical-join chains. The
             # plan ran unbucketed; surface the degradation so the agent
             # can decide whether to widen the metric definition or drop
-            # the grain. Precedence below missing_order_by_with_limit
-            # would mask the time-dim signal when both apply, so place
-            # it before that branch.
+            # the grain.
             degradation = "time_dimension_unavailable"
-        elif group_by and not order_by:
-            # `limit` is always set (defaults to 1000, hard cap 10_000)
-            # — so any non-empty group_by without order_by produces a
-            # potentially non-deterministic slice. Surface it even when
-            # the caller used the default limit.
-            degradation = "missing_order_by_with_limit"
         # Charter v1.2: take the worst of (the 2D trust signal from
         # the metric + its traversed joins) AND the degradation-
         # induced MEDIUM cap. A fan-out plan can never report HIGH

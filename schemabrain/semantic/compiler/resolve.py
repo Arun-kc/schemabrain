@@ -117,11 +117,11 @@ def resolve_metric_plan(
     resolver auto-appends a deterministic tie-breaker (first
     group-by column ASC, flagged via `auto_appended_tie_break=True`)
     so identical measure values produce identical row order across
-    runs. Without `order_by`, no ORDER BY is emitted and the row
-    order is database-determined (a caller passing `limit=N` with no
-    `order_by` against a multi-row group_by gets a non-deterministic
-    slice; the MCP layer surfaces this as a `missing_order_by_with_limit`
-    degradation reason).
+    runs. When `order_by` is empty AND `group_by` is non-empty, the
+    resolver auto-fills `order_by` with every group column ASC so
+    the LIMIT N slice is deterministic without the caller having to
+    construct one. When both are empty (single-row aggregate), no
+    ORDER BY is emitted.
 
     `time_dimension` is the v1.2 inheritance disambiguator. When the
     metric has no local `time_dimension` and 2+ timestamp columns are
@@ -443,6 +443,25 @@ def resolve_metric_plan(
     alias_by_request: dict[str, str] = {metric.name: metric.name}
     for index, group_col in enumerate(group_by_columns_ordered):
         alias_by_request[f"{group_col.entity}.{group_col.column}"] = f"group_col_{index}"
+
+    # When the caller passed `group_by` but no `order_by`, default
+    # ORDER BY to the group columns themselves so the LIMIT N slice is
+    # deterministic without forcing every agent to explicitly construct
+    # one. Without this, every `get_metric(group_by=[...])` call would
+    # surface `missing_order_by_with_limit` as a degradation — a
+    # legitimate determinism concern, but firing on every grouped query
+    # erodes the meaning of `degraded` and trains agents to ignore it.
+    # The explicit-`order_by` path is untouched: callers who specify
+    # any ORDER BY clause keep full control over ranking (with the
+    # tie-break logic below adding a deterministic suffix).
+    if not order_by and group_by_columns_ordered:
+        order_by = tuple(
+            RequestedOrderBy(
+                column=f"{group_col.entity}.{group_col.column}",
+                direction="asc",
+            )
+            for group_col in group_by_columns_ordered
+        )
 
     order_by_resolved: list[ResolvedOrderBy] = []
     seen_aliases: set[str] = set()

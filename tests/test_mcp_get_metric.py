@@ -981,15 +981,18 @@ class TestEnvelopeMapping:
         # so agents can switch on the value without parsing text.
         assert structured["degradation_reason"] == "fan_out_join"
 
-    def test_missing_order_by_with_limit_maps_to_degraded(
+    def test_group_by_without_order_by_auto_fills_and_stays_success(
         self, store_with_seed: SQLiteStore
     ) -> None:
-        """PR-6h.2 Gap #2 + Gap #6: when the caller asks for `group_by`
-        but no `order_by`, the LIMIT N slice is non-deterministic. The
-        envelope surfaces `degradation_reason='missing_order_by_with_limit'`
-        so the agent knows to add `order_by=` before relying on row order.
+        """When the caller asks for `group_by` but no `order_by`,
+        the resolver auto-fills ORDER BY with the group columns (ASC)
+        so the LIMIT N slice is deterministic. The envelope reports
+        `success`, NOT `degraded` — the prior
+        `missing_order_by_with_limit` degradation was firing on every
+        grouped query without an explicit sort, eroding the meaning of
+        `degraded`. Determinism is now built in, no signal needed.
         """
-        executor = _StubExecutor(rows=[{"total_revenue": 100}])
+        executor = _StubExecutor(rows=[{"group_col_0": "2024-01-01", "total_revenue": 100}])
         app = _build(store_with_seed, executor)
         _content, structured = _call(
             app,
@@ -998,8 +1001,12 @@ class TestEnvelopeMapping:
                 "group_by": ["order.placed_at"],
             },
         )
-        assert structured["status"] == "degraded"
-        assert structured["degradation_reason"] == "missing_order_by_with_limit"
+        assert structured["status"] == "success"
+        assert structured["degradation_reason"] is None
+        # SQL must contain ORDER BY — proves auto-fill happened, not
+        # that the degradation was just silenced. Without ORDER BY the
+        # LIMIT slice would be database-default-ordered.
+        assert "ORDER BY" in structured["data"]["sql_skeleton"]
 
     def test_order_by_clears_missing_order_by_degradation(
         self, store_with_seed: SQLiteStore
