@@ -233,6 +233,61 @@ class TestAmbiguousInheritance:
         assert "time_dimension=" in str(exc.value)
 
 
+class TestTimeDimensionDisambiguator:
+    """`time_dimension` arg lets the agent pick one of multiple candidates
+    after seeing `AmbiguousTimeDimensionError`. Closes the structured-
+    recovery loop: the error envelope names the candidates, the agent
+    re-calls with the one it wants, the resolver narrows + inherits.
+    """
+
+    def test_time_dimension_arg_narrows_to_one_candidate(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_orderitem_anchored(store)
+            # Without time_dimension: ambiguous (two reachable timestamps).
+            with pytest.raises(AmbiguousTimeDimensionError):
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="quantity_sold",
+                    time_grain="month",
+                )
+            # WITH time_dimension naming a real candidate: succeeds, the
+            # named candidate becomes the inherited dimension.
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="quantity_sold",
+                time_grain="month",
+                time_dimension="order.created_at",
+            )
+        assert plan.time_dimension_resolution == "inherited"
+        assert plan.inherited_time_dimension == "order.created_at"
+
+    def test_time_dimension_arg_not_in_candidates_still_ambiguous(
+        self, tmp_path: Path
+    ) -> None:
+        # An agent that passes a `time_dimension` not in the candidate
+        # set falls through to AmbiguousTimeDimensionError — the message
+        # carries the full valid list so the next retry can pick a real
+        # choice. Treating bogus input as "unavailable" would silently
+        # eat the agent's error and ship the wrong shape.
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_orderitem_anchored(store)
+            with pytest.raises(AmbiguousTimeDimensionError) as exc:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="quantity_sold",
+                    time_grain="month",
+                    time_dimension="bogus.nonexistent_column",
+                )
+        # The full original candidate set is in the error so the agent's
+        # next try has both real options available.
+        candidate_columns = {c[0] for c in exc.value.candidates}
+        assert "order.created_at" in candidate_columns
+        assert "user.signup_at" in candidate_columns
+
+
 class TestUnavailableInheritance:
     """A non-temporal metric with no reachable timestamp ships unbucketed."""
 

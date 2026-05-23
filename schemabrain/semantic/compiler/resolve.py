@@ -85,6 +85,7 @@ def resolve_metric_plan(
     group_by: tuple[str, ...] = (),
     filters: tuple[RequestedFilter, ...] = (),
     time_grain: TimeGrain | None = None,
+    time_dimension: str | None = None,
     limit: int = 1000,
     via: tuple[str, ...] = (),
     order_by: tuple[RequestedOrderBy, ...] = (),
@@ -121,6 +122,16 @@ def resolve_metric_plan(
     `order_by` against a multi-row group_by gets a non-deterministic
     slice; the MCP layer surfaces this as a `missing_order_by_with_limit`
     degradation reason).
+
+    `time_dimension` is the v1.2 inheritance disambiguator. When the
+    metric has no local `time_dimension` and 2+ timestamp columns are
+    reachable via canonical joins, the resolver filters the candidate
+    set to the caller-specified `<entity>.<column>`. A filter that
+    leaves 0 candidates still raises `AmbiguousTimeDimensionError` so
+    the agent sees the full valid set (the message guides them to a
+    real choice). When the metric has its own declared
+    `time_dimension`, the arg is ignored — the metric's declared
+    dimension always wins.
     """
     metric = store.get_metric(metric_name, source_connection_id=source_connection_id)
     if metric is None:
@@ -501,6 +512,19 @@ def resolve_metric_plan(
             store=store,
             source_connection_id=source_connection_id,
         )
+        # v1.2 caller-provided disambiguator: when 2+ candidates exist,
+        # narrow to the one the caller asked for. A `time_dimension`
+        # that doesn't match any candidate falls through to the
+        # AmbiguousTimeDimensionError below — the message lists the
+        # full valid set so the agent can re-call with a real choice.
+        # Keep the original `candidates` for the error envelope so the
+        # agent sees every option, not just the (empty) post-filter set.
+        if time_dimension is not None and len(candidates) >= 1:
+            filtered = tuple(
+                c for c in candidates if c[0] == time_dimension
+            )
+            if len(filtered) == 1:
+                candidates = filtered  # type: ignore[assignment]
         if len(candidates) > 1:
             raise AmbiguousTimeDimensionError(
                 anchor_entity=metric.entity,

@@ -1363,6 +1363,22 @@ def build_server(
                 ),
             ),
         ] = None,
+        time_dimension: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Disambiguates time-dimension inheritance when a "
+                    "metric carries no local `time_dimension` and 2+ "
+                    "timestamp columns are reachable via canonical "
+                    "joins. Pass `<entity>.<column>` form chosen from "
+                    "the `ambiguous_time_dimension` error's candidate "
+                    "list (also visible in the error message). "
+                    "Silently ignored when the metric has its own "
+                    "declared `time_dimension` — that always wins. "
+                    "Defaults null (no disambiguation)."
+                ),
+            ),
+        ] = None,
         limit: Annotated[
             int,
             Field(
@@ -1439,18 +1455,31 @@ def build_server(
                 group_by=group_by,
                 filters=filters,
                 time_grain=time_grain,
+                time_dimension=time_dimension,
                 limit=limit,
                 via=via,
                 order_by=order_by,
                 pii_block=pii_block,
             )
         except PiiBlockedError as exc:
+            # Populate `suggested_args` so an agent consuming the
+            # structured recovery contract can pivot directly to
+            # `describe_entity(name=<anchor>)` and enumerate non-PII
+            # columns without re-parsing the human-readable message.
+            # `anchor_entity` is None only for callers that bypass
+            # `get_metric_impl` (no production path); guard regardless.
+            recovery_args: dict[str, Any] | None = None
+            if exc.anchor_entity is not None:
+                recovery_args = {"name": exc.anchor_entity}
             return ToolResponse(
                 status="refused",
                 error=ToolError(
                     kind="pii_blocked",
                     message=str(exc),
-                    recovery=Recovery(suggested_tool="describe_entity"),
+                    recovery=Recovery(
+                        suggested_tool="describe_entity",
+                        suggested_args=recovery_args,
+                    ),
                     pii_categories=exc.attempted_categories,
                 ),
             )
@@ -1631,13 +1660,25 @@ def build_server(
             # from the metric's anchor via canonical-join chains and the
             # caller didn't disambiguate. Recovery is for the agent to
             # re-call with an explicit time_dimension (or remove
-            # time_grain to bucket-less aggregate).
+            # time_grain to bucket-less aggregate). Populate
+            # `suggested_args` with the first candidate so a programmatic
+            # agent can act on the structured recovery contract without
+            # parsing the human-readable message. Picking
+            # `candidates[0]` is informational — the agent should pick
+            # whichever candidate semantically matches the user's
+            # question (the full list lives in the message text).
+            time_dim_args: dict[str, Any] | None = None
+            if exc.candidates:
+                time_dim_args = {"time_dimension": exc.candidates[0][0]}
             return ToolResponse(
                 status="error",
                 error=ToolError(
                     kind="ambiguous_time_dimension",
                     message=str(exc),
-                    recovery=Recovery(suggested_tool="get_metric"),
+                    recovery=Recovery(
+                        suggested_tool="get_metric",
+                        suggested_args=time_dim_args,
+                    ),
                 ),
             )
         except MalformedMetricRowError as exc:
