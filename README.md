@@ -171,7 +171,7 @@ Refused and degraded calls return a structured `recovery.suggested_args` block �
 </td>
 <td width="50%" valign="top">
 
-### 4. PII-aware refusal at the tool boundary
+### 4. PII-aware refusal at the `get_metric` tool boundary
 
 Any `get_metric` touching a blocked PII category returns a `refused` envelope; the compiled SQL never runs and the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`. `describe_entity` enforces the same policy at the column level — the agent still sees the entity and its non-PII columns, but blocked columns ship with `redacted=True` and the LLM-enriched description cleared. `schemabrain init` writes `--pii-block contact` into the Claude Desktop snippet by default so email / phone / address columns are blocked on a fresh install; widen with `--pii-block contact,health` and other categories as needed.
 
@@ -180,6 +180,8 @@ schemabrain serve --pii-block contact,health
 ```
 
 Twelve categories from GDPR, CCPA/CPRA, HIPAA, PCI DSS, ISO 27018 — tagged per-column at index time.
+
+**Enforcement scope:** binding is at the `get_metric` compile path today. Lower-level tools (`describe_entity`, `resolve_join`, `describe_table`) surface the `redacted=True` flag + `pii_categories` as advisory metadata so the agent can self-regulate, but they don't refuse. Uniform SQL-layer enforcement against agent-emitted SQL ships in v2 — see [Where it's going](#where-its-going).
 
 [PII classification →](docs/observability.md#pii-classification-alpha)
 
