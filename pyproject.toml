@@ -39,7 +39,7 @@ dependencies = [
     # example_queries write set. Pinned at the 25.x major; sqlglot
     # bumps the parser semantics across majors, so widening the range
     # is a deliberate review.
-    "sqlglot>=25.0,<27.0",
+    "sqlglot>=25.0,<31.0",
     # PyYAML powers the entity YAML grammar parser
     # (`schemabrain entities apply <yaml-path>` and the in-process
     # loader behind it). It also arrives transitively via fastembed's
