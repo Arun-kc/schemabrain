@@ -644,6 +644,10 @@ class TestJoinsList:
         assert "order → customer" in out
         assert "user_id ↔ id" in out
         assert "origin=manual" in out
+        # Charter v1.2 2D trust signal surfaces alongside the legacy
+        # `origin=` field; manually-authored joins land as
+        # `manually_authored · applied (HIGH)`.
+        assert "trust=manually_authored · applied (HIGH)" in out
 
     def test_list_with_source_filter(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

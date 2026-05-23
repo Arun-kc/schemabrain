@@ -25,9 +25,10 @@ from dataclasses import dataclass
 from typing import Literal, get_args
 
 from schemabrain.core.entity import Entity
-from schemabrain.core.join import Cardinality
-from schemabrain.core.metric import AggFunction
+from schemabrain.core.join import CanonicalJoin, Cardinality
+from schemabrain.core.metric import AggFunction, Metric
 from schemabrain.core.store_protocol import Store
+from schemabrain.joins.bridges import synthesize_bridges_for_entity
 from schemabrain.pii.categories import Sensitivity
 
 # Closed direction values — `outgoing` from the drilled entity's
@@ -68,6 +69,13 @@ class RelatedEntity:
     `cardinality` mirrors `CanonicalJoin.cardinality` (4-value
     Literal, or `None` for back-compat with joins authored before
     the column existed).
+
+    Bridges: when `via_junction` is set, this edge represents a logical
+    M:N bridge through a junction entity. `join_name` carries the
+    synthesised bridge name (`<a>_<b>_via_<junction>`) and `on` lists
+    the column pairs of the FIRST leg (drilled-entity → junction); the
+    renderer surfaces the bridge label so the operator sees that the
+    relationship is mediated rather than direct.
     """
 
     name: str
@@ -75,6 +83,7 @@ class RelatedEntity:
     join_name: str
     on: tuple[tuple[str, str], ...]
     cardinality: Cardinality | None
+    via_junction: str | None = None
 
     def __post_init__(self) -> None:
         if self.direction not in _VALID_DIRECTIONS:
@@ -91,12 +100,19 @@ class AnchoredMetric:
     so the renderer can format aggregations safely; widening to `str`
     here would silently allow an unvalidated value through if a future
     caller bypassed `MetricMeasure`'s validation.
+
+    Exactly one of `column` and `expression` is populated, mirroring the
+    XOR invariant on `MetricMeasure`. Bare-column measures carry
+    `column` (single identifier); composite-expression measures carry
+    `expression` (the raw whitelisted arithmetic source). The renderer
+    branches on which is set to format the measure shape for display.
     """
 
     name: str
     description: str
     agg: AggFunction
-    column: str
+    column: str | None
+    expression: str | None
     time_dimension: str | None
     time_grains: tuple[str, ...]
 
@@ -109,6 +125,38 @@ class EntityDetail:
     columns: tuple[EntityColumnDetail, ...]
     related_entities: tuple[RelatedEntity, ...]
     anchored_metrics: tuple[AnchoredMetric, ...]
+
+
+@dataclass(frozen=True)
+class MetricDetail:
+    """Inspect drill view for one metric.
+
+    Carries the full `Metric` plus the anchor entity row (`anchor`) so
+    the renderer can show "anchored on customer (public.customers)"
+    without a second round-trip. `anchor` is None only when the
+    metric's anchor entity has been deleted out from under it — a
+    corruption case the dataclass surfaces honestly so the operator
+    sees the orphaned row instead of a misleading silent omission.
+    """
+
+    metric: Metric
+    anchor: Entity | None
+
+
+@dataclass(frozen=True)
+class JoinDetail:
+    """Inspect drill view for one canonical join.
+
+    Carries the full `CanonicalJoin` plus both entity ends so the
+    renderer can show the bound tables. Either end being `None`
+    indicates a corrupt store (FK CASCADE should have swept this
+    join when the entity was deleted); the renderer surfaces the
+    inconsistency rather than hiding it.
+    """
+
+    join: CanonicalJoin
+    source: Entity | None
+    target: Entity | None
 
 
 @dataclass(frozen=True)
@@ -126,11 +174,11 @@ class StoreSummary:
     build; the scoped build leaves it as a single-element tuple
     matching the supplied filter, or empty when filter is `None` and
     the store is empty. The renderer uses `len > 1` to surface a
-    multi-source warning banner — smoke 2026-05-19 surfaced an
-    operator whose pre-existing store had 6 entities under an older
-    source-id scheme and 6 fresh entities under the new scheme, with
-    no visual signal that 12 rendered names were 6 logical entities
-    duplicated.
+    multi-source warning banner so that stores spanning multiple
+    `source_connection_id` schemes (e.g. an older and a re-indexed
+    fresh source) render with a visible signal — preventing the
+    silent footgun where the same logical entity appears twice
+    under different source-ids.
 
     When the summary is cross-source, `entity_names` / `metric_names`
     / `join_names` are DEDUPED by name — the operator-facing answer
@@ -209,8 +257,7 @@ def build_summary(*, store: Store, source_connection_id: str | None) -> StoreSum
         # collision across sources symmetrically.
         deduped_tables = {f"{schema}.{name}" for schema, name in qualified_tables}
         table_count = len(deduped_tables)
-        # `list_distinct_source_connection_ids` is the new Store
-        # protocol method (PR fix smoke 2026-05-19); spans tables +
+        # `list_distinct_source_connection_ids` spans tables +
         # entities + metrics + canonical_joins so an old store with
         # data in only one of those tables still surfaces.
         source_ids = tuple(store.list_distinct_source_connection_ids())
@@ -314,6 +361,41 @@ def build_entity_detail(
     )
 
 
+def build_metric_detail(
+    *,
+    store: Store,
+    metric_name: str,
+    source_connection_id: str,
+) -> MetricDetail | None:
+    """Return a `MetricDetail` for `metric_name`, or `None` if absent.
+
+    Anchor entity is fetched alongside so the renderer can surface
+    the bound table without a second drill — answers "what does
+    this metric measure, and where does that column live?" in one
+    look.
+    """
+    metric = store.get_metric(metric_name, source_connection_id=source_connection_id)
+    if metric is None:
+        return None
+    anchor = store.get_entity(metric.entity, source_connection_id=source_connection_id)
+    return MetricDetail(metric=metric, anchor=anchor)
+
+
+def build_join_detail(
+    *,
+    store: Store,
+    join_name: str,
+    source_connection_id: str,
+) -> JoinDetail | None:
+    """Return a `JoinDetail` for `join_name`, or `None` if absent."""
+    join = store.get_canonical_join(join_name, source_connection_id=source_connection_id)
+    if join is None:
+        return None
+    source_entity = store.get_entity(join.source_entity, source_connection_id=source_connection_id)
+    target_entity = store.get_entity(join.target_entity, source_connection_id=source_connection_id)
+    return JoinDetail(join=join, source=source_entity, target=target_entity)
+
+
 def _resolve_related_entities(
     *,
     store: Store,
@@ -324,6 +406,12 @@ def _resolve_related_entities(
     that touch `entity_name`. Direction + on-pair orientation are
     normalised to the drilled entity's perspective so renderers don't
     have to flip anything.
+
+    Junction bridges: in addition to direct canonical joins, synthesise
+    M:N bridge edges through any junction entity (`products <->
+    categories via product_categories`). Bridges always render with
+    `direction="outgoing"` from the drilled entity — the operator's
+    perspective is the natural left side of the bridge.
     """
     joins = store.list_canonical_joins(source_connection_id=source_connection_id)
     related: list[RelatedEntity] = []
@@ -351,6 +439,51 @@ def _resolve_related_entities(
                     cardinality=join.cardinality,
                 )
             )
+
+    bridges = synthesize_bridges_for_entity(
+        store=store,
+        source_connection_id=source_connection_id,
+        entity_name=entity_name,
+    )
+    # Build a lookup of canonical joins for orienting the bridge's
+    # first leg from the drilled entity's perspective.
+    joins_by_name = {j.name: j for j in joins}
+    for bridge in bridges:
+        # The drilled entity is one of the two ends. Identify the
+        # opposite end + the leg that connects drilled-entity to
+        # junction so we can show that leg's on-pairs.
+        if entity_name == bridge.source_entity:
+            other_end = bridge.target_entity
+            # First leg in (lo, hi) order is the source-end leg.
+            first_leg_name = bridge.via_joins[0]
+        else:
+            other_end = bridge.source_entity
+            first_leg_name = bridge.via_joins[1]
+        first_leg = joins_by_name.get(first_leg_name)
+        if first_leg is None:  # pragma: no cover — bridge derives from these joins
+            continue
+        # Orient the first leg so the pair reads
+        # `(local_column, junction_column)` from the drilled entity's
+        # perspective.
+        if first_leg.source_entity == entity_name:
+            on = tuple((p.source_column, p.target_column) for p in first_leg.on)
+        else:
+            on = tuple((p.target_column, p.source_column) for p in first_leg.on)
+        related.append(
+            RelatedEntity(
+                name=other_end,
+                direction="outgoing",
+                join_name=bridge.name,
+                on=on,
+                # Bridge cardinality is many_to_many by definition
+                # (that's what an M:N junction encodes). Surfacing
+                # this explicitly lets the fan-out detector reason
+                # about bridge edges the same way it reasons about
+                # direct ones.
+                cardinality="many_to_many",
+                via_junction=bridge.via_junction,
+            )
+        )
     # Stable alphabetical ordering by related-entity name so the
     # render is deterministic across runs.
     related.sort(key=lambda r: (r.name, r.join_name))
@@ -372,6 +505,7 @@ def _resolve_anchored_metrics(
             description=m.description,
             agg=m.measure.agg,
             column=m.measure.column,
+            expression=m.measure.expression,
             time_dimension=m.time_dimension,
             time_grains=tuple(m.time_grains),
         )

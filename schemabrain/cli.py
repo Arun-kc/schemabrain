@@ -515,6 +515,13 @@ def _dispatch(argv: list[str] | None) -> int:
                 provider=args.provider,
                 max_cost_usd=args.max_cost_usd,
             )
+        if args.metrics_action == "audit":
+            return _cmd_metrics_audit(
+                store_path=args.store_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+                fix=args.fix,
+            )
         parser.error(f"unknown metrics action: {args.metrics_action}")  # pragma: no cover
     # argparse `required=True` on subparsers prevents reaching here, but
     # leaving an explicit branch is cheaper than a guarded assertion.
@@ -1323,6 +1330,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Name of the environment variable that holds the source URL.",
     )
 
+    p_metrics_audit = metrics_sub.add_parser(
+        "audit",
+        help="Scan applied metrics for anti-pattern descriptions and "
+        "optionally remove them. Counterpart to the suggest-time "
+        "anti-pattern filter for stores written before that filter shipped.",
+    )
+    p_metrics_audit.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_metrics_audit.add_argument(
+        "--source",
+        default=None,
+        help="Filter audit to one source. Without this flag, audits "
+        "across every source in the store.",
+    )
+    p_metrics_audit.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL.",
+    )
+    p_metrics_audit.add_argument(
+        "--fix",
+        action="store_true",
+        help="Delete every flagged metric (excluding dbt-owned ones). "
+        "Without this flag, audit is read-only — lists findings and "
+        "exits non-zero if any were found.",
+    )
+
     p_metrics_suggest = metrics_sub.add_parser(
         "suggest",
         help="LLM-suggest metric candidates anchored on existing entities.",
@@ -1646,9 +1685,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Path to the JSONL events file written by `schemabrain serve`. "
         f"Default: $SCHEMABRAIN_EVENTS_PATH or {_DEFAULT_EVENTS_PATH}.",
     )
-    # Smoke 2026-05-19: operators reflexively pass `--store-path` to
-    # `tail` (every other subcommand accepts it). Accept it here so the
-    # CLI doesn't surface a hostile `unrecognized arguments` error.
+    # Operators reflexively pass `--store-path` to `tail` (every other
+    # subcommand accepts it). Accept it here so the CLI doesn't
+    # surface a hostile `unrecognized arguments` error.
     # The events JSONL is decoupled from the SQLite store by default
     # (events go to `~/.schemabrain/events.jsonl`, store goes wherever
     # the operator chose), so `--store-path` is only used as a
@@ -2636,14 +2675,14 @@ def _cmd_serve(
                 tracer=tracer,
             )
     except SchemaVersionMismatchError as exc:
-        # Smoke 2026-05-19 surfaced this: a Claude Desktop launch
-        # against a store written by an older schemabrain version
-        # crashed with a raw Python traceback to MCP stderr. Claude
-        # Desktop's UI then just showed "Server disconnected" with
-        # no actionable hint. Match the inspect/check/doctor pattern
-        # and emit a guided block instead — the operator-facing
-        # remediation is identical across all four subcommands so
-        # operators only have to learn the message once.
+        # A Claude Desktop launch against a store written by an older
+        # schemabrain version would otherwise crash with a raw Python
+        # traceback to MCP stderr — Claude Desktop's UI then just
+        # shows "Server disconnected" with no actionable hint. Match
+        # the inspect/check/doctor pattern and emit a guided block
+        # instead — the operator-facing remediation is identical across
+        # all four subcommands so operators only have to learn the
+        # message once.
         _render_guided(
             GuidedError(
                 kind="serve_schema_version_mismatch",
@@ -2976,6 +3015,19 @@ def _cmd_entities_apply(
     return 1 if failures else 0
 
 
+def _format_trust(inference_method: str, validation_state: str) -> str:
+    """Render the charter v1.2 2D trust signal as `<method> · <state> (<CONF>)`.
+
+    Lazily imports `derive_confidence` to keep the envelope module
+    (and its Pydantic transitive deps) off the import path of CLI
+    commands that don't render trust.
+    """
+    from schemabrain.mcp.envelope import derive_confidence
+
+    confidence = derive_confidence(inference_method, validation_state)  # type: ignore[arg-type]
+    return f"{inference_method} · {validation_state} ({confidence})"
+
+
 def _cmd_entities_list(
     *,
     store_path: str,
@@ -3029,11 +3081,13 @@ def _cmd_entities_list(
         return 0
 
     for entity in entities:
+        trust = _format_trust(entity.inference_method, entity.validation_state)
         print(
             f"{entity.name}  "
             f"table={entity.binding.qualified_table}  "
             f"identity={entity.identity}  "
-            f"origin={entity.origin}"
+            f"origin={entity.origin}  "
+            f"trust={trust}"
         )
     return 0
 
@@ -4096,10 +4150,12 @@ def _cmd_joins_list(
 
     for join in joins:
         on_summary = ", ".join(f"{p.source_column} ↔ {p.target_column}" for p in join.on)
+        trust = _format_trust(join.inference_method, join.validation_state)
         print(
             f"{join.name}  "
             f"{join.source_entity} → {join.target_entity}  "
-            f"[{on_summary}]  origin={join.origin}"
+            f"[{on_summary}]  origin={join.origin}  "
+            f"trust={trust}"
         )
     return 0
 
@@ -4249,21 +4305,132 @@ def _cmd_metrics_list(
         return 2
 
     if not metrics:
+        # Mirror the MCP `list_metrics` tool's empty-state hint: tell
+        # the operator how to populate the surface rather than dead-
+        # ending with a parenthetical. The CLI used to print only
+        # `(no metrics in the store)` and the operator had to guess
+        # the next command.
         print("(no metrics in the store)")
+        print(
+            "  next: run `schemabrain metrics suggest --out-dir ./metrics` "
+            "to propose metrics from the indexed entities, then "
+            "`schemabrain metrics apply ./metrics` to persist."
+        )
         return 0
 
     for metric in metrics:
         grains = ",".join(metric.time_grains) if metric.time_grains else "(non-temporal)"
         time_dim = metric.time_dimension or "—"
+        # `measure.column` and `measure.expression` are mutually
+        # exclusive — render whichever is populated so composite
+        # metrics show their expression instead of `sum(None)`.
+        measure_body = (
+            metric.measure.column
+            if metric.measure.column is not None
+            else metric.measure.expression
+        )
+        trust = _format_trust(metric.inference_method, metric.validation_state)
         print(
             f"{metric.name}  "
             f"entity={metric.entity}  "
-            f"{metric.measure.agg}({metric.measure.column})  "
+            f"{metric.measure.agg}({measure_body})  "
             f"time_dim={time_dim}  "
             f"grains={grains}  "
-            f"origin={metric.origin}"
+            f"origin={metric.origin}  "
+            f"trust={trust}"
         )
     return 0
+
+
+def _cmd_metrics_audit(
+    *,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+    fix: bool,
+) -> int:
+    """Scan applied metrics for the anti-pattern phrases that
+    `metrics suggest` blocks at suggest-time, optionally deleting them.
+
+    Read-only without `--fix`: list every flagged metric with the
+    matched phrase, exit 0 if clean / 1 if any flagged. CI can fail a
+    build on a store with bad metrics by running the read-only path.
+
+    With `--fix`: delete every non-dbt-owned finding. dbt-owned
+    metrics are listed but not removed — the upstream dbt repo is the
+    source of truth, and a local deletion would just drift back in on
+    the next `schemabrain import dbt --include-metrics`.
+
+    Exit codes:
+      0: audit clean OR audit found+fixed every removable finding
+      1: audit found flagged metrics and `--fix` was not given
+      2: structural (unwritable store / unreadable URL / corrupt row)
+    """
+    from schemabrain.metrics.audit import (
+        find_anti_pattern_metrics,
+        remove_anti_pattern_metrics,
+    )
+
+    source_id: str | None = None
+    if positional_url is not None or url_env is not None:
+        source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+        if source_url is None:
+            return 2
+        if _resolve_url(source_url) is None:  # pragma: no cover — defensive
+            return 2  # pragma: no cover
+        source_id = _make_source_id(source_url)
+
+    try:
+        with SQLiteStore(store_path) as store:
+            findings = find_anti_pattern_metrics(store, source_connection_id=source_id)
+            if not findings:
+                print("metrics audit: no anti-pattern metrics found.")
+                return 0
+
+            print(f"metrics audit: {len(findings)} flagged metric(s):")
+            print()
+            for finding in findings:
+                m = finding.metric
+                measure_body = (
+                    m.measure.column if m.measure.column is not None else m.measure.expression
+                )
+                print(f"  {m.name}  entity={m.entity}  {m.measure.agg}({measure_body})")
+                print(f"    matched phrase: {finding.matched_phrase!r}")
+                print(
+                    f"    origin: {m.origin}"
+                    + (" [DBT-OWNED — cannot fix]" if finding.is_dbt_owned else "")
+                )
+                desc_line = (m.description or "").strip().replace("\n", " ")
+                if desc_line:
+                    excerpt = desc_line if len(desc_line) <= 140 else (desc_line[:137] + "...")
+                    print(f"    description: {excerpt}")
+                print()
+
+            if not fix:
+                # Read-only mode: exit 1 so callers (CI, scripts)
+                # can branch on the audit verdict without parsing
+                # stdout.
+                print("Re-run with --fix to remove the non-dbt-owned findings.")
+                return 1
+
+            # `--fix` path: delete each non-dbt-owned finding.
+            removed, skipped = remove_anti_pattern_metrics(store, findings)
+            print(f"metrics audit: removed {removed} metric(s).")
+            if skipped:
+                print(
+                    f"metrics audit: {len(skipped)} dbt-owned metric(s) were left in place. "
+                    f"Drop them in your dbt repo and re-import to remove."
+                )
+            return 0
+    except OSError as e:  # pragma: no cover — defensive, mirrors _cmd_metrics_list
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+    except ValueError as exc:  # pragma: no cover — defensive, mirrors _cmd_metrics_list
+        print(
+            f"error: failed to read metrics from {store_path!r}: store appears corrupt ({exc})",
+            file=sys.stderr,
+        )
+        return 2
 
 
 def _cmd_metrics_suggest(
@@ -4575,7 +4742,16 @@ def _format_metric_yaml_body(candidate: MetricCandidate) -> str:
     if metric.description:
         body["description"] = metric.description
     body["entity"] = metric.entity
-    body["measure"] = {"agg": metric.measure.agg, "column": metric.measure.column}
+    # `measure.column` and `measure.expression` are mutually exclusive
+    # (XOR enforced by the dataclass). Emit only the populated field so
+    # the rendered YAML round-trips cleanly through the grammar parser,
+    # which itself enforces XOR at read time.
+    measure_body: dict[str, object] = {"agg": metric.measure.agg}
+    if metric.measure.column is not None:
+        measure_body["column"] = metric.measure.column
+    else:
+        measure_body["expression"] = metric.measure.expression
+    body["measure"] = measure_body
     if metric.time_dimension is not None:
         body["time_dimension"] = metric.time_dimension
         body["time_grains"] = list(metric.time_grains)
@@ -5071,22 +5247,45 @@ def _cmd_init(
     # overwriting an existing host config) can pass
     # `--skip-llm-confirm` alone.
     effective_skip_llm_confirm = skip_llm_confirm or assume_yes
-    cfg = WizardConfig(
-        source_url=source_url,
-        store_path=Path(store_path),
-        host=effective_host,
-        env_var_name=env_var,
-        skip_index=skip_index,
-        no_entities=no_entities,
-        enrich=enrich,
-        entities_max_cost_usd=entities_max_cost_usd,
-        assume_yes=assume_yes,
-        no_metrics=no_metrics,
-        metrics_max_cost_usd=metrics_max_cost_usd,
-        no_joins=no_joins,
-        from_dbt=Path(from_dbt) if from_dbt else None,
-        skip_llm_confirm=effective_skip_llm_confirm,
-    )
+
+    # Surface the PII-block choice to the operator instead of silently
+    # baking ("contact",) into the host snippet. Interactive only:
+    # `--yes` (CI / scripted) and non-TTY stderr (piped output) both
+    # fall through to the wizard's `("contact",)` default — the prior
+    # silent behavior — so automation is unchanged.
+    pii_block_choice: tuple[str, ...] | None = None
+    if _stderr_is_interactive_tty() and not assume_yes:
+        from schemabrain.setup.setup_stage import prompt_for_pii_block
+
+        try:
+            pii_block_choice = prompt_for_pii_block(console=_stderr_console())
+        # Ctrl-C / EOF re-raise — same clean-abort convention as
+        # `prompt_for_init_setup` above: any prompt exits with the
+        # standard exit-130 / exit-2 path the outer handler provides.
+        # Skipped from coverage because the operator-driven abort is
+        # identical in shape to the existing init-prompt handler.
+        except (KeyboardInterrupt, EOFError):  # pragma: no cover
+            raise
+
+    wizard_kwargs: dict[str, object] = {
+        "source_url": source_url,
+        "store_path": Path(store_path),
+        "host": effective_host,
+        "env_var_name": env_var,
+        "skip_index": skip_index,
+        "no_entities": no_entities,
+        "enrich": enrich,
+        "entities_max_cost_usd": entities_max_cost_usd,
+        "assume_yes": assume_yes,
+        "no_metrics": no_metrics,
+        "metrics_max_cost_usd": metrics_max_cost_usd,
+        "no_joins": no_joins,
+        "from_dbt": Path(from_dbt) if from_dbt else None,
+        "skip_llm_confirm": effective_skip_llm_confirm,
+    }
+    if pii_block_choice is not None:
+        wizard_kwargs["pii_block"] = pii_block_choice
+    cfg = WizardConfig(**wizard_kwargs)  # type: ignore[arg-type]
 
     host_display = _host_display_name(effective_host)
     console = _stderr_console()
@@ -5568,6 +5767,17 @@ def _cmd_audit_list(
         except _sqlite3.DatabaseError as exc:
             print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
             return 2
+        # Differentiate "empty audit log" from "filters excluded
+        # everything". A bare `no rows matched` was ambiguous — operators
+        # couldn't tell whether they had no MCP traffic yet, or simply a
+        # filter typo. Computed only when needed so the happy path
+        # doesn't pay for an extra query.
+        total_rows: int | None = None
+        if not rows:
+            try:
+                total_rows = conn.execute("SELECT COUNT(*) FROM mcp_audit").fetchone()[0]
+            except _sqlite3.DatabaseError:  # pragma: no cover — defensive
+                total_rows = None
     finally:
         conn.close()
 
@@ -5587,7 +5797,19 @@ def _cmd_audit_list(
         return 0
 
     if not rows:
-        print("no audit rows matched the filters")
+        if total_rows == 0:
+            print("(audit log is empty — no MCP tool calls have run yet)")
+            print(
+                "  next: drive the MCP server (Claude Desktop, "
+                "`examples/anthropic_demo.py`, or another MCP client) to "
+                "produce audit rows."
+            )
+        elif where_clauses:
+            suffix = f" (audit log has {total_rows} rows total)" if total_rows else ""
+            print(f"no audit rows matched the filters{suffix}")
+            print("  next: widen with `--since 24h` or drop `--status`/`--tool` filters.")
+        else:  # pragma: no cover — empty without filters yet total>0 is impossible
+            print("no audit rows in this view")
         return 0
 
     console = _Console()
@@ -5793,9 +6015,9 @@ def _format_path_for_terminal(path: Path, *, max_width: int = 60) -> str:
 # Stages whose handlers commonly take long enough to need a visible
 # "I'm working" cue. Stages 1, 5 are fast enough that a spinner
 # would flash and clear before the eye registers it; stages 2, 3, 4
-# routinely take 5-60s on real schemas. Smoke 2026-05-19 surfaced
-# stage 4 looking frozen for ~56s without the spinner — adding
-# `metrics` here restores symmetry with stage 3.
+# routinely take 5-60s on real schemas. Without the `metrics`
+# entry stage 4 can look frozen for ~minute on a real schema; the
+# spinner restores symmetry with stage 3.
 _SPINNER_STAGES: frozenset[str] = frozenset({"index", "entities", "metrics"})
 
 
@@ -5899,10 +6121,10 @@ def _wizard_stage_context(stage: object) -> Iterator[None]:
     # `__exit__`) and direct `.start()` / `.stop()` calls. The wizard's
     # interactive prompt code pauses the spinner via the latter — see
     # `_ui.pause_active_spinner` and `setup.wizard._prompt_llm_confirmation`.
-    # Smoke 2026-05-19 surfaced a UX bug where the spinner kept
-    # rendering during `input()` and read as "stage is already running";
-    # registering the active spinner here gives the prompt a handle to
-    # pause it during the wait.
+    # Without registration the spinner kept rendering during
+    # `input()` and read as "stage is already running"; registering
+    # the active spinner here gives the prompt a handle to pause it
+    # during the wait.
     #
     # Cleanup ordering note: in `with A, B:`, Python exits B first,
     # then A. Here that means `register_active_spinner.__exit__` runs
@@ -6665,8 +6887,12 @@ def _cmd_inspect(
     from schemabrain.core.store import SchemaVersionMismatchError
     from schemabrain.inspect import (
         build_entity_detail,
+        build_join_detail,
+        build_metric_detail,
         build_summary,
         render_entity_detail,
+        render_join_detail,
+        render_metric_detail,
         render_summary,
     )
 
@@ -6707,25 +6933,26 @@ def _cmd_inspect(
                 render_summary(summary, console=console, store_path=store_path)
                 return 0
 
-            # Drill mode. If no `--source` filter was supplied we walk
-            # every source in the store and render every match. This
-            # keeps the operator UX simple in the common one-source
-            # case (no flag required) while still surfacing
-            # multi-source matches when they exist.
+            # Drill mode resolves `name` as entity → metric → join in
+            # that priority. The summary view lists all three kinds
+            # alongside each other with no namespace, so callers like
+            # the summary's "Drill into one: `schemabrain inspect <name>`"
+            # link must work for any of them.
             if source_id is not None:
                 candidate_sources = [source_id]
             else:
-                # `list_entities()` with no filter walks every source.
-                # We dedupe to the unique source set via the entity
-                # rows' implicit source-id grouping. The
-                # `Store.list_entities` Protocol returns just Entity
-                # rows without exposing `source_connection_id`, so
-                # we fall back to the raw store-private path: enumerate
-                # via the table list and walk by entity name.
-                source_ids = _list_source_ids_with_entity(store, name)
+                # Union the source-id sets across the three name spaces
+                # — a name that lives only as a metric (or join) still
+                # gets a non-empty candidate set so the drill below can
+                # find it. Sorted for determinism in the rendered output.
+                source_ids = sorted(
+                    set(_list_source_ids_with_entity(store, name))
+                    | set(_list_source_ids_with_metric(store, name))
+                    | set(_list_source_ids_with_join(store, name))
+                )
                 if not source_ids:
                     print(
-                        f"error: no entity named {name!r} in {store_path!r}",
+                        f"error: no entity, metric, or join named {name!r} in {store_path!r}",
                         file=sys.stderr,
                     )
                     return 1
@@ -6733,21 +6960,48 @@ def _cmd_inspect(
 
             rendered = False
             for sid in candidate_sources:
-                detail = build_entity_detail(
+                # Priority: entity → metric → join. A name that exists
+                # as both an entity and a metric (rare; the identifiers
+                # share the same alphabet but the operator typically
+                # avoids the collision) drills as the entity, and the
+                # operator can disambiguate by passing the metric/join
+                # name verbatim when it differs.
+                entity_detail = build_entity_detail(
                     store=store,
                     entity_name=name,
                     source_connection_id=sid,
                 )
-                if detail is None:
+                if entity_detail is not None:
+                    if rendered:
+                        console.print()
+                    render_entity_detail(entity_detail, console=console)
+                    rendered = True
                     continue
-                if rendered:
-                    console.print()
-                render_entity_detail(detail, console=console)
-                rendered = True
+                metric_detail = build_metric_detail(
+                    store=store,
+                    metric_name=name,
+                    source_connection_id=sid,
+                )
+                if metric_detail is not None:
+                    if rendered:  # pragma: no cover — multi-source separator; same name resolving in >1 source-id is rare
+                        console.print()
+                    render_metric_detail(metric_detail, console=console)
+                    rendered = True
+                    continue
+                join_detail = build_join_detail(
+                    store=store,
+                    join_name=name,
+                    source_connection_id=sid,
+                )
+                if join_detail is not None:
+                    if rendered:  # pragma: no cover — multi-source separator; same name resolving in >1 source-id is rare
+                        console.print()
+                    render_join_detail(join_detail, console=console)
+                    rendered = True
 
             if not rendered:
                 print(
-                    f"error: no entity named {name!r} in {store_path!r}",
+                    f"error: no entity, metric, or join named {name!r} in {store_path!r}",
                     file=sys.stderr,
                 )
                 return 1
@@ -6805,7 +7059,38 @@ def _list_source_ids_with_entity(store: SQLiteStore, entity_name: str) -> list[s
             "SELECT DISTINCT source_connection_id FROM entities WHERE name = ?",
             (entity_name,),
         ).fetchall()
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError:  # pragma: no cover — pre-v10 partial-migration defense
+        return []
+    return [r[0] for r in rows]
+
+
+def _list_source_ids_with_metric(store: SQLiteStore, metric_name: str) -> list[str]:
+    """Cross-source variant of `_list_source_ids_with_entity` for metrics.
+
+    Same partial-migration tolerance: a store missing the `metrics`
+    table (pre-v10) returns an empty list rather than crashing, so
+    the caller's "name not found" path still renders cleanly.
+    """
+    conn = store._require_conn()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT source_connection_id FROM metrics WHERE name = ?",
+            (metric_name,),
+        ).fetchall()
+    except sqlite3.OperationalError:  # pragma: no cover — pre-v10 partial-migration defense
+        return []
+    return [r[0] for r in rows]
+
+
+def _list_source_ids_with_join(store: SQLiteStore, join_name: str) -> list[str]:
+    """Cross-source variant of `_list_source_ids_with_entity` for joins."""
+    conn = store._require_conn()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT source_connection_id FROM canonical_joins WHERE name = ?",
+            (join_name,),
+        ).fetchall()
+    except sqlite3.OperationalError:  # pragma: no cover — pre-v10 partial-migration defense
         return []
     return [r[0] for r in rows]
 

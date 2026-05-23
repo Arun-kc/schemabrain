@@ -31,6 +31,7 @@ from schemabrain.setup.setup_stage import (
     DEMO_FIXTURE_LOAD_COMMAND,
     detect_docker,
     prompt_for_init_setup,
+    prompt_for_pii_block,
 )
 
 
@@ -55,6 +56,51 @@ class TestDetectDocker:
         # Must mention the fallback so the user knows they're not
         # dead-ended.
         assert "option 1" in explanation
+
+
+class TestPromptForPiiBlock:
+    """The interactive PII-block prompt added by the init wizard.
+
+    Prior behavior was to silently bake ("contact",) into the host
+    snippet without asking. The prompt surfaces the choice so an
+    operator can opt into the full v1 category set OR opt out
+    entirely for dev/synthetic databases — without scripted flows
+    (-y / piped stderr) ever blocking on stdin.
+    """
+
+    def test_default_recommended_returns_contact(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Pressing Enter at the prompt selects the recommended default —
+        # `contact` only, matching the pre-prompt silent default so the
+        # zero-effort path is unchanged for operators who don't read
+        # prompt copy carefully.
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: "1")
+        result = prompt_for_pii_block(console=make_console(file=io.StringIO()))
+        assert result == ("contact",)
+
+    def test_all_categories_returns_full_v1_enum(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Option 2 fans out to every v1 PIICategory the classifier can
+        # tag. Sorted output keeps the host-snippet shape deterministic
+        # across machines (otherwise the comma-joined arg order would
+        # flap based on frozenset iteration).
+        from schemabrain.pii.categories import PII_CATEGORIES
+
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: "2")
+        result = prompt_for_pii_block(console=make_console(file=io.StringIO()))
+        assert result == tuple(sorted(PII_CATEGORIES))
+        # Must include the universally-sensitive category (`contact`)
+        # AND at least one rarer category (`government_id`) so a
+        # future enum addition that misses sorting/inclusion surfaces
+        # here rather than silently shipping a partial set.
+        assert "contact" in result
+        assert "government_id" in result
+
+    def test_none_choice_returns_empty_tuple(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Option 3 = dev/synthetic database escape hatch. Empty tuple
+        # signals "no `--pii-block` flag in the host snippet"; the
+        # server then runs with PII enforcement off.
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: "3")
+        result = prompt_for_pii_block(console=make_console(file=io.StringIO()))
+        assert result == ()
 
 
 class TestPromptForInitSetup:

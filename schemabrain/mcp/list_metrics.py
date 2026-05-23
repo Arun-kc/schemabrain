@@ -10,11 +10,10 @@ same lean-summary philosophy: the agent gets enough to pick a
 metric to feed to `get_metric` (name + aggregation + time grains)
 without paying the full Metric serialisation cost.
 
-Closes the day-one discovery gap surfaced by the 2026-05-21 manual
-smoke: ten metrics lived in the store, the agent had no path to
-enumerate them. The previous `get_metric` description routed agents
-to a CLI subcommand for discovery — agents have no terminal, so
-every ad-hoc question dead-ended.
+Closes a discovery gap: when metrics live in the store but the
+agent has no way to enumerate them, every ad-hoc question dead-ends.
+The previous `get_metric` description routed agents to a CLI
+subcommand for discovery — agents have no terminal.
 """
 
 from __future__ import annotations
@@ -48,9 +47,12 @@ def list_metrics_impl(
             entity=m.entity,
             aggregation=m.measure.agg,
             measure_column=m.measure.column,
+            measure_expression=m.measure.expression,
             time_dimension=m.time_dimension,
             time_grains=m.time_grains,
             origin=m.origin,
+            inference_method=m.inference_method,
+            validation_state=m.validation_state,
         )
         for m in metrics
     ]

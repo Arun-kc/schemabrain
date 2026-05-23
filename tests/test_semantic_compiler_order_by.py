@@ -42,8 +42,12 @@ from schemabrain.core.metric import Metric, MetricMeasure
 from schemabrain.core.models import Column, Table
 from schemabrain.core.store import SQLiteStore
 from schemabrain.semantic.compiler import (
+    RequestedFilter,
     RequestedOrderBy,
     ResolvedOrderBy,
+    UnknownFilterColumnError,
+    UnknownGroupByColumnError,
+    UnknownMeasureColumnError,
     UnknownOrderByColumnError,
     emit_sql,
     resolve_metric_plan,
@@ -64,6 +68,29 @@ def _id_col(table: str) -> Column:
     )
 
 
+def _col(table: str, name: str, *, ordinal: int, data_type: str = "text") -> Column:
+    return Column(
+        name=name,
+        table_name=table,
+        schema_name="public",
+        data_type=data_type,
+        nullable=True,
+        ordinal_position=ordinal,
+        is_primary_key=False,
+    )
+
+
+# Columns each fixture table carries beyond `id`. Centralised so the
+# `_seed_two_hop` fixture stays in sync with what the compiler's column-
+# existence validation (PR-6h.3) now checks against. Adding a column
+# referenced by a test means adding it to this map AND seeding it.
+_FIXTURE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "order_items": ("quantity", "product_id"),
+    "orders": ("placed_at", "user_id"),
+    "users": ("email", "full_name"),
+}
+
+
 def _seed_two_hop(store: SQLiteStore) -> None:
     """`order_item → order → user`. Minimal fixture matching the
     PR-6h.1 + PR-6h.1.1 multi-hop tests; `total_items_sold` metric
@@ -71,8 +98,13 @@ def _seed_two_hop(store: SQLiteStore) -> None:
     against a 2-hop chain.
     """
     for name in ("order_items", "orders", "users"):
+        extra = _FIXTURE_COLUMNS.get(name, ())
+        cols: tuple[Column, ...] = (
+            _id_col(name),
+            *(_col(name, col_name, ordinal=2 + i) for i, col_name in enumerate(extra)),
+        )
         store.write_table(
-            Table(name=name, schema_name="public", columns=(_id_col(name),)),
+            Table(name=name, schema_name="public", columns=cols),
             source_connection_id=SOURCE,
         )
     for entity_name, table in (
@@ -125,10 +157,14 @@ def _seed_two_hop(store: SQLiteStore) -> None:
 
 
 class TestOrderByDefault:
-    def test_no_order_by_produces_no_clause_in_sql(self, tmp_path: Path) -> None:
-        """Default `order_by=()` is the v0 behavior — backward
-        compatible with every existing caller. Emitter must NOT
-        produce an ORDER BY line.
+    def test_no_order_by_with_group_by_auto_fills_group_columns(self, tmp_path: Path) -> None:
+        """When the caller passes `group_by` without `order_by`, the
+        resolver auto-fills ORDER BY with the group columns ASC so
+        the LIMIT N slice is deterministic. Without this, every
+        get_metric grouped query would surface
+        `missing_order_by_with_limit` as a degradation — a real
+        determinism concern, but firing on every grouped call eroded
+        the meaning of `degraded`.
         """
         with SQLiteStore(tmp_path / "store.db") as store:
             _seed_two_hop(store)
@@ -137,6 +173,30 @@ class TestOrderByDefault:
                 source_connection_id=SOURCE,
                 metric_name="total_items_sold",
                 group_by=("user.email",),
+            )
+        # Auto-filled: one ResolvedOrderBy per group column, ASC, NOT
+        # flagged as tie-break (the tie-break path is for the EXPLICIT
+        # order_by + group_by combo).
+        assert len(plan.order_by_clauses) == 1
+        assert plan.order_by_clauses[0] == ResolvedOrderBy(
+            expression="group_col_0",
+            direction="asc",
+            auto_appended_tie_break=False,
+        )
+        sql_text, _ = emit_sql(plan)
+        assert 'ORDER BY "group_col_0" ASC' in sql_text
+
+    def test_no_order_by_no_group_by_emits_no_clause(self, tmp_path: Path) -> None:
+        """Single-row aggregate (no group_by, no order_by) — auto-fill
+        only kicks in when there's something to order by. With no
+        group columns, no ORDER BY line is emitted.
+        """
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="total_items_sold",
             )
         assert plan.order_by_clauses == ()
         sql_text, _ = emit_sql(plan)
@@ -303,6 +363,237 @@ class TestTieBreak:
 
 
 # ----- error class shape contracts -------------------------------------------
+
+
+class TestUnknownGroupByColumn:
+    """Closes the 2026-05-21 stress-test silent-failure path:
+    `get_metric(group_by=['user.bogus_column'])` used to emit literal
+    SQL `"user"."bogus_column"`, run it against Postgres, get
+    `UndefinedColumn` back, and surface to the agent as
+    `internal_error` — useless feedback for a typo. The new
+    compile-time check raises `UnknownGroupByColumnError` BEFORE SQL
+    emission so the MCP layer can map to a clean envelope kind with
+    the allowed-column set in `recovery.suggested_args`.
+    """
+
+    def test_unknown_column_on_anchor_entity_raises(self, tmp_path: Path) -> None:
+        # Anchor entity is `order_item`; column `bogus_column` doesn't
+        # exist on `public.order_items`. Validate before BFS even runs.
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop(store)
+            with pytest.raises(UnknownGroupByColumnError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    group_by=("order_item.bogus_column",),
+                )
+        assert exc_info.value.entity == "order_item"
+        assert exc_info.value.column == "bogus_column"
+        # Allowed columns is the real per-table list (sorted) — agents
+        # can pick any of these as a retry.
+        assert "id" in exc_info.value.allowed_columns
+        assert "quantity" in exc_info.value.allowed_columns
+
+    def test_unknown_column_on_joined_entity_raises(self, tmp_path: Path) -> None:
+        # `user` is reachable via 2-hop chain from `order_item`. Once
+        # BFS resolves the join, the column check fires.
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop(store)
+            with pytest.raises(UnknownGroupByColumnError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    group_by=("user.bogus_column",),
+                )
+        assert exc_info.value.entity == "user"
+        assert exc_info.value.column == "bogus_column"
+        assert set(exc_info.value.allowed_columns) == {"id", "email", "full_name"}
+
+    def test_known_column_on_joined_entity_still_resolves(self, tmp_path: Path) -> None:
+        # Pinning the happy path so the validation guard doesn't
+        # accidentally over-reject for a column that DOES exist.
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop(store)
+            plan = resolve_metric_plan(
+                store=store,
+                source_connection_id=SOURCE,
+                metric_name="total_items_sold",
+                group_by=("user.email",),
+            )
+        assert len(plan.group_by_columns) == 1
+        assert plan.group_by_columns[0].column == "email"
+
+
+class TestUnknownFilterColumn:
+    """Parallel to TestUnknownGroupByColumn — the same compile-time
+    check on the `filters=` surface.
+    """
+
+    def test_unknown_filter_column_raises(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop(store)
+            with pytest.raises(UnknownFilterColumnError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                    filters=(RequestedFilter(column="user.bogus_column", op="eq", value="x"),),
+                )
+        assert exc_info.value.entity == "user"
+        assert exc_info.value.column == "bogus_column"
+        assert "email" in exc_info.value.allowed_columns
+
+
+def test_unknown_group_by_column_error_pickles() -> None:
+    """Frozen-dataclass error must round-trip through pickle — locks
+    `__reduce__` shape against accidental field-order drift, matching
+    the `UnknownOrderByColumnError` contract."""
+    import pickle
+
+    err = UnknownGroupByColumnError(
+        entity="user",
+        column="bogus",
+        allowed_columns=("email", "full_name", "id"),
+    )
+    revived: UnknownGroupByColumnError = pickle.loads(pickle.dumps(err))
+    assert revived.entity == err.entity
+    assert revived.column == err.column
+    assert revived.allowed_columns == err.allowed_columns
+
+
+class TestUnknownMeasureColumn:
+    """Compile-time validation of every column the measure references
+    against the anchor entity's table. Covers BOTH the v1 bare-column
+    path and the v2 composite-expression path — a typo in either shape
+    surfaces here as a clean envelope instead of an `internal_error`
+    masking Postgres's UndefinedColumn."""
+
+    def test_unknown_bare_measure_column_raises(self, tmp_path: Path) -> None:
+        from schemabrain.core.metric import Metric, MetricMeasure
+
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop(store)
+            # Overwrite the seeded `total_items_sold` metric with one
+            # that references a column that doesn't exist on `order_item`.
+            store.write_metric(
+                Metric(
+                    name="total_items_sold",
+                    description="",
+                    entity="order_item",
+                    measure=MetricMeasure(agg="sum", column="bogus_column"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            with pytest.raises(UnknownMeasureColumnError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                )
+        assert exc_info.value.entity == "order_item"
+        assert exc_info.value.column == "bogus_column"
+
+    def test_unknown_composite_operand_raises(self, tmp_path: Path) -> None:
+        from schemabrain.core.metric import Metric, MetricMeasure
+
+        with SQLiteStore(tmp_path / "store.db") as store:
+            _seed_two_hop(store)
+            # Composite expression with one valid operand + one typo.
+            # `quantity` is on `order_item`; `bogus_field` is not.
+            store.write_metric(
+                Metric(
+                    name="total_items_sold",
+                    description="",
+                    entity="order_item",
+                    measure=MetricMeasure(agg="sum", expression="quantity * bogus_field"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=SOURCE,
+            )
+            with pytest.raises(UnknownMeasureColumnError) as exc_info:
+                resolve_metric_plan(
+                    store=store,
+                    source_connection_id=SOURCE,
+                    metric_name="total_items_sold",
+                )
+        assert exc_info.value.entity == "order_item"
+        assert exc_info.value.column == "bogus_field"
+
+
+def test_unknown_filter_column_error_pickles() -> None:
+    import pickle
+
+    err = UnknownFilterColumnError(
+        entity="order",
+        column="bogus",
+        allowed_columns=("id", "placed_at", "user_id"),
+    )
+    revived: UnknownFilterColumnError = pickle.loads(pickle.dumps(err))
+    assert revived.entity == err.entity
+    assert revived.column == err.column
+    assert revived.allowed_columns == err.allowed_columns
+
+
+def test_unknown_measure_column_error_pickles() -> None:
+    import pickle
+
+    err = UnknownMeasureColumnError(
+        entity="order_item",
+        column="bogus",
+        allowed_columns=("id", "order_id", "quantity", "unit_price"),
+    )
+    revived: UnknownMeasureColumnError = pickle.loads(pickle.dumps(err))
+    assert revived.entity == err.entity
+    assert revived.column == err.column
+    assert revived.allowed_columns == err.allowed_columns
+
+
+def test_ambiguous_path_error_pickles() -> None:
+    """The audit layer fingerprints refusal events; AmbiguousPathError's
+    `candidate_paths` field is a nested tuple, so `__reduce__` must
+    preserve the structure round-trip."""
+    import pickle
+
+    from schemabrain.semantic.compiler import AmbiguousPathError
+
+    err = AmbiguousPathError(
+        anchor_entity="order_item",
+        target_entity="user",
+        candidate_paths=(
+            ("order_items_order_id", "orders_user_id_billing"),
+            ("order_items_order_id", "orders_user_id_shipping"),
+        ),
+    )
+    revived: AmbiguousPathError = pickle.loads(pickle.dumps(err))
+    assert revived.anchor_entity == err.anchor_entity
+    assert revived.target_entity == err.target_entity
+    assert revived.candidate_paths == err.candidate_paths
+
+
+def test_unknown_via_join_error_pickles() -> None:
+    """Same audit-fingerprint contract as the other compiler errors.
+    `requested_via` and `available_join_names` are both tuples that
+    must survive the pickle round-trip."""
+    import pickle
+
+    from schemabrain.semantic.compiler import UnknownViaJoinError
+
+    err = UnknownViaJoinError(
+        anchor_entity="order",
+        target_entity="user",
+        requested_via=("ghost_join",),
+        available_join_names=("orders_user_id_billing", "orders_user_id_shipping"),
+    )
+    revived: UnknownViaJoinError = pickle.loads(pickle.dumps(err))
+    assert revived.anchor_entity == err.anchor_entity
+    assert revived.target_entity == err.target_entity
+    assert revived.requested_via == err.requested_via
+    assert revived.available_join_names == err.available_join_names
 
 
 def test_unknown_order_by_column_error_pickles() -> None:

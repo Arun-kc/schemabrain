@@ -424,6 +424,10 @@ class TestMetricsList:
         assert "total_revenue" in out
         assert "sum" in out
         assert "total_amount" in out
+        # Charter v1.2 2D trust signal lands on every row alongside
+        # the legacy `origin=` field; `metrics apply` force-promotes
+        # to `manually_authored · applied (HIGH)`.
+        assert "trust=manually_authored · applied (HIGH)" in out
 
     def test_filters_by_source(self, tmp_path: Path, capsys: Any, monkeypatch: Any) -> None:
         # Write the same metric under two different sources. Filtered

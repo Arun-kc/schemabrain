@@ -425,24 +425,53 @@ class TestS5_EcommerceFixtureHasTransactionalData:
             "ecommerce.sql must seed product_categories junction rows"
         )
 
-    def test_fixture_orders_total_sums_to_documented_value(self) -> None:
-        """The fixture's revenue total appears in user-facing docs
-        (`examples/ecommerce/` Step 6, smoke reports). A drift between
-        the doc and the SQL would silently mislead readers. Pin the
-        documented total here so any change forces a doc update too."""
+    def test_fixture_is_demoable_volume_with_skewed_distribution(self) -> None:
+        """Originally pinned exact totals (32997 + 8999 + 44997 = 86993)
+        from the 3-order fixture. PR-6h.3 (Gap #4 from the 2026-05-21
+        smoke) replaced that with a generator-driven ~80-user fixture
+        with a Pareto-shaped order distribution so `get_metric(...,
+        limit=5)` returns a real leaderboard, not a 3-row trivia
+        answer. This test now pins the volume + distribution
+        invariants instead of specific dollar amounts so the generator
+        can be re-tuned without snapping the contract.
+        """
+        import re
+
         sql_path = (
             Path(__file__).parent.parent / "schemabrain" / "eval" / "fixtures" / "ecommerce.sql"
         )
         text = sql_path.read_text()
-        # The seeded `orders.total_cents` values must sum to 86993 cents
-        # ($869.93). Three orders: 32997 + 8999 + 44997 = 86993.
-        for cents in ("32997", "8999", "44997"):
-            assert cents in text, (
-                f"expected total_cents={cents} in fixture; if you changed "
-                "the seed data, update the documented total in "
-                "docs/internal/manual_smoke_2026_05_19.md and "
-                "examples/ecommerce/README.md"
-            )
+
+        # Volume floors — enough rows that ranking queries are
+        # non-trivial. Generator targets ~80 users / ~150+ orders;
+        # these floors leave slack for future re-tuning.
+        users_section = text.split("INSERT INTO public.users")[1].split("ON CONFLICT")[0]
+        user_rows = re.findall(r"^\s*\(\d+,", users_section, re.MULTILINE)
+        assert len(user_rows) >= 50, (
+            f"fixture must seed >= 50 users for demoable ranking; got {len(user_rows)}"
+        )
+
+        orders_section = text.split("INSERT INTO public.orders")[1].split("ON CONFLICT")[0]
+        order_rows = re.findall(r"^\s*\((\d+), (\d+),", orders_section, re.MULTILINE)
+        assert len(order_rows) >= 100, (
+            f"fixture must seed >= 100 orders for demoable ranking; got {len(order_rows)}"
+        )
+
+        # Skew floor — top buyer must have at least 3x the median to
+        # produce a clear leaderboard when limited to top 5. Without
+        # this the fixture could regress to uniform random and the
+        # `limit=5` payoff stops being demonstrable.
+        from collections import Counter
+
+        per_user = Counter(int(user_id) for _order_id, user_id in order_rows)
+        sorted_counts = sorted(per_user.values(), reverse=True)
+        top = sorted_counts[0]
+        median = sorted_counts[len(sorted_counts) // 2]
+        assert top >= median * 3, (
+            f"fixture distribution too flat for demoable ranking: top={top} "
+            f"vs median={median}; expected >= 3x. Regenerate via "
+            f"`python scripts/generate_ecommerce_fixture.py`."
+        )
 
 
 # ---------------------------------------------------------------------------

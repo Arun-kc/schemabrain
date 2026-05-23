@@ -1,8 +1,7 @@
 -- Synthetic PII regression fixture for Schema Brain's heuristic classifier.
 --
 -- Designed to exercise EVERY category in `schemabrain/pii/categories.py`
--- (12 PIICategory values) plus the four bug shapes the 2026-05-18
--- production-DB smoke surfaced:
+-- (12 PIICategory values) plus the four bug shapes documented below:
 --
 --   S1 — `<noun>_name` columns in non-PII tables (`product_name` in
 --        `non_pii_things`) tagged `pii (contact)`.

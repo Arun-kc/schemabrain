@@ -66,9 +66,18 @@ def seeded_store(tmp_path: Path) -> Iterator[Path]:
 
 @pytest.fixture
 def stub_uvx(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    # Stub `_is_pypi_install` to True alongside `shutil.which` so the
+    # resolver picks the uvx path. The actual test environment is an
+    # editable checkout (PEP 610 `direct_url.json` present), which the
+    # resolver would otherwise treat as non-PyPI and fall through to the
+    # absolute-path runner.
     monkeypatch.setattr(
         "shutil.which",
         lambda n: "/usr/local/bin/uvx" if n == "uvx" else None,
+    )
+    monkeypatch.setattr(
+        "schemabrain.setup.init_flow._is_pypi_install",
+        lambda: True,
     )
     yield
 
@@ -451,6 +460,12 @@ class TestInitStageZeroAbortPaths:
 
         monkeypatch.setattr("schemabrain.setup.setup_stage.prompt_for_init_setup", fake_prompt)
         monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        # Stub the post-stage-0 PII-block prompt so it doesn't block
+        # on stdin when forced-TTY mode is active.
+        monkeypatch.setattr(
+            "schemabrain.setup.setup_stage.prompt_for_pii_block",
+            lambda *, console: ("contact",),
+        )
         monkeypatch.setattr("schemabrain.setup.wizard.run_default_wizard", fake_run_wizard)
         # KeyboardInterrupt from the wizard itself bubbles up to main()
         # and exits 130 — same shape as stage 0 abort.
@@ -661,6 +676,15 @@ class TestInitCliInteractiveOverlay:
         # — single source of truth used by both `cli` and `wizard`.
         # Tests just monkeypatch that one function.
         monkeypatch.setattr("schemabrain._ui.stderr_is_interactive_tty", lambda: True)
+        # The init wizard now surfaces an interactive PII-block choice
+        # before constructing the WizardConfig. Tests that force TTY
+        # mode would otherwise hang on stdin at the PII prompt; stub
+        # it to the wizard's `("contact",)` default so test behavior
+        # matches the pre-prompt era exactly.
+        monkeypatch.setattr(
+            "schemabrain.setup.setup_stage.prompt_for_pii_block",
+            lambda *, console: ("contact",),
+        )
         yield
 
     def test_overwrite_prompt_y_proceeds_with_assume_yes(

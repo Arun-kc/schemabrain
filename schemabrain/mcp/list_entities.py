@@ -41,6 +41,8 @@ def list_entities_impl(
             qualified_table=e.qualified_table,
             identity=e.identity,
             origin=e.origin,
+            inference_method=e.inference_method,
+            validation_state=e.validation_state,
         )
         for e in entities
     ]

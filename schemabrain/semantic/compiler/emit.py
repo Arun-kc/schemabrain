@@ -80,19 +80,25 @@ def emit_sql(plan: MetricPlan) -> tuple[str, dict[str, Any]]:
     group_by_parts: list[str] = []
     params: dict[str, Any] = {}
 
-    # Defense-in-depth invariant: a time bucket requires a time
-    # dimension on the metric. The resolver enforces this — but
-    # asserting here converts a future resolver bug into a crash
-    # instead of a silently-wrong SQL emission.
-    assert plan.time_bucket is None or plan.metric.time_dimension is not None, (
-        "compiler invariant: time_bucket requires metric.time_dimension"
+    # Defense-in-depth invariant: a time bucket requires either a
+    # locally-declared time_dimension on the metric OR a resolver-
+    # inherited one (charter v1.2 time-dimension inheritance). The
+    # resolver enforces this — but asserting here converts a future
+    # resolver bug into a crash instead of a silently-wrong SQL
+    # emission.
+    assert plan.time_bucket is None or (
+        plan.metric.time_dimension is not None or plan.inherited_time_dimension is not None
+    ), (
+        "compiler invariant: time_bucket requires either "
+        "metric.time_dimension or plan.inherited_time_dimension"
     )
 
     # Time bucket — date_trunc('day' | 'week' | ...) — emitted only
-    # when a grain was requested AND the metric has a time_dimension.
-    # The time dimension is on the anchor entity by Decision 2 (v1
-    # cross-entity time dimensions defer to v2), so the alias is
-    # always the anchor alias.
+    # when a grain was requested AND a time_dimension is resolved (local
+    # or inherited). For a local time_dimension the column lives on the
+    # anchor entity (current convention); for an inherited one the
+    # resolver has already added the chain of JOINs that brings the
+    # owning entity's alias into scope.
     #
     # `time_bucket` is interpolated as a SQL LITERAL rather than a
     # parameter binding. This is safe-by-construction because
@@ -112,11 +118,26 @@ def emit_sql(plan: MetricPlan) -> tuple[str, dict[str, Any]]:
     # out injection; quoting handles the keyword case Postgres rejects.
     quoted_anchor_alias = f'"{plan.anchor_alias}"'
 
-    if plan.time_bucket is not None and plan.metric.time_dimension is not None:
-        _, time_column = plan.metric.time_dimension.split(".", 1)
+    if plan.time_bucket is not None:
+        # Pick the time-dim column reference: local time_dimension lives
+        # on the anchor; inherited time_dimension lives on a joined
+        # entity whose alias the resolver has already brought into scope
+        # via plan.joins. The alias for entity X is `_alias_for(X)` —
+        # entity names are identifier-shaped so they double as aliases.
+        if plan.inherited_time_dimension is not None:
+            time_entity, time_column = plan.inherited_time_dimension.split(".", 1)
+            quoted_time_alias = f'"{time_entity}"'
+        elif plan.metric.time_dimension is not None:
+            _, time_column = plan.metric.time_dimension.split(".", 1)
+            quoted_time_alias = quoted_anchor_alias
+        else:  # pragma: no cover — defended by the invariant above
+            raise RuntimeError(
+                "emit invariant: time_bucket set but no time_dimension "
+                "(neither local nor inherited)"
+            )
         select_parts.append(
             f"date_trunc('{plan.time_bucket}', "
-            f'{quoted_anchor_alias}."{time_column}") AS time_bucket'
+            f'{quoted_time_alias}."{time_column}") AS time_bucket'
         )
         group_by_parts.append("time_bucket")
 
@@ -129,10 +150,31 @@ def emit_sql(plan: MetricPlan) -> tuple[str, dict[str, Any]]:
         group_by_parts.append(alias)
 
     # The measure — `agg("anchor"."column") AS metric_name`. The
-    # measure column is always on the anchor entity by Decision 2.
+    # measure columns are always on the anchor entity by Decision 2.
     # `count_distinct` becomes `count(DISTINCT ...)` — the SQL idiom.
+    #
+    # Two shapes: bare-column (the v1 path) renders as `"anchor"."col"`;
+    # composite-expression (v2) renders by walking the parsed AST via
+    # `render_measure_expression` — the same double-quoting + alias-
+    # prefix discipline applied to every operand. Numeric literals
+    # render through Python's stdlib formatters, so no user-supplied
+    # text reaches the SQL string. The choice between the two is the
+    # `MetricMeasure` XOR — exactly one of `column` or `expression` is
+    # populated, enforced by both the dataclass and the store CHECK.
     measure = plan.metric.measure
-    measure_ref = f'{quoted_anchor_alias}."{measure.column}"'
+    if measure.expression is not None:
+        from schemabrain.semantic.compiler.measure_expression import (
+            parse_measure_expression,
+            render_measure_expression,
+        )
+
+        parsed = parse_measure_expression(measure.expression)
+        measure_ref = render_measure_expression(
+            parsed.ast_node, quoted_anchor_alias=quoted_anchor_alias
+        )
+    else:
+        # Mutual exclusion guarantees `measure.column is not None` here.
+        measure_ref = f'{quoted_anchor_alias}."{measure.column}"'
     if measure.agg == "count_distinct":
         agg_expr = f"count(DISTINCT {measure_ref})"
     else:

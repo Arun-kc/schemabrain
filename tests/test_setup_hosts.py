@@ -135,6 +135,45 @@ class TestBuildSnippet:
         assert s.args[idx + 1] == "ACME_PROD_DB"
         assert "ACME_PROD_DB" in s.env
 
+    def test_pii_block_default_omits_flag(self) -> None:
+        # Bare `build_snippet` call (no `pii_block` arg) must NOT
+        # add `--pii-block` to the args — programmatic callers
+        # that haven't opted into PII enforcement keep the v0
+        # behaviour. The wizard supplies its own default at the
+        # higher layer.
+        s = build_snippet(
+            version_pin="0.4.0",
+            env_var_name="DB",
+            store_path=Path("/abs/.sb.db"),
+            db_url="postgresql://x",
+        )
+        assert "--pii-block" not in s.args
+
+    def test_pii_block_single_category_appended_to_args(self) -> None:
+        s = build_snippet(
+            version_pin="0.4.0",
+            env_var_name="DB",
+            store_path=Path("/abs/.sb.db"),
+            db_url="postgresql://x",
+            pii_block=("contact",),
+        )
+        assert "--pii-block" in s.args
+        idx = s.args.index("--pii-block")
+        assert s.args[idx + 1] == "contact"
+
+    def test_pii_block_multiple_categories_comma_joined(self) -> None:
+        # The server-side parser expects comma-separated categories
+        # on a single argv slot, not repeated `--pii-block` pairs.
+        s = build_snippet(
+            version_pin="0.4.0",
+            env_var_name="DB",
+            store_path=Path("/abs/.sb.db"),
+            db_url="postgresql://x",
+            pii_block=("contact", "health"),
+        )
+        idx = s.args.index("--pii-block")
+        assert s.args[idx + 1] == "contact,health"
+
     def test_rejects_non_absolute_store_path(self) -> None:
         with pytest.raises(ValueError, match="absolute"):
             build_snippet(

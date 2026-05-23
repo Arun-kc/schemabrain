@@ -35,11 +35,11 @@ via an environment variable. Centralizes:
     callers use `"raise"` mode and translate the `ValueError` into
     the CLI-specific guided render.
 
-History: factored out of `enrichment/anthropic_client.py` after the
-2026-05-19 config-flexibility audit found 4+ near-duplicate
-parser+warn-and-fallback paths across `cli.py` and `wizard.py`,
-each using lax `float(env_var)` that silently accepted the same
-footguns PR #67 hardened the int parser against.
+History: factored out of `enrichment/anthropic_client.py` after a
+config-flexibility audit found 4+ near-duplicate parser+warn-and-
+fallback paths across `cli.py` and `wizard.py`, each using lax
+`float(env_var)` that silently accepted footguns the int parser
+already hardened against.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ InvalidMode = Literal["raise", "warn_and_default"]
 # hex/octal prefixes, decimals, signed negatives. Python's `int()`
 # silently accepts most of those; this pattern makes the operator-facing
 # contract explicit so a typo never silently becomes a smaller-than-
-# default cap. Pinned via the test suite to match PR #67's regex.
+# default cap. Pinned via the test suite to match the original regex.
 _POSITIVE_INT_RE = re.compile(r"^\+?[1-9][0-9]*$")
 
 # ASCII decimal positive float with optional leading `+`. Accepts:

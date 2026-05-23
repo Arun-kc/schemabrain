@@ -94,6 +94,52 @@ class TestMetricMeasure:
         assert a == b
 
 
+class TestMetricMeasureCompositeExpression:
+    """v2 composite-expression measures via the `expression=` field."""
+
+    def test_composite_measure_constructed(self) -> None:
+        measure = MetricMeasure(agg="sum", expression="unit_price * quantity")
+        assert measure.agg == "sum"
+        assert measure.column is None
+        assert measure.expression == "unit_price * quantity"
+
+    def test_composite_measure_columns_property(self) -> None:
+        measure = MetricMeasure(agg="sum", expression="unit_price * quantity")
+        assert measure.measure_columns == frozenset({"unit_price", "quantity"})
+
+    def test_bare_column_measure_columns_property(self) -> None:
+        measure = MetricMeasure(agg="sum", column="total")
+        assert measure.measure_columns == frozenset({"total"})
+
+    def test_setting_both_column_and_expression_rejected(self) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            MetricMeasure(agg="sum", column="a", expression="a * b")
+
+    def test_setting_neither_column_nor_expression_rejected(self) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            MetricMeasure(agg="sum")
+
+    def test_malformed_expression_rejected_at_construction(self) -> None:
+        with pytest.raises(ValueError, match="malformed measure expression"):
+            MetricMeasure(agg="sum", expression="abs(x)")
+
+    def test_syntax_error_expression_rejected(self) -> None:
+        with pytest.raises(ValueError, match="syntax error"):
+            MetricMeasure(agg="sum", expression="a *")
+
+    def test_two_equal_composite_measures_compare_equal(self) -> None:
+        a = MetricMeasure(agg="sum", expression="unit_price * quantity")
+        b = MetricMeasure(agg="sum", expression="unit_price * quantity")
+        assert a == b
+
+    def test_composite_measure_is_hashable(self) -> None:
+        # Frozen dataclass — must be hashable so `MetricPlan` (which
+        # carries `Metric` which carries `MetricMeasure`) stays
+        # hashable for the audit-layer fingerprinting path.
+        measure = MetricMeasure(agg="sum", expression="unit_price * quantity")
+        assert hash(measure) == hash(MetricMeasure(agg="sum", expression="unit_price * quantity"))
+
+
 # ----- Metric ----------------------------------------------------------------
 
 
@@ -204,6 +250,20 @@ class TestMetricValidation:
         # `CanonicalJoin.origin` here.
         for origin in ("manual", "suggested", "dbt_import"):
             _make_metric(origin=origin)
+
+    def test_rejects_unknown_inference_method(self) -> None:
+        # Charter v1.2 2D trust signal: the closed-set check in
+        # `__post_init__` rejects any inference_method outside the
+        # five-value Literal. Mirrors the equivalent on `Entity` and
+        # `CanonicalJoin`.
+        with pytest.raises(ValueError, match="inference_method"):
+            _make_metric(inference_method="bogus")
+
+    def test_rejects_unknown_validation_state(self) -> None:
+        # Charter v1.2 2D trust signal: `validation_state` must be
+        # one of {draft, applied, confirmed}.
+        with pytest.raises(ValueError, match="validation_state"):
+            _make_metric(validation_state="archived")
 
 
 class TestMetricTimeDimension:

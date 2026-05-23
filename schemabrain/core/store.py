@@ -41,6 +41,7 @@ from schemabrain.core.example_query import ExampleQuery
 from schemabrain.core.join import CanonicalJoin, JoinColumnPair
 from schemabrain.core.metric import (
     DbtOwnedMetricError,
+    MalformedMetricRowError,
     Metric,
     MetricMeasure,
 )
@@ -54,6 +55,7 @@ from schemabrain.pii.categories import ColumnPiiTag
 __all__ = [
     "DbtOwnedEntityError",
     "DbtOwnedMetricError",
+    "MalformedMetricRowError",
     "SQLiteStore",
     "SchemaVersionMismatchError",
 ]
@@ -146,8 +148,24 @@ __all__ = [
 #         uses; stale rows on dropped tables are harmless because
 #         `get_column_pii_tags` only returns rows that match the
 #         caller-supplied table + column set.
-# Older stores raise SchemaVersionMismatchError; pre-alpha users re-create.
-SCHEMA_VERSION = "12"
+#   "14" → added `inference_method` + `validation_state` columns on
+#         entities, metrics, and canonical_joins for the 2D trust
+#         signal that backs charter v1.2's `Provenance.inference_method`
+#         + `Provenance.validation_state`. Replaces the 1D `confidence`
+#         derivation that conflated "how was this derived?" with
+#         "how validated is it?". `inference_method` closed set:
+#         `manually_authored | llm_suggested | fk_constraint |
+#         dbt_import | observed_in_query_log`. `validation_state`
+#         closed set: `draft | applied | confirmed`. The first real
+#         migration: v13 stores ALTER TABLE ADD COLUMN both fields
+#         with defaults that satisfy the CHECK, then UPDATE backfills
+#         from `origin` (manual → manually_authored/confirmed,
+#         suggested → llm_suggested/applied, dbt_import →
+#         dbt_import/applied). Pre-v13 stores still hit the mismatch
+#         error path.
+# Pre-v13 stores raise SchemaVersionMismatchError; v13 stores migrate
+# in-place to v14 via `_migrate_v13_to_v14`.
+SCHEMA_VERSION = "14"
 _MEMORY_PATH = ":memory:"
 
 # 1 USD = 1_000_000 micros. Storing the ledger as INTEGER micros avoids
@@ -168,6 +186,76 @@ class SchemaVersionMismatchError(RuntimeError):
     Indicates the store was created (or last migrated) by a different
     Schema Brain release. Re-create the store, or implement a migration.
     """
+
+
+def _migrate_v13_to_v14(conn: sqlite3.Connection) -> None:
+    """Add `inference_method` + `validation_state` columns to entities,
+    metrics, and canonical_joins. Backfill from existing `origin` values.
+
+    Mapping (chosen so existing data lands on the most accurate signal
+    the producer can infer without re-running suggest):
+
+      origin='manual'     → inference_method='manually_authored',
+                            validation_state='confirmed'
+      origin='suggested'  → inference_method='llm_suggested',
+                            validation_state='applied'
+      origin='dbt_import' → inference_method='dbt_import',
+                            validation_state='applied'
+
+    `manual` rows land on `confirmed` because hand-authored YAML is
+    the strongest validation signal we have without re-asking the
+    operator. `suggested` rows land on `applied` (they passed
+    `--apply`); they keep `llm_suggested` until either re-derived from
+    an FK constraint (joins suggest run re-classifies) or hand-promoted
+    by an operator. `dbt_import` rows mirror `suggested` because the
+    upstream dbt project is the validating system.
+
+    Idempotency: the caller guards on `existing_version == "13"`. The
+    function does NOT guard against double-invocation because the
+    ALTER TABLE statements would raise "duplicate column name" on the
+    second call, which is a fail-fast signal of a programming error
+    in the caller. Wrapped in the caller's `with conn:` block so a
+    crash mid-migration rolls back the partial state.
+    """
+    # `{table}` is interpolated from the hardcoded tuple below — no
+    # user input ever reaches the SQL string. The three nosec
+    # suppressions mirror the `# nosec B608` pattern used in
+    # `profiler/postgres.py` for identifier-only f-string assembly.
+    for table in ("entities", "metrics", "canonical_joins"):
+        # `DEFAULT 'manually_authored'` satisfies the CHECK so existing
+        # rows land in a valid initial state; the UPDATE below
+        # overwrites them with the origin-derived value before commit.
+        # SQLite ALTER TABLE ADD COLUMN supports CHECK constraints
+        # since 3.25 — well under any version Python supports.
+        conn.execute(
+            f"ALTER TABLE {table} ADD COLUMN inference_method TEXT NOT NULL "  # nosec B608
+            f"DEFAULT 'manually_authored' "
+            f"CHECK (inference_method IN ("
+            f"'manually_authored', 'llm_suggested', 'fk_constraint', "
+            f"'dbt_import', 'observed_in_query_log'))"
+        )
+        conn.execute(
+            f"ALTER TABLE {table} ADD COLUMN validation_state TEXT NOT NULL "  # nosec B608
+            f"DEFAULT 'applied' "
+            f"CHECK (validation_state IN ('draft', 'applied', 'confirmed'))"
+        )
+        conn.execute(
+            f"UPDATE {table} SET "  # nosec B608
+            f"  inference_method = CASE origin "
+            f"    WHEN 'manual' THEN 'manually_authored' "
+            f"    WHEN 'suggested' THEN 'llm_suggested' "
+            f"    WHEN 'dbt_import' THEN 'dbt_import' "
+            f"  END, "
+            f"  validation_state = CASE origin "
+            f"    WHEN 'manual' THEN 'confirmed' "
+            f"    WHEN 'suggested' THEN 'applied' "
+            f"    WHEN 'dbt_import' THEN 'applied' "
+            f"  END"
+        )
+    conn.execute(
+        "UPDATE schemabrain_meta SET value = ? WHERE key = ?",
+        ("14", "schema_version"),
+    )
 
 
 _DDL_STATEMENTS: tuple[str, ...] = (
@@ -396,6 +484,18 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         identity TEXT NOT NULL,
         origin TEXT NOT NULL
             CHECK (origin IN ('manual', 'suggested', 'dbt_import')),
+        -- v14: 2D trust signal. `origin` stays for back-compat + dbt-
+        -- guard; charter v1.2 producers read `inference_method` +
+        -- `validation_state` to derive `Confidence`. Defaults match
+        -- the most common "hand-authored YAML" path so a caller that
+        -- doesn't pass these fields keeps working unchanged.
+        inference_method TEXT NOT NULL DEFAULT 'manually_authored'
+            CHECK (inference_method IN (
+                'manually_authored', 'llm_suggested', 'fk_constraint',
+                'dbt_import', 'observed_in_query_log'
+            )),
+        validation_state TEXT NOT NULL DEFAULT 'applied'
+            CHECK (validation_state IN ('draft', 'applied', 'confirmed')),
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (source_connection_id, name),
@@ -437,6 +537,18 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         on_columns_json TEXT NOT NULL,
         origin TEXT NOT NULL
             CHECK (origin IN ('manual', 'suggested', 'dbt_import')),
+        -- v14: 2D trust signal. For joins specifically, the gap
+        -- `fk_constraint` (DB-validated equi-join derived from a
+        -- foreign key) vs `llm_suggested` (model proposed; no FK
+        -- backs it) is the load-bearing distinction the agent needs.
+        -- Default `manually_authored` matches hand-authored YAML.
+        inference_method TEXT NOT NULL DEFAULT 'manually_authored'
+            CHECK (inference_method IN (
+                'manually_authored', 'llm_suggested', 'fk_constraint',
+                'dbt_import', 'observed_in_query_log'
+            )),
+        validation_state TEXT NOT NULL DEFAULT 'applied'
+            CHECK (validation_state IN ('draft', 'applied', 'confirmed')),
         cardinality TEXT
             CHECK (cardinality IS NULL OR cardinality IN (
                 'one_to_one', 'one_to_many', 'many_to_one', 'many_to_many'
@@ -484,17 +596,41 @@ _DDL_STATEMENTS: tuple[str, ...] = (
             CHECK (measure_agg IN (
                 'sum', 'count', 'count_distinct', 'avg', 'min', 'max'
             )),
-        measure_column TEXT NOT NULL,
+        -- Exactly one of measure_column / measure_expression is populated.
+        -- v12 had measure_column TEXT NOT NULL; v13 makes it nullable to
+        -- accommodate composite expressions (measure_expression). The
+        -- table-level CHECK at the end of the definition enforces the
+        -- XOR invariant the dataclass also enforces, so a corrupted row
+        -- can't smuggle past the read path.
+        measure_column TEXT,
+        measure_expression TEXT,
         time_dimension TEXT,
         time_grains TEXT NOT NULL DEFAULT '',
         origin TEXT NOT NULL
             CHECK (origin IN ('manual', 'suggested', 'dbt_import')),
+        -- v14: 2D trust signal. For metrics, `fk_constraint` never
+        -- applies (metrics aren't FK-derived); the meaningful set is
+        -- `manually_authored | llm_suggested | dbt_import`. The CHECK
+        -- still permits the full enum so the column-shape constraint
+        -- matches `entities` + `canonical_joins`.
+        inference_method TEXT NOT NULL DEFAULT 'manually_authored'
+            CHECK (inference_method IN (
+                'manually_authored', 'llm_suggested', 'fk_constraint',
+                'dbt_import', 'observed_in_query_log'
+            )),
+        validation_state TEXT NOT NULL DEFAULT 'applied'
+            CHECK (validation_state IN ('draft', 'applied', 'confirmed')),
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (source_connection_id, name),
         FOREIGN KEY (source_connection_id, entity)
             REFERENCES entities (source_connection_id, name)
-            ON DELETE CASCADE
+            ON DELETE CASCADE,
+        CHECK (
+            (measure_column IS NOT NULL AND measure_expression IS NULL)
+            OR
+            (measure_column IS NULL AND measure_expression IS NOT NULL)
+        )
     )
     """,
     """
@@ -548,6 +684,11 @@ def _row_to_entity(row: sqlite3.Row) -> Entity:
     them on read. The `Entity` constructor re-runs identifier and
     origin-enum validation defensively — a corrupt row would otherwise
     surface much later in MCP-tool callers.
+
+    v14 columns `inference_method` and `validation_state` round-trip
+    directly into the matching dataclass fields. Pre-v14 stores
+    migrated in-place (`_migrate_v13_to_v14`) so the columns are
+    always present.
     """
     return Entity(
         name=row["name"],
@@ -557,6 +698,8 @@ def _row_to_entity(row: sqlite3.Row) -> Entity:
         ),
         identity=row["identity"],
         origin=row["origin"],
+        inference_method=row["inference_method"],
+        validation_state=row["validation_state"],
     )
 
 
@@ -614,6 +757,8 @@ def _row_to_canonical_join(row: sqlite3.Row) -> CanonicalJoin:
         on=on_pairs,
         origin=row["origin"],
         cardinality=row["cardinality"],
+        inference_method=row["inference_method"],
+        validation_state=row["validation_state"],
     )
 
 
@@ -626,21 +771,42 @@ def _row_to_metric(row: sqlite3.Row) -> Metric:
     re-runs all invariants (identifier shape, paired-emptiness on the
     time fields, canonical grain order, enum membership) — a corrupt
     row surfaces here, not in an MCP-tool caller several layers up.
+
+    Any `ValueError` raised by `MetricMeasure` or `Metric` construction
+    (typically because the row's `measure_expression` was written via
+    direct SQL with content that fails the whitelist parser) is
+    re-raised as `MalformedMetricRowError` so callers can distinguish
+    "row is corrupt" from generic runtime errors, and so the metric
+    name is preserved in the error message for operator diagnostics.
     """
     stored_grains = row["time_grains"]
     time_grains = tuple(stored_grains.split(",")) if stored_grains else ()
-    return Metric(
-        name=row["name"],
-        description=row["description"],
-        entity=row["entity"],
-        measure=MetricMeasure(
-            agg=row["measure_agg"],
-            column=row["measure_column"],
-        ),
-        time_dimension=row["time_dimension"],
-        time_grains=time_grains,  # type: ignore[arg-type]
-        origin=row["origin"],
-    )
+    # Exactly one of measure_column / measure_expression is populated
+    # per the row-level CHECK. The dataclass's `__post_init__` re-enforces
+    # the same XOR invariant — a CHECK-violating row would have been
+    # rejected at write time, but the dataclass guard ensures the
+    # invariant survives a row written by a pre-v13 store or a
+    # future direct-SQL escape hatch.
+    measure_column = row["measure_column"]
+    measure_expression = row["measure_expression"]
+    try:
+        return Metric(
+            name=row["name"],
+            description=row["description"],
+            entity=row["entity"],
+            measure=MetricMeasure(
+                agg=row["measure_agg"],
+                column=measure_column,
+                expression=measure_expression,
+            ),
+            time_dimension=row["time_dimension"],
+            time_grains=time_grains,  # type: ignore[arg-type]
+            origin=row["origin"],
+            inference_method=row["inference_method"],
+            validation_state=row["validation_state"],
+        )
+    except ValueError as exc:
+        raise MalformedMetricRowError(name=row["name"], reason=str(exc)) from exc
 
 
 def _pack_vector(vector: tuple[float, ...]) -> bytes:
@@ -1736,14 +1902,17 @@ class SQLiteStore:
                 "INSERT INTO entities ("
                 "source_connection_id, name, description, "
                 "binding_schema, binding_table, identity, origin, "
+                "inference_method, validation_state, "
                 "created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (source_connection_id, name) DO UPDATE SET "
                 "description = excluded.description, "
                 "binding_schema = excluded.binding_schema, "
                 "binding_table = excluded.binding_table, "
                 "identity = excluded.identity, "
                 "origin = excluded.origin, "
+                "inference_method = excluded.inference_method, "
+                "validation_state = excluded.validation_state, "
                 "updated_at = excluded.updated_at",
                 (
                     source_connection_id,
@@ -1753,6 +1922,8 @@ class SQLiteStore:
                     table_name,
                     entity.identity,
                     entity.origin,
+                    entity.inference_method,
+                    entity.validation_state,
                     now,
                     now,
                 ),
@@ -1762,7 +1933,8 @@ class SQLiteStore:
         conn = self._require_conn()
         row = conn.execute(
             "SELECT name, description, binding_schema, binding_table, "
-            "identity, origin FROM entities "
+            "identity, origin, inference_method, validation_state "
+            "FROM entities "
             "WHERE source_connection_id = ? AND name = ?",
             (source_connection_id, name),
         ).fetchone()
@@ -1783,13 +1955,15 @@ class SQLiteStore:
         if source_connection_id is None:
             rows = conn.execute(
                 "SELECT name, description, binding_schema, binding_table, "
-                "identity, origin FROM entities "
+                "identity, origin, inference_method, validation_state "
+                "FROM entities "
                 "ORDER BY name, source_connection_id"
             ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT name, description, binding_schema, binding_table, "
-                "identity, origin FROM entities "
+                "identity, origin, inference_method, validation_state "
+                "FROM entities "
                 "WHERE source_connection_id = ? ORDER BY name",
                 (source_connection_id,),
             ).fetchall()
@@ -1835,14 +2009,17 @@ class SQLiteStore:
                 "INSERT INTO canonical_joins ("
                 "source_connection_id, name, description, "
                 "source_entity, target_entity, on_columns_json, origin, "
+                "inference_method, validation_state, "
                 "cardinality, created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (source_connection_id, name) DO UPDATE SET "
                 "description = excluded.description, "
                 "source_entity = excluded.source_entity, "
                 "target_entity = excluded.target_entity, "
                 "on_columns_json = excluded.on_columns_json, "
                 "origin = excluded.origin, "
+                "inference_method = excluded.inference_method, "
+                "validation_state = excluded.validation_state, "
                 "cardinality = excluded.cardinality, "
                 "updated_at = excluded.updated_at",
                 (
@@ -1853,6 +2030,8 @@ class SQLiteStore:
                     join.target_entity,
                     on_columns_json,
                     join.origin,
+                    join.inference_method,
+                    join.validation_state,
                     join.cardinality,
                     now,
                     now,
@@ -1864,7 +2043,8 @@ class SQLiteStore:
         conn = self._require_conn()
         row = conn.execute(
             "SELECT name, description, source_entity, target_entity, "
-            "on_columns_json, origin, cardinality FROM canonical_joins "
+            "on_columns_json, origin, cardinality, "
+            "inference_method, validation_state FROM canonical_joins "
             "WHERE source_connection_id = ? AND name = ?",
             (source_connection_id, name),
         ).fetchone()
@@ -1885,13 +2065,15 @@ class SQLiteStore:
         if source_connection_id is None:
             rows = conn.execute(
                 "SELECT name, description, source_entity, target_entity, "
-                "on_columns_json, origin, cardinality FROM canonical_joins "
+                "on_columns_json, origin, cardinality, "
+                "inference_method, validation_state FROM canonical_joins "
                 "ORDER BY name, source_connection_id"
             ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT name, description, source_entity, target_entity, "
-                "on_columns_json, origin, cardinality FROM canonical_joins "
+                "on_columns_json, origin, cardinality, "
+                "inference_method, validation_state FROM canonical_joins "
                 "WHERE source_connection_id = ? ORDER BY name",
                 (source_connection_id,),
             ).fetchall()
@@ -1932,7 +2114,8 @@ class SQLiteStore:
         conn = self._require_conn()
         select_cols = (
             "SELECT name, description, source_entity, target_entity, "
-            "on_columns_json, origin, cardinality FROM canonical_joins "
+            "on_columns_json, origin, cardinality, "
+            "inference_method, validation_state FROM canonical_joins "
         )
         rows = conn.execute(
             f"{select_cols}"
@@ -2019,17 +2202,21 @@ class SQLiteStore:
             conn.execute(
                 "INSERT INTO metrics ("
                 "source_connection_id, name, description, "
-                "entity, measure_agg, measure_column, "
+                "entity, measure_agg, measure_column, measure_expression, "
                 "time_dimension, time_grains, origin, "
+                "inference_method, validation_state, "
                 "created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (source_connection_id, name) DO UPDATE SET "
                 "description = excluded.description, "
                 "measure_agg = excluded.measure_agg, "
                 "measure_column = excluded.measure_column, "
+                "measure_expression = excluded.measure_expression, "
                 "time_dimension = excluded.time_dimension, "
                 "time_grains = excluded.time_grains, "
                 "origin = excluded.origin, "
+                "inference_method = excluded.inference_method, "
+                "validation_state = excluded.validation_state, "
                 "updated_at = excluded.updated_at",
                 (
                     source_connection_id,
@@ -2038,9 +2225,12 @@ class SQLiteStore:
                     metric.entity,
                     metric.measure.agg,
                     metric.measure.column,
+                    metric.measure.expression,
                     metric.time_dimension,
                     stored_grains,
                     metric.origin,
+                    metric.inference_method,
+                    metric.validation_state,
                     now,
                     now,
                 ),
@@ -2050,8 +2240,9 @@ class SQLiteStore:
         """Return the metric named `name`, or `None` if absent."""
         conn = self._require_conn()
         row = conn.execute(
-            "SELECT name, description, entity, measure_agg, measure_column, "
-            "time_dimension, time_grains, origin FROM metrics "
+            "SELECT name, description, entity, measure_agg, measure_column, measure_expression, "
+            "time_dimension, time_grains, origin, "
+            "inference_method, validation_state FROM metrics "
             "WHERE source_connection_id = ? AND name = ?",
             (source_connection_id, name),
         ).fetchone()
@@ -2066,22 +2257,68 @@ class SQLiteStore:
         `(name, source_connection_id)` so cross-source results are
         deterministic. The CLI `metrics list` command depends on the
         alphabetical order for stable output across runs.
+
+        Corrupted rows surface as `MalformedMetricRowError` from
+        `_row_to_metric`. The CLI's `metrics list` command translates
+        that into a structured `exit 2 corrupt store` response so the
+        operator is unambiguously informed; agents using the MCP
+        surface see the wrapped error message rather than a bare
+        `internal_error`.
         """
         conn = self._require_conn()
         if source_connection_id is None:
             rows = conn.execute(
-                "SELECT name, description, entity, measure_agg, measure_column, "
-                "time_dimension, time_grains, origin FROM metrics "
+                "SELECT name, description, entity, measure_agg, measure_column, measure_expression, "
+                "time_dimension, time_grains, origin, "
+                "inference_method, validation_state FROM metrics "
                 "ORDER BY name, source_connection_id"
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT name, description, entity, measure_agg, measure_column, "
-                "time_dimension, time_grains, origin FROM metrics "
+                "SELECT name, description, entity, measure_agg, measure_column, measure_expression, "
+                "time_dimension, time_grains, origin, "
+                "inference_method, validation_state FROM metrics "
                 "WHERE source_connection_id = ? ORDER BY name",
                 (source_connection_id,),
             ).fetchall()
         return [_row_to_metric(row) for row in rows]
+
+    def delete_metric(self, name: str, *, source_connection_id: str) -> bool:
+        """Idempotent delete of one `(source_connection_id, name)` metric row.
+
+        Returns True if a row was actually removed, False if no row
+        matched. The dbt-owned write guard from `write_metric` is
+        symmetric here: a metric with `origin='dbt_import'` is refused
+        with `DbtOwnedMetricError`, because manual deletion would
+        silently drift from the upstream dbt repo on the next
+        `schemabrain import dbt --include-metrics`.
+
+        Used by `schemabrain metrics audit --fix` to remove
+        already-applied anti-pattern metrics whose descriptions admit
+        the metric doesn't compute what its name implies. The deletion
+        is `with conn:` wrapped so a concurrent reader can't observe
+        a partial state.
+        """
+        conn = self._require_conn()
+        with conn:
+            row = conn.execute(
+                "SELECT origin FROM metrics WHERE source_connection_id = ? AND name = ?",
+                (source_connection_id, name),
+            ).fetchone()
+            if row is None:
+                return False
+            if row["origin"] == "dbt_import":
+                raise DbtOwnedMetricError(
+                    f"metric {name!r} is owned by dbt import "
+                    f"(origin='dbt_import'); manual deletion refused. "
+                    f"Drop the metric in the upstream dbt repo and re-run "
+                    f"`schemabrain import dbt --include-metrics`."
+                )
+            conn.execute(
+                "DELETE FROM metrics WHERE source_connection_id = ? AND name = ?",
+                (source_connection_id, name),
+            )
+            return True
 
     def write_column_pii_tags(
         self,
@@ -2226,11 +2463,33 @@ class SQLiteStore:
         from schemabrain.audit.ddl import ensure_audit_schema
 
         conn = self._require_conn()
-        # Single atomic block: core DDL + version stamp + audit DDL all
-        # commit together. A crash mid-block rolls back, so the version
-        # stamp never lands without the `mcp_audit` table that the
-        # stamp implies exists.
+        # Single atomic block: in-place migration (if needed) + core DDL
+        # + version stamp + audit DDL all commit together. A crash
+        # mid-block rolls back, so a half-migrated v13.5 state cannot
+        # land on disk.
         with conn:
+            # Ensure `schemabrain_meta` exists before reading the
+            # version row — on a brand-new store the table doesn't
+            # exist yet, and a bare SELECT would raise.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS schemabrain_meta ("
+                "key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            existing_version_row = conn.execute(
+                "SELECT value FROM schemabrain_meta WHERE key = ?",
+                ("schema_version",),
+            ).fetchone()
+            existing_version: str | None = (
+                existing_version_row["value"] if existing_version_row else None
+            )
+
+            # In-place migration v13 → v14. Runs BEFORE the DDL block
+            # so the new ALTER TABLE statements land on the existing
+            # tables rather than fighting `CREATE TABLE IF NOT EXISTS`
+            # (which is a no-op when the table exists).
+            if existing_version == "13":
+                _migrate_v13_to_v14(conn)
+
             for stmt in _DDL_STATEMENTS:
                 conn.execute(stmt)
             conn.execute(
@@ -2244,10 +2503,13 @@ class SQLiteStore:
         if stored is not None and stored["value"] != SCHEMA_VERSION:
             raise SchemaVersionMismatchError(
                 f"Store schema version {stored['value']!r} does not match "
-                f"expected {SCHEMA_VERSION!r}. Schema Brain is pre-alpha and "
-                f"does not yet provide migrations — delete or move the store "
-                f"file (path passed to SQLiteStore) and re-run `schemabrain "
-                f"index` to rebuild from scratch."
+                f"expected {SCHEMA_VERSION!r}. Pre-v13 stores are pre-alpha "
+                f"and do not have a migration path — delete or move the "
+                f"store file (path passed to SQLiteStore) and re-run "
+                f"`schemabrain index` to rebuild from scratch. v13 → v14 "
+                f"migrates in-place; if you're seeing this message with "
+                f"a v13 store the migration itself failed and the rollback "
+                f"left the version unchanged."
             )
 
     def _require_conn(self) -> sqlite3.Connection:

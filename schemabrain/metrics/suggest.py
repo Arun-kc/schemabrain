@@ -150,28 +150,30 @@ _TOP_LEVEL_ALLOWED_KEYS: frozenset[str] = frozenset({"candidates"})
 
 # Measure sub-mapping shape. Mirrors `_ALLOWED_MEASURE_KEYS` from
 # `metrics/yaml_grammar.py` — drift here would silently change what the
-# parser accepts compared to hand-authored YAML.
-_MEASURE_REQUIRED_KEYS: frozenset[str] = frozenset({"agg", "column"})
-_MEASURE_ALLOWED_KEYS: frozenset[str] = _MEASURE_REQUIRED_KEYS
+# parser accepts compared to hand-authored YAML. `agg` is the only
+# required key; exactly one of `column` / `expression` must be present
+# (XOR enforced in `_parse_measure` after the allowed-key check).
+_MEASURE_ALLOWED_KEYS: frozenset[str] = frozenset({"agg", "column", "expression"})
+_MEASURE_REQUIRED_KEYS: frozenset[str] = frozenset({"agg"})
 
 # Belt-and-suspenders defense for the metric-name-overpromises-result
-# failure mode (Gap #5 - surfaced by 2026-05-21 smoke where the LLM
-# produced `total_order_item_revenue` with measure `sum(unit_price_cents)`
-# and a description that literally admitted "unit_price_cents * quantity
-# is not directly available, but unit_price_cents summed gives a
-# price-mix signal"). The system prompt now explicitly forbids this
-# pattern, but the LLM is non-deterministic - these phrases in a
-# description are strong evidence the LLM is admitting its proposed
-# aggregation doesn't match what the metric promises. Reject at
-# parse-time so a future prompt-cache miss / model drift doesn't
-# silently re-introduce the anti-pattern. Substrings are matched
-# lowercase against the description. Add new phrases here when new
-# failure modes surface.
-_DESCRIPTION_ANTI_PATTERN_PHRASES: tuple[str, ...] = (
+# failure mode (e.g. a metric named `total_order_item_revenue` whose
+# measure is `sum(unit_price_cents)` and whose description literally
+# admits "unit_price_cents x quantity is not directly available").
+# The system prompt teaches the LLM the composite-expression shape for
+# this case; these phrases stay as belt-and-braces against prompt-cache
+# misses or model drift that re-introduces a column-mismatch description.
+# Substrings are matched lowercase against the description. Add new
+# phrases here when new failure modes surface.
+DESCRIPTION_ANTI_PATTERN_PHRASES: tuple[str, ...] = (
     "not directly available",
     "would require multiplication",
     "is not available directly",
 )
+# Backward-compat alias for the original private name. The audit module
+# needs the same phrase list, so the public name lives at module level;
+# the underscored alias preserves any callers that hand-rolled an import.
+_DESCRIPTION_ANTI_PATTERN_PHRASES = DESCRIPTION_ANTI_PATTERN_PHRASES
 
 
 # ----- system prompt ---------------------------------------------------------
@@ -185,7 +187,10 @@ _SYSTEM_PROMPT = """You are a semantic-layer architect proposing business metric
 
 A METRIC is a named, validator-backed business measure anchored on one
 ENTITY. It carries a single aggregation over a column on that entity's
-table, plus an optional time dimension for bucketing.
+table, plus an optional time dimension for bucketing. The grammar is
+domain-agnostic — it applies equally to clinical, financial, legal,
+commerce, and blockchain-analytics schemas; use the schema's actual
+column names as your source of truth, not domain-specific assumptions.
 
 You are given:
   - A list of ENTITIES, each with its bound physical table and column
@@ -196,13 +201,15 @@ Output STRICT YAML with this shape (no markdown fences, no commentary
 outside YAML):
 
 candidates:
-  - name: total_revenue                       # snake_case identifier
+  - name: <metric_name>                       # snake_case identifier derived from what the measure means
     description: One sentence about it
-    entity: order                             # one of the listed entity names
+    entity: <entity_name>                     # one of the listed entity names
     measure:
       agg: sum                                # closed: sum|count|count_distinct|avg|min|max
-      column: total_cents                     # column on the entity's bound table
-    time_dimension: order.placed_at           # OPTIONAL; entity.column form
+      # Exactly ONE of `column` or `expression`:
+      column: <numeric_column>                # bare-column shape — single identifier
+      # expression: <col_a> * <col_b>         # composite shape — see below
+    time_dimension: <entity>.<timestamp_col>  # OPTIONAL; entity.column form
     time_grains: [day, week, month]           # REQUIRED iff time_dimension set
     confidence: high                          # one of: high | medium | low
     rationale: One sentence on why this is a useful metric
@@ -213,12 +220,24 @@ Rules:
   - `entity` must be one of the entity names listed in the user prompt.
     Anchoring on an unknown entity will fail the store-side foreign
     key check at apply time.
-  - `measure.column` must be a column that exists on the entity's
-    bound table.
+  - Exactly ONE of `measure.column` or `measure.expression`. Use
+    `column` for the common single-column case (e.g. summing a stored
+    `amount` column). Use `expression` when the meaningful measure
+    requires arithmetic over multiple columns on the entity's bound
+    table — e.g. when an entity stores `unit_amount` and `unit_count`
+    separately, the meaningful aggregate is
+    `expression: unit_amount * unit_count`, not `column: unit_amount`
+    (which sums per-unit values and is meaningless for multi-unit rows).
+    The same pattern applies regardless of domain: medical claim
+    line-items, financial position sizing, commerce line-item revenue,
+    blockchain transaction-value calculations all share this shape.
+    Allowed in expressions: identifier columns from the entity's table,
+    integer/float literals, parens, and `+ - * /` (no functions, no
+    comparisons, no string ops). All operand columns must exist.
   - `measure.agg` must be one of: sum, count, count_distinct, avg,
     min, max. Use `count` for row counts (column can be the entity's
     identity column); `count_distinct` for unique-value counts; sum/
-    avg/min/max for numeric columns only.
+    avg/min/max for numeric columns or numeric composite expressions.
   - `time_dimension` is optional. When set, it MUST be
     `<entity>.<column>` form where `<entity>` is the same as `entity`
     above (cross-entity time dimensions deferred to v2), and
@@ -230,31 +249,30 @@ Rules:
     pad. List them in canonical order day → year.
   - DO NOT propose metrics on identity columns with sum/avg (an `id`
     column's sum is meaningless); use count or count_distinct instead.
-  - DO NOT propose `sum` or `avg` on per-unit / per-line monetary
-    columns that need multiplication to be meaningful. Example: on an
-    `order_item` entity with `unit_price_cents` and `quantity`,
-    `sum(unit_price_cents)` is NOT line-item revenue — that requires
-    `unit_price_cents * quantity`, which is a column expression and
-    NOT something today's metric grammar can express. Skip the metric
-    entirely. The honest rule: a metric's `name` and `description`
-    must not promise a result the single-column aggregation cannot
-    deliver. If you find yourself writing "X * Y is not directly
-    available" or "would require multiplication" in the description,
-    DO NOT propose the metric.
+  - DO NOT propose `sum` or `avg` on per-unit / per-line stored values
+    when the meaningful measure is the product of two columns. The
+    honest rule: a metric's `name` and `description` must not promise a
+    result the chosen measure (column or expression) cannot deliver. If
+    you find yourself writing "X * Y is not directly available" or
+    "would require multiplication" in the description, either rewrite
+    the measure as a composite expression OR skip the metric.
   - DO NOT propose `sum` or `avg` on percentage / rate / ratio columns
-    (e.g. `discount_percent`, `tax_rate`); sums of percentages are
-    nonsense and averages of unweighted rates are misleading. Skip
-    these columns for sum/avg; min/max may still be useful.
+    (e.g. `success_rate`, `interest_rate`, `completion_percent`,
+    `mortality_rate`); sums of percentages are nonsense and averages of
+    unweighted rates are misleading. Skip these columns for sum/avg;
+    min/max may still be useful.
   - DO NOT propose more than 2 metrics per entity unless the entity is
-    genuinely metric-rich (e.g., `order` may warrant 3-4: revenue,
-    item-count, average-order-value, distinct-customer-count).
+    genuinely metric-rich. A primary transactional entity (whatever it
+    is in the schema you're given) may warrant 3-4 metrics: a total, a
+    count, an average, and a distinct count of a key dimension.
   - SKIP junction tables and pure-audit/log entities — they don't host
     useful business metrics.
   - Confidence: `high` if the column name+type cleanly imply the
-    aggregation (e.g., `total_cents` + sum, `placed_at` + time
-    dimension); `medium` if the inference required a small leap (e.g.,
-    `created_at` as a time dimension when the entity is something
-    other than its creation event); `low` if you're unsure.
+    aggregation (e.g., an `amount`-shaped numeric column + sum, a
+    timestamp column + time dimension); `medium` if the inference
+    required a small leap (e.g., `created_at` as a time dimension when
+    the entity is something other than its creation event); `low` if
+    you're unsure.
 """
 
 
@@ -463,20 +481,32 @@ def _parse_candidate(raw: Any, *, index: int) -> MetricCandidate:
     description_lower = description.lower()
     for phrase in _DESCRIPTION_ANTI_PATTERN_PHRASES:
         if phrase.lower() in description_lower:
+            # `measure.column` and `measure.expression` are mutually
+            # exclusive; render whichever is populated in the error
+            # message so composite-expression candidates don't show
+            # the misleading `(None)`.
+            measure_body = measure.column if measure.column is not None else measure.expression
             raise MetricSuggestionParseError(
                 f"candidate #{index} description contains anti-pattern "
                 f"{phrase!r} indicating the metric's aggregation cannot "
                 f"deliver what its name implies (name={name!r}, "
-                f"measure={measure.agg}({measure.column})). The metric "
-                f"grammar today supports single-column aggregations only "
-                f"— if the desired metric requires a column expression, "
-                f"skip the candidate."
+                f"measure={measure.agg}({measure_body})). If the desired "
+                f"metric requires a column expression, use the composite-"
+                f"expression shape (`expression: <arithmetic>`) instead of "
+                f"a column-mismatch description, or skip the candidate."
             )
 
     # Construct the Metric — its __post_init__ runs identifier-shape +
     # paired-emptiness + canonical-grain-order + origin-enum checks.
     # Re-wrap as MetricSuggestionParseError so the CLI surface stays
-    # uniform.
+    # uniform. `inference_method="llm_suggested"` is the load-bearing
+    # 2D trust-signal classification: every candidate parsed here came
+    # from an LLM's YAML output, so the metric must ride the
+    # `llm_suggested` rail (→ MEDIUM confidence) rather than the
+    # dataclass-default `manually_authored` (→ HIGH). Without this,
+    # `derive_confidence(method, state)` collapses to HIGH everywhere
+    # on the wizard happy path and the 2D trust signal silently
+    # degrades to a flat 1D HIGH that operators can't reason about.
     try:
         metric = Metric(
             name=name,
@@ -486,6 +516,7 @@ def _parse_candidate(raw: Any, *, index: int) -> MetricCandidate:
             time_dimension=time_dimension,
             time_grains=time_grains,
             origin="suggested",
+            inference_method="llm_suggested",
         )
     except ValueError as exc:
         raise MetricSuggestionParseError(f"candidate #{index}: {exc}") from exc
@@ -571,17 +602,46 @@ def _parse_measure(raw: Any, *, index: int) -> MetricMeasure:
             f"candidate #{index}.measure.agg must be one of {sorted(_VALID_AGGS)} (got {agg_raw!r})"
         )
 
-    column_raw = raw["column"]
-    if not isinstance(column_raw, str):
+    has_column = "column" in raw
+    has_expression = "expression" in raw
+    # XOR — same shape the YAML grammar enforces. Mirrored here so the
+    # error names both candidates when the LLM emits both or neither.
+    if has_column == has_expression:
+        if has_column:
+            raise MetricSuggestionParseError(
+                f"candidate #{index}.measure must set exactly one of "
+                f"`column` or `expression`, not both"
+            )
         raise MetricSuggestionParseError(
-            f"candidate #{index}.measure.column must be a string "
-            f"(got {type(column_raw).__name__}: {column_raw!r})"
+            f"candidate #{index}.measure must set one of `column` "
+            f"(bare-column measure) or `expression` (composite arithmetic)"
         )
+
+    column_raw: str | None = None
+    expression_raw: str | None = None
+    if has_column:
+        column_raw = raw["column"]
+        if not isinstance(column_raw, str):
+            raise MetricSuggestionParseError(
+                f"candidate #{index}.measure.column must be a string "
+                f"(got {type(column_raw).__name__}: {column_raw!r})"
+            )
+    else:
+        expression_raw = raw["expression"]
+        if not isinstance(expression_raw, str):
+            raise MetricSuggestionParseError(
+                f"candidate #{index}.measure.expression must be a string "
+                f"(got {type(expression_raw).__name__}: {expression_raw!r})"
+            )
 
     try:
         # `agg_raw not in _VALID_AGGS` rejected non-Literal values above;
         # `cast` documents that narrowing for the type checker.
-        return MetricMeasure(agg=cast("AggFunction", agg_raw), column=column_raw)
+        return MetricMeasure(
+            agg=cast("AggFunction", agg_raw),
+            column=column_raw,
+            expression=expression_raw,
+        )
     except ValueError as exc:
         raise MetricSuggestionParseError(f"candidate #{index}.measure: {exc}") from exc
 

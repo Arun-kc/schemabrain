@@ -1,10 +1,10 @@
 # MCP tool reference
 
-Schema Brain exposes ten Pydantic-typed MCP tools split across two layers:
+Schema Brain exposes twelve Pydantic-typed MCP tools split across two layers:
 
 - **Physical-schema tools** (5) read directly from the indexed schema. Always
   available after `schemabrain index`.
-- **Semantic-layer tools** (5) read curated entities, canonical joins, and
+- **Semantic-layer tools** (7) read curated entities, canonical joins, and
   metrics. Available once the operator has confirmed at least one entity
   (`schemabrain entities suggest --apply` or `schemabrain init`).
 

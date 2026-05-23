@@ -117,6 +117,40 @@ def server_with_one_table_zero_embedder(tmp_path: Path) -> Generator[FastMCP, No
     store.close()
 
 
+class TestServerInfoVersion:
+    """`serverInfo.version` in the MCP `initialize` response must be
+    Schema Brain's own version string, not the version of the underlying
+    `mcp` SDK package. FastMCP defaults `server_version` to the SDK
+    package version, which leaks an unrelated identity to clients.
+    """
+
+    def test_initialize_response_carries_schemabrain_version(self, server_with_one_table) -> None:
+        from schemabrain import __version__ as schemabrain_version
+
+        opts = server_with_one_table._mcp_server.create_initialization_options()
+        assert opts.server_version == schemabrain_version
+
+    def test_initialize_response_does_not_leak_mcp_sdk_version(self, server_with_one_table) -> None:
+        """Defensive: even if the SDK package version coincidentally
+        matches Schema Brain's at some point, the test_initialize_response
+        above already pins the contract. This assertion is the negative
+        symmetric counterpart — the server must not be using the
+        FastMCP default fallback that calls `pkg_version("mcp")`.
+        """
+        from importlib.metadata import version as _pkg_version
+
+        from schemabrain import __version__ as schemabrain_version
+
+        mcp_sdk_version = _pkg_version("mcp")
+        # If the two happen to match, the assertion is still meaningful;
+        # the contract is "use Schema Brain's version", and equality
+        # there is satisfied. Only fail when the SERVER version is the
+        # SDK version AND they differ (which would prove the bug).
+        opts = server_with_one_table._mcp_server.create_initialization_options()
+        if mcp_sdk_version != schemabrain_version:
+            assert opts.server_version != mcp_sdk_version
+
+
 class TestToolRegistry:
     def test_all_tools_are_registered(self, server_with_one_table) -> None:
         names = {t.name for t in asyncio.run(server_with_one_table.list_tools())}
@@ -505,10 +539,16 @@ class TestSuggestJoinsEnvelope:
         assert data["token_estimate"] > 0
         # FK-graph data is schema-sourced (declared constraints) — surface
         # that explicitly so a client agent knows this isn't LLM-inferred.
+        # Charter v1.2 populates the 2D trust signal explicitly:
+        # `inference_method='fk_constraint'` (DB constraint, not LLM)
+        # + `validation_state='applied'` (the constraint exists in the
+        # live schema, no operator confirmation needed).
         assert structured["provenance"] == {
             "source": "schema",
             "model": None,
             "observed_in": None,
+            "inference_method": "fk_constraint",
+            "validation_state": "applied",
         }
 
     def test_single_table_input_maps_to_malformed_name_error(self, server_with_fk_pair) -> None:
@@ -1190,3 +1230,38 @@ class TestResolveJoinNoCanonical:
         # like `order` survive Postgres paste.
         assert 'JOIN "public"."users" AS "customer"' in structured["data"]["sql_skeleton"]
         assert '"order"."user_id" = "customer"."id"' in structured["data"]["sql_skeleton"]
+
+
+# ----- MCP server branding (icons + website_url) -----------------------------
+
+
+class TestServerBranding:
+    """Charter v1.2-adjacent: the FastMCP `initialize` response carries
+    `icons` + `website_url` so hosts that render server cards (Claude
+    Desktop, Cursor) show the schemabrain mark instead of a generic
+    placeholder. Tests pin the icon URLs + size set so a renamer in
+    `docs/assets/` surfaces here rather than as a broken Claude
+    Desktop avatar in the wild.
+    """
+
+    def test_server_icons_three_sizes(self) -> None:
+        from schemabrain.mcp.server import _server_icons
+
+        icons = _server_icons()
+        # 32 / 64 / 512 — sizes the rendering hosts ask for.
+        assert len(icons) == 3
+        sizes = [icon.sizes[0] for icon in icons]
+        assert sizes == ["32x32", "64x64", "512x512"]
+
+    def test_server_icons_point_at_repo_raw_urls(self) -> None:
+        from schemabrain.mcp.server import _server_icons
+
+        icons = _server_icons()
+        for icon in icons:
+            assert icon.src.startswith("https://raw.githubusercontent.com/Arun-kc/schemabrain/")
+            assert icon.mimeType == "image/png"
+
+    def test_website_url_is_repo(self) -> None:
+        from schemabrain.mcp.server import _SERVER_WEBSITE_URL
+
+        assert _SERVER_WEBSITE_URL == "https://github.com/Arun-kc/schemabrain"

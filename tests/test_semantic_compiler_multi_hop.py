@@ -62,24 +62,60 @@ def _id_col(table: str) -> Column:
     )
 
 
+def _extra_col(table: str, name: str, *, ordinal: int) -> Column:
+    return Column(
+        name=name,
+        table_name=table,
+        schema_name="public",
+        data_type="text",
+        nullable=True,
+        ordinal_position=ordinal,
+        is_primary_key=False,
+    )
+
+
+# Columns each fixture table carries beyond `id`. Centralised so the
+# `_seed_*` fixtures stay in sync with what the compiler's column-
+# existence validation (PR-6h.3) now checks against. Adding a column
+# referenced by a test means adding it to this map AND any fixture
+# that owns the table.
+_FIXTURE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "order_items": ("quantity", "product_id"),
+    "orders": ("placed_at", "user_id"),
+    "users": ("email", "full_name"),
+    "addresses": ("country",),
+    "products": ("name",),
+    "categories": ("name",),
+    "category_aliases": ("name",),
+}
+
+
+def _table(name: str) -> Table:
+    """Build a fixture Table with `id` + every column in `_FIXTURE_COLUMNS[name]`.
+
+    The compiler validates group_by / filter columns against the
+    table's column list (PR-6h.3). Fixture tables only had `id` before
+    that change; calling tests now go through the same validation path
+    real callers do, so the fixture must declare every column the
+    tests reference.
+    """
+    extras = _FIXTURE_COLUMNS.get(name, ())
+    cols: tuple[Column, ...] = (
+        _id_col(name),
+        *(_extra_col(name, col_name, ordinal=2 + i) for i, col_name in enumerate(extras)),
+    )
+    return Table(name=name, schema_name="public", columns=cols)
+
+
 def _seed_two_hop_chain(store: SQLiteStore) -> None:
     """`order_item → order → user`. Mirrors the live-smoke schema.
 
     Metric `total_items_sold` is anchored on `order_item`; `user` is
     only reachable through `order`.
     """
-    store.write_table(
-        Table(name="order_items", schema_name="public", columns=(_id_col("order_items"),)),
-        source_connection_id=SOURCE,
-    )
-    store.write_table(
-        Table(name="orders", schema_name="public", columns=(_id_col("orders"),)),
-        source_connection_id=SOURCE,
-    )
-    store.write_table(
-        Table(name="users", schema_name="public", columns=(_id_col("users"),)),
-        source_connection_id=SOURCE,
-    )
+    store.write_table(_table("order_items"), source_connection_id=SOURCE)
+    store.write_table(_table("orders"), source_connection_id=SOURCE)
+    store.write_table(_table("users"), source_connection_id=SOURCE)
     for name, table in (
         ("order_item", "public.order_items"),
         ("order", "public.orders"),
@@ -137,7 +173,7 @@ def _seed_diamond_paths(store: SQLiteStore) -> None:
     """
     for name in ("order_items", "orders", "addresses", "users"):
         store.write_table(
-            Table(name=name, schema_name="public", columns=(_id_col(name),)),
+            _table(name),
             source_connection_id=SOURCE,
         )
     entity_bindings = (
@@ -239,7 +275,7 @@ def _seed_parallel_single_edge(store: SQLiteStore) -> None:
     """
     for name in ("order_items", "orders", "users"):
         store.write_table(
-            Table(name=name, schema_name="public", columns=(_id_col(name),)),
+            _table(name),
             source_connection_id=SOURCE,
         )
     for name, table in (
@@ -315,7 +351,7 @@ def _seed_tangent_parallel_off_chain(store: SQLiteStore) -> None:
     """
     for name in ("order_items", "orders", "users", "addresses", "products"):
         store.write_table(
-            Table(name=name, schema_name="public", columns=(_id_col(name),)),
+            _table(name),
             source_connection_id=SOURCE,
         )
     for entity_name, table in (
@@ -629,18 +665,8 @@ class TestEmptyJoinGraph:
         with SQLiteStore(tmp_path / "store.db") as store:
             # Seed the two-hop schema but DELIBERATELY skip the
             # `write_canonical_join` calls so the graph is empty.
-            store.write_table(
-                Table(
-                    name="order_items",
-                    schema_name="public",
-                    columns=(_id_col("order_items"),),
-                ),
-                source_connection_id=SOURCE,
-            )
-            store.write_table(
-                Table(name="users", schema_name="public", columns=(_id_col("users"),)),
-                source_connection_id=SOURCE,
-            )
+            store.write_table(_table("order_items"), source_connection_id=SOURCE)
+            store.write_table(_table("users"), source_connection_id=SOURCE)
             for name, table in (
                 ("order_item", "public.order_items"),
                 ("user", "public.users"),
@@ -762,11 +788,7 @@ class TestUnreachableNoPath:
         with SQLiteStore(tmp_path / "store.db") as store:
             _seed_two_hop_chain(store)
             store.write_table(
-                Table(
-                    name="products",
-                    schema_name="public",
-                    columns=(_id_col("products"),),
-                ),
+                _table("products"),
                 source_connection_id=SOURCE,
             )
             store.write_entity(
@@ -912,14 +934,7 @@ class TestTangentParallelJoinsOffChain:
             # them. Both entities are in the graph (have edges), but
             # no edge reaches them from `order_item`'s component.
             for table_name in ("categories", "category_aliases"):
-                store.write_table(
-                    Table(
-                        name=table_name,
-                        schema_name="public",
-                        columns=(_id_col(table_name),),
-                    ),
-                    source_connection_id=SOURCE,
-                )
+                store.write_table(_table(table_name), source_connection_id=SOURCE)
             for entity_name, table in (
                 ("category", "public.categories"),
                 ("category_alias", "public.category_aliases"),

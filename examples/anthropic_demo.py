@@ -109,10 +109,8 @@ async def _run_agent_loop(
     out of `ps` output, shell history, and process argv.
     """
     server_params = StdioServerParameters(
-        command="uv",
+        command="schemabrain",
         args=[
-            "run",
-            "schemabrain",
             "serve",
             "--url-env",
             url_env,
