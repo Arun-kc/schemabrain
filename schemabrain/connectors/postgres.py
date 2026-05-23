@@ -103,6 +103,77 @@ class PostgresDataSource:
             ).fetchall()
         return frozenset((str(row[0]), str(row[1])) for row in rows)
 
+    def _get_partition_child_fks(self, parent_schema: str, parent_name: str) -> list[ForeignKey]:
+        """Return every FK that lives on any partition child of the parent.
+
+        Bypasses SQLAlchemy's `inspector.get_foreign_keys()` because that
+        helper sets `referred_schema=None` whenever the target is in the
+        Postgres default search_path (`public`), making cross-schema FKs
+        indistinguishable from same-schema ones at the reflection layer.
+        `pg_constraint` joined to `pg_class` resolves the actual target
+        schema by oid — no ambiguity.
+
+        Result is de-duped at the SQL layer by FK identity (source
+        columns + target schema + target table + target columns). Postgres
+        auto-names FKs per-child even when the same logical FK is added
+        to every partition (the Pagila pattern), so a constraint-name-
+        based GROUP BY would miss the dedup; the identity tuple catches it.
+        """
+        engine = self._require_engine()
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT DISTINCT "
+                    "  src_cols.cols AS source_columns, "
+                    "  tgt_n.nspname AS target_schema, "
+                    "  tgt.relname AS target_table, "
+                    "  tgt_cols.cols AS target_columns "
+                    "FROM pg_constraint con "
+                    "JOIN pg_class src ON src.oid = con.conrelid "
+                    "JOIN pg_inherits inh ON inh.inhrelid = con.conrelid "
+                    "JOIN pg_class parent ON parent.oid = inh.inhparent "
+                    "JOIN pg_namespace pn ON pn.oid = parent.relnamespace "
+                    "JOIN pg_class tgt ON tgt.oid = con.confrelid "
+                    "JOIN pg_namespace tgt_n ON tgt_n.oid = tgt.relnamespace "
+                    "JOIN LATERAL ("
+                    "  SELECT array_agg(a.attname ORDER BY u.ord) AS cols "
+                    "  FROM unnest(con.conkey) WITH ORDINALITY AS u(att, ord) "
+                    "  JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = u.att"
+                    ") AS src_cols ON true "
+                    "JOIN LATERAL ("
+                    "  SELECT array_agg(a.attname ORDER BY u.ord) AS cols "
+                    "  FROM unnest(con.confkey) WITH ORDINALITY AS u(att, ord) "
+                    "  JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = u.att"
+                    ") AS tgt_cols ON true "
+                    "WHERE con.contype = 'f' "
+                    "AND parent.relname = :parent_name "
+                    "AND pn.nspname = :parent_schema "
+                    "AND src.relispartition = true "
+                    "ORDER BY tgt_n.nspname, tgt.relname"
+                ),
+                {"parent_name": parent_name, "parent_schema": parent_schema},
+            ).fetchall()
+        out: list[ForeignKey] = []
+        for row in rows:
+            source_columns = tuple(str(c) for c in row[0])
+            target_schema = str(row[1])
+            target_table = str(row[2])
+            target_columns = tuple(str(c) for c in row[3])
+            # Synthesise a parent-scoped FK name — per-child auto-names
+            # would leak partition-specific identifiers onto the parent's
+            # surface, where they would later confuse downstream join
+            # inference about which table the FK actually anchors on.
+            out.append(
+                ForeignKey(
+                    name=f"fk_{parent_name}_{'_'.join(source_columns)}",
+                    source_columns=source_columns,
+                    target_schema=target_schema,
+                    target_table=target_table,
+                    target_columns=target_columns,
+                )
+            )
+        return out
+
     def get_table(self, name: str, schema: str) -> Table:
         engine = self._require_engine()
         inspector = inspect(engine)
@@ -137,6 +208,30 @@ class PostgresDataSource:
         foreign_keys = tuple(
             self._build_foreign_key(raw, owning_table=name, owning_schema=schema) for raw in fk_info
         )
+
+        # Pagila pattern: declarative partition parents whose FKs sit on
+        # the children instead of the parent. Postgres does NOT propagate
+        # child-only FKs upward, so `get_foreign_keys(parent)` returns []
+        # and the parent looks like a relationship-less island to the
+        # downstream entity / join inference. `_get_partition_child_fks`
+        # peeks at every child's FKs via `pg_constraint` (one round-trip,
+        # SQL-side DISTINCT), bypassing SQLAlchemy's `referred_schema=None`
+        # ambiguity for cross-schema targets. De-dup against the parent's
+        # own FK set so cleanly-built schemas (FKs declared on the parent
+        # and auto-propagated by Postgres) don't double-count.
+        child_fks = self._get_partition_child_fks(schema, name)
+        if child_fks:
+            seen: set[tuple[tuple[str, ...], str, str, tuple[str, ...]]] = {
+                self._fk_identity(fk) for fk in foreign_keys
+            }
+            extra: list[ForeignKey] = []
+            for fk in child_fks:
+                ident = self._fk_identity(fk)
+                if ident in seen:
+                    continue
+                seen.add(ident)
+                extra.append(fk)
+            foreign_keys = foreign_keys + tuple(extra)
 
         return Table(
             name=name,
@@ -188,6 +283,14 @@ class PostgresDataSource:
             target_table=raw["referred_table"],
             target_columns=tuple(raw["referred_columns"]),
         )
+
+    @staticmethod
+    def _fk_identity(fk: ForeignKey) -> tuple[tuple[str, ...], str, str, tuple[str, ...]]:
+        """Identity tuple for de-duping FKs surfaced from both parent
+        and child partitions. Excludes `name` because parent-declared FKs
+        get auto-named per-child by Postgres, so the same logical FK can
+        carry a different name on the parent vs. on a child."""
+        return (fk.source_columns, fk.target_schema, fk.target_table, fk.target_columns)
 
     def _require_engine(self) -> Engine:
         if self._engine is None:

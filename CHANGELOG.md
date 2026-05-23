@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MetricResult.fingerprint` docstring documents ADR-0001 privacy-by-construction (repeat-prefix is by design, not a hash collision). ([#96])
 
 ### Fixed
+- Postgres partition parents whose FKs sit on the partition children (the Pagila pattern) now surface those FKs on the parent's `Table.foreign_keys`. New `_get_partition_child_fks` queries `pg_constraint` directly (bypassing SQLAlchemy's `referred_schema=None` ambiguity for cross-schema FKs into the default search_path), unions with the parent's own FKs, and de-dupes by identity tuple so cleanly-built schemas don't double-count. ([#102])
 - Reverse-traversal cardinality flip missed same-name-FK joins (e.g. `rental.customer_id ↔ customer.customer_id`), silently over-counting on grouped aggregates — Pagila re-test reported 182 customers where ground truth was 158. Replaced heuristic with explicit `is_reverse_traversal` flag on `_ChainEdge`. ([#95])
 - Wizard tagged LLM-suggested entities + metrics as `manually_authored`, collapsing the 2D trust signal to flat HIGH on the wizard happy path. ([#96])
 - MCP refusal envelopes left `recovery.suggested_args` null even when the message named a structured arg — now populated for `ambiguous_time_dimension` and `pii_blocked`. ([#96])
@@ -1156,3 +1157,4 @@ First public preview. Live on PyPI as `schemabrain==0.1.0a1`.
 [#99]: https://github.com/Arun-kc/schemabrain/pull/99
 [#100]: https://github.com/Arun-kc/schemabrain/pull/100
 [#101]: https://github.com/Arun-kc/schemabrain/pull/101
+[#102]: https://github.com/Arun-kc/schemabrain/pull/102
