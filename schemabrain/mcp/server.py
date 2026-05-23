@@ -1470,7 +1470,7 @@ def build_server(
             # `anchor_entity` is None only for callers that bypass
             # `get_metric_impl` (no production path); guard regardless.
             recovery_args: dict[str, Any] | None = None
-            if exc.anchor_entity is not None:
+            if exc.anchor_entity is not None:  # pragma: no branch
                 recovery_args = {"name": exc.anchor_entity}
             return ToolResponse(
                 status="refused",
@@ -1669,7 +1669,7 @@ def build_server(
             # whichever candidate semantically matches the user's
             # question (the full list lives in the message text).
             time_dim_args: dict[str, Any] | None = None
-            if exc.candidates:
+            if exc.candidates:  # pragma: no branch
                 time_dim_args = {"time_dimension": exc.candidates[0][0]}
             return ToolResponse(
                 status="error",

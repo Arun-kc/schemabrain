@@ -1094,9 +1094,7 @@ class TestEnvelopeMapping:
         assert structured["degradation_reason"] == "time_dimension_unavailable"
         assert structured["data"]["time_dimension_resolution"] == "unavailable"
 
-    def test_pii_blocked_envelope_populates_anchor_in_recovery_args(
-        self, tmp_path: Path
-    ) -> None:
+    def test_pii_blocked_envelope_populates_anchor_in_recovery_args(self, tmp_path: Path) -> None:
         """PII refusal surface: when get_metric refuses on PII policy,
         the envelope's `recovery.suggested_args` carries the metric's
         anchor entity name so an agent can pivot directly to

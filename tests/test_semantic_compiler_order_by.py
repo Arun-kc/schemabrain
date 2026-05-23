@@ -157,9 +157,7 @@ def _seed_two_hop(store: SQLiteStore) -> None:
 
 
 class TestOrderByDefault:
-    def test_no_order_by_with_group_by_auto_fills_group_columns(
-        self, tmp_path: Path
-    ) -> None:
+    def test_no_order_by_with_group_by_auto_fills_group_columns(self, tmp_path: Path) -> None:
         """When the caller passes `group_by` without `order_by`, the
         resolver auto-fills ORDER BY with the group columns ASC so
         the LIMIT N slice is deterministic. Without this, every

@@ -539,9 +539,7 @@ def resolve_metric_plan(
         # Keep the original `candidates` for the error envelope so the
         # agent sees every option, not just the (empty) post-filter set.
         if time_dimension is not None and len(candidates) >= 1:
-            filtered = tuple(
-                c for c in candidates if c[0] == time_dimension
-            )
+            filtered = tuple(c for c in candidates if c[0] == time_dimension)
             if len(filtered) == 1:
                 candidates = filtered  # type: ignore[assignment]
         if len(candidates) > 1:

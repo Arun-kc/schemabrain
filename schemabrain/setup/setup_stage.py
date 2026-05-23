@@ -252,8 +252,7 @@ def prompt_for_pii_block(*, console: Console) -> tuple[str, ...]:
         )
         console.print()
         console.print(
-            f"    [bright_black]{GLYPH_ACTIVE} 1. Recommended: contact "
-            "(email, phone, address)[/]"
+            f"    [bright_black]{GLYPH_ACTIVE} 1. Recommended: contact (email, phone, address)[/]"
         )
         console.print(
             f"    [bright_black]{GLYPH_ACTIVE} 2. All categories "

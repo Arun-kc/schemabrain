@@ -263,9 +263,7 @@ class TestTimeDimensionDisambiguator:
         assert plan.time_dimension_resolution == "inherited"
         assert plan.inherited_time_dimension == "order.created_at"
 
-    def test_time_dimension_arg_not_in_candidates_still_ambiguous(
-        self, tmp_path: Path
-    ) -> None:
+    def test_time_dimension_arg_not_in_candidates_still_ambiguous(self, tmp_path: Path) -> None:
         # An agent that passes a `time_dimension` not in the candidate
         # set falls through to AmbiguousTimeDimensionError — the message
         # carries the full valid list so the next retry can pick a real

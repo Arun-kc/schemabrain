@@ -68,9 +68,7 @@ class TestPromptForPiiBlock:
     (-y / piped stderr) ever blocking on stdin.
     """
 
-    def test_default_recommended_returns_contact(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_default_recommended_returns_contact(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Pressing Enter at the prompt selects the recommended default —
         # `contact` only, matching the pre-prompt silent default so the
         # zero-effort path is unchanged for operators who don't read
@@ -79,9 +77,7 @@ class TestPromptForPiiBlock:
         result = prompt_for_pii_block(console=make_console(file=io.StringIO()))
         assert result == ("contact",)
 
-    def test_all_categories_returns_full_v1_enum(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_all_categories_returns_full_v1_enum(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Option 2 fans out to every v1 PIICategory the classifier can
         # tag. Sorted output keeps the host-snippet shape deterministic
         # across machines (otherwise the comma-joined arg order would
@@ -98,9 +94,7 @@ class TestPromptForPiiBlock:
         assert "contact" in result
         assert "government_id" in result
 
-    def test_none_choice_returns_empty_tuple(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_none_choice_returns_empty_tuple(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Option 3 = dev/synthetic database escape hatch. Empty tuple
         # signals "no `--pii-block` flag in the host snippet"; the
         # server then runs with PII enforcement off.
