@@ -39,7 +39,10 @@ class TestPartitionFiltering:
     def test_excludes_partition_children_from_schema_listing(self, seeded_pg_url: str):
         with PostgresDataSource(seeded_pg_url) as ds:
             tables = sorted(ds.list_tables(schema="partitioning"))
-        assert tables == [("partitioning", "events_by_region")]
+        assert tables == [
+            ("partitioning", "events_by_region"),
+            ("partitioning", "orders_by_region"),
+        ]
 
     def test_excludes_partition_children_from_full_listing(self, seeded_pg_url: str):
         with PostgresDataSource(seeded_pg_url) as ds:
@@ -47,6 +50,9 @@ class TestPartitionFiltering:
         assert ("partitioning", "events_by_region") in tables
         assert ("partitioning", "events_us") not in tables
         assert ("partitioning", "events_eu") not in tables
+        assert ("partitioning", "orders_by_region") in tables
+        assert ("partitioning", "orders_by_region_us") not in tables
+        assert ("partitioning", "orders_by_region_eu") not in tables
 
     def test_get_table_still_returns_partition_child_when_explicitly_requested(
         self, seeded_pg_url: str
@@ -64,6 +70,33 @@ class TestPartitionFiltering:
         col_names = {c.name for c in parent.columns}
         assert col_names == {"id", "region", "payload"}
         assert sorted(parent.primary_key_columns()) == ["id", "region"]
+
+    def test_get_table_unions_fks_from_partition_children(self, seeded_pg_url: str):
+        # Pagila pattern: the FK on `user_id -> users.id` is declared on
+        # `orders_by_region_us` (a partition child), NOT on the parent.
+        # Postgres does NOT propagate child-only FKs up to the parent, so
+        # `inspector.get_foreign_keys('orders_by_region')` returns []. The
+        # connector must peek at a representative child and surface the
+        # child's FK as if it lived on the parent — otherwise the
+        # downstream entity-detection / join-inference paths see the
+        # partition parent as a relationship-less island.
+        with PostgresDataSource(seeded_pg_url) as ds:
+            parent = ds.get_table("orders_by_region", schema="partitioning")
+        fk_targets = sorted((fk.target_table, fk.source_columns[0]) for fk in parent.foreign_keys)
+        assert fk_targets == [("users", "user_id")]
+        # Target schema resolves to `public` (the FK's referred_schema),
+        # not the parent's `partitioning` schema.
+        assert parent.foreign_keys[0].target_schema == "public"
+        assert parent.foreign_keys[0].target_columns == ("id",)
+
+    def test_get_table_dedups_when_fk_lives_on_both_parent_and_children(self, seeded_pg_url: str):
+        # The `events_by_region` parent has no FKs declared anywhere
+        # (parent has no FKs AND its children have no FKs). The connector
+        # must NOT invent FKs out of thin air on partition parents
+        # whose children are also FK-less.
+        with PostgresDataSource(seeded_pg_url) as ds:
+            parent = ds.get_table("events_by_region", schema="partitioning")
+        assert parent.foreign_keys == ()
 
 
 class TestGetTable:

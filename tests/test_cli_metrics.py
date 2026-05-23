@@ -553,3 +553,152 @@ class TestUrlErrors:
             capsys,
         )
         assert code == 2
+
+
+# ----- metrics show ----------------------------------------------------------
+
+
+class TestMetricsShow:
+    """Drill-into-one-metric surface. Renders the same `MetricDetail`
+    that `inspect <name>` renders for a metric, but bound to the
+    `metrics` namespace so operators who know they want a metric do not
+    risk an entity / join taking priority on a name collision."""
+
+    def test_known_metric_renders_brand_line_and_measure(
+        self, tmp_path: Path, capsys: Any, monkeypatch: Any
+    ) -> None:
+        store_path = tmp_path / "store.db"
+        _seed_order_entity(store_path)
+        yaml_file = tmp_path / "total_revenue.yaml"
+        yaml_file.write_text(_temporal_yaml(), encoding="utf-8")
+        _set_env(monkeypatch)
+        apply_code, _o, _e = _run(
+            [
+                "metrics",
+                "apply",
+                str(yaml_file),
+                "--url-env",
+                "DBURL",
+                "--store-path",
+                str(store_path),
+            ],
+            capsys,
+        )
+        assert apply_code == 0
+
+        code, _out, err = _run(
+            ["metrics", "show", "total_revenue", "--store-path", str(store_path)],
+            capsys,
+        )
+        assert code == 0
+        # Brand line uses the `metric:<name>` shape (same as inspect drill).
+        assert "metric:total_revenue" in err
+        # Measure body rendered.
+        assert "sum(total_amount)" in err
+        # Time dimension + grains line.
+        assert "order.created_at" in err
+        # 2D trust signal.
+        assert "Trust:" in err
+
+    def test_unknown_metric_exits_one_with_hint(self, tmp_path: Path, capsys: Any) -> None:
+        store_path = tmp_path / "store.db"
+        _seed_order_entity(store_path)
+
+        code, _out, err = _run(
+            ["metrics", "show", "ghost_metric", "--store-path", str(store_path)],
+            capsys,
+        )
+        assert code == 1
+        # Pointer to the discovery surface so the operator knows the
+        # next-action instead of guessing the right name.
+        assert "ghost_metric" in err
+        assert "metrics list" in err
+
+    def test_empty_store_exits_one(self, tmp_path: Path, capsys: Any) -> None:
+        store_path = tmp_path / "store.db"
+        SQLiteStore(store_path).close()
+
+        code, _out, err = _run(
+            ["metrics", "show", "anything", "--store-path", str(store_path)],
+            capsys,
+        )
+        assert code == 1
+        assert "anything" in err
+
+    def test_missing_store_exits_two(self, tmp_path: Path, capsys: Any) -> None:
+        # Symmetric with `inspect` — store-missing is structural, not
+        # name-not-found.
+        missing = tmp_path / "does-not-exist.db"
+        code, _out, err = _run(
+            ["metrics", "show", "x", "--store-path", str(missing)],
+            capsys,
+        )
+        assert code == 2
+        assert "store not found" in err
+
+    def test_source_filter_restricts_to_that_source(
+        self, tmp_path: Path, capsys: Any, monkeypatch: Any
+    ) -> None:
+        # Write `src_a_metric` under one source, then try to show it
+        # while filtering by a different source — should miss.
+        store_path = tmp_path / "store.db"
+        source_id = _seed_order_entity(store_path, source_url=DBURL)
+        other_url = "postgresql+psycopg://user:pw@localhost:5432/other"
+        _seed_order_entity(store_path, source_url=other_url)
+        with SQLiteStore(store_path) as store:
+            store.write_metric(
+                Metric(
+                    name="src_a_only",
+                    description="",
+                    entity="order",
+                    measure=MetricMeasure(agg="count", column="id"),
+                    time_dimension=None,
+                    time_grains=(),
+                ),
+                source_connection_id=source_id,
+            )
+
+        monkeypatch.setenv("OTHER", other_url)
+        code, _out, err = _run(
+            [
+                "metrics",
+                "show",
+                "src_a_only",
+                "--store-path",
+                str(store_path),
+                "--url-env",
+                "OTHER",
+            ],
+            capsys,
+        )
+        assert code == 1
+        assert "src_a_only" in err
+
+    def test_cross_source_walks_all_sources(self, tmp_path: Path, capsys: Any) -> None:
+        # Same metric name in two sources, no --source filter — both
+        # render in succession, exit 0.
+        store_path = tmp_path / "store.db"
+        a_id = _seed_order_entity(store_path, source_url=DBURL)
+        b_url = "postgresql+psycopg://user:pw@localhost:5432/other"
+        b_id = _seed_order_entity(store_path, source_url=b_url)
+        with SQLiteStore(store_path) as store:
+            for sid in (a_id, b_id):
+                store.write_metric(
+                    Metric(
+                        name="shared",
+                        description="",
+                        entity="order",
+                        measure=MetricMeasure(agg="count", column="id"),
+                        time_dimension=None,
+                        time_grains=(),
+                    ),
+                    source_connection_id=sid,
+                )
+
+        code, _out, err = _run(
+            ["metrics", "show", "shared", "--store-path", str(store_path)],
+            capsys,
+        )
+        assert code == 0
+        # Brand line appears for each source the metric is found in.
+        assert err.count("metric:shared") == 2
