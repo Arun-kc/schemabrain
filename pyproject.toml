@@ -184,6 +184,14 @@ filterwarnings = [
     "error",
     "ignore::DeprecationWarning:pkg_resources.*",
     "ignore::DeprecationWarning:testcontainers.*",
+    # OpenTelemetry's internal `_importlib_metadata.py` shim still calls
+    # the deprecated `EntryPoints.values()` API on Python 3.10+ (see
+    # `opentelemetry/util/_importlib_metadata.py:32`). The deprecation
+    # is in a third-party library, not in code we control, and will
+    # resolve when upstream OTel updates its shim. Suppress here so
+    # the warning doesn't tip the strict-warnings filter into a test
+    # collection failure on every OTel SDK ≥1.42 bump.
+    "ignore::DeprecationWarning:opentelemetry.*",
 ]
 
 [tool.coverage.run]
