@@ -108,6 +108,51 @@ def parse_entity_yaml(text: str) -> Entity:
         raise EntityParseError(f"entity validation failed: {exc}") from exc
 
 
+def entity_to_yaml(entity: Entity) -> str:
+    """Serialise an `Entity` into the v1 entity YAML body.
+
+    Inverse of `parse_entity_yaml`: any `Entity` that round-trips
+    through this function then `parse_entity_yaml` is value-equal to
+    the input (modulo the two store-derived fields below).
+
+    Trust-signal fields (`inference_method`, `validation_state`) are
+    deliberately NOT emitted. The grammar parser does not accept them
+    — they are store-side derived at apply time (defaulting to
+    `manually_authored` + `applied` for hand-authored YAML, overridden
+    by the LLM-suggest writer and the dbt importer). Round-tripping
+    an LLM-suggested entity through export → edit → apply correctly
+    resets the trust signal to manually-authored, because the operator
+    DID author the edit.
+
+    `description` is omitted when empty so the YAML body stays compact
+    for hand-edited or minimal entities — the parser fills the field
+    with the empty string by default.
+
+    Uses `yaml.safe_dump` for scalar values so a description containing
+    YAML-special characters (colons, hashes, indented lines) is
+    properly quoted/escaped. Hand-rolled string concatenation would
+    open a YAML-injection path where a malicious description fragments
+    the document on re-parse. The returned body is rstrip'd (no
+    trailing newline) so callers compose their own line endings —
+    matches the convention `_format_entity_yaml_body` already uses.
+    """
+    body: dict[str, object] = {
+        "version": _SUPPORTED_VERSION,
+        "name": entity.name,
+    }
+    if entity.description:
+        body["description"] = entity.description
+    body["binding"] = {"single_table": entity.qualified_table}
+    body["identity"] = entity.identity
+    body["origin"] = entity.origin
+    return yaml.safe_dump(
+        body,
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=True,
+    ).rstrip()
+
+
 def parse_entity_yaml_file(path: Path) -> Entity:
     """Read `path` and parse its contents as an entity YAML document.
 

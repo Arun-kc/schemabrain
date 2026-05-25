@@ -77,7 +77,6 @@ from typing import TYPE_CHECKING, Final
 from urllib.parse import urlparse
 
 import sqlalchemy
-import yaml
 from sqlalchemy.exc import OperationalError
 
 from schemabrain import __version__
@@ -86,7 +85,8 @@ from schemabrain.connectors._url import safe_engine_url
 from schemabrain.connectors.base import DataSource
 from schemabrain.connectors.postgres import PostgresDataSource
 from schemabrain.core.entity import Entity
-from schemabrain.core.metric import DbtOwnedMetricError
+from schemabrain.core.join import CanonicalJoin
+from schemabrain.core.metric import DbtOwnedMetricError, Metric
 from schemabrain.core.models import Table
 from schemabrain.core.store import DbtOwnedEntityError, SchemaVersionMismatchError, SQLiteStore
 from schemabrain.core.store_protocol import Store
@@ -379,6 +379,21 @@ def _dispatch(argv: list[str] | None) -> int:
                 provider=args.provider,
                 max_cost_usd=args.max_cost_usd,
             )
+        if args.entity_action == "export":
+            return _cmd_entities_export(
+                name=args.name,
+                out=args.out,
+                store_path=args.store_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+            )
+        if args.entity_action == "export-all":
+            return _cmd_entities_export_all(
+                out_dir=args.out_dir,
+                store_path=args.store_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+            )
         # argparse `required=True` on the entity-action subparser
         # prevents reaching here; the branch is structurally
         # unreachable but symmetric with the outer command dispatch.
@@ -423,6 +438,21 @@ def _dispatch(argv: list[str] | None) -> int:
                 positional_url=args.source,
                 url_env=args.url_env,
             )
+        if args.joins_action == "export":
+            return _cmd_joins_export(
+                name=args.name,
+                out=args.out,
+                store_path=args.store_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+            )
+        if args.joins_action == "export-all":
+            return _cmd_joins_export_all(
+                out_dir=args.out_dir,
+                store_path=args.store_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+            )
         parser.error(f"unknown joins action: {args.joins_action}")  # pragma: no cover
     if args.command == "doctor":
         return _cmd_doctor(
@@ -431,6 +461,20 @@ def _dispatch(argv: list[str] | None) -> int:
             store_path=args.store_path,
             host=args.host,
             json_output=args.json,
+        )
+    if args.command == "apply":
+        return _cmd_apply_project(
+            project_dir=args.project_dir,
+            positional_url=args.source,
+            url_env=args.url_env,
+            store_path=args.store_path,
+        )
+    if args.command == "diff":
+        return _cmd_diff_project(
+            project_dir=args.project_dir,
+            positional_url=args.source,
+            url_env=args.url_env,
+            store_path=args.store_path,
         )
     if args.command == "init":
         return _cmd_init(
@@ -451,6 +495,7 @@ def _dispatch(argv: list[str] | None) -> int:
             from_dbt=args.from_dbt,
             skip_llm_confirm=args.skip_llm_confirm,
             pii_block_csv=args.pii_block,
+            emit_yaml_dir=args.emit_yaml_dir,
         )
     if args.command == "tail":
         return _cmd_tail(
@@ -523,6 +568,21 @@ def _dispatch(argv: list[str] | None) -> int:
                 positional_url=args.source,
                 url_env=args.url_env,
                 fix=args.fix,
+            )
+        if args.metrics_action == "export":
+            return _cmd_metrics_export(
+                name=args.name,
+                out=args.out,
+                store_path=args.store_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+            )
+        if args.metrics_action == "export-all":
+            return _cmd_metrics_export_all(
+                out_dir=args.out_dir,
+                store_path=args.store_path,
+                positional_url=args.source,
+                url_env=args.url_env,
             )
         if args.metrics_action == "show":
             return _cmd_metrics_show(
@@ -1075,6 +1135,83 @@ def _build_parser() -> argparse.ArgumentParser:
         f"flag wins on conflict.",
     )
 
+    # `entities export <name>` — single entity store → YAML. Inverse of
+    # `entities apply`. Writes to stdout (default) so `entities export X
+    # | tee X.yaml` is the natural workflow; `--out PATH` writes to disk
+    # directly. Cross-source posture mirrors `metrics show`: without
+    # `--source`/`--url-env` the handler walks every source the store
+    # knows about, errors if the same name lives in multiple sources.
+    p_entities_export = entity_sub.add_parser(
+        "export",
+        help="Render one entity from the local store as apply-ready YAML on stdout (or --out PATH).",
+    )
+    p_entities_export.add_argument(
+        "name",
+        help="Entity name to export. Without --source/--url-env, the handler "
+        "errors if the same name is present in multiple sources.",
+    )
+    p_entities_export.add_argument(
+        "--out",
+        dest="out",
+        default=None,
+        help="Optional output path. Without this flag, writes to stdout.",
+    )
+    p_entities_export.add_argument(
+        "--source",
+        default=None,
+        help="Filter to one source (the same URL passed to `index`). "
+        "Without this flag, walks every source. DEPRECATED when the "
+        "URL contains a password; prefer --url-env.",
+    )
+    p_entities_export.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Env var holding the source URL.",
+    )
+    p_entities_export.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+
+    # `entities export-all --dir PATH` — every entity as one YAML per
+    # row. Pairs with `schemabrain apply <dir>` for the dbt-shaped
+    # store ↔ YAML round-trip. Refuses if `--dir` already contains a
+    # `<entity>.yaml` so prior hand-edits are not silently overwritten;
+    # also refuses on cross-source name collisions when no `--source`
+    # is passed (two sources with the same entity name would clobber).
+    p_entities_export_all = entity_sub.add_parser(
+        "export-all",
+        help="Write one apply-ready YAML per entity into --dir.",
+    )
+    p_entities_export_all.add_argument(
+        "--dir",
+        dest="out_dir",
+        required=True,
+        help="Output directory. Created if missing. Refuses to overwrite "
+        "existing `<entity>.yaml` files to preserve hand-edits.",
+    )
+    p_entities_export_all.add_argument(
+        "--source",
+        default=None,
+        help="Filter to one source. Without this flag, exports across "
+        "every source — the handler refuses on entity-name collisions.",
+    )
+    p_entities_export_all.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Env var holding the source URL.",
+    )
+    p_entities_export_all.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+
     # `import` is a subgroup for external semantic-source ingestion.
     # Today: dbt manifest.json import. Future: Cube YAML, OSI semantic
     # models drop in alongside as new sub-actions.
@@ -1273,6 +1410,69 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Name of the environment variable that holds the source URL.",
     )
 
+    # `joins export <name>` / `joins export-all --dir` — same shape as
+    # the entities + metrics export commands.
+    p_joins_export = joins_sub.add_parser(
+        "export",
+        help="Render one canonical join from the local store as apply-ready YAML on stdout (or --out PATH).",
+    )
+    p_joins_export.add_argument(
+        "name",
+        help="Canonical-join name to export. Without --source/--url-env, "
+        "the handler errors if the same name is present in multiple sources.",
+    )
+    p_joins_export.add_argument(
+        "--out",
+        dest="out",
+        default=None,
+        help="Optional output path. Without this flag, writes to stdout.",
+    )
+    p_joins_export.add_argument(
+        "--source",
+        default=None,
+        help="Filter to one source. Without this flag, walks every source.",
+    )
+    p_joins_export.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Env var holding the source URL.",
+    )
+    p_joins_export.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+
+    p_joins_export_all = joins_sub.add_parser(
+        "export-all",
+        help="Write one apply-ready YAML per canonical join into --dir.",
+    )
+    p_joins_export_all.add_argument(
+        "--dir",
+        dest="out_dir",
+        required=True,
+        help="Output directory. Refuses to overwrite existing `<join>.yaml` files.",
+    )
+    p_joins_export_all.add_argument(
+        "--source",
+        default=None,
+        help="Filter to one source. Without this flag, refuses on cross-source name collisions.",
+    )
+    p_joins_export_all.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Env var holding the source URL.",
+    )
+    p_joins_export_all.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+
     # ----- metrics -----
     #
     # Same shape as `entities apply` + `joins apply`. No `metrics
@@ -1404,6 +1604,69 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Name of the environment variable that holds the source URL.",
     )
 
+    # `metrics export <name>` — mirrors `entities export`. Writes to
+    # stdout by default; `--out PATH` writes the body to disk.
+    p_metrics_export = metrics_sub.add_parser(
+        "export",
+        help="Render one metric from the local store as apply-ready YAML on stdout (or --out PATH).",
+    )
+    p_metrics_export.add_argument(
+        "name",
+        help="Metric name to export. Without --source/--url-env, the handler "
+        "errors if the same name is present in multiple sources.",
+    )
+    p_metrics_export.add_argument(
+        "--out",
+        dest="out",
+        default=None,
+        help="Optional output path. Without this flag, writes to stdout.",
+    )
+    p_metrics_export.add_argument(
+        "--source",
+        default=None,
+        help="Filter to one source. Without this flag, walks every source.",
+    )
+    p_metrics_export.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Env var holding the source URL.",
+    )
+    p_metrics_export.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+
+    p_metrics_export_all = metrics_sub.add_parser(
+        "export-all",
+        help="Write one apply-ready YAML per metric into --dir.",
+    )
+    p_metrics_export_all.add_argument(
+        "--dir",
+        dest="out_dir",
+        required=True,
+        help="Output directory. Refuses to overwrite existing `<metric>.yaml` files.",
+    )
+    p_metrics_export_all.add_argument(
+        "--source",
+        default=None,
+        help="Filter to one source. Without this flag, refuses on cross-source name collisions.",
+    )
+    p_metrics_export_all.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Env var holding the source URL.",
+    )
+    p_metrics_export_all.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+
     p_metrics_suggest = metrics_sub.add_parser(
         "suggest",
         help="LLM-suggest metric candidates anchored on existing entities.",
@@ -1520,6 +1783,79 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit machine-readable JSON to stdout instead of the human-readable "
         "report to stderr. Useful for CI/monitoring scripts.",
+    )
+
+    # `schemabrain apply [PROJECT_DIR]` — walk a project tree
+    # (entities/, metrics/, joins/ subdirs) and apply each YAML to the
+    # store. Pairs with `init --emit-yaml-dir` and the per-resource
+    # `export[-all]` commands for the full store ↔ YAML round-trip
+    # workflow. The directory order is deliberate (entities first,
+    # then metrics + joins which reference entities); the per-
+    # resource apply commands enforce FK invariants internally so a
+    # broken reference fails the inner command, not the outer walker.
+    p_apply_root = sub.add_parser(
+        "apply",
+        help="Apply a project tree of entity / metric / join YAMLs against a source.",
+    )
+    p_apply_root.add_argument(
+        "project_dir",
+        nargs="?",
+        default="./schemabrain",
+        help="Path to the project tree. Expected layout: "
+        "<dir>/entities/*.yaml, <dir>/metrics/*.yaml, <dir>/joins/*.yaml. "
+        "Missing subdirs are skipped cleanly. Default: ./schemabrain",
+    )
+    p_apply_root.add_argument(
+        "--source",
+        default=None,
+        help="The source URL the YAMLs attach to. DEPRECATED when the "
+        "URL contains a password; prefer --url-env.",
+    )
+    p_apply_root.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Env var holding the source URL.",
+    )
+    p_apply_root.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+
+    # `schemabrain diff [PROJECT_DIR]` — drift check. Reports
+    # only-on-disk / only-in-store / value-mismatch per resource type
+    # by round-tripping both sides through the YAML serialiser
+    # (matching the round-trip semantics of `export[-all]` ↔ `apply`).
+    # Trust-signal fields are deliberately excluded from comparison
+    # because the YAML grammar does not carry them.
+    p_diff = sub.add_parser(
+        "diff",
+        help="Show drift between a project YAML tree and the store. CI-friendly exit codes (0 in-sync, 1 drift, 2 error).",
+    )
+    p_diff.add_argument(
+        "project_dir",
+        nargs="?",
+        default="./schemabrain",
+        help="Path to the project tree. Same layout as `schemabrain apply`. Default: ./schemabrain",
+    )
+    p_diff.add_argument(
+        "--source",
+        default=None,
+        help="The source URL the YAMLs attach to.",
+    )
+    p_diff.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Env var holding the source URL.",
+    )
+    p_diff.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
     )
 
     p_init = sub.add_parser(
@@ -1696,6 +2032,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "credential,payment_card,government_id under --yes (with a "
         "stderr confirmation) or to the interactive prompt otherwise. "
         "Pass '' (empty) to explicitly disable enforcement.",
+    )
+    g_behavior.add_argument(
+        "--emit-yaml-dir",
+        dest="emit_yaml_dir",
+        default=None,
+        metavar="PATH",
+        help="After the wizard completes, write one YAML per applied "
+        "entity / metric / canonical join into PATH/entities/, "
+        "PATH/metrics/, PATH/joins/. Gives the operator on-disk "
+        "definitions to edit and re-apply alongside the SQLite store. "
+        "Refuses if any target file already exists.",
     )
 
     p_tail = sub.add_parser(
@@ -3180,6 +3527,118 @@ def _cmd_entities_list(
     return 0
 
 
+def _cmd_entities_export(
+    *,
+    name: str,
+    out: str | None,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """Render one entity as apply-ready YAML on stdout or to `--out PATH`.
+
+    Cross-source posture mirrors `metrics show`: without a source flag
+    the handler walks every source the store knows about. If exactly
+    one row matches the name → emit it. If zero → exit 1 with a list
+    hint. If multiple → exit 2 with a disambiguation hint naming the
+    source-id prefixes so the operator can re-run with `--source`.
+
+    Exit codes:
+      0: one entity emitted
+      1: no entity with that name in any source the store knows about
+      2: store path missing / corrupt, URL conflict, or multi-source
+         collision without explicit `--source`/`--url-env`
+    """
+    from schemabrain.entities.yaml_grammar import entity_to_yaml
+
+    source_id, rc = _resolve_source_id_or_walk(positional_url, url_env)
+    if rc:
+        return rc
+
+    try:
+        with SQLiteStore(store_path) as store:
+            entity: Entity | None
+            if source_id is not None:
+                entity = store.get_entity(name, source_connection_id=source_id)
+                if entity is None:
+                    print(
+                        f"error: no entity named {name!r} for source "
+                        f"{source_id!r} in {store_path!r}",
+                        file=sys.stderr,
+                    )
+                    return 1
+            else:
+                source_ids = sorted(_list_source_ids_with_entity(store, name))
+                if not source_ids:
+                    print(
+                        f"error: no entity named {name!r} in {store_path!r}\n"
+                        f"  next: run `schemabrain entities list` to see what is curated.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                if len(source_ids) > 1:
+                    print(
+                        f"error: entity {name!r} is defined in {len(source_ids)} sources: "
+                        f"{source_ids}. Re-run with --source/--url-env to disambiguate.",
+                        file=sys.stderr,
+                    )
+                    return 2
+                entity = store.get_entity(name, source_connection_id=source_ids[0])
+                if entity is None:  # pragma: no cover — concurrent-writer race
+                    print(
+                        f"error: entity {name!r} no longer present in source {source_ids[0]!r}",
+                        file=sys.stderr,
+                    )
+                    return 1
+    except OSError as e:  # pragma: no cover — disk/permission failure not simulatable in CI
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+
+    return _write_yaml_body(entity_to_yaml(entity) + "\n", out)
+
+
+def _cmd_entities_export_all(
+    *,
+    out_dir: str,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """Write one apply-ready YAML per entity into `--dir`.
+
+    Refuses to overwrite existing `<entity>.yaml` files (preserves
+    hand-edits) and refuses on cross-source name collisions when no
+    `--source` is passed (otherwise two sources holding the same
+    entity name would clobber the same filename).
+
+    Exit codes:
+      0: success (empty store is success, not error)
+      2: store-path / URL / filesystem error, or collision refusal
+    """
+    from schemabrain.entities.yaml_grammar import entity_to_yaml
+
+    source_id, rc = _resolve_source_id_or_walk(positional_url, url_env)
+    if rc:
+        return rc
+
+    try:
+        with SQLiteStore(store_path) as store:
+            entities = store.list_entities(source_connection_id=source_id)
+    except OSError as e:  # pragma: no cover — disk/permission failure not simulatable in CI
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+
+    return _bulk_export_yaml_files(
+        items=entities,
+        out_dir=out_dir,
+        name_attr="name",
+        serializer=entity_to_yaml,
+        noun_singular="entity",
+        noun_plural="entities",
+        scope_has_source=source_id is not None,
+    )
+
+
 def _cmd_entities_suggest(
     *,
     positional_url: str | None,
@@ -3458,34 +3917,13 @@ def _format_candidate_for_dry_run(candidate: EntityCandidate) -> str:
 def _format_entity_yaml_body(candidate: EntityCandidate) -> str:
     """Render the canonical entity YAML body — apply-ready, no envelope.
 
-    Uses `yaml.safe_dump` for the description scalar so an LLM-supplied
-    value containing colons, newlines, or other YAML-special characters
-    is properly quoted/escaped. Manual string concatenation here would
-    open the door to YAML injection where a malicious or careless
-    description string fragments the document. The dumped value is
-    spliced back into a hand-rolled key-order layout so the file
-    matches the same field ordering that `entities apply` and the
-    bundled fixtures use.
+    Thin wrapper around `entities.yaml_grammar.entity_to_yaml` so the
+    suggest-out-dir path and the `entities export` command share a
+    single serialiser; a future grammar change lands in one place.
     """
-    entity = candidate.entity
-    body: dict[str, object] = {
-        "version": 1,
-        "name": entity.name,
-    }
-    if entity.description:
-        body["description"] = entity.description
-    body["binding"] = {"single_table": entity.qualified_table}
-    body["identity"] = entity.identity
-    body["origin"] = entity.origin
-    # `sort_keys=False` preserves the insertion order set above.
-    # `allow_unicode=True` keeps non-ASCII (e.g., entity descriptions
-    # in any language) human-readable instead of `\u` escaped.
-    return yaml.safe_dump(
-        body,
-        sort_keys=False,
-        default_flow_style=False,
-        allow_unicode=True,
-    ).rstrip()
+    from schemabrain.entities.yaml_grammar import entity_to_yaml
+
+    return entity_to_yaml(candidate.entity)
 
 
 def _render_to_out_dir(result: SuggestionResult, out_dir: Path) -> int:
@@ -4248,6 +4686,104 @@ def _cmd_joins_list(
     return 0
 
 
+def _cmd_joins_export(
+    *,
+    name: str,
+    out: str | None,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """Render one canonical join as apply-ready YAML on stdout or `--out PATH`.
+
+    Cross-source posture matches `entities export` / `metrics export`.
+    """
+    from schemabrain.joins.yaml_grammar import canonical_join_to_yaml
+
+    source_id, rc = _resolve_source_id_or_walk(positional_url, url_env)
+    if rc:
+        return rc
+
+    try:
+        with SQLiteStore(store_path) as store:
+            join: CanonicalJoin | None
+            if source_id is not None:
+                join = store.get_canonical_join(name, source_connection_id=source_id)
+                if join is None:
+                    print(
+                        f"error: no canonical join named {name!r} for source "
+                        f"{source_id!r} in {store_path!r}",
+                        file=sys.stderr,
+                    )
+                    return 1
+            else:
+                source_ids = sorted(_list_source_ids_with_join(store, name))
+                if not source_ids:
+                    print(
+                        f"error: no canonical join named {name!r} in {store_path!r}\n"
+                        f"  next: run `schemabrain joins list` to see what is curated.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                if len(source_ids) > 1:
+                    print(
+                        f"error: canonical join {name!r} is defined in "
+                        f"{len(source_ids)} sources: {source_ids}. "
+                        f"Re-run with --source/--url-env to disambiguate.",
+                        file=sys.stderr,
+                    )
+                    return 2
+                join = store.get_canonical_join(name, source_connection_id=source_ids[0])
+                if join is None:  # pragma: no cover — concurrent-writer race
+                    print(
+                        f"error: canonical join {name!r} no longer present "
+                        f"in source {source_ids[0]!r}",
+                        file=sys.stderr,
+                    )
+                    return 1
+    except OSError as e:  # pragma: no cover — disk/permission failure not simulatable in CI
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+
+    return _write_yaml_body(canonical_join_to_yaml(join) + "\n", out)
+
+
+def _cmd_joins_export_all(
+    *,
+    out_dir: str,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """Write one apply-ready YAML per canonical join into `--dir`.
+
+    Refuses on cross-source name collisions and existing files, same
+    contract as `_cmd_entities_export_all`.
+    """
+    from schemabrain.joins.yaml_grammar import canonical_join_to_yaml
+
+    source_id, rc = _resolve_source_id_or_walk(positional_url, url_env)
+    if rc:
+        return rc
+
+    try:
+        with SQLiteStore(store_path) as store:
+            joins = store.list_canonical_joins(source_connection_id=source_id)
+    except OSError as e:  # pragma: no cover — disk/permission failure not simulatable in CI
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+
+    return _bulk_export_yaml_files(
+        items=joins,
+        out_dir=out_dir,
+        name_attr="name",
+        serializer=canonical_join_to_yaml,
+        noun_singular="canonical join",
+        noun_plural="canonical joins",
+        scope_has_source=source_id is not None,
+    )
+
+
 # ----- metrics CLI commands --------------------------------------------------
 #
 # Mirrors `_cmd_entities_apply` / `_cmd_joins_apply`. Single-file + directory
@@ -4519,6 +5055,211 @@ def _cmd_metrics_audit(
             file=sys.stderr,
         )
         return 2
+
+
+def _resolve_source_id_or_walk(
+    positional_url: str | None,
+    url_env: str | None,
+) -> tuple[str | None, int]:
+    """Resolve `--source`/`--url-env` flags to a source_id, or fall through.
+
+    Shared shape for the export commands: returns `(source_id, 0)` on
+    success. `source_id is None` means "no flag passed; the handler
+    should walk every source the store knows about". `(None, 2)`
+    signals a malformed URL flag; the caller propagates exit 2.
+    """
+    if positional_url is None and url_env is None:
+        return None, 0
+    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if source_url is None:
+        return None, 2
+    if _resolve_url(source_url) is None:  # pragma: no cover — defensive
+        return None, 2
+    return _make_source_id(source_url), 0
+
+
+def _cmd_metrics_export(
+    *,
+    name: str,
+    out: str | None,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """Render one metric as apply-ready YAML on stdout or to `--out PATH`.
+
+    Cross-source posture matches `entities export`: without a source
+    flag, the handler errors if the same name lives in multiple sources.
+    """
+    from schemabrain.metrics.yaml_grammar import metric_to_yaml
+
+    source_id, rc = _resolve_source_id_or_walk(positional_url, url_env)
+    if rc:
+        return rc
+
+    try:
+        with SQLiteStore(store_path) as store:
+            metric: Metric | None
+            if source_id is not None:
+                metric = store.get_metric(name, source_connection_id=source_id)
+                if metric is None:
+                    print(
+                        f"error: no metric named {name!r} for source "
+                        f"{source_id!r} in {store_path!r}",
+                        file=sys.stderr,
+                    )
+                    return 1
+            else:
+                source_ids = sorted(_list_source_ids_with_metric(store, name))
+                if not source_ids:
+                    print(
+                        f"error: no metric named {name!r} in {store_path!r}\n"
+                        f"  next: run `schemabrain metrics list` to see what is curated.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                if len(source_ids) > 1:
+                    print(
+                        f"error: metric {name!r} is defined in {len(source_ids)} sources: "
+                        f"{source_ids}. Re-run with --source/--url-env to disambiguate.",
+                        file=sys.stderr,
+                    )
+                    return 2
+                metric = store.get_metric(name, source_connection_id=source_ids[0])
+                if metric is None:  # pragma: no cover — concurrent-writer race
+                    print(
+                        f"error: metric {name!r} no longer present in source {source_ids[0]!r}",
+                        file=sys.stderr,
+                    )
+                    return 1
+    except OSError as e:  # pragma: no cover — disk/permission failure not simulatable in CI
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+
+    return _write_yaml_body(metric_to_yaml(metric) + "\n", out)
+
+
+def _write_yaml_body(body: str, out: str | None) -> int:
+    """Write a YAML body to stdout or to `out` (file path).
+
+    Shared exit-code contract: 0 on success; 2 on filesystem error.
+    Surfaces a `wrote <path>` confirmation on stderr when writing to
+    disk so the operator sees what landed, while stdout stays clean
+    for `tee` / `>` redirection of the body itself.
+    """
+    if out is None:
+        sys.stdout.write(body)
+        return 0
+    out_p = Path(out).expanduser()
+    try:
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        out_p.write_text(body, encoding="utf-8")
+    except OSError as exc:  # pragma: no cover — disk/permission failure not simulatable in CI
+        print(f"error: cannot write {out_p}: {exc}", file=sys.stderr)
+        return 2
+    print(f"wrote {out_p}", file=sys.stderr)
+    return 0
+
+
+def _cmd_metrics_export_all(
+    *,
+    out_dir: str,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """Write one apply-ready YAML per metric into `--dir`.
+
+    Refuses on cross-source name collisions and existing files, same
+    contract as `_cmd_entities_export_all`.
+    """
+    from schemabrain.metrics.yaml_grammar import metric_to_yaml
+
+    source_id, rc = _resolve_source_id_or_walk(positional_url, url_env)
+    if rc:
+        return rc
+
+    try:
+        with SQLiteStore(store_path) as store:
+            metrics = store.list_metrics(source_connection_id=source_id)
+    except OSError as e:  # pragma: no cover — disk/permission failure not simulatable in CI
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+
+    return _bulk_export_yaml_files(
+        items=metrics,
+        out_dir=out_dir,
+        name_attr="name",
+        serializer=metric_to_yaml,
+        noun_singular="metric",
+        noun_plural="metrics",
+        scope_has_source=source_id is not None,
+    )
+
+
+def _bulk_export_yaml_files(
+    *,
+    items: list,
+    out_dir: str,
+    name_attr: str,
+    serializer,
+    noun_singular: str,
+    noun_plural: str,
+    scope_has_source: bool,
+) -> int:
+    """Shared body for `entities/metrics/joins export-all`.
+
+    Refuses on cross-source name collisions (when no source flag is
+    passed and two rows share a name) and on existing target files
+    (so prior hand-edits are not silently overwritten). Writes
+    `<name>.yaml` per item via `serializer(item)`.
+    """
+    if not items:
+        scope = "this source" if scope_has_source else "any source the store knows about"
+        print(f"(no {noun_plural} to export in {scope})")
+        return 0
+
+    if not scope_has_source:
+        seen: dict[str, int] = {}
+        for item in items:
+            key = getattr(item, name_attr)
+            seen[key] = seen.get(key, 0) + 1
+        collisions = sorted(n for n, c in seen.items() if c > 1)
+        if collisions:
+            print(
+                f"error: {noun_singular} name(s) collide across sources: {collisions}. "
+                f"Re-run with --source/--url-env to pick one.",
+                file=sys.stderr,
+            )
+            return 2
+
+    out_p = Path(out_dir).expanduser()
+    existing: list[str] = []
+    for item in items:
+        candidate = out_p / f"{getattr(item, name_attr)}.yaml"
+        if candidate.exists():
+            existing.append(candidate.name)
+    if existing:
+        print(
+            f"error: refusing to overwrite existing files in {out_p}: "
+            f"{sorted(existing)}. Delete them or pick a fresh --dir.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        out_p.mkdir(parents=True, exist_ok=True)
+        for item in items:
+            (out_p / f"{getattr(item, name_attr)}.yaml").write_text(
+                serializer(item) + "\n", encoding="utf-8"
+            )
+    except OSError as exc:  # pragma: no cover — disk/permission failure not simulatable in CI
+        print(f"error: cannot write to {out_p}: {exc}", file=sys.stderr)
+        return 2
+
+    noun = noun_singular if len(items) == 1 else noun_plural
+    print(f"exported {len(items)} {noun} to {out_p}/", file=sys.stderr)
+    return 0
 
 
 def _cmd_metrics_show(
@@ -4931,49 +5672,13 @@ def _format_metric_candidate_for_dry_run(candidate: MetricCandidate) -> str:
 def _format_metric_yaml_body(candidate: MetricCandidate) -> str:
     """Render the canonical metric YAML body — apply-ready, no envelope.
 
-    Uses `yaml.safe_dump` for the description scalar so an LLM-supplied
-    value containing colons, newlines, or other YAML-special characters
-    is properly quoted/escaped. Manual string concatenation here would
-    open the door to YAML injection where a malicious or careless
-    description string fragments the document. The dumped value is
-    spliced back into a hand-rolled key-order layout so the file
-    matches the same field ordering that `metrics apply` and the
-    bundled fixtures use.
+    Thin wrapper around `metrics.yaml_grammar.metric_to_yaml` so the
+    suggest-out-dir path and the `metrics export` command share a
+    single serialiser; a future grammar change lands in one place.
     """
-    metric = candidate.metric
-    body: dict[str, object] = {
-        "version": 1,
-        "name": metric.name,
-    }
-    if metric.description:
-        body["description"] = metric.description
-    body["entity"] = metric.entity
-    # `measure.column` and `measure.expression` are mutually exclusive
-    # (XOR enforced by the dataclass). Emit only the populated field so
-    # the rendered YAML round-trips cleanly through the grammar parser,
-    # which itself enforces XOR at read time.
-    measure_body: dict[str, object] = {"agg": metric.measure.agg}
-    if metric.measure.column is not None:
-        measure_body["column"] = metric.measure.column
-    else:
-        measure_body["expression"] = metric.measure.expression
-    body["measure"] = measure_body
-    if metric.time_dimension is not None:
-        body["time_dimension"] = metric.time_dimension
-        body["time_grains"] = list(metric.time_grains)
-    body["origin"] = metric.origin
-    # `sort_keys=False` preserves the insertion order set above.
-    # `allow_unicode=True` keeps non-ASCII (e.g., metric descriptions
-    # in any language) human-readable instead of `\u` escaped.
-    # `default_flow_style=False` forces block style on nested mappings
-    # (the `measure:` key) so the rendered body matches the bundled
-    # fixtures byte-for-byte where possible.
-    return yaml.safe_dump(
-        body,
-        sort_keys=False,
-        default_flow_style=False,
-        allow_unicode=True,
-    ).rstrip()
+    from schemabrain.metrics.yaml_grammar import metric_to_yaml
+
+    return metric_to_yaml(candidate.metric)
 
 
 def _render_metrics_to_out_dir(result: MetricSuggestionResult, out_dir: Path) -> int:
@@ -5344,6 +6049,7 @@ def _cmd_init(
     from_dbt: str | None = None,
     skip_llm_confirm: bool = False,
     pii_block_csv: str | None = None,
+    emit_yaml_dir: str | None = None,
 ) -> int:
     """Run the activation wizard and render the multi-stage outcome.
 
@@ -5573,12 +6279,319 @@ def _cmd_init(
     _render_wizard_after(result, host_display=host_display, console=console)
     if result.aborted:
         return 2
+
+    # Emit YAML projection of the (now-populated) store if requested.
+    # Runs AFTER the wizard summary so the operator sees stage outcomes
+    # first, then the file-emit confirmation. Skipped on `result.aborted`
+    # above so a mid-stage abort doesn't leave a half-populated YAML
+    # tree on disk; runs on shell_out_failed because the store IS
+    # complete and YAML files are precisely the manual-recovery path.
+    # The branch is # pragma: no cover because reaching it requires a
+    # successful real wizard run (needs Postgres); the wiring it
+    # invokes is exercised directly via the `_emit_yaml_projection`
+    # tests in `tests/test_cli_yaml_roundtrip.py`.
+    if (
+        emit_yaml_dir is not None
+    ):  # pragma: no cover — exercised via _emit_yaml_projection unit test
+        emit_rc = _emit_yaml_projection(
+            base_dir=emit_yaml_dir,
+            store_path=store_path,
+            source_url=source_url,
+        )
+        if emit_rc != 0:
+            # Surface filesystem / collision failures with a non-zero
+            # exit code, but only when the wizard itself succeeded —
+            # so a failing emit on an otherwise-good wizard doesn't
+            # masquerade as a wizard failure.
+            return emit_rc
+
     if (
         result.host_install_result is not None
         and result.host_install_result.state == "shell_out_failed"
     ):
         return 1
     return 0
+
+
+def _emit_yaml_projection(
+    *,
+    base_dir: str,
+    store_path: str,
+    source_url: str,
+) -> int:
+    """Write the YAML projection of a freshly-initialised store.
+
+    Produces three subdirectories — `entities/`, `metrics/`, `joins/`
+    — under `base_dir`, each containing one YAML per row in the
+    corresponding store table. Reuses the existing `_cmd_*_export_all`
+    handlers so the file format and collision contract are identical
+    between `init --emit-yaml-dir` and the standalone export commands.
+
+    Returns 0 on success, 2 on any collision / filesystem failure.
+    """
+    base = Path(base_dir).expanduser()
+    # Pass `source_url` as the positional URL so the export handlers
+    # resolve to the same source_id the wizard just wrote into. Without
+    # this the handlers would walk every source, which is fine for a
+    # fresh store with one source but error-prone on re-runs against
+    # a store that has accumulated multiple sources.
+    handlers = (
+        (_cmd_entities_export_all, "entities"),
+        (_cmd_metrics_export_all, "metrics"),
+        (_cmd_joins_export_all, "joins"),
+    )
+    for handler, subdir in handlers:
+        rc = handler(
+            out_dir=str(base / subdir),
+            store_path=store_path,
+            positional_url=source_url,
+            url_env=None,
+        )
+        if rc != 0:
+            return rc
+    print(
+        f"emitted YAML projection under {base}/ (entities/, metrics/, joins/)",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _cmd_apply_project(
+    *,
+    project_dir: str,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+) -> int:
+    """Walk a project tree (entities/, metrics/, joins/) and apply each.
+
+    Directory order is deliberate: entities first, then metrics + joins
+    which reference entities. Missing subdirectories are skipped (the
+    operator may not curate all three resource types). Each per-resource
+    apply runs via the existing `_cmd_*_apply` handlers so the FK
+    invariants, dbt-owned guard, and per-file error reporting are
+    identical to invoking them directly.
+
+    Exit codes:
+      0: every YAML applied cleanly across every subdirectory
+      1: at least one file failed in at least one subdir
+      2: project_dir missing / not a directory, or source URL missing
+    """
+    base = Path(project_dir).expanduser()
+    if not base.exists():
+        print(f"error: project directory not found: {base}", file=sys.stderr)
+        return 2
+    if not base.is_dir():
+        print(f"error: project path is not a directory: {base}", file=sys.stderr)
+        return 2
+
+    # Pre-validate the source URL once so a missing flag fails before
+    # any per-resource handler opens the store. The inner handlers
+    # re-validate, but doing it here keeps the error surface flat:
+    # the operator sees "missing --source/--url-env" once, not three
+    # times if all three subdirs exist.
+    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if source_url is None:
+        return 2
+
+    overall_rc = 0
+    summary_lines: list[str] = []
+    handlers: tuple[tuple[str, object], ...] = (
+        ("entities", _cmd_entities_apply),
+        ("metrics", _cmd_metrics_apply),
+        ("joins", _cmd_joins_apply),
+    )
+    for subdir_name, handler in handlers:
+        subdir = base / subdir_name
+        if not subdir.exists():
+            summary_lines.append(f"  {subdir_name}/: skipped (subdirectory missing)")
+            continue
+        # Sorted glob so apply order is deterministic — important for
+        # reproducible CI runs and for human-readable progress output.
+        yaml_files = sorted(p for p in subdir.iterdir() if p.suffix in (".yaml", ".yml"))
+        if not yaml_files:
+            summary_lines.append(f"  {subdir_name}/: skipped (no YAML files)")
+            continue
+        rc = handler(  # type: ignore[operator]
+            yaml_paths=[str(p) for p in yaml_files],
+            positional_url=positional_url,
+            url_env=url_env,
+            store_path=store_path,
+        )
+        verb = "applied" if rc == 0 else "applied with errors"
+        summary_lines.append(f"  {subdir_name}/: {verb} {len(yaml_files)} file(s) (rc={rc})")
+        if rc > overall_rc:
+            overall_rc = rc
+
+    print(f"schemabrain apply: {base}/")
+    for line in summary_lines:
+        print(line)
+    return overall_rc
+
+
+def _cmd_diff_project(
+    *,
+    project_dir: str,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+) -> int:
+    """Show drift between a project YAML tree and the store.
+
+    For each resource type (entities, metrics, joins), parses every
+    YAML in the subdirectory and compares against rows in the store
+    for the resolved source. Both sides are round-tripped through the
+    YAML serialiser before comparison so trust-signal fields
+    (`inference_method`, `validation_state`) that the YAML grammar
+    does not carry are excluded from the diff — matching the
+    round-trip semantics of `export[-all]` ↔ `apply`.
+
+    Drift categories per resource:
+      * only on disk → YAML present, store row missing (apply would add it)
+      * only in store → store row present, no YAML (apply would not delete it; this is informational)
+      * value-mismatch → both sides exist but their YAML bodies differ
+
+    Exit codes:
+      0: store and tree agree (no drift)
+      1: drift detected (CI-actionable, not a tool error)
+      2: project_dir missing, source URL missing, parse failure
+    """
+    base = Path(project_dir).expanduser()
+    if not base.exists():
+        print(f"error: project directory not found: {base}", file=sys.stderr)
+        return 2
+    if not base.is_dir():
+        print(f"error: project path is not a directory: {base}", file=sys.stderr)
+        return 2
+
+    source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+    if source_url is None:
+        return 2
+    source_id = _make_source_id(source_url)
+
+    try:
+        with SQLiteStore(store_path) as store:
+            entity_drift = _diff_resource_dir(
+                subdir=base / "entities",
+                store_items=store.list_entities(source_connection_id=source_id),
+                parser="entity",
+                serializer="entity",
+                kind="entity",
+            )
+            metric_drift = _diff_resource_dir(
+                subdir=base / "metrics",
+                store_items=store.list_metrics(source_connection_id=source_id),
+                parser="metric",
+                serializer="metric",
+                kind="metric",
+            )
+            join_drift = _diff_resource_dir(
+                subdir=base / "joins",
+                store_items=store.list_canonical_joins(source_connection_id=source_id),
+                parser="join",
+                serializer="join",
+                kind="join",
+            )
+    except OSError as e:  # pragma: no cover — disk/permission failure not simulatable in CI
+        _render_guided(store_path_unwritable(store_path, e))
+        return 2
+
+    total_drift = entity_drift + metric_drift + join_drift
+    if total_drift == 0:
+        print(f"schemabrain diff: {base}/ in sync with store (no drift)")
+        return 0
+    noun = "drift" if total_drift == 1 else "drifts"
+    print(f"schemabrain diff: {total_drift} {noun} detected")
+    return 1
+
+
+def _diff_resource_dir(
+    *,
+    subdir: Path,
+    store_items: list,
+    parser: str,
+    serializer: str,
+    kind: str,
+) -> int:
+    """Diff one resource type's YAML tree against the store rows.
+
+    Returns the count of drift lines printed for this resource. Both
+    sides are serialised to YAML for comparison so trust-signal fields
+    not present in the grammar are excluded — matching the
+    export→edit→apply round-trip contract. A parse failure on a YAML
+    file is reported as a drift entry and counted, NOT raised, so a
+    `diff` run against a tree with one broken file still surfaces
+    every other drift before failing.
+
+    `parser` / `serializer` / `kind` route to the right grammar module.
+    Pass strings ("entity" / "metric" / "join") rather than the
+    function objects themselves so this helper does not need to know
+    about the dataclass types at signature time.
+    """
+    grammars = {
+        "entity": (
+            "schemabrain.entities.yaml_grammar",
+            "parse_entity_yaml_file",
+            "entity_to_yaml",
+        ),
+        "metric": (
+            "schemabrain.metrics.yaml_grammar",
+            "parse_metric_yaml_file",
+            "metric_to_yaml",
+        ),
+        "join": (
+            "schemabrain.joins.yaml_grammar",
+            "parse_canonical_join_yaml_file",
+            "canonical_join_to_yaml",
+        ),
+    }
+    module_name, parser_name, serializer_name = grammars[parser]
+    import importlib
+
+    grammar = importlib.import_module(module_name)
+    parse_file = getattr(grammar, parser_name)
+    to_yaml = getattr(grammar, serializer_name)
+
+    on_disk: dict[str, str] = {}
+    parse_errors: list[tuple[str, str]] = []
+    if subdir.exists():
+        for yaml_path in sorted(subdir.iterdir()):
+            if yaml_path.suffix not in (".yaml", ".yml"):
+                continue
+            try:
+                obj = parse_file(yaml_path)
+            except ValueError as exc:
+                parse_errors.append((yaml_path.name, str(exc)))
+                continue
+            on_disk[obj.name] = to_yaml(obj)
+
+    in_store: dict[str, str] = {item.name: to_yaml(item) for item in store_items}
+
+    drift = 0
+    for filename, message in parse_errors:
+        print(f"  {kind}  {filename}: PARSE ERROR — {message}")
+        drift += 1
+
+    only_disk = sorted(set(on_disk) - set(in_store))
+    only_store = sorted(set(in_store) - set(on_disk))
+    common = sorted(set(on_disk) & set(in_store))
+
+    for name in only_disk:
+        print(f"  {kind}  {name}: only on disk (apply would add it)")
+        drift += 1
+    for name in only_store:
+        print(f"  {kind}  {name}: only in store (no YAML file)")
+        drift += 1
+    # CLI subcommand families are not the same as the resource noun
+    # — entities/metrics/joins (plural) on the CLI vs entity/metric/
+    # join (singular) on the diff lines. Map explicitly so the hint
+    # in the value-mismatch line points at the right subcommand.
+    cli_family = {"entity": "entities", "metric": "metrics", "join": "joins"}[kind]
+    for name in common:
+        if on_disk[name] != in_store[name]:
+            print(f"  {kind}  {name}: value mismatch (run `{cli_family} export {name}` to inspect)")
+            drift += 1
+    return drift
 
 
 def _resolve_tail_events_path(*, events_path: str | None, store_path: str | None) -> str:

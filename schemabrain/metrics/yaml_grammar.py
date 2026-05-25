@@ -147,6 +147,62 @@ def parse_metric_yaml(text: str) -> Metric:
         raise MetricYamlError(f"metric validation failed: {exc}") from exc
 
 
+def metric_to_yaml(metric: Metric) -> str:
+    """Serialise a `Metric` into the v1 metric YAML body.
+
+    Inverse of `parse_metric_yaml`: any `Metric` that round-trips
+    through this function then `parse_metric_yaml` is value-equal to
+    the input (modulo the two store-derived fields below).
+
+    Trust-signal fields (`inference_method`, `validation_state`) are
+    deliberately NOT emitted. The grammar parser does not accept them
+    — they are store-side derived at apply time. Round-tripping an
+    LLM-suggested metric through export → edit → apply correctly
+    resets the trust signal to manually-authored, because the operator
+    DID author the edit.
+
+    `measure.column` and `measure.expression` are XOR (enforced by the
+    `MetricMeasure` dataclass); the serialiser emits exactly the
+    populated one. `time_dimension` and `time_grains` are paired (both
+    set or both absent — also a dataclass invariant); the serialiser
+    emits both when set, neither when not.
+
+    `description` is omitted when empty so the YAML body stays compact
+    for minimal metrics — the parser fills the field with the empty
+    string by default.
+
+    Uses `yaml.safe_dump` for scalar values so an LLM-supplied
+    description containing YAML-special characters is properly quoted/
+    escaped. Hand-rolled string concatenation would open a YAML-
+    injection path where a malicious description fragments the
+    document on re-parse.
+    """
+    body: dict[str, object] = {
+        "version": _SUPPORTED_VERSION,
+        "name": metric.name,
+    }
+    if metric.description:
+        body["description"] = metric.description
+    body["entity"] = metric.entity
+    measure_body: dict[str, object] = {"agg": metric.measure.agg}
+    if metric.measure.column is not None:
+        measure_body["column"] = metric.measure.column
+    else:
+        # XOR invariant: when `column` is None, `expression` is set.
+        measure_body["expression"] = metric.measure.expression
+    body["measure"] = measure_body
+    if metric.time_dimension is not None:
+        body["time_dimension"] = metric.time_dimension
+        body["time_grains"] = list(metric.time_grains)
+    body["origin"] = metric.origin
+    return yaml.safe_dump(
+        body,
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=True,
+    ).rstrip()
+
+
 def parse_metric_yaml_file(path: Path) -> Metric:
     """Read `path` and parse its contents as a metric YAML document.
 

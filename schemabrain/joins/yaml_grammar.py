@@ -171,6 +171,73 @@ def parse_canonical_join_yaml(text: str) -> CanonicalJoin:
         raise CanonicalJoinParseError(f"canonical-join validation failed: {exc}") from exc
 
 
+def canonical_join_to_yaml(join: CanonicalJoin) -> str:
+    """Serialise a `CanonicalJoin` into the v1 canonical-join YAML body.
+
+    Inverse of `parse_canonical_join_yaml`: any `CanonicalJoin` that
+    round-trips through this function then `parse_canonical_join_yaml`
+    is value-equal to the input (modulo the two store-derived fields
+    below).
+
+    Trust-signal fields (`inference_method`, `validation_state`) are
+    deliberately NOT emitted. The grammar parser does not accept them
+    — they are store-side derived at apply time. Round-tripping an
+    FK-derived join through export → edit → apply correctly resets
+    the trust signal to manually-authored, because the operator DID
+    author the edit.
+
+    The top-level `"on":` key is force-quoted in the output so the
+    body survives a re-parse under YAML 1.1 boolean coercion (where
+    bare `on:` becomes `True:`). `yaml.safe_dump` won't quote it on
+    its own — `_Yaml12SafeLoader` patches the loader, not the dumper —
+    so the body is assembled in two parts: scalar fields via
+    `yaml.safe_dump` (proper description escaping), then the `"on":`
+    block hand-rolled from the identifier-constrained column pairs.
+
+    Hand-rolling the `on` predicate list is safe because `source_column`
+    / `target_column` are regex-constrained identifiers in
+    `JoinColumnPair.__post_init__`. No user-supplied free text reaches
+    this code path; the only YAML-injection risk lives in
+    `description`, which flows through `yaml.safe_dump`.
+
+    `description` is omitted when empty so the YAML body stays compact
+    for minimal joins — the parser fills the field with the empty
+    string by default. `cardinality` is omitted when `None` (back-compat
+    shape for joins authored before the column existed).
+    """
+    head: dict[str, object] = {
+        "version": _SUPPORTED_VERSION,
+        "name": join.name,
+    }
+    if join.description:
+        head["description"] = join.description
+    head["source_entity"] = join.source_entity
+    head["target_entity"] = join.target_entity
+    head_body = yaml.safe_dump(
+        head,
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=True,
+    ).rstrip()
+
+    on_lines = ['"on":']
+    for pair in join.on:
+        on_lines.append(f"  - source: {pair.source_column}")
+        on_lines.append(f"    target: {pair.target_column}")
+
+    tail: dict[str, object] = {"origin": join.origin}
+    if join.cardinality is not None:
+        tail["cardinality"] = join.cardinality
+    tail_body = yaml.safe_dump(
+        tail,
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=True,
+    ).rstrip()
+
+    return "\n".join([head_body, *on_lines, tail_body])
+
+
 def parse_canonical_join_yaml_file(path: Path) -> CanonicalJoin:
     """Read `path` and parse its contents as a canonical-join YAML document.
 

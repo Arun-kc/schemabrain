@@ -23,9 +23,10 @@ from pathlib import Path
 
 import pytest
 
-from schemabrain.core.metric import Metric
+from schemabrain.core.metric import Metric, MetricMeasure
 from schemabrain.metrics.yaml_grammar import (
     MetricYamlError,
+    metric_to_yaml,
     parse_metric_yaml,
     parse_metric_yaml_file,
 )
@@ -687,3 +688,90 @@ class TestParseFilePermissionWrap:
             # Restore so the tmp_path cleanup can remove it.
             target.chmod(stat.S_IRUSR | stat.S_IWUSR)
             del os  # silence unused-import warning when test path skips
+
+
+class TestMetricToYamlRoundTrip:
+    """`metric_to_yaml` is the inverse of `parse_metric_yaml`. Round-
+    trip invariant is load-bearing for the CLI export → edit → apply
+    workflow.
+
+    Two XOR shapes need coverage: `measure.column` (the common case)
+    and `measure.expression` (composite metrics). The serialiser
+    must emit exactly the populated half of the XOR; the parser
+    rejects YAML that names both.
+    """
+
+    def test_column_measure_round_trips(self) -> None:
+        original = Metric(
+            name="order_count",
+            description="Orders so far",
+            entity="order",
+            measure=MetricMeasure(agg="count", column="id"),
+            time_dimension=None,
+            time_grains=(),
+        )
+        body = metric_to_yaml(original)
+        assert parse_metric_yaml(body) == original
+
+    def test_expression_measure_round_trips(self) -> None:
+        original = Metric(
+            name="revenue",
+            description="",
+            entity="order",
+            measure=MetricMeasure(agg="sum", expression="price * qty"),
+            time_dimension=None,
+            time_grains=(),
+        )
+        body = metric_to_yaml(original)
+        assert "expression: price * qty" in body
+        assert "column:" not in body
+        assert parse_metric_yaml(body) == original
+
+    def test_time_dimension_round_trips_with_grains(self) -> None:
+        original = Metric(
+            name="revenue_by_month",
+            description="",
+            entity="order",
+            measure=MetricMeasure(agg="sum", column="amount"),
+            time_dimension="order.created_at",
+            time_grains=("day", "month"),
+        )
+        body = metric_to_yaml(original)
+        assert parse_metric_yaml(body) == original
+
+    def test_missing_time_dimension_emits_neither_field(self) -> None:
+        """A metric without a time dimension must NOT emit
+        `time_dimension:` or `time_grains:` lines — the parallel-
+        emptiness invariant on the dataclass means both-set OR both-
+        absent are the only valid shapes. The serialiser respects
+        the invariant by omitting both.
+        """
+        m = Metric(
+            name="order_count",
+            description="",
+            entity="order",
+            measure=MetricMeasure(agg="count", column="id"),
+            time_dimension=None,
+            time_grains=(),
+        )
+        body = metric_to_yaml(m)
+        assert "time_dimension:" not in body
+        assert "time_grains:" not in body
+
+    def test_trust_signal_fields_not_emitted(self) -> None:
+        original = Metric(
+            name="revenue",
+            description="LLM-suggested",
+            entity="order",
+            measure=MetricMeasure(agg="sum", column="amount"),
+            time_dimension=None,
+            time_grains=(),
+            inference_method="llm_suggested",
+            validation_state="draft",
+        )
+        body = metric_to_yaml(original)
+        assert "inference_method" not in body
+        assert "validation_state" not in body
+        round_tripped = parse_metric_yaml(body)
+        assert round_tripped.inference_method == "manually_authored"
+        assert round_tripped.validation_state == "applied"
