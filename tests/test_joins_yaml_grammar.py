@@ -19,9 +19,10 @@ from pathlib import Path
 
 import pytest
 
-from schemabrain.core.join import CanonicalJoin
+from schemabrain.core.join import CanonicalJoin, JoinColumnPair
 from schemabrain.joins.yaml_grammar import (
     CanonicalJoinParseError,
+    canonical_join_to_yaml,
     parse_canonical_join_yaml,
     parse_canonical_join_yaml_file,
 )
@@ -527,3 +528,90 @@ cardinality: 42
 """.strip()
         with pytest.raises(CanonicalJoinParseError, match="cardinality"):
             parse_canonical_join_yaml(text)
+
+
+class TestCanonicalJoinToYamlRoundTrip:
+    """`canonical_join_to_yaml` is the inverse of
+    `parse_canonical_join_yaml`. Round-trip invariant is load-bearing
+    for the CLI export → edit → apply workflow.
+
+    Critically: the `"on":` key must be force-quoted in the output.
+    The native YAML 1.1 boolean coercion would parse a bare `on:`
+    key as `True:`, silently turning a valid join body into "missing
+    required field" on re-parse. The serialiser dodges this by
+    splitting the body into a yaml.safe_dump'd head + tail and
+    hand-rolling the `"on":` block between them.
+    """
+
+    def _basic_join(self, **overrides: object) -> CanonicalJoin:
+        base = {
+            "name": "order_to_customer",
+            "description": "Orders belong to customers",
+            "source_entity": "order",
+            "target_entity": "customer",
+            "on": (JoinColumnPair(source_column="customer_id", target_column="id"),),
+            "origin": "manual",
+            "cardinality": "many_to_one",
+        }
+        base.update(overrides)
+        return CanonicalJoin(**base)  # type: ignore[arg-type]
+
+    def test_basic_join_round_trips(self) -> None:
+        original = self._basic_join()
+        body = canonical_join_to_yaml(original)
+        assert parse_canonical_join_yaml(body) == original
+
+    def test_on_key_is_force_quoted(self) -> None:
+        """The serialiser MUST emit `"on":` with quotes so a re-parse
+        under stricter (YAML 1.1) loaders does not coerce the key to
+        `True`. This is the load-bearing reason the join serialiser
+        splits the body around `yaml.safe_dump` rather than dumping
+        the whole dict at once.
+        """
+        original = self._basic_join()
+        body = canonical_join_to_yaml(original)
+        assert '"on":' in body
+        # No bare `^on:` line — guard against an inadvertent dedupe
+        # of the quoting later.
+        for line in body.splitlines():
+            if line.startswith("on:"):
+                raise AssertionError(
+                    f"bare `on:` line emitted: {line!r} — would parse as True under YAML 1.1"
+                )
+
+    def test_composite_key_join_round_trips(self) -> None:
+        """Junction tables use composite-key joins — the `on` list has
+        multiple pairs. Both pairs must survive the round-trip.
+        """
+        original = self._basic_join(
+            on=(
+                JoinColumnPair(source_column="customer_id", target_column="id"),
+                JoinColumnPair(source_column="region_id", target_column="region_id"),
+            ),
+        )
+        body = canonical_join_to_yaml(original)
+        assert parse_canonical_join_yaml(body) == original
+
+    def test_missing_cardinality_omitted(self) -> None:
+        """A join with `cardinality=None` (back-compat shape for joins
+        authored before the column existed) must emit a body without
+        a `cardinality:` line — the parser fills None when the field
+        is absent.
+        """
+        original = self._basic_join(cardinality=None)
+        body = canonical_join_to_yaml(original)
+        assert "cardinality:" not in body
+        assert parse_canonical_join_yaml(body) == original
+
+    def test_trust_signal_fields_not_emitted(self) -> None:
+        original = self._basic_join(
+            inference_method="fk_constraint",
+            validation_state="applied",
+        )
+        body = canonical_join_to_yaml(original)
+        assert "inference_method" not in body
+        assert "validation_state" not in body
+        round_tripped = parse_canonical_join_yaml(body)
+        # Trust signal resets to defaults; the operator edited the
+        # file, so they ARE manually-authored now.
+        assert round_tripped.inference_method == "manually_authored"

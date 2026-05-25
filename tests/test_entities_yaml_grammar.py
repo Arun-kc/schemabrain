@@ -21,6 +21,7 @@ import pytest
 from schemabrain.core.entity import Entity, SingleTableBinding
 from schemabrain.entities.yaml_grammar import (
     EntityParseError,
+    entity_to_yaml,
     parse_entity_yaml,
     parse_entity_yaml_file,
 )
@@ -368,3 +369,93 @@ class TestErrorType:
         """Callers should be able to catch parse errors as ValueError."""
         with pytest.raises(ValueError):
             parse_entity_yaml("")
+
+
+class TestEntityToYamlRoundTrip:
+    """`entity_to_yaml` is the inverse of `parse_entity_yaml`. The
+    round-trip invariant is the contract the CLI export → edit → apply
+    workflow relies on: an exported entity that the operator does not
+    touch must apply identically.
+
+    Trust-signal fields (`inference_method`, `validation_state`) are
+    NOT carried through the YAML grammar (the parser does not accept
+    them; they default to `manually_authored` + `applied` on every
+    round-trip). Round-trip tests therefore compare entities
+    constructed with the default trust signal.
+    """
+
+    def test_minimal_entity_round_trips(self) -> None:
+        original = Entity(
+            name="customer",
+            description="",
+            binding=SingleTableBinding(qualified_table="public.customers"),
+            identity="id",
+        )
+        body = entity_to_yaml(original)
+        assert parse_entity_yaml(body) == original
+
+    def test_entity_with_description_round_trips(self) -> None:
+        original = Entity(
+            name="customer",
+            description="A registered shopper",
+            binding=SingleTableBinding(qualified_table="public.customers"),
+            identity="id",
+            origin="manual",
+        )
+        body = entity_to_yaml(original)
+        assert parse_entity_yaml(body) == original
+
+    def test_empty_description_is_omitted_from_serialised_body(self) -> None:
+        """An entity with `description=""` round-trips to YAML that does
+        NOT contain a `description:` line. Keeps the body compact for
+        minimal entities and matches the convention the suggest-out-dir
+        path already emits.
+        """
+        entity = Entity(
+            name="customer",
+            description="",
+            binding=SingleTableBinding(qualified_table="public.customers"),
+            identity="id",
+        )
+        body = entity_to_yaml(entity)
+        assert "description:" not in body
+
+    def test_yaml_special_chars_in_description_are_escaped(self) -> None:
+        """A description containing colons, hashes, and newlines must
+        survive the round-trip. Hand-rolled string concatenation
+        would fragment the document; `yaml.safe_dump` quotes/escapes
+        scalar values for us.
+        """
+        tricky = "Has: a colon, # a hash, and\nan embedded newline"
+        original = Entity(
+            name="customer",
+            description=tricky,
+            binding=SingleTableBinding(qualified_table="public.customers"),
+            identity="id",
+        )
+        body = entity_to_yaml(original)
+        round_tripped = parse_entity_yaml(body)
+        assert round_tripped.description == tricky
+
+    def test_trust_signal_fields_not_emitted(self) -> None:
+        """An LLM-suggested entity (non-default trust signal) still
+        emits a YAML body the parser accepts; the inference_method
+        and validation_state are NOT in the body and reset to
+        defaults on parse.
+        """
+        original = Entity(
+            name="customer",
+            description="LLM-suggested",
+            binding=SingleTableBinding(qualified_table="public.customers"),
+            identity="id",
+            inference_method="llm_suggested",
+            validation_state="draft",
+        )
+        body = entity_to_yaml(original)
+        assert "inference_method" not in body
+        assert "validation_state" not in body
+        round_tripped = parse_entity_yaml(body)
+        # Trust-signal fields reset to defaults on round-trip — the
+        # operator edited the file, so they ARE manually-authored now.
+        assert round_tripped.inference_method == "manually_authored"
+        assert round_tripped.validation_state == "applied"
