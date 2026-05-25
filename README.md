@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-<h1 align="center">schemabrain</h1>
+<!-- <h1 align="center">schemabrain</h1> -->
 
 <p align="center">
   <a href="https://github.com/Arun-kc/schemabrain/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Arun-kc/schemabrain/ci.yml?style=flat-square&label=CI&labelColor=0A0A0A&color=3ECF8E" alt="CI"></a>
@@ -17,35 +17,40 @@
 </p>
 
 <p align="center">
-  <strong>The SQL firewall between AI agents and your production database.</strong>
+  <em>Works with Claude Desktop · Claude Code · Cursor · Zed · any MCP host</em>
 </p>
 
-> **The agent never writes SQL against your database. Schema Brain does, from definitions you control.**
+<p align="center">
+  <strong>Stop giving AI agents raw database connection strings.</strong><br>
+  SchemaBrain is the SQL firewall between AI agents and your production database — twelve read-only tools, validated metrics, tamper-evident audit.
+</p>
 
-Your agent gets twelve read-only MCP tools — none of which can write. Schema Brain compiles the parameterized SQL from definitions you control and runs it on its side. Refused calls return a structured `recovery` block agents act on programmatically; every call lands in a tamper-evident audit log.
+> **The agent never writes SQL. SchemaBrain does, from definitions you control.**
 
-- **One command from `pip install` to wired agent** — bare `schemabrain init` walks the 7-stage activation wizard end-to-end. Auto-detects a dbt project and routes through the importer when one is present.
-- **Validated metrics, not invented SQL** — entities, metrics, and canonical joins compile to parameterized SQL the agent never sees.
-- **Read-only by architecture, not configuration** — no `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database. Stage 1 of `init` pins `default_transaction_read_only=on` on the source connection as belt-and-suspenders.
-- **Failure is a contract, not a string** — refused calls return structured `recovery.suggested_args` agents act on programmatically. PII blocks ship the entity name to retry; ambiguous time dimensions ship the candidate to pick.
-- **Pluggable into any agent loop** — Claude Desktop, Claude Code, Cursor, or your own Anthropic / OpenAI / LangGraph loop over MCP stdio. 230-LOC drop-in proof at [`examples/anthropic_demo.py`](examples/anthropic_demo.py).
+Three guarantees that close the trust gap between AI agents and your database:
+
+- **[Read-only by architecture](#1-read-only-by-architecture-not-configuration)** — twelve MCP tools, none of which can write. No `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database.
+- **[PII refusal at retrieval](#2-pii-aware-refusal-at-the-get_metric-tool-boundary)** — PII tags propagate from the physical schema through joins and metrics. If a query touches a blocked category, SchemaBrain refuses *before* the database is queried.
+- **[Cryptographic audit chain](#3-tamper-evident-audit-log)** — every call, refusal, and recovery lands in a SHA256-hashed append-only log. `audit verify` exits non-zero if any past row was rewritten.
+
+---
 
 ```bash
 pip install schemabrain
 schemabrain init
-# then ask your MCP host: "list the entities Schema Brain knows about"
+# then: Cmd+Q Claude Desktop, relaunch, and ask: "list the entities SchemaBrain knows about"
 ```
 
-**Cost.** ~$0.03 to index + curate the bundled 7-table demo (30 columns, 6 entities + 10 metrics) · ~$0.03 for a 87-column Pagila sample · **$0** to re-index unchanged schemas. Bounded by per-stage cost caps; index step runs on Claude Haiku 4.5, curation on Claude Sonnet 4.6.
+**Cost:** ~$0.03 to index the bundled demo · **$0** to re-index unchanged schemas. Detail in [Sample session](#sample-session).
 
-**Status: 0.3.0 (alpha).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap. The longer-term position is the SQL-boundary safety layer for AI agents — see [Where it's going](#where-its-going).
+**Status: 0.4.0 (alpha).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap.
 
 ---
 
 ## Contents
 
 - [Quickstart](#quickstart) — 3 steps from `pip install` to a working agent
-- [The firewall](#the-firewall) — what Schema Brain enforces at the SQL boundary
+- [The firewall](#the-firewall) — what SchemaBrain enforces at the SQL boundary
 - [Sample session](#sample-session) — real Claude Desktop interaction against the bundled fixture
 - [Where it's going](#where-its-going) — honest disclaimer about what's not built yet
 - [Roadmap](#roadmap) — shipped + in progress + planned
@@ -68,7 +73,7 @@ schemabrain init
 
 ## Quickstart
 
-Three steps from `pip install` to a working Claude Desktop integration. ~45s once Docker and the embedding model are cached; budget a couple of minutes on a true first run while the `postgres:16-alpine` image and the ~67 MB ONNX embedding model download.
+Three steps from `pip install` to a working Claude Desktop integration. If you paste your own Postgres URL — no Docker needed, ~30s. Press Enter for the bundled demo and `init` invokes Docker + downloads a ~67 MB embedding model first time; ~45s once cached.
 
 ### 1. Install
 
@@ -77,7 +82,7 @@ pip install schemabrain
 schemabrain --version
 ```
 
-Source install (`git clone` + `uv sync --extra dev`) is documented in [`docs/setup.md`](docs/setup.md#0-activation-wizard-recommended).
+Source install (`git clone` + [`uv`](https://docs.astral.sh/uv/) `sync --extra dev`) is documented in [`docs/setup.md`](docs/setup.md#0-activation-wizard-recommended).
 
 ### 2. Run the activation wizard
 
@@ -91,7 +96,7 @@ schemabrain init
 - **An `ANTHROPIC_API_KEY`** — optional. Skip and the wizard still wires Claude Desktop; entity curation can run later.
 
 ```
-Schema Brain init — activation wizard
+SchemaBrain init — activation wizard
 
   [1/7] Source check       ✓ source reachable + read-only
   [2/7] Index schema       ✓ 7 tables, 30 columns indexed
@@ -99,7 +104,7 @@ Schema Brain init — activation wizard
   [4/7] Curate metrics     ✓ 10 metrics suggested + applied (cost: $0.03)
   [5/7] Curate joins       ✓ 5 canonical joins created (FK-mined, no LLM)
   [6/7] Wire host          ✓ wrote schemabrain entry to claude_desktop_config.json
-  [7/7] Next               ✓ restart your MCP host, then ask: "list the entities Schema Brain knows about"
+  [7/7] Next               ✓ restart your MCP host, then ask: "list the entities SchemaBrain knows about"
 ```
 
 Full wizard reference (stages explained, flags, dbt auto-detection, `--print-only` for non-Claude-Desktop hosts, `--no-entities` / `--no-metrics` / `--no-joins` opt-outs, cost-cap pauses): [`docs/setup.md`](docs/setup.md#0-activation-wizard-recommended).
@@ -110,7 +115,7 @@ Full wizard reference (stages explained, flags, dbt auto-detection, `--print-onl
 2. Relaunch.
 3. New conversation:
 
-   > list the entities Schema Brain knows about
+   > list the entities SchemaBrain knows about
 
 If Claude calls `list_entities` and reports `user`, `order`, etc., you're done. If not, see [Troubleshooting](#troubleshooting).
 
@@ -122,36 +127,57 @@ After the wizard, `schemabrain inspect` shows what the agent has and `schemabrai
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/schemabrain-architecture-dark.gif">
-    <img src="docs/assets/schemabrain-architecture-light.gif" alt="schemabrain architecture: agent talks to schemabrain over MCP stdio; schemabrain emits parameterized SQL to Postgres; the schemabrain boundary is the trust boundary. Mint pulse animates from agent through MCP tools, semantic layer, SQL emitter, and audit log to Postgres." width="900">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-architecture-dark.svg">
+    <img src="docs/assets/readme-architecture-light.svg" alt="schemabrain architecture: agent talks to schemabrain over MCP stdio (12 read-only tools); schemabrain emits parameterized SQL to Postgres; the schemabrain boundary is the trust boundary; audit log is tamper-evident." width="900">
   </picture>
 </p>
 
-Six properties Schema Brain enforces at the SQL boundary today:
+Six properties SchemaBrain enforces at the SQL boundary today:
 
 <table>
 <tr>
 <td width="50%" valign="top">
 
-### 1. Agent never writes raw SQL
+### 1. Read-only by architecture, not configuration
 
-Entities, metrics, and canonical joins compile to parameterized SQL Schema Brain runs on its side. The agent sees rows + the SQL that was run — never arbitrary statements at your database.
-
-[Build your semantic layer →](docs/semantic-layer.md)
+The MCP surface exposes twelve tools — **none of which can write**. There is no `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database, regardless of session state. The read-only guarantee is structural, not a session flag the agent can flip. Stage 1 of `init` additionally pins `default_transaction_read_only=on` on the connection as belt-and-suspenders against a misconfigured downstream.
 
 </td>
 <td width="50%" valign="top">
 
-### 2. Read-only by architecture, not configuration
+### 2. PII-aware refusal at the `get_metric` tool boundary
 
-The MCP surface exposes twelve tools — none of which can write. There is no `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database, regardless of session state. Stage 1 of `init` additionally pins `default_transaction_read_only=on` on the source connection and refuses activation against a Postgres that won't honor it. Belt and suspenders.
+Any `get_metric` touching a blocked PII category returns a `refused` envelope; the compiled SQL never runs and the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`. `describe_entity` enforces the same policy at the column level — the agent still sees the entity and its non-PII columns, but blocked columns ship with `redacted=True` and the LLM-enriched description cleared. `schemabrain init` writes `--pii-block contact` into the Claude Desktop snippet by default so email / phone / address columns are blocked on a fresh install; widen with `--pii-block contact,health` and other categories as needed.
+
+```bash
+schemabrain serve --pii-block contact,health
+```
+
+Twelve categories from GDPR, CCPA/CPRA, HIPAA, PCI DSS, ISO 27018 — tagged per-column at index time. Detection is column-name patterns + redacted-sample inspection — see [`schemabrain/pii/classifier.py`](schemabrain/pii/classifier.py) for the full rule set.
+
+**Enforcement scope:** binding is at the `get_metric` compile path today. Lower-level tools (`describe_entity`, `resolve_join`, `describe_table`) surface the `redacted=True` flag + `pii_categories` as advisory metadata so the agent can self-regulate, but they don't refuse. Uniform SQL-layer enforcement against agent-emitted SQL ships in v2 — see [Where it's going](#where-its-going).
+
+[PII classification →](docs/observability.md#pii-classification-alpha)
 
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 
-### 3. Failure is a contract, not a string
+### 3. Tamper-evident audit log
+
+Every tool call under `schemabrain serve` writes one row to an append-only `mcp_audit` table — PII categories per row, content-addressable fingerprints, sha256 hash chain. `audit verify` re-walks the chain and exits non-zero if any past row was rewritten. Detects post-hoc tampering by any process without write access to the audit table; streaming the chain to an external immutable store is on the v3 roadmap (`mcp_audit` is local SQLite today).
+
+```bash
+schemabrain audit verify   # exit 0 = chain clean
+```
+
+[Tamper-evident audit log →](docs/observability.md#audit-log-alpha)
+
+</td>
+<td width="50%" valign="top">
+
+### 4. Failure is a contract, not a string
 
 Refused and degraded calls return a structured `recovery.suggested_args` block — not a message agents have to parse. PII blocks ship the entity name to retry; ambiguous time dimensions ship the candidate to pick; unknown joins ship the next tool to call. Agents act on the contract programmatically.
 
@@ -169,36 +195,15 @@ Refused and degraded calls return a structured `recovery.suggested_args` block �
 [Charter v1.2 envelope reference →](docs/agent-ux-charter.md#3-errors-are-prompts-for-the-next-tool-call)
 
 </td>
-<td width="50%" valign="top">
-
-### 4. PII-aware refusal at the `get_metric` tool boundary
-
-Any `get_metric` touching a blocked PII category returns a `refused` envelope; the compiled SQL never runs and the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`. `describe_entity` enforces the same policy at the column level — the agent still sees the entity and its non-PII columns, but blocked columns ship with `redacted=True` and the LLM-enriched description cleared. `schemabrain init` writes `--pii-block contact` into the Claude Desktop snippet by default so email / phone / address columns are blocked on a fresh install; widen with `--pii-block contact,health` and other categories as needed.
-
-```bash
-schemabrain serve --pii-block contact,health
-```
-
-Twelve categories from GDPR, CCPA/CPRA, HIPAA, PCI DSS, ISO 27018 — tagged per-column at index time.
-
-**Enforcement scope:** binding is at the `get_metric` compile path today. Lower-level tools (`describe_entity`, `resolve_join`, `describe_table`) surface the `redacted=True` flag + `pii_categories` as advisory metadata so the agent can self-regulate, but they don't refuse. Uniform SQL-layer enforcement against agent-emitted SQL ships in v2 — see [Where it's going](#where-its-going).
-
-[PII classification →](docs/observability.md#pii-classification-alpha)
-
-</td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 
-### 5. Tamper-evident audit log
+### 5. Compile path: definitions → parameterized SQL
 
-Every tool call under `schemabrain serve` writes one row to an append-only `mcp_audit` table — PII categories per row, content-addressable fingerprints, sha256 hash chain. `audit verify` re-walks the chain and exits non-zero if any past row was rewritten. Every claim is verifiable end-to-end against the bundled fixture.
+Entities, metrics, and canonical joins compile to parameterized SQL SchemaBrain runs on its side. The agent sees rows + the SQL that was run — never arbitrary statements at your database. LLM-suggested definitions during `init` are reviewed and applied explicitly; nothing reaches the runtime store until you accept it.
 
-```bash
-schemabrain audit verify   # exit 0 = chain clean
-```
-
-[Tamper-evident audit log →](docs/observability.md#audit-log-alpha)
+[Build your semantic layer →](docs/semantic-layer.md)
 
 </td>
 <td width="50%" valign="top">
@@ -227,7 +232,7 @@ python examples/anthropic_demo.py \
 
 Real Claude Desktop session against the bundled e-commerce fixture (7 tables, 30 columns, 6 entities curated for **~$0.03**):
 
-> **You:** Using Schema Brain, write me a SQL query to compute each customer's total spend by product category.
+> **You:** Using SchemaBrain, write me a SQL query to compute each customer's total spend by product category.
 >
 > **Claude:** *(calls `describe_entity` for `order_item`, then chains `resolve_join` along `user → order → order_item → product`. Each FK-derived hop returns `inference_method: fk_constraint` / `confidence: HIGH`. The last hop — `resolve_join(product, category)` — refuses:)*
 >
@@ -260,17 +265,19 @@ Real Claude Desktop session against the bundled e-commerce fixture (7 tables, 30
 > - **Status filter omitted.** `orders.status` is free TEXT and I haven't inspected its values; this counts every order. If you only want paid/fulfilled spend, add `WHERE o.status = …` once you confirm the allowed values.
 > - **PII flag.** `full_name` is `pii_sensitivity: pii / categories: [contact] / redacted: true` in the semantic layer. Fine if you're running this yourself; not fine if it's flowing into an agent context.
 
-The differentiator is what *didn't* happen: most LLM-over-database tools, asked this exact question, would confidently emit `JOIN categories c ON p.category_id = c.id` and produce SQL that errors against a column that isn't there. Schema Brain refused — `resolve_join` returned `kind: no_canonical_join` with `recovery.suggested_tool: suggest_joins`, not prose. The agent **acted on the structured recovery contract programmatically** instead of fabricating a join. Refusal-not-fabrication is the safety mechanism, demonstrated live.
+The differentiator is what *didn't* happen: most LLM-over-database tools, asked this exact question, would confidently emit `JOIN categories c ON p.category_id = c.id` and produce SQL that errors against a column that isn't there. SchemaBrain refused — `resolve_join` returned `kind: no_canonical_join` with `recovery.suggested_tool: suggest_joins`, not prose. The agent **acted on the structured recovery contract programmatically** instead of fabricating a join. Refusal-not-fabrication is the safety mechanism, demonstrated live.
 
 **Cost.** ~$0.001/column with Claude Haiku 4.5 + Sonnet 4.6 (Sonnet for the structured curation prompt). The bundled 7-table fixture (30 columns, 6 entities + 10 metrics + 5 joins) indexes + curates for **~$0.03 in ~85s**. The Pagila DVD-rental sample (87 columns after partition deduplication) runs for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
 
 To verify Claude's SQL is mechanically correct (and that flagged caveats are the actual data behavior), see [Validating SQL Claude generates](docs/setup.md#validating-sql-claude-generates).
 
+**Run this exact session yourself:** `schemabrain init` walks you to a wired Claude Desktop in one command; then ask Claude *"Using SchemaBrain, write me a SQL query to compute each customer's total spend by product category."* and watch the refuse-then-pivot live.
+
 ---
 
 ## Where it's going
 
-Schema Brain is being built as the **SQL-boundary safety layer for AI agents** — the layer that parses what your agent is about to ask the database and refuses (or rewrites) before it runs.
+SchemaBrain is being built as the **SQL-boundary safety layer for AI agents** — the layer that parses what your agent is about to ask the database and refuses (or rewrites) before it runs.
 
 That layer needs a semantic substrate underneath it. You can't refuse "this query touches PII" without knowing which columns are PII. You can't rewrite "join through this junction" without canonical-join definitions. You can't validate a metric without knowing its grain.
 
@@ -322,8 +329,8 @@ The five most common first-run failures. Full troubleshooter in [`docs/setup.md`
 - **`pip install schemabrain` gave me an older version.** Check `schemabrain --version`. If it doesn't match the [latest release](https://pypi.org/project/schemabrain/) your pip cache is stale — run `pip install --upgrade schemabrain`. `schemabrain init` writes the same version into the Claude Desktop snippet (`uvx schemabrain==<pin>`) so it stays reproducible across restarts; bump the pin in the snippet manually after upgrading via pip.
 - **`init` reports `source unreachable`.** Postgres may not be ready on first run — wait a few seconds and re-run. For your own database, verify host, port, and credentials. Connection URLs in any form are accepted (`postgresql://`, `postgres://`, `postgresql+psycopg://`).
 - **The first `init` or `schemabrain index` hangs for ~60 seconds.** Normal. The first index downloads the ONNX embedding model (~67 MB) and makes one LLM call per column. Subsequent runs are fast.
-- **`init` fails at stage 6 "wire host".** Claude Desktop must be installed first — Schema Brain writes into its config file, which doesn't exist until Claude Desktop has launched at least once.
-- **Claude Desktop doesn't show Schema Brain after restart.** Cmd+Q is required (close-window doesn't trigger a re-read of MCP config). Run `schemabrain doctor` to verify the config landed. If `doctor` says everything's good but Claude Desktop still doesn't see the tool, check `~/Library/Logs/Claude/mcp*.log`.
+- **`init` fails at stage 6 "wire host".** Claude Desktop must be installed first — SchemaBrain writes into its config file, which doesn't exist until Claude Desktop has launched at least once.
+- **Claude Desktop doesn't show SchemaBrain after restart.** Cmd+Q is required (close-window doesn't trigger a re-read of MCP config). Run `schemabrain doctor` to verify the config landed. If `doctor` says everything's good but Claude Desktop still doesn't see the tool, check `~/Library/Logs/Claude/mcp*.log`.
 
 ---
 
@@ -353,9 +360,12 @@ Only LLM-enriched column descriptions and the redacted sample values that feed t
 Postgres 16+ (primary target) and SQLite (for development and demos). Adding Snowflake / BigQuery / MySQL is mostly a new `DataSource` implementation plus a profiler tweak — on the v1.x roadmap.
 
 **Why MCP and not a REST API?**
-The consumer is an agent, not a service. MCP standardizes tool registration, schema description, and request/response transport. Agents discover Schema Brain natively and get its tool surface — no API wrapper, no SDK to maintain per language.
+The consumer is an agent, not a service. MCP standardizes tool registration, schema description, and request/response transport. Agents discover SchemaBrain natively and get its tool surface — no API wrapper, no SDK to maintain per language.
 
-More questions answered in [`docs/landscape.md`](docs/landscape.md) (is this a semantic layer like Cube?) and [`docs/setup.md`](docs/setup.md#troubleshooting) (why local embeddings, more troubleshooting).
+**Is this a semantic layer like Cube or dbt Semantic Layer?**
+Partially. SchemaBrain ships entities, metrics, and canonical joins as first-class persisted definitions today — agents call them via `list_entities`, `describe_entity`, `resolve_join`, `get_metric`. But the semantic layer isn't the headline; it's the **substrate** that makes the SQL-boundary safety primitives possible. Full comparison vs Cube / dbt-mcp / Vanna / WrenAI in [`docs/landscape.md`](docs/landscape.md).
+
+More questions answered in [`docs/setup.md`](docs/setup.md#troubleshooting) (why local embeddings, more troubleshooting).
 
 ---
 

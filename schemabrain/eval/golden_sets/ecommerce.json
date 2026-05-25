@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "schema_description": "ONE example domain — synthetic e-commerce schema (six tables under `public`: users, products, categories, product_categories, orders, order_items) defined in `schemabrain/eval/fixtures/ecommerce.sql`. E-commerce was chosen because its tables are universally legible, NOT because Schema Brain is e-commerce-specific. Schema Brain is a generic semantic layer for ANY production database; author your own `golden_sets/<your-schema>.json` for your real schema and pass it via `schemabrain eval --golden`.",
+  "schema_description": "ONE example domain — synthetic e-commerce schema (six tables under `public`: users, products, categories, product_categories, orders, order_items) defined in `schemabrain/eval/fixtures/ecommerce.sql`. E-commerce was chosen because its tables are universally legible, NOT because SchemaBrain is e-commerce-specific. SchemaBrain is a generic semantic layer for ANY production database; author your own `golden_sets/<your-schema>.json` for your real schema and pass it via `schemabrain eval --golden`.",
   "questions": [
     {
       "id": "q001",

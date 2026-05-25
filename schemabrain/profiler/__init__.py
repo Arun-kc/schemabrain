@@ -1,4 +1,4 @@
-"""Schema Brain profiling layer.
+"""SchemaBrain profiling layer.
 
 Computes per-column statistics (NULL %, distinct count, sample values, shape
 patterns) used as LLM-enrichment context. PII is redacted from sample values

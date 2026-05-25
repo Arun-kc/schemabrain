@@ -5,7 +5,7 @@ raw SQL string — as emitted by `pg_stat_statements`, including its
 `$1`/`$2` parameter placeholders — and returns the set of
 `(schema, table)` pairs the statement touches. The mining pipeline
 uses the result to filter mined rows down to tables that are
-actually in the Schema Brain index.
+actually in the SchemaBrain index.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ _logger = logging.getLogger(__name__)
 # sqlglot warns at WARNING level for every statement it can't fit
 # into its grammar (`SHOW transaction isolation level`,
 # `CREATE EXTENSION ...`, etc.). pg_stat_statements surfaces several
-# such statements from Schema Brain's own connection setup; mining a
+# such statements from SchemaBrain's own connection setup; mining a
 # real batch logs one "Falling back to parsing as a 'Command'." line
 # per non-DML statement, which is pure noise — the pipeline already
 # drops non-DML via `_DML_TYPES`. Raising sqlglot's logger to ERROR
@@ -38,12 +38,12 @@ logging.getLogger("sqlglot").setLevel(logging.ERROR)
 # supports; widening is a deliberate decision.
 _DML_TYPES = (exp.Select, exp.Insert, exp.Update, exp.Delete, exp.Merge)
 
-# Profiler-query signatures. These match Schema Brain's own SELECT
+# Profiler-query signatures. These match SchemaBrain's own SELECT
 # statements emitted by `schemabrain.profiler.postgres` during
 # `schemabrain index`. After indexing, `pg_stat_statements` surfaces
 # these alongside real user workload; without this filter,
 # `mine-queries` writes them into `example_queries` and
-# `get_example_queries` returns Schema Brain's own profiling chatter
+# `get_example_queries` returns SchemaBrain's own profiling chatter
 # to agents asking "show me example queries for this table".
 #
 # Both signatures are deliberately narrow. The counts pattern keys
@@ -112,7 +112,7 @@ def extract_table_references(sql: str) -> frozenset[tuple[str | None, str]]:
 
 
 def is_profiler_query(sql: str) -> bool:
-    """Return True if `sql` matches Schema Brain's own profiler signatures.
+    """Return True if `sql` matches SchemaBrain's own profiler signatures.
 
     Two shapes, both emitted by `schemabrain.profiler.postgres`:
 
@@ -124,7 +124,7 @@ def is_profiler_query(sql: str) -> bool:
          text cast in a `SELECT DISTINCT`), which is similarly
          specific to the profiler.
 
-    Used by `mine_queries` to skip Schema Brain's own indexing
+    Used by `mine_queries` to skip SchemaBrain's own indexing
     chatter that `pg_stat_statements` captures during a `schemabrain
     index` run. Returns False on empty/whitespace input so callers
     can chain it with the parser without an extra emptiness check.

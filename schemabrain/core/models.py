@@ -1,4 +1,4 @@
-"""Pydantic models for Schema Brain core entities.
+"""Pydantic models for SchemaBrain core entities.
 
 These are the canonical, immutable representations of database objects after
 introspection. Connectors produce these; the store persists them; MCP tools

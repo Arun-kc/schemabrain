@@ -1,4 +1,4 @@
-"""Logging configuration for Schema Brain.
+"""Logging configuration for SchemaBrain.
 
 Two execution surfaces, one conflicting constraint:
 
@@ -79,7 +79,7 @@ _THIRD_PARTY_QUIETED = ("mcp", "anyio", "httpx", "httpcore", "fastembed")
 
 
 def configure_logging(*, verbosity: int = 0) -> None:
-    """Configure Schema Brain's stderr-only logging.
+    """Configure SchemaBrain's stderr-only logging.
 
     `verbosity`:
         0 → WARNING (default), 1 → INFO, 2+ → DEBUG. Higher numbers

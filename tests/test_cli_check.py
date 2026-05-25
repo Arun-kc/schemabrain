@@ -375,7 +375,7 @@ class TestCheckOutputRouting:
         assert parsed["summary"]["entities_total"] == 1
         assert parsed["summary"]["entities_healthy"] == 1
         # JSON mode suppresses the rich rendering on stderr.
-        assert "Schema Brain check" not in captured.err
+        assert "SchemaBrain check" not in captured.err
 
     def test_human_mode_writes_to_stderr(
         self,
@@ -404,7 +404,7 @@ class TestCheckOutputRouting:
         )
         captured = capsys.readouterr()
         # Human render lands on stderr.
-        assert "Schema Brain check" in captured.err
+        assert "SchemaBrain check" in captured.err
         # stdout is reserved for JSON output / pipe-clean payloads.
         assert captured.out == ""
 

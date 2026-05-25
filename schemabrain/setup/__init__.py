@@ -1,7 +1,7 @@
 """Setup-time machinery for `schemabrain init` and `schemabrain doctor`.
 
 This package owns the activation gate — the surface a stranger first
-touches when wiring Schema Brain to an MCP host. Three modules will
+touches when wiring SchemaBrain to an MCP host. Three modules will
 land here as the gate matures:
 
   - `checks`       — `Check` DTO + sequential runner used by `doctor`.

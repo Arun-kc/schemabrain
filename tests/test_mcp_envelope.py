@@ -655,7 +655,7 @@ class TestMinLengthGuards:
             WideningHint(scope_requested="pii:contact", would_unblock=False, reason="")
 
 
-# ----- degradation_reason invariant (PR-6h.2 Gap #2) -------------------------
+# ----- degradation_reason invariant (PR-6h.2 an earlier gap) -------------------------
 
 
 class TestDegradationReasonInvariant:

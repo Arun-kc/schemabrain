@@ -1,7 +1,7 @@
 """Connector contract: every backend implements `DataSource`.
 
 Implementations connect to a specific database backend (Postgres, SQLite, ...)
-and produce canonical Schema Brain models. They are read-only with respect to
+and produce canonical SchemaBrain models. They are read-only with respect to
 the source database.
 """
 

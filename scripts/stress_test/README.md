@@ -1,4 +1,4 @@
-# Schema Brain stress harness
+# SchemaBrain stress harness
 
 Headless integration harness that exercises the full MCP surface area
 end-to-end against a real Postgres + indexed store. Used to validate

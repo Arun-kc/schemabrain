@@ -185,7 +185,7 @@ def prompt_for_init_setup(*, console: Console) -> str | None:
 
     with pause_active_spinner():
         console.print()
-        console.print(f"  [bold]{GLYPH_BRAND} Schema Brain — wire Claude to a Postgres database[/]")
+        console.print(f"  [bold]{GLYPH_BRAND} SchemaBrain — wire Claude to a Postgres database[/]")
         console.print()
         console.print("  [bright_black]How would you like to start?[/]")
         console.print()
@@ -396,7 +396,7 @@ def _wait_for_postgres_ready(
 
     # `silent_rewrite_to_psycopg` normalises bare `postgresql://` to
     # `postgresql+psycopg://` so SQLAlchemy doesn't try to import the
-    # missing psycopg2 driver. Schema Brain ships psycopg v3 only —
+    # missing psycopg2 driver. SchemaBrain ships psycopg v3 only —
     # same boundary rewrite as `_resolve_url_source`. The helper
     # returns `None` for already-correctly-suffixed URLs; the
     # `or url` fallback keeps those verbatim.

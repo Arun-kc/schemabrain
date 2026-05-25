@@ -40,7 +40,7 @@ _logger = logging.getLogger("schemabrain.security.safe_url")
 def safe_engine_url(url: str) -> SafeEngineUrl:
     """Return `url` with non-allowlisted query parameters stripped.
 
-    Used everywhere Schema Brain hands a URL to SQLAlchemy
+    Used everywhere SchemaBrain hands a URL to SQLAlchemy
     `create_engine` (directly or via `PostgresDataSource` /
     `PostgresProfiler`). The raw URL is preserved by callers that
     need a source-identity hash (e.g. `_make_source_id`) so a

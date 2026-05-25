@@ -1,6 +1,6 @@
 # MCP tool reference
 
-Schema Brain exposes twelve Pydantic-typed MCP tools split across two layers:
+SchemaBrain exposes twelve Pydantic-typed MCP tools split across two layers:
 
 - **Physical-schema tools** (5) read directly from the indexed schema. Always
   available after `schemabrain index`.
@@ -261,7 +261,7 @@ Use `suggest_joins` instead when you only have physical table names.
 Computes a pre-declared metric against the live database. Returns the
 materialised rows, the parameterised SQL the compiler emitted, and a
 `fingerprint` linking back to the immutable audit row. The agent never
-writes SQL itself for declared metrics — Schema Brain compiles and
+writes SQL itself for declared metrics — SchemaBrain compiles and
 parameter-binds.
 
 ```json

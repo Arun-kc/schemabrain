@@ -1,6 +1,6 @@
 """`schemabrain init` orchestration — the activation gate.
 
-`init` wires Schema Brain to an MCP host. The non-interactive flow
+`init` wires SchemaBrain to an MCP host. The non-interactive flow
 takes resolved arguments (already validated upstream by the CLI for
 URL conflicts, env-var resolution, etc.) and:
 
@@ -495,7 +495,7 @@ def _resolve_runner() -> str:
         GuidedError(
             kind="init_runner_missing",
             message="neither `uvx` nor an installed `schemabrain` is on PATH",
-            why="Schema Brain needs a runner the host can invoke to launch the MCP server",
+            why="SchemaBrain needs a runner the host can invoke to launch the MCP server",
             fix="install uv (`pip install uv`) for the recommended `uvx` path, "
             "or ensure `schemabrain` is on PATH in the env the host will launch from",
             next_step="see docs/setup.md for the canonical install instructions",
@@ -555,7 +555,7 @@ def _validate_source_read_only(source_url: str) -> None:
             GuidedError(
                 kind="init_source_not_read_only",
                 message=f"source session reports default_transaction_read_only={value!r}",
-                why="Schema Brain requires a read-only session as a defense against agent-driven writes",
+                why="SchemaBrain requires a read-only session as a defense against agent-driven writes",
                 fix="connect with a role/URL that can enforce session-level read-only, "
                 "or grant the role permission to SET it",
                 next_step=None,
@@ -572,7 +572,7 @@ def _validate_store(*, store_path: Path, skip_index: bool) -> None:
             GuidedError(
                 kind="init_store_path_unwritable",
                 message=f"store parent directory does not exist: {store_path.parent}",
-                why="Schema Brain needs to create or open the store at the supplied path",
+                why="SchemaBrain needs to create or open the store at the supplied path",
                 fix=f"create {store_path.parent}, or re-run with --store-path pointing somewhere writable",
                 next_step=None,
             )

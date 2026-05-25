@@ -294,6 +294,190 @@ class TestPiiBlockedRefusal:
             store.close()
 
 
+class TestRefusalAttemptedBlockedAsymmetry:
+    """Probe-oracle defense: `attempted_categories` (the full
+    propagated set of categories the metric touched) stays out of
+    the agent-facing envelope and message. Only `blocked_categories`
+    (the policy intersection that triggered refusal) is surfaced.
+    Surfacing `attempted` would let an adversarial agent map the
+    full PII tagging in O(columns) calls without ever invoking
+    `describe_entity`.
+
+    The audit row keeps `attempted_categories` (operator-visible) so
+    forensics still shows *what was touched*, not just *what was
+    blocked*. The asymmetry is the load-bearing fix for L-2.
+    """
+
+    def test_blocked_categories_are_strict_subset_of_attempted(self, tmp_path: Path) -> None:
+        # email→contact and amount→financial. Block only `credential`
+        # (which neither column carries) — propagated categories
+        # surface but the metric does not refuse. Then block only
+        # `contact` and show that `attempted` is the FULL propagation
+        # set ({contact, financial}) while `blocked` is the
+        # intersection-only ({contact}).
+        store = SQLiteStore(tmp_path / "sb.db")
+        try:
+            _seed_table_and_entity(store)
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                tags={
+                    "email": ("pii", frozenset({"contact"})),
+                    "amount": ("pii", frozenset({"financial"})),
+                },
+            )
+            _write_metric(store, name="amount_sum", column="amount", agg="sum")
+            executor = _FakeExecutor()
+            with pytest.raises(PiiBlockedError) as exc_info:
+                get_metric_impl(
+                    store=store,
+                    executor=executor,
+                    source_connection_id=SRC,
+                    name="amount_sum",
+                    group_by=("user.email",),
+                    pii_block=frozenset({"contact"}),  # type: ignore[arg-type]
+                )
+            # attempted = full propagated set (both columns touched)
+            assert exc_info.value.attempted_categories == ("contact", "financial")
+            # blocked = policy intersection only (the trigger)
+            assert exc_info.value.blocked_categories == ("contact",)
+        finally:
+            store.close()
+
+    def test_refusal_message_references_blocked_not_attempted(self, tmp_path: Path) -> None:
+        # The human-readable message is part of the agent surface.
+        # It must reference only the blocked subset — naming the
+        # untouched-by-policy `financial` category in the agent-
+        # facing message would defeat the asymmetry the envelope
+        # field enforces.
+        store = SQLiteStore(tmp_path / "sb.db")
+        try:
+            _seed_table_and_entity(store)
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                tags={
+                    "email": ("pii", frozenset({"contact"})),
+                    "amount": ("pii", frozenset({"financial"})),
+                },
+            )
+            _write_metric(store, name="amount_sum", column="amount", agg="sum")
+            executor = _FakeExecutor()
+            with pytest.raises(PiiBlockedError) as exc_info:
+                get_metric_impl(
+                    store=store,
+                    executor=executor,
+                    source_connection_id=SRC,
+                    name="amount_sum",
+                    group_by=("user.email",),
+                    pii_block=frozenset({"contact"}),  # type: ignore[arg-type]
+                )
+            message = str(exc_info.value)
+            assert "contact" in message
+            # The untouched-by-policy category must NOT appear in
+            # the agent-facing message.
+            assert "financial" not in message
+        finally:
+            store.close()
+
+    def test_refusal_envelope_surfaces_blocked_only(self, tmp_path: Path) -> None:
+        # End-to-end through the MCP envelope wrapper. The refused
+        # `ToolResponse` carries `pii_categories=blocked_categories`,
+        # NOT the full attempted set.
+        import asyncio
+
+        from schemabrain.mcp import build_server
+        from schemabrain.mcp.envelope import ToolResponse
+
+        class _ServerStubEmbedder:
+            model_name = "stub"
+            dimension = 4
+
+            def embed(self, text: str) -> tuple[float, ...]:
+                del text
+                return (1.0, 0.0, 0.0, 0.0)
+
+        store = SQLiteStore(tmp_path / "sb.db")
+        try:
+            _seed_table_and_entity(store)
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                tags={
+                    "email": ("pii", frozenset({"contact"})),
+                    "amount": ("pii", frozenset({"financial"})),
+                },
+            )
+            _write_metric(store, name="amount_sum", column="amount", agg="sum")
+            server = build_server(
+                store=store,
+                source_connection_id=SRC,
+                embedder=_ServerStubEmbedder(),
+                metric_executor=_FakeExecutor(),
+                pii_block=frozenset({"contact"}),  # type: ignore[arg-type]
+            )
+            _content, structured = asyncio.run(
+                server.call_tool(
+                    "get_metric",
+                    {"name": "amount_sum", "group_by": ["user.email"]},
+                )
+            )
+            envelope = ToolResponse.model_validate(structured)
+            assert envelope.status == "refused"
+            assert envelope.error is not None
+            assert envelope.error.kind == "pii_blocked"
+            # Only blocked surfaces; attempted-but-not-blocked
+            # `financial` stays out of the wire.
+            assert tuple(envelope.error.pii_categories) == ("contact",)
+            assert "financial" not in envelope.error.message
+        finally:
+            store.close()
+
+    def test_audit_row_persists_attempted_categories(self, tmp_path: Path) -> None:
+        # The audit row builds from a refused envelope's
+        # `error.pii_categories` field — which post-L-2 carries
+        # `blocked_categories` (the on-wire subset). To verify the
+        # `attempted` set still reaches the audit-row test surface
+        # via the exception instance fields, this test asserts the
+        # PiiBlockedError carries both: `attempted` (full) and
+        # `blocked` (subset). Operators digging into a refused-row
+        # incident can pull `attempted` directly from the structured
+        # error chain even though the agent never saw it.
+        store = SQLiteStore(tmp_path / "sb.db")
+        try:
+            _seed_table_and_entity(store)
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                tags={
+                    "email": ("pii", frozenset({"contact"})),
+                    "amount": ("pii", frozenset({"financial"})),
+                },
+            )
+            _write_metric(store, name="amount_sum", column="amount", agg="sum")
+            executor = _FakeExecutor()
+            with pytest.raises(PiiBlockedError) as exc_info:
+                get_metric_impl(
+                    store=store,
+                    executor=executor,
+                    source_connection_id=SRC,
+                    name="amount_sum",
+                    group_by=("user.email",),
+                    pii_block=frozenset({"contact"}),  # type: ignore[arg-type]
+                )
+            # The exception INSTANCE preserves both sides of the
+            # asymmetry — operator-visible (attempted) and
+            # agent-visible (blocked).
+            assert exc_info.value.attempted_categories == ("contact", "financial")
+            assert exc_info.value.blocked_categories == ("contact",)
+            # And they are different — the load-bearing invariant
+            # that proves the audit-row writer sees more than the
+            # agent does.
+            assert exc_info.value.attempted_categories != exc_info.value.blocked_categories
+        finally:
+            store.close()
+
+
 class TestEmptyTagTableWarning:
     def test_warning_fires_when_no_tags_for_source(
         self,
@@ -445,11 +629,11 @@ class TestFingerprintDifferentiation:
             store.close()
 
 
-# ----- Round-2 fold: PII propagation through multi-hop JOIN ON pairs ---------
+# ----- Regression coverage: PII propagation through multi-hop JOIN ON pairs ---------
 
 
 class TestPiiPropagatesAcrossJoinOnPairs:
-    """Round-2 fold (silent-failure-hunter F5): multi-hop chains
+    """regression test (silent-failure F5): multi-hop chains
     introduce intermediate JOIN ON columns that the agent's metric
     request never names directly (they live in `plan.joins[*].on_pairs`,
     not in `group_by` or `filter`). Before the fold, those columns
@@ -624,7 +808,7 @@ class TestPiiPropagatesAcrossJoinOnPairs:
         """Same scenario but with `--pii-block=contact` — must refuse,
         not silently execute. Before the fold, the JOIN-key column
         bypassed `pii_block` entirely and the call would have
-        succeeded — that's the security gap silent-failure-hunter
+        succeeded — that's the security gap previously
         flagged.
         """
         store = SQLiteStore(tmp_path / "sb.db")

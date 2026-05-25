@@ -244,9 +244,9 @@ class TestFilteringOutNonDml:
 class TestFilteringOutSchemaBrainProfilerQueries:
     """When a user runs `mine-queries` against a Postgres that they
     also ran `schemabrain index` against, `pg_stat_statements`
-    surfaces Schema Brain's own profiler SELECTs alongside their real
+    surfaces SchemaBrain's own profiler SELECTs alongside their real
     workload. Without filtering, those land in `example_queries` and
-    `get_example_queries` returns Schema Brain's indexing chatter to
+    `get_example_queries` returns SchemaBrain's indexing chatter to
     agents asking for example SQL — directly undermining the
     "real SQL agents have run" pitch.
 

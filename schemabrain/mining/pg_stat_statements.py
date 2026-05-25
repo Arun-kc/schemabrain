@@ -1,6 +1,6 @@
 """Reader for the source Postgres `pg_stat_statements` view.
 
-Schema Brain v0.5 mining harvests `(query, calls)` tuples from this
+SchemaBrain v0.5 mining harvests `(query, calls)` tuples from this
 view, then hands them to the pipeline for parsing and writing into
 the local `example_queries` table.
 

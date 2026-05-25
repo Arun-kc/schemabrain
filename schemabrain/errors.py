@@ -56,10 +56,10 @@ class GuidedError:
 # time with a confusing `ModuleNotFoundError: psycopg2`. Reject these
 # at the URL-parse boundary instead.
 _WRONG_DRIVER_HINT: dict[str, str] = {
-    "postgresql": "bare postgresql:// resolves to psycopg2 in SQLAlchemy; Schema Brain uses psycopg v3",
-    "postgres": "bare postgres:// resolves to psycopg2 in SQLAlchemy; Schema Brain uses psycopg v3",
-    "postgresql+psycopg2": "psycopg v2 is not bundled; Schema Brain uses psycopg v3",
-    "postgresql+asyncpg": "asyncpg is not bundled; Schema Brain uses psycopg v3 (sync)",
+    "postgresql": "bare postgresql:// resolves to psycopg2 in SQLAlchemy; SchemaBrain uses psycopg v3",
+    "postgres": "bare postgres:// resolves to psycopg2 in SQLAlchemy; SchemaBrain uses psycopg v3",
+    "postgresql+psycopg2": "psycopg v2 is not bundled; SchemaBrain uses psycopg v3",
+    "postgresql+asyncpg": "asyncpg is not bundled; SchemaBrain uses psycopg v3 (sync)",
 }
 
 
@@ -78,7 +78,7 @@ def url_wrong_driver(scheme: str, url: str) -> GuidedError | None:
     corrected = _swap_scheme(url, "postgresql+psycopg")
     return GuidedError(
         kind="url_wrong_driver",
-        message=f"connection URL uses {scheme}:// — Schema Brain only ships psycopg v3",
+        message=f"connection URL uses {scheme}:// — SchemaBrain only ships psycopg v3",
         why=_WRONG_DRIVER_HINT[scheme],
         fix=f"re-run with: {corrected}",
         next_step="see docs/setup.md for the canonical URL format",

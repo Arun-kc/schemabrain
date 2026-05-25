@@ -1,4 +1,4 @@
-"""Comprehensive stress test of Schema Brain's MCP surface.
+"""Comprehensive stress test of SchemaBrain's MCP surface.
 
 50+ scenarios across the categories an agent actually uses:
   - Schema discovery (find / list / describe)

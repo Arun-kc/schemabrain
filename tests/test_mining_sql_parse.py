@@ -4,7 +4,7 @@
 SQL string (as emitted by `pg_stat_statements`, including its `$1`/`$2`
 parameter placeholders) and returns the set of `(schema, table)` pairs
 the statement touches. Pipeline code uses the result to filter mined
-rows down to tables that are actually in the Schema Brain index.
+rows down to tables that are actually in the SchemaBrain index.
 
 Contract:
   - Returns `frozenset[tuple[str | None, str]]` so the caller can
@@ -175,7 +175,7 @@ class TestSqlglotLoggerSilenced:
     """The mining module silences sqlglot's own warning-level chatter
     at module import. Without this, statements like `SHOW transaction
     isolation level` or `CREATE EXTENSION ...` (captured by
-    `pg_stat_statements` from Schema Brain's own connection setup,
+    `pg_stat_statements` from SchemaBrain's own connection setup,
     not user code) make sqlglot log `'show ...' contains unsupported
     syntax. Falling back to parsing as a 'Command'.` to stderr — one
     noisy line per non-DML statement in a mining batch.
@@ -197,7 +197,7 @@ class TestSqlglotLoggerSilenced:
 
 
 class TestIsProfilerQuery:
-    """Schema Brain's own profiler emits two distinctive SELECT shapes
+    """SchemaBrain's own profiler emits two distinctive SELECT shapes
     against every indexed table during `schemabrain index`. When the
     user runs `mine-queries` against the same Postgres after indexing,
     `pg_stat_statements` surfaces those profiler statements alongside
@@ -276,7 +276,7 @@ class TestIsProfilerQuery:
     def test_detection_is_case_insensitive_for_keyword_resilience(self) -> None:
         """Some psql tooling lowercases or uppercases keywords. The
         alias literals themselves (`nn_0`, `v`) stay verbatim because
-        Schema Brain emits them with double-quoted column identifiers
+        SchemaBrain emits them with double-quoted column identifiers
         and lowercase aliases; the surrounding keywords may shift.
         """
         sql = (

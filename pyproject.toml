@@ -1,7 +1,7 @@
 [project]
 name = "schemabrain"
-version = "0.3.0"
-description = "An MCP server that gives AI agents deep semantic understanding of any production database."
+version = "0.4.0"
+description = "The SQL firewall between AI agents and your production database."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

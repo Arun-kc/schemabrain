@@ -1,6 +1,6 @@
 # End-to-end ecommerce example
 
-A complete Schema Brain setup for the bundled ecommerce fixture
+A complete SchemaBrain setup for the bundled ecommerce fixture
 (7 tables: `users`, `addresses`, `orders`, `order_items`, `products`,
 `categories`, `product_categories`). Walks from `pip install` to an
 MCP agent that resolves a *validated* metric end-to-end — no
@@ -35,7 +35,7 @@ them next to the README walkthrough.
 
 ## Prerequisites
 
-- Schema Brain installed: `pip install schemabrain` (or
+- SchemaBrain installed: `pip install schemabrain` (or
   `uv sync --extra dev` from a clone).
 - A Postgres reachable on `postgresql+psycopg://...` with the bundled
   ecommerce SQL loaded. The one-liner from the top-level README:
@@ -138,7 +138,7 @@ haven't yet), ask the same question in the desktop UI. Claude is free
 to call the validated `get_metric("total_revenue", by="month")` tool
 or to compose an answer from the schema-introspection tools — exactly
 which path it picks depends on the agent's reasoning. When it does
-take the `get_metric` route, the SQL is compiled by Schema Brain from
+take the `get_metric` route, the SQL is compiled by SchemaBrain from
 the YAML you applied, not invented by the agent.
 
 ### 7. Watch the tool call live
@@ -164,11 +164,11 @@ schemabrain audit list --since 1h
 ## What you proved
 
 The agent answered a domain question (*revenue per month*) without
-writing SQL. Schema Brain compiled the metric from your `total_revenue`
+writing SQL. SchemaBrain compiled the metric from your `total_revenue`
 YAML + the `customer_orders` join + the `order` entity, executed it
 against the source, and returned rows. Every step is visible in
 `tail`, durable in `mcp_audit`, and reproducible — the same question
 asked twice produces the same `fingerprint` digest in the audit row.
 
-That's the wedge: **the agent never wrote SQL. Schema Brain did, from
+That's the wedge: **the agent never wrote SQL. SchemaBrain did, from
 definitions you controlled.**

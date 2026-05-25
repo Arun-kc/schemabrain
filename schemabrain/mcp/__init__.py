@@ -1,6 +1,6 @@
-"""Schema Brain MCP server.
+"""SchemaBrain MCP server.
 
-Exposes the local Schema Brain store to AI agents over the Model Context
+Exposes the local SchemaBrain store to AI agents over the Model Context
 Protocol. Four tools ship in v0:
 
   - `find_relevant_tables(query, limit=10)` — embedding-cosine retrieval
