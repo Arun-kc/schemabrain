@@ -155,7 +155,7 @@ jobs:
           echo "owner_lc=${OWNER_LC}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
         with:
           platforms: arm64
 
