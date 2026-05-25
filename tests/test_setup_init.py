@@ -215,7 +215,7 @@ class TestInitToClaudeDesktop:
 
 
 class TestInitInstallToClaudeDesktopMalformedConfig:
-    """Round-2 fold HIGH (silent-failure-hunter): the TOCTOU mirror
+    """Regression coverage: the TOCTOU mirror
     of the MalformedConfigError wrap in `compare_existing_claude_desktop_entry`.
 
     Covers the case where the config was malformed between the
@@ -921,7 +921,7 @@ class TestCompareExistingClaudeDesktopEntry:
         assert result.differing_field_names == ("env",)
 
     def test_malformed_config_wraps_as_init_refusal(self, tmp_path: Path) -> None:
-        # Round-2 fold HIGH (silent-failure-hunter): pre-fold, the
+        # Regression coverage: pre-fold, the
         # docstring CLAIMED this function "raises InitRefusal if the
         # config file is present but malformed" — but the code
         # raised MalformedConfigError directly. The wizard's

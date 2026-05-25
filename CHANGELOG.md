@@ -60,7 +60,7 @@ the same code that ran it regardless of how schemabrain was installed
 
 ## [0.3.0] - 2026-05-20
 
-**Highlights** — Schema Brain v0.3.0 is the first release where the
+**Highlights** — SchemaBrain v0.3.0 is the first release where the
 "pluggable semantic+SQL firewall for agents" positioning is honest
 end-to-end. Ships: validated-SQL `get_metric` (the agent never sees
 or writes SQL); tamper-evident `mcp_audit` append-only chain with
@@ -86,7 +86,7 @@ trio per release.
   CLI design-system migration arc (PR #7; PRs #71/#72/#73 +
   #4/#5/#6 prior). Three surfaces upgraded in one bundle:
 
-  - **`schemabrain inspect`** summary replaces the `Schema Brain
+  - **`schemabrain inspect`** summary replaces the `SchemaBrain
     inspect` plain header with `◆ store · <path>` brand line.
     Below the existing Definitions Tree, a balanced
     3-Panel grid (`entities · N` / `metrics · N` / `joins · N`)
@@ -133,7 +133,7 @@ trio per release.
   + singular/plural grammar), `tests/test_ui_primitives.py` (+5
   tests pinning the `short_path` `$HOME` collapse). 11 existing
   test assertions flipped from old shape to design vocabulary
-  (`Schema Brain inspect` / `Entity: customer` / `Dry-run:` /
+  (`SchemaBrain inspect` / `Entity: customer` / `Dry-run:` /
   `Est. cost:` / `Stale since` (Rich path only) → `◆ store` /
   `◆ public.users · entity:customer` / `◆ plan` / `est. cost`
   (lowercased) / `→ freshness audit` (Rich path only)).
@@ -237,7 +237,7 @@ trio per release.
   design-system migration arc (PR #4 of #71/#72/#73/#4/...).
   Output reshape: a cyan brand line
   (``◆ environment · {cwd} · {host} · {os}    N / M healthy``)
-  replaces the old ``Schema Brain doctor — N pass, N warn, N fail``
+  replaces the old ``SchemaBrain doctor — N pass, N warn, N fail``
   header. A progress rule above the grid surfaces total elapsed
   time (``  N checks  ────────  {elapsed} ms``). Per-check rows
   render in a Table.grid with columns ``ordinal · glyph · name ·
@@ -277,7 +277,7 @@ trio per release.
   (``  7 stages  ────────  {elapsed} · {advisory count}``)
   summarises the run shape before the operator scans rows. The
   bordered cyan header Panel collapses to a one-line brand line
-  (``◆ Schema Brain init — activating for {host}. ~30s.``) so the
+  (``◆ SchemaBrain init — activating for {host}. ~30s.``) so the
   visual weight lands on the stages, not the framing. The local
   ``_STAGE_GLYPHS`` + ``_STAGE_PANEL_BORDER`` dicts in
   ``schemabrain/cli.py`` are removed; stage status routes through
@@ -469,7 +469,7 @@ trio per release.
   the bare string has no scheme. Both commands now route through the
   existing `_resolve_url` helper which intercepts the `ValueError`
   and emits a guided `url_invalid` block with exit code 2.
-  Regression test in `tests/test_smoke_2026_05_19_fixes.py::TestB2_*`.
+  Regression test in `tests/test_polish_bundle_regressions.py::TestB2_*`.
 - **Bundled `ecommerce.sql` fixture now seeds orders / order_items /
   product_categories rows.** Pre-fix, the fixture seeded only users
   / addresses / products / categories — `orders` and `order_items`
@@ -858,7 +858,7 @@ trio per release.
   emits a parseable contract `{drifts, summary, exit_code}` to
   stdout for CI / monitoring scripts.
 - `docker-compose.yml` at the repo root: one-command demo stack
-  (Postgres 16 + bundled fixture loader + Schema Brain indexer). The
+  (Postgres 16 + bundled fixture loader + SchemaBrain indexer). The
   stack reaches `Done` with a populated store on a named volume
   (`sb-data`) that survives `docker compose down`. README's "Run via
   Docker" section documents the `docker run`-based MCP host wiring
@@ -947,7 +947,7 @@ trio per release.
 ## [0.2.0a1] - 2026-05-15
 
 ### Added
-- PEP 561 `py.typed` marker shipped in the wheel. Schema Brain's
+- PEP 561 `py.typed` marker shipped in the wheel. SchemaBrain's
   source carries full type annotations on every public function
   signature; the marker tells downstream type checkers (mypy,
   pyright, pyrefly) to use them. Without it, the checkers silently
@@ -1048,10 +1048,10 @@ trio per release.
   week.
 
 ### Changed
-- `schemabrain mine-queries` now filters Schema Brain's own profiler
+- `schemabrain mine-queries` now filters SchemaBrain's own profiler
   SELECT statements out of the mined `example_queries` set.
   Previously, running `mine-queries` against a Postgres that was also
-  indexed surfaced Schema Brain's own profiling chatter (positional-
+  indexed surfaced SchemaBrain's own profiling chatter (positional-
   alias counts queries and `::text AS v` value samplers) alongside
   real user workload, polluting what `get_example_queries` returned
   to agents. The filter is narrow — joint signatures only, so

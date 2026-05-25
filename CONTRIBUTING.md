@@ -1,6 +1,6 @@
-# Contributing to Schema Brain
+# Contributing to SchemaBrain
 
-Thanks for your interest. Schema Brain is alpha and the public surface
+Thanks for your interest. SchemaBrain is alpha and the public surface
 is small, but the engineering bar is intentionally high — the goal is a
 codebase that stays maintainable as it grows.
 
@@ -21,7 +21,7 @@ is unclear, open an issue rather than guessing.
 
 ## Dev environment
 
-Schema Brain uses [uv](https://docs.astral.sh/uv/) for dependency
+SchemaBrain uses [uv](https://docs.astral.sh/uv/) for dependency
 management. Install it first:
 
 ```bash
@@ -36,7 +36,7 @@ cd schemabrain
 uv sync --extra dev
 ```
 
-This installs Schema Brain plus the `dev` extras (`pytest`, `pytest-cov`,
+This installs SchemaBrain plus the `dev` extras (`pytest`, `pytest-cov`,
 `ruff`, `testcontainers`) into `.venv/`. Subsequent `uv run <cmd>`
 invocations use that venv automatically.
 
@@ -112,7 +112,7 @@ opening an issue first:
   functions.** The FastMCP wiring in `server.py` is a thin adapter — keep
   it that way so the impls stay testable without touching the transport.
 - **The `eval/golden_sets/ecommerce.json` set is ONE example domain, not
-  a default.** Schema Brain is generic; the bundled e-commerce schema is
+  a default.** SchemaBrain is generic; the bundled e-commerce schema is
   there so the eval CLI works out of the box. Don't add e-commerce-specific
   logic to anything outside the `golden_sets/` and `fixtures/` directories.
 - **Postgres URLs always use `postgresql+psycopg://`** (we use psycopg v3,

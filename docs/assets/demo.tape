@@ -1,4 +1,4 @@
-# Schema Brain demo recording — scripted with charmbracelet/vhs.
+# SchemaBrain demo recording — scripted with charmbracelet/vhs.
 #
 # vhs renders this tape into a reproducible animated GIF. The output is
 # read by the README hero. Re-render after any user-visible CLI surface
@@ -105,5 +105,5 @@ Type "schemabrain tail --since 5m"
 Enter
 Sleep 4s
 
-Type "# The agent never wrote SQL. Schema Brain did."
+Type "# The agent never wrote SQL. SchemaBrain did."
 Sleep 2s

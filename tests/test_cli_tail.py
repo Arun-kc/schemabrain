@@ -205,7 +205,7 @@ class TestTailFlagResolution:
 
 
 class TestTailStorePathResolution:
-    """Smoke 2026-05-19: `tail --store-path` was rejected with an
+    """Regression coverage: `tail --store-path` was rejected with an
     unhelpful argparse "unrecognized arguments" error. Operators
     reflexively pass `--store-path` (every other subcommand accepts
     it). Accept it as a documented surface-parity flag and use it
@@ -249,8 +249,8 @@ class TestTailStorePathResolution:
     ) -> None:
         # No sibling events.jsonl → fall through to the default path
         # AND emit a one-line note so the operator knows which file
-        # we ended up reading. The note is the Round-2 fold against
-        # the silent-failure-hunter finding: silently using the
+        # we ended up reading. The note is the regression case against
+        # this regression finding: silently using the
         # default `~/.schemabrain/events.jsonl` after the operator
         # passed `--store-path` is rarely the right outcome.
         store_path = tmp_path / "schemabrain.db"

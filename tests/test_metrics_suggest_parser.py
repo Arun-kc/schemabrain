@@ -583,11 +583,11 @@ candidates:
         parse_suggestions(text)
 
 
-# ----- description anti-pattern validation (Gap #5 belt-and-suspenders) ------
+# ----- description anti-pattern validation (an earlier gap belt-and-suspenders) ------
 
 
 def test_parse_suggestions_rejects_admits_aggregation_cannot_deliver() -> None:
-    """Gap #5 regression — 2026-05-21 smoke surfaced a metric where the
+    """an earlier gap regression — 2026-05-21 smoke surfaced a metric where the
     LLM admitted in its own description that the aggregation couldn't
     deliver what the name promised: `total_order_item_revenue` with
     measure `sum(unit_price_cents)` and description "unit_price_cents

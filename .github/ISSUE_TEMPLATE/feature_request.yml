@@ -1,12 +1,12 @@
 name: Feature request
-description: Suggest something Schema Brain should do that it doesn't.
+description: Suggest something SchemaBrain should do that it doesn't.
 title: "[feat] "
 labels: ["enhancement", "triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        Schema Brain has a deliberately small surface — most "missing"
+        SchemaBrain has a deliberately small surface — most "missing"
         features are deferred on purpose, not forgotten. Please describe
         the underlying problem first; the maintainer will propose the
         smallest fix rather than implementing the requested change verbatim.
@@ -57,7 +57,7 @@ body:
     id: scope
     attributes:
       label: Scope check
-      description: "Schema Brain v0 stays small on purpose. Please confirm:"
+      description: "SchemaBrain v0 stays small on purpose. Please confirm:"
       options:
         - label: I've checked the README's "Roadmap" section to see if this is already planned.
           required: true

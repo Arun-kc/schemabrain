@@ -290,7 +290,7 @@ class TestEnvelopeSuccess:
         assert envelope.data[0]["time_grains"] == ["day", "week", "month"]
 
     def test_envelope_non_temporal_metric_round_trips(self, tmp_path: Path) -> None:
-        """Round-2 fold (Reality Checker M1): pin the parallel-emptiness
+        """regression test (reality check M1): pin the parallel-emptiness
         invariant (`time_dimension is None` iff `time_grains == ()`)
         at the wire boundary, not just at `Metric` construction. A
         non-temporal metric should round-trip with `time_dimension=None`
@@ -310,7 +310,7 @@ class TestEnvelopeSuccess:
         assert envelope.data[0]["time_grains"] == []
 
     def test_envelope_success_hint_includes_describe_entity(self, tmp_path: Path) -> None:
-        """Round-2 fold (silent-failure-hunter F2): the agent needs
+        """regression test (silent-failure F2): the agent needs
         `describe_entity` to interpret an opaque `measure_column`
         before invoking `get_metric` with a related `group_by`.
         Both `get_metric` and `describe_entity` must appear in the
@@ -329,7 +329,7 @@ class TestEnvelopeSuccess:
 
 
 class TestEnvelopeStoreFailure:
-    """Round-2 fold (Reality Checker): the `_wrap_internal_error`
+    """Regression coverage: the `_wrap_internal_error`
     branch in `list_metrics` was uncovered post-commit. A store that
     raises should surface as a structurally-valid `error` envelope,
     not propagate the exception as a raw traceback.

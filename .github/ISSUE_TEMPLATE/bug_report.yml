@@ -44,7 +44,7 @@ body:
   - type: input
     id: schemabrain-version
     attributes:
-      label: Schema Brain version
+      label: SchemaBrain version
       description: Output of `pip show schemabrain | grep -i version` or the commit SHA.
       placeholder: "0.0.0 / commit ee9e357"
     validations:

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# Two-stage build for a Schema Brain runtime container.
+# Two-stage build for a SchemaBrain runtime container.
 #
 # Stage 1 (builder) installs build deps, builds the package into a venv,
 # and pre-pulls the fastembed ONNX model so the runtime image does not
@@ -42,7 +42,7 @@ RUN pip install --upgrade pip \
 # Pre-pull the local embedding model into a known path that the runtime
 # stage can copy. `FASTEMBED_CACHE_PATH` is the env var the fastembed
 # library reads when its `cache_dir` constructor argument is None, which
-# is how Schema Brain instantiates it.
+# is how SchemaBrain instantiates it.
 ENV FASTEMBED_CACHE_PATH=/build/.fastembed
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-small-en-v1.5')"
 

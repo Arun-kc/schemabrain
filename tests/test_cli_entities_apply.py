@@ -739,7 +739,7 @@ class TestMultiPath:
     def test_db_error_mid_loop_flushes_applied_before_exit_two(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # Covers the silent-failure-hunter fold: when the SQLite store
+        # Covers this regression case: when the SQLite store
         # raises a non-Integrity DatabaseError mid-loop, the CLI returns
         # exit 2 but must FLUSH the per-file summary first so the user
         # sees which files DID land before the structural error.

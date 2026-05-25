@@ -1,4 +1,4 @@
-"""Smoke 2026-05-19: `schemabrain serve` must emit a guided block
+"""Regression coverage: `schemabrain serve` must emit a guided block
 instead of a Python traceback when the local store is on a different
 schema version.
 
@@ -94,13 +94,13 @@ def _seed_corrupted_store(path: Path) -> None:
 
     SQLite refuses to open this with `DatabaseError: file is not a
     database`, mirroring the hard-shutdown / truncated-WAL / OS-level
-    corruption case the Round-2 fold covers.
+    corruption case the regression case covers.
     """
     path.write_bytes(b"NOT_A_VALID_SQLITE_HEADER" + b"\x00" * 100)
 
 
 class TestServeStoreCorrupted:
-    """Round-2 fold (convergent python + silent-failure finding): a
+    """Regression coverage: a
     corrupted store file surfaces as `sqlite3.DatabaseError`, NOT as
     `OSError` or `SchemaVersionMismatchError`. Before this fix, the
     bare exception would bubble up to MCP stderr as a Python

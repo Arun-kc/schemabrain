@@ -4,7 +4,7 @@ row volume + skewed purchase distribution.
 Why this exists: the original fixture had 3 users / 3 orders, which made
 queries like `get_metric(name="total_items_sold", group_by=["user.email"],
 limit=5)` return only 3 rows — too few to demonstrate ranking. PR-6h.3
-(Gap #4 from the 2026-05-21 smoke) widened it to ~80 users with a
+(operator feedback) widened it to ~80 users with a
 Pareto-shaped order distribution so "find users who bought the most
 products" returns a clear, interpretable leaderboard.
 
@@ -460,11 +460,11 @@ def _emit_order_items(rows: list[tuple]) -> str:
 
 
 _HEADER = """\
--- ONE example fixture for the bundled Schema Brain eval set.
+-- ONE example fixture for the bundled SchemaBrain eval set.
 --
 -- E-commerce was chosen as the bundled example domain only because its
 -- tables (users/orders/products/order_items) are universally legible —
--- NOT because Schema Brain targets e-commerce. Schema Brain is a
+-- NOT because SchemaBrain targets e-commerce. SchemaBrain is a
 -- generic semantic layer for ANY production database. Future bundled
 -- fixtures (HR, analytics, healthcare-light) drop into this same
 -- `fixtures/` directory; users author their own `.sql` + matching

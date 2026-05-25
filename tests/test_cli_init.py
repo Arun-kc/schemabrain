@@ -1141,13 +1141,13 @@ class TestWizardRenderer:
     ) -> None:
         # On a TTY, slow stages (index, entities, metrics) get the
         # spinner via console.status with the dots spinner. `metrics`
-        # was added after smoke 2026-05-19 surfaced stage 4 looking
+        # was added after an earlier smoke surfaced stage 4 looking
         # frozen for ~56s; the test pins all three so a future
         # regression here is loud.
         from schemabrain.cli import _wizard_stage_context
 
         class _RecordingStatus:
-            # Round-2 fold: include no-op `start()` / `stop()` so the
+            # Regression coverage: include no-op `start()` / `stop()` so the
             # stub also satisfies `_ui._PausableSpinner`. The current
             # test only exercises the context-manager path, but the
             # production code now registers this same status with

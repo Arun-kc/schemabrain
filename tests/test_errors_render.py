@@ -290,7 +290,7 @@ class TestRenderLlmFailure:
         assert "Anthropic returned an error" in out
 
     def test_unknown_kind_raises_assertion_error(self) -> None:
-        # Round-2 fold MED (python-reviewer): contract moved from
+        # Regression coverage: contract moved from
         # `raise ValueError("unknown kind")` to `typing.assert_never`
         # so static type-checkers (mypy / pyright) flag a missing
         # branch BEFORE the test runs. Runtime guard is now an
@@ -415,7 +415,7 @@ class TestClassifyLlmFailure:
 
 
 class TestCauseFromLlmError:
-    """Round-1 fold M3: `cause_from_llm_error` extracts a one-line
+    """Regression coverage: `cause_from_llm_error` extracts a one-line
     cause string from an Anthropic SDK exception. Lifted from
     `cli._try_render_llm_failure` so the `getattr(exc, "message", ...)`
     untyped access lives next to `classify_llm_failure` — single
