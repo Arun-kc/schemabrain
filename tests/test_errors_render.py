@@ -26,6 +26,8 @@ import pytest
 from rich.console import Console
 
 from schemabrain.errors_render import (
+    _is_overloaded_error,
+    _llm_failure_retry_hint,
     cause_from_llm_error,
     classify_llm_failure,
     render_bad_argument_error,
@@ -300,6 +302,16 @@ class TestRenderLlmFailure:
         with pytest.raises(AssertionError):
             _render(self._default_call(kind="not_a_kind"))
 
+    def test_unknown_kind_in_retry_hint_raises_assertion_error(self) -> None:
+        # `_llm_failure_retry_hint` carries its own `assert_never`
+        # exhaustiveness guard (parallel to `_llm_failure_titles`).
+        # Exercise it directly: the public render path raises on
+        # `_llm_failure_titles` first, so the retry-hint guard never
+        # runs through the public surface and would silently drift
+        # if a future kind was added to titles but missed here.
+        with pytest.raises(AssertionError):
+            _llm_failure_retry_hint("not_a_kind")  # type: ignore[arg-type]
+
     def test_cause_string_rendered_under_glyph(self) -> None:
         out = _render(self._default_call(cause="upstream connect error · 5s timeout"))
         assert "upstream connect error · 5s timeout" in out
@@ -412,6 +424,40 @@ class TestClassifyLlmFailure:
         exc = anthropic.APIStatusError.__new__(anthropic.APIStatusError)
         exc.status_code = 529  # type: ignore[attr-defined]
         assert classify_llm_failure(exc) == "overloaded"
+
+    def test_bare_api_error_base_class_classifies_as_api_error(self) -> None:
+        # Branch coverage: an instance of `anthropic.APIError` that
+        # is NOT an `APIStatusError` or `APIConnectionError` subclass
+        # (e.g. a future SDK addition that lands directly under
+        # `APIError`) must still classify as "api_error" via the
+        # fallback isinstance check, not silently return None.
+        import anthropic
+
+        exc = anthropic.APIError.__new__(anthropic.APIError)
+        assert classify_llm_failure(exc) == "api_error"
+
+
+class TestIsOverloadedError:
+    """`_is_overloaded_error` is a small SDK-version-shim that recognizes
+    529s through either the dedicated `OverloadedError` class (newer
+    SDKs) or the `status_code` attribute (older SDKs). Both branches
+    matter — different SDK versions hit different paths.
+    """
+
+    def test_returns_true_when_exc_is_overloaded_class_instance(self) -> None:
+        # Branch coverage: when the anthropic module exposes
+        # `OverloadedError` AND `exc` is an instance, the class-isinstance
+        # path returns True without falling through to status_code.
+        # Use a synthetic module so the test runs regardless of which
+        # SDK version ships in CI.
+        from types import SimpleNamespace
+
+        class FakeOverloadedError(Exception):
+            pass
+
+        mock_module = SimpleNamespace(OverloadedError=FakeOverloadedError)
+        exc = FakeOverloadedError()
+        assert _is_overloaded_error(exc, anthropic_module=mock_module) is True
 
 
 class TestCauseFromLlmError:
