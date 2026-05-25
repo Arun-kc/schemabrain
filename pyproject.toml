@@ -78,7 +78,7 @@ dev = [
     # Marked `slow` so the default `pytest` run skips it; the `slow`
     # CI job (or `pytest -m slow` locally) runs it and gates the
     # `find_relevant_tables` < 100ms-at-10k-cols Charter target.
-    "pytest-benchmark>=4.0,<6.0",
+    "pytest-benchmark>=5.2.3,<6.0",
     # Hypothesis powers the property-based tests on the metric
     # compiler (Q16 in `project_v1_quality_plan.md`) — required because
     # the compiler is a v2-substrate seam where the single-statement /
