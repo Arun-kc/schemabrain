@@ -1474,6 +1474,16 @@ def build_server(
             recovery_args: dict[str, Any] | None = None
             if exc.anchor_entity is not None:  # pragma: no branch
                 recovery_args = {"name": exc.anchor_entity}
+            # Surface only `blocked_categories` (the policy
+            # intersection that actually triggered refusal) in the
+            # agent-facing envelope. `attempted_categories` — the
+            # full propagated set of categories the metric touched —
+            # would let an adversarial agent probe `get_metric` with
+            # different `group_by` columns, read which categories
+            # surface, and reconstruct the full PII tagging in
+            # O(columns) calls without ever calling `describe_entity`.
+            # The full `attempted_categories` tuple stays operator-
+            # visible in the audit row (see `_resolve_pii_categories`).
             return ToolResponse(
                 status="refused",
                 error=ToolError(
@@ -1483,7 +1493,7 @@ def build_server(
                         suggested_tool="describe_entity",
                         suggested_args=recovery_args,
                     ),
-                    pii_categories=exc.attempted_categories,
+                    pii_categories=exc.blocked_categories,
                 ),
             )
         except UnknownMetricError as exc:
