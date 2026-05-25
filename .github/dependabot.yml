@@ -1,6 +1,6 @@
-# Dependabot configuration for Schema Brain.
+# Dependabot configuration for SchemaBrain.
 #
-# Why this exists: Schema Brain ships seven runtime dependencies — all
+# Why this exists: SchemaBrain ships seven runtime dependencies — all
 # under active development (anthropic, fastembed, mcp, sqlalchemy,
 # psycopg, fastmcp, pydantic). Without Dependabot, a known-CVE patch
 # release lands silently. With it, we get a PR on the day a security

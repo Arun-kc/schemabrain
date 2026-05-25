@@ -363,15 +363,18 @@ def _resolve_pii_categories(
         if blocked:
             attempted_tuple = cast(tuple[PIICategory, ...], tuple(sorted(propagated)))
             blocked_tuple = cast(tuple[PIICategory, ...], tuple(sorted(blocked)))
-            # Message intentionally omits the operator's `--pii-block`
-            # set — exposing the exact policy lets an adversarial
-            # agent map the full enforcement envelope by probing
-            # multiple metrics. The blocked subset stays internal to
-            # the audit row (which the agent never sees) and the
-            # PiiBlockedError instance fields.
+            # Message references `blocked_tuple` — the policy
+            # intersection that actually triggered refusal — not
+            # `attempted_tuple` (the full propagated set). Surfacing
+            # `attempted` to the agent would be a probe oracle: an
+            # adversarial agent could iterate `get_metric` calls with
+            # different `group_by` columns and reconstruct the full
+            # PII tagging in O(columns) calls without ever calling
+            # `describe_entity`. `attempted_tuple` stays in the audit
+            # row (operator-visible) via the `PiiBlockedError` field.
             raise PiiBlockedError(
                 f"get_metric refused: metric touches PII categories "
-                f"{list(attempted_tuple)} that this server policy blocks",
+                f"{list(blocked_tuple)} that this server policy blocks",
                 attempted_categories=attempted_tuple,
                 blocked_categories=blocked_tuple,
                 anchor_entity=plan.metric.entity,

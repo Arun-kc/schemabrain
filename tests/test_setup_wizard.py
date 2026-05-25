@@ -167,7 +167,7 @@ class TestStageOutcome:
             StageOutcome(stage=1, name="x", status="done", message="m", duration_s=-0.1)
 
     def test_user_cancelled_defaults_to_false(self) -> None:
-        # Round-1 fold H3: the field is opt-in; non-F3 stage
+        # Regression coverage: the field is opt-in; non-F3 stage
         # handlers never need to set it.
         outcome = StageOutcome(stage=1, name="x", status="done", message="m")
         assert outcome.user_cancelled is False
@@ -637,7 +637,7 @@ class TestStageSourceCheck:
         err = GuidedError(
             kind="init_source_not_read_only",
             message="source session reports default_transaction_read_only='off'",
-            why="Schema Brain requires a read-only session",
+            why="SchemaBrain requires a read-only session",
             fix="grant the role permission to SET read-only",
             next_step=None,
         )
@@ -4732,7 +4732,7 @@ class TestPromptLlmConfirmation:
         assert "custom-stage" in captured.err
 
     def test_pauses_registered_spinner_around_input(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Smoke 2026-05-19 surfaced the bug this fixes: Rich's status
+        # Regression coverage: Rich's status
         # spinner kept refreshing during ``input()``, reading as
         # "stage is already running". The helper must pause the
         # registered spinner before blocking and restart it after.
@@ -5250,7 +5250,7 @@ class TestStageWireHostF3InlineOverwrite:
     ) -> None:
         # Interactive + differs + user says no → failed StageOutcome
         # with `user_cancelled=True` so `_cmd_init` maps to exit 0
-        # (graceful cancel, not error). Round-1 fold H3 replaced
+        # (graceful cancel, not error). Regression coverage replaced
         # the message-prefix-coupling shape with this typed field.
         from schemabrain.setup.init_flow import ClaudeDesktopEntryComparison
 
@@ -5446,7 +5446,7 @@ class TestLlmFailureNextStep:
         assert "schemabrain metrics apply" in out
 
     def test_unknown_kind_raises_value_error(self) -> None:
-        # Round-1 fold L1: a typo (or a new LlmFailureKind value
+        # Regression coverage: a typo (or a new LlmFailureKind value
         # forgotten in this dispatch) must fail loudly rather than
         # silently returning the None-fallback copy. Matches the
         # posture of `errors_render._llm_failure_titles` and

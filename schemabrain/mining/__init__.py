@@ -1,4 +1,4 @@
-"""Query log mining for Schema Brain.
+"""Query log mining for SchemaBrain.
 
 Reads observed SQL from a source database's `pg_stat_statements` view,
 parses each statement with `sqlglot` to identify which indexed tables

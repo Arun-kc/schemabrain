@@ -1,6 +1,6 @@
-"""Regression tests for the polish bundle from the 2026-05-19 manual smoke.
+"""Regression tests for an early-cycle polish bundle.
 
-Each test corresponds to one finding from `docs/internal/manual_smoke_2026_05_19.md`:
+Each test pins one operator-facing behavior that previously regressed:
 
 - B2: `inspect --source <VARNAME>` AND `check --source <VARNAME>` must emit a
   guided `url_invalid` error block, NOT crash with an unhandled `ValueError`
@@ -19,10 +19,6 @@ Each test corresponds to one finding from `docs/internal/manual_smoke_2026_05_19
   matters (MCP host reads the snippet's store, not the cwd's).
 - N2: `url_source_missing` error must hint at `--url-env DATABASE_URL` when
   the user's environment already has a URL-shaped DATABASE_URL.
-
-Grouped here for traceability against the smoke report; once the PR merges,
-the tests are still useful as regression checks even though their grouping
-is no longer load-bearing.
 """
 
 from __future__ import annotations
@@ -427,7 +423,7 @@ class TestS5_EcommerceFixtureHasTransactionalData:
 
     def test_fixture_is_demoable_volume_with_skewed_distribution(self) -> None:
         """Originally pinned exact totals (32997 + 8999 + 44997 = 86993)
-        from the 3-order fixture. PR-6h.3 (Gap #4 from the 2026-05-21
+        from the 3-order fixture. PR-6h.3 (an earlier gap from the 2026-05-21
         smoke) replaced that with a generator-driven ~80-user fixture
         with a Pareto-shaped order distribution so `get_metric(...,
         limit=5)` returns a real leaderboard, not a 3-row trivia

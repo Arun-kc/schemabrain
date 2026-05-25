@@ -1,4 +1,4 @@
-"""Tests for the Schema Brain Charter v1.0 CI lint.
+"""Tests for the SchemaBrain Charter v1.0 CI lint.
 
 The lint script lives at `scripts/charter_lint.py` and is the PR-gate
 enforcement for Charter §Enforcement Levels 1 and 2. The contracts it

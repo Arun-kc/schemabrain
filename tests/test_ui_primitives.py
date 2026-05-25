@@ -793,7 +793,7 @@ class TestOfferPersistAnthropicKeyToEnvFile:
 
         out = buf.getvalue()
         # Operator must see the leak-risk line before the prompt fires.
-        # Round-2 fold MED: when .gitignore is missing entirely, the
+        # regression test MED: when .gitignore is missing entirely, the
         # warning wording changed from "NOT listed in .gitignore"
         # (literally wrong) to "no .gitignore found" (honest).
         assert ".env" in out
@@ -903,7 +903,7 @@ class TestOfferPersistAnthropicKeyToEnvFile:
     def test_template_seed_writes_at_0o600_not_0o644(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Round-2 fold CRITICAL (python-reviewer): pre-fold,
+        # Regression coverage: pre-fold,
         # `shutil.copy(template, env)` preserved the template's
         # `0o644` mode bits; the subsequent `persist_key_to_env_file`
         # read that mode back in and preserved it — the API key
@@ -943,7 +943,7 @@ class TestOfferPersistAnthropicKeyToEnvFile:
     def test_warning_distinguishes_missing_gitignore_from_unlisted_env(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Round-2 fold MED (silent-failure-hunter): pre-fold, the
+        # Regression coverage: pre-fold, the
         # warning text said ".env is NOT listed in .gitignore" even
         # when no .gitignore existed at all — alarmist and literally
         # wrong. Fix branches the wording.

@@ -2,8 +2,8 @@
 
 Pins the desired `(column → (sensitivity, categories))` mapping for
 every column in `schemabrain/eval/fixtures/pii_mockup.sql`. The
-mockup encodes the four bug shapes the 2026-05-18 production-DB smoke
-surfaced (S1-S4 in `docs/internal/manual_smoke_2026_05_18.md`):
+mockup encodes four bug shapes the PII classifier must handle
+correctly:
 
   S1  `<noun>_name` in non-PII tables — `product_name`, `brand_name`,
       `category_name`, `language_name` must classify as `public`.

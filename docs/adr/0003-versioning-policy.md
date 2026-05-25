@@ -5,7 +5,7 @@
 
 ## Context
 
-Schema Brain ships on PyPI as `schemabrain`. Downstream agent
+SchemaBrain ships on PyPI as `schemabrain`. Downstream agent
 frameworks, MCP host configs, and tooling will pin version constraints
 that survive across releases. The MCP tool signatures, CLI argument
 shapes, and the Store Protocol (ADR 0002) are the public API surface.
@@ -93,7 +93,7 @@ so future contributors don't argue past each other.
 **Acknowledge the tension:**
 
 Semver's FAQ says *"If your software is being used in production, it
-should probably already be 1.0.0."* Schema Brain has live PyPI install
+should probably already be 1.0.0."* SchemaBrain has live PyPI install
 paths, so a strict reading pushes toward `1.0` sooner. We deliberately
 choose "battle-tested" over "in production" as the `1.0` trigger.
 That is an interpretive choice, not a spec mandate. The asymmetric

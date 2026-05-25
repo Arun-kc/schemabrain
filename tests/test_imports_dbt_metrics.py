@@ -9,10 +9,10 @@ Locks the dbt-metric-import contract:
   - Metrics whose anchor entity isn't in the import-time entity set
     skip with reason (the entity import didn't include the anchor)
   - Time granularity from the metric or semantic_model maps to the
-    Schema Brain time_grains tuple, canonical-sorted
+    SchemaBrain time_grains tuple, canonical-sorted
   - Non-temporal metrics (no time dim on the semantic_model) import
     with `time_dimension=None`, `time_grains=()`
-  - dbt agg names map to Schema Brain agg names
+  - dbt agg names map to SchemaBrain agg names
   - Origin is always `dbt_import`
 """
 
@@ -176,7 +176,7 @@ class TestSimpleMetricImport:
         assert metrics[0].description == "Sum of completed order totals."
 
     def test_subday_primary_grain_falls_through_to_options(self, tmp_path: Path) -> None:
-        # dbt accepts `hour`/`minute` but Schema Brain starts at `day`.
+        # dbt accepts `hour`/`minute` but SchemaBrain starts at `day`.
         # When `time_granularity` is sub-day, the importer ignores it
         # and falls back to `granularity_options` for valid grains.
         manifest_path = _write_manifest(
@@ -293,7 +293,7 @@ class TestSkipExpressions:
         assert skipped[0].reason == "non_column_expr"
 
     def test_unmapped_agg_skipped(self, tmp_path: Path) -> None:
-        # dbt has aggs like `percentile`, `median` that Schema Brain
+        # dbt has aggs like `percentile`, `median` that SchemaBrain
         # doesn't support at v1.
         manifest_path = _write_manifest(
             tmp_path,

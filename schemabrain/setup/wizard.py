@@ -213,13 +213,18 @@ class WizardConfig:
     from_dbt: Path | None = None
     skip_llm_confirm: bool = False
     # Default `--pii-block` categories written into the host snippet.
-    # `("contact",)` is the safe default — blocks the most universally
-    # sensitive PII (email, phone, address) without surprising the
-    # operator with over-broad refusals on benign columns. `()` opts
-    # out entirely (no `--pii-block` flag added to the snippet, server
-    # runs with enforcement off — useful for development databases
-    # or fully synthetic fixtures).
-    pii_block: tuple[str, ...] = ("contact",)
+    # The catastrophic-leak set (credential, payment_card,
+    # government_id) is the safe default — every category where a
+    # single leak is reportable under GDPR / CCPA / PCI-DSS / HIPAA
+    # and no plausible aggregate-analytics use case justifies the
+    # exposure. `()` opts out entirely (no `--pii-block` flag added
+    # to the snippet, server runs with enforcement off — useful for
+    # development databases or fully synthetic fixtures). The CLI
+    # `init` entrypoint resolves the default in `_cmd_init` and
+    # always passes an explicit value, so this dataclass-level
+    # default only governs programmatic callers constructing
+    # `WizardConfig` directly.
+    pii_block: tuple[str, ...] = ("credential", "government_id", "payment_card")
 
     def __post_init__(self) -> None:
         if self.host not in _VALID_HOSTS:
@@ -566,7 +571,7 @@ def _stage_source_check(ctx: WizardContext) -> StageOutcome:
 # Walk this many parents up from cwd looking for a `dbt_project.yml`
 # sentinel. Empirical: 3 levels covers nested-monorepo layouts where
 # the dbt project sits under `analytics/` or `etl/` from the
-# Schema Brain run directory. Beyond 3 invites cross-project misfires.
+# SchemaBrain run directory. Beyond 3 invites cross-project misfires.
 _DBT_DETECT_PARENT_LIMIT: int = 3
 
 

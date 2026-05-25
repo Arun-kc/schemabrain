@@ -1,4 +1,4 @@
-# Publishes Schema Brain to TestPyPI or PyPI via Trusted Publishers (OIDC).
+# Publishes SchemaBrain to TestPyPI or PyPI via Trusted Publishers (OIDC).
 #
 # No long-lived API tokens. PyPI/TestPyPI verify the workflow's OIDC token
 # against a pending-or-existing Trusted Publisher configured on each index.

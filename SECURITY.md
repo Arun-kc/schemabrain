@@ -1,12 +1,12 @@
 # Security Policy
 
-Schema Brain is an MCP server that connects to production-grade databases.
+SchemaBrain is an MCP server that connects to production-grade databases.
 We take vulnerability reports seriously. This document explains how to
 report a vulnerability, what to expect in response, and what is in scope.
 
 ## Supported Versions
 
-Schema Brain is in public beta (current line: `0.3.x`). Only the latest
+SchemaBrain is in public beta (current line: `0.3.x`). Only the latest
 minor and the `main` branch receive security fixes today. When 1.0 ships,
 this table will list the supported minor versions.
 
@@ -30,7 +30,7 @@ Use one of these private channels instead:
 2. **Email:** `arunkc91@gmail.com` with subject prefix `[schemabrain-security]`.
 
 A useful report includes:
-- Schema Brain version (`schemabrain --version`)
+- SchemaBrain version (`schemabrain --version`)
 - Python version and OS
 - Minimal reproduction steps
 - Impact assessment in your words (what an attacker could do)
@@ -38,7 +38,7 @@ A useful report includes:
 
 ## Response Expectations
 
-Schema Brain is currently maintained by one person on a part-time basis,
+SchemaBrain is currently maintained by one person on a part-time basis,
 which shapes the response targets below. These are *targets* — we'll
 publish a status update on the advisory thread if real life delays
 any of them.
@@ -59,7 +59,7 @@ the other channel.
 
 We follow a 90-day coordinated-disclosure window from the date the report
 is acknowledged. Reporters who would like credit will be acknowledged in
-the release notes (CHANGELOG.md) for the fix release. Schema Brain does
+the release notes (CHANGELOG.md) for the fix release. SchemaBrain does
 not currently offer a bug bounty.
 
 ## In Scope
@@ -83,11 +83,11 @@ not currently offer a bug bounty.
   alone won't close, please report it here.
 - Supply-chain compromise of a build-time-only dep (e.g. a test
   framework, a CI tool) that does not materially affect the published
-  PyPI wheel. Schema Brain's distributable artifacts are gated by
+  PyPI wheel. SchemaBrain's distributable artifacts are gated by
   `pip-audit` and the deps declared in `pyproject.toml`'s `dev` extra
   do not ship to end users.
-- Self-hosted deployments of Schema Brain where the operator has
-  intentionally exposed it to untrusted networks. Schema Brain is
+- Self-hosted deployments of SchemaBrain where the operator has
+  intentionally exposed it to untrusted networks. SchemaBrain is
   designed for local-only use today; hardened multi-tenant operation is
   on the roadmap, not the current product.
 - Issues that require an already-compromised host or root access to
@@ -99,7 +99,7 @@ not currently offer a bug bounty.
 
 ## Security Posture Today
 
-Schema Brain currently:
+SchemaBrain currently:
 
 - Validates and canonicalizes Postgres URLs at the boundary, stripping
   credentials before any logging or display
@@ -112,7 +112,7 @@ Schema Brain currently:
 - Restricts the source-database connection to read-only access: the
   profiler issues `SELECT` queries only. No `INSERT`, `UPDATE`,
   `DELETE`, or `DROP` codepaths exist against the source database.
-  (Schema Brain's own local SQLite store is written to, of course —
+  (SchemaBrain's own local SQLite store is written to, of course —
   that's the cache.)
 - Runs `pip-audit`, `bandit`, and `semgrep` on every PR via CI
 

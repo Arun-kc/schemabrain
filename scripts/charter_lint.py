@@ -1,4 +1,4 @@
-"""Schema Brain MCP Charter v1.0 — CI lint.
+"""SchemaBrain MCP Charter v1.0 — CI lint.
 
 Promotes Charter §Enforcement Levels 1 and 2 from unit-test-level
 assertions to a PR-gate check. Runs in CI before the unit suite so a

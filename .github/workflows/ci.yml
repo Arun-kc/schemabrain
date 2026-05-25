@@ -1,4 +1,4 @@
-# GitHub Actions CI for Schema Brain.
+# GitHub Actions CI for SchemaBrain.
 #
 # Two jobs run on every push to `main` and every pull request:
 #   - lint-and-unit: ruff + pytest unit tests across Python 3.11 + 3.12.

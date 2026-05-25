@@ -1,4 +1,4 @@
-"""Golden-set loader for the Schema Brain eval harness.
+"""Golden-set loader for the SchemaBrain eval harness.
 
 A golden set is a JSON file with a list of natural-language questions,
 each paired with the qualified table name(s) a correct retriever should
@@ -30,7 +30,7 @@ NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length
 
 # Default starter golden set bundled with the package. E-commerce is the
 # example domain only because its tables (users/orders/products/order_items)
-# are universally legible across industries — it is NOT what Schema Brain
+# are universally legible across industries — it is NOT what SchemaBrain
 # is "for". The harness is generic; bring your own golden file via
 # `schemabrain eval --golden /path/to/your-schema.json`. Future bundled
 # sets (HR, analytics, etc.) drop into the same `golden_sets/` directory

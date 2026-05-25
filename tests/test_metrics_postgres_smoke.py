@@ -232,7 +232,7 @@ class TestPostgresMetricExecution:
     def test_day_week_month_grains_all_execute(
         self, pg_url: str, metric_store: SQLiteStore
     ) -> None:
-        # Triple-check that every grain literal Schema Brain emits is
+        # Triple-check that every grain literal SchemaBrain emits is
         # actually accepted by Postgres's date_trunc.
         pg_engine = create_engine(pg_url)
         try:

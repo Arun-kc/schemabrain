@@ -609,7 +609,7 @@ class CanonicalJoinInfo(BaseModel):
 # ----- metric shapes --------------------------------------------------------
 #
 # The boundary between the agent (caller of `get_metric`) and the
-# Schema Brain compiler. The Pydantic shapes here are the wire format
+# SchemaBrain compiler. The Pydantic shapes here are the wire format
 # FastMCP exposes; the compiler's `RequestedFilter` dataclass is the
 # internal IR — there's a one-to-one mapping between them.
 

@@ -506,7 +506,7 @@ class TestEnvelopeMapping:
     def test_unknown_order_by_column_maps_to_unknown_order_by_column(
         self, store_with_seed: SQLiteStore
     ) -> None:
-        """PR-6h.2 Gap #6 — agent passes `order_by=` with a column
+        """PR-6h.2 an earlier gap — agent passes `order_by=` with a column
         reference that isn't the metric name or a group_by column.
         Compiler raises `UnknownOrderByColumnError`; MCP layer maps to
         `unknown_order_by_column` envelope kind with `allowed_columns`
@@ -977,7 +977,7 @@ class TestEnvelopeMapping:
         )
         assert structured["status"] == "degraded"
         assert structured["data"]["fan_out_join_names"] == ["customer_orders"]
-        # PR-6h.2 Gap #2: degradation reason surfaced as a closed Literal
+        # PR-6h.2 an earlier gap: degradation reason surfaced as a closed Literal
         # so agents can switch on the value without parsing text.
         assert structured["degradation_reason"] == "fan_out_join"
 

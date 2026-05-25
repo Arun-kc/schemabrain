@@ -1,4 +1,4 @@
-"""Schema Brain CLI.
+"""SchemaBrain CLI.
 
 Entry point: `schemabrain <subcommand>`.
 
@@ -450,6 +450,7 @@ def _dispatch(argv: list[str] | None) -> int:
             print_only=args.print_only,
             from_dbt=args.from_dbt,
             skip_llm_confirm=args.skip_llm_confirm,
+            pii_block_csv=args.pii_block,
         )
     if args.command == "tail":
         return _cmd_tail(
@@ -630,7 +631,7 @@ class _GroupedInitHelpAction(argparse.Action):
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="schemabrain",
-        description="MCP-ready semantic understanding of any production database.",
+        description="The SQL firewall between AI agents and your production database.",
     )
     parser.add_argument(
         "--version",
@@ -873,14 +874,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument(
         "--pii-block",
         dest="pii_block",
-        default="",
+        default=None,
         help="Comma-separated PIICategory list whose presence in a "
         "compiled get_metric plan triggers a refused envelope "
         "(refusal_reason='pii_blocked'). Example: "
         "--pii-block contact,health. Unknown category names abort "
-        "startup with an error listing the 12 valid values. Empty "
-        "(default) disables enforcement — PII tags still flow to "
-        "the audit row.",
+        "startup with an error listing the 12 valid values. "
+        "Omitted (no flag) defaults to credential,payment_card,"
+        "government_id — the catastrophic-leak categories where no "
+        "plausible aggregate-analytics use case exists. Pass "
+        "--pii-block '' to explicitly disable enforcement (PII tags "
+        "still flow to the audit row).",
     )
 
     p_mine = sub.add_parser(
@@ -1681,6 +1685,16 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="print_only",
         action="store_true",
         help="Alias for --host manual: print the snippet, write nothing.",
+    )
+    g_behavior.add_argument(
+        "--pii-block",
+        dest="pii_block",
+        default=None,
+        help="Comma-separated PIICategory list to write into the host "
+        "snippet as `serve --pii-block`. Omitted defaults to "
+        "credential,payment_card,government_id under --yes (with a "
+        "stderr confirmation) or to the interactive prompt otherwise. "
+        "Pass '' (empty) to explicitly disable enforcement.",
     )
 
     p_tail = sub.add_parser(
@@ -2558,7 +2572,7 @@ def _cmd_serve(
     events_path: str | None = None,
     no_events: bool = False,
     no_audit: bool = False,
-    pii_block_csv: str = "",
+    pii_block_csv: str | None = None,
 ) -> int:
     """Run the MCP server on stdio against the local store.
 
@@ -2585,17 +2599,41 @@ def _cmd_serve(
 
     from schemabrain.audit.writer import AuditWriter
     from schemabrain.observability import JsonlEventBus, NullEventBus
-    from schemabrain.pii import PII_CATEGORIES, PIICategory
+    from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES, PII_CATEGORIES, PIICategory
 
-    # Parse `--pii-block CATEGORIES`. Empty string disables enforcement.
-    # Unknown category names abort startup with a clear error listing
-    # the 12 valid values — a typo in the operator config should
-    # NOT silently fall through to "no PII protection." After the
-    # guard passes, cast the validated set to `frozenset[PIICategory]`
-    # so the type narrows across the build_server / run_stdio
-    # boundary without a `type: ignore` at the call site.
-    pii_block: frozenset[PIICategory] = frozenset()
-    if pii_block_csv:
+    # Three-state contract for `--pii-block`:
+    #   - None (flag absent)        → catastrophic-leak default
+    #     {credential, payment_card, government_id}. Surfaced to
+    #     stderr at startup so the operator sees what's enforced.
+    #     Safe-by-default: a zero-config operator following the README
+    #     gets enforcement on the categories where no plausible
+    #     aggregate-analytics use case justifies exposure.
+    #   - "" (explicit empty)       → empty frozenset (escape hatch).
+    #     Disables refusal — PII tags still flow to the audit row.
+    #     Surfaced as a warning so the operator who reads logs sees
+    #     they have OPTED OUT of enforcement.
+    #   - "<csv>"                   → parse, validate, use the typed
+    #     set. Unknown category names abort with a clear error.
+    #
+    # The argparse `default=None` is load-bearing — it lets `pii_block_csv == ""`
+    # remain a distinguishable escape hatch from "no flag passed".
+    pii_block: frozenset[PIICategory]
+    if pii_block_csv is None:
+        pii_block = CATASTROPHIC_LEAK_CATEGORIES
+        print(
+            "schemabrain serve: --pii-block not passed; defaulting to "
+            f"{','.join(sorted(CATASTROPHIC_LEAK_CATEGORIES))} "
+            "(use --pii-block '' to disable, --pii-block <csv> to override).",
+            file=sys.stderr,
+        )
+    elif pii_block_csv == "":
+        pii_block = frozenset()
+        print(
+            "warning: --pii-block '' (explicit empty) disables refusal "
+            "enforcement. PII tags still flow to the audit row.",
+            file=sys.stderr,
+        )
+    else:
         requested = frozenset(c.strip() for c in pii_block_csv.split(",") if c.strip())
         unknown = requested - PII_CATEGORIES
         if unknown:
@@ -2785,7 +2823,7 @@ def _cmd_mine_queries(
 
     When the view isn't readable the pipeline soft-skips: the handler
     prints an actionable message and exits 0 (this is operator config,
-    not a Schema Brain bug).
+    not a SchemaBrain bug).
 
     The engine is built with `default_transaction_read_only=on` —
     mining is strictly a read operation and the session-level
@@ -3034,7 +3072,7 @@ def _cmd_entities_apply(
                             message=f"store-level error during write: {exc}",
                             why="the SQLite store reported an error other than a foreign-key violation",
                             fix="check the store file integrity, available disk "
-                            "space, and that no other Schema Brain process is "
+                            "space, and that no other SchemaBrain process is "
                             "writing to the same store",
                             next_step=f"inspect {store_path} with `sqlite3 .schema`",
                         )
@@ -5292,6 +5330,7 @@ def _cmd_init(
     print_only: bool,
     from_dbt: str | None = None,
     skip_llm_confirm: bool = False,
+    pii_block_csv: str | None = None,
 ) -> int:
     """Run the activation wizard and render the multi-stage outcome.
 
@@ -5403,13 +5442,47 @@ def _cmd_init(
     # `--skip-llm-confirm` alone.
     effective_skip_llm_confirm = skip_llm_confirm or assume_yes
 
-    # Surface the PII-block choice to the operator instead of silently
-    # baking ("contact",) into the host snippet. Interactive only:
-    # `--yes` (CI / scripted) and non-TTY stderr (piped output) both
-    # fall through to the wizard's `("contact",)` default — the prior
-    # silent behavior — so automation is unchanged.
+    # Resolve the PII-block set written into the host snippet under
+    # a three-state contract that mirrors `schemabrain serve` itself:
+    #
+    #   - `--pii-block <csv>` explicit   → parse, validate, use it
+    #   - `--pii-block ''` explicit empty → empty tuple (disabled,
+    #                                       no `--pii-block` flag
+    #                                       added to the snippet)
+    #   - flag absent + interactive TTY  → interactive prompt (legacy)
+    #   - flag absent + --yes / non-TTY  → catastrophic-leak default
+    #                                       + one-line stderr confirm
+    #
+    # The fourth row is the load-bearing fix: the prior behavior
+    # silently dropped to the wizard's `("contact",)` default under
+    # `--yes`, so a CI / scripted operator following the README got
+    # `contact`-only enforcement while `staff.password` (credential),
+    # `customer.credit_card` (payment_card), and `staff.ssn`
+    # (government_id) remained readable. The catastrophic-leak
+    # default closes that gap without surprising the operator —
+    # the stderr confirmation surfaces what's enforced and how to
+    # override it.
+    from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES, PII_CATEGORIES
+
     pii_block_choice: tuple[str, ...] | None = None
-    if _stderr_is_interactive_tty() and not assume_yes:
+    if pii_block_csv is not None:
+        # Explicit flag value — short-circuits both the interactive
+        # prompt and the --yes default. Empty CSV → empty tuple
+        # (operator opted out); otherwise parse + validate.
+        if pii_block_csv == "":
+            pii_block_choice = ()
+        else:
+            requested = tuple(sorted({c.strip() for c in pii_block_csv.split(",") if c.strip()}))
+            unknown = sorted(set(requested) - PII_CATEGORIES)
+            if unknown:
+                print(
+                    f"error: --pii-block contains unknown category names: "
+                    f"{unknown}. Valid categories: {sorted(PII_CATEGORIES)}.",
+                    file=sys.stderr,
+                )
+                return 2
+            pii_block_choice = requested
+    elif _stderr_is_interactive_tty() and not assume_yes:
         from schemabrain.setup.setup_stage import prompt_for_pii_block
 
         try:
@@ -5421,6 +5494,17 @@ def _cmd_init(
         # identical in shape to the existing init-prompt handler.
         except (KeyboardInterrupt, EOFError):  # pragma: no cover
             raise
+    else:
+        # --yes or non-TTY with no explicit --pii-block. Apply the
+        # safe-by-default catastrophic-leak set and surface the
+        # choice to stderr so CI logs show what got enforced.
+        pii_block_choice = tuple(sorted(CATASTROPHIC_LEAK_CATEGORIES))
+        print(
+            "schemabrain init: --pii-block not passed; defaulting to "
+            f"{','.join(pii_block_choice)} "
+            "(use --pii-block '' to disable, --pii-block <csv> to override).",
+            file=sys.stderr,
+        )
 
     wizard_kwargs: dict[str, object] = {
         "source_url": source_url,
@@ -6334,7 +6418,7 @@ def _render_wizard_header(*, host_display: str | None, console: object) -> None:
     )
     console.print()  # type: ignore[attr-defined]
     console.print(  # type: ignore[attr-defined]
-        f"[cyan]{GLYPH_BRAND}[/] [bold]Schema Brain init[/] [dim]{activating}[/]"
+        f"[cyan]{GLYPH_BRAND}[/] [bold]SchemaBrain init[/] [dim]{activating}[/]"
     )
     console.print()  # type: ignore[attr-defined]
 
@@ -6358,8 +6442,8 @@ def _render_wizard_result(result: object, *, host_display: str | None = None) ->
 
     Layout:
 
-      Schema Brain
-      Activating Schema Brain for Claude Desktop. ~30s.
+      SchemaBrain
+      Activating SchemaBrain for Claude Desktop. ~30s.
 
         [N/7] <stage display name>
               <glyph> <message>
@@ -6603,7 +6687,7 @@ def _render_closing_block(
 
       ──────────────────────────────────────────────────────────────
       Restart Claude Desktop, then ask:
-      > list the entities Schema Brain knows about
+      > list the entities SchemaBrain knows about
 
       [pending-action block, only when stage 3 did not curate entities]
 
@@ -6637,7 +6721,7 @@ def _render_closing_block(
     else:
         target = host_display or "your MCP host"
         console.print(f"Restart {target}, then ask:")  # type: ignore[attr-defined]
-    console.print("[cyan]>[/] list the entities Schema Brain knows about")  # type: ignore[attr-defined]
+    console.print("[cyan]>[/] list the entities SchemaBrain knows about")  # type: ignore[attr-defined]
     # UX audit #12: show the config path so the operator knows where
     # the entry landed without scrolling back up to stage 6 or running
     # `schemabrain doctor`. Surfaces only for claude-desktop where the
@@ -6707,7 +6791,7 @@ def _render_pending_entity_block(wizard_result: object, *, console: object) -> N
         return
     if entities_outcome.message.startswith("ANTHROPIC_API_KEY not set"):
         console.print(  # type: ignore[attr-defined]
-            "To curate entities (let Schema Brain understand customer/order/...):"
+            "To curate entities (let SchemaBrain understand customer/order/...):"
         )
         console.print("  [dim]export[/] ANTHROPIC_API_KEY=sk-ant-...")  # type: ignore[attr-defined]
         console.print("  schemabrain entities suggest --apply")  # type: ignore[attr-defined]
@@ -7686,7 +7770,7 @@ def _resolve_url(url: str) -> str | None:
             GuidedError(
                 kind="url_invalid",
                 message=str(e),
-                why="Schema Brain needs a Postgres URL to connect to your source database",
+                why="SchemaBrain needs a Postgres URL to connect to your source database",
                 fix="use the form postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME",
                 next_step="see docs/setup.md for the canonical URL format",
             )

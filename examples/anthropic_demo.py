@@ -1,6 +1,6 @@
-"""End-to-end demo: Claude Haiku answers a database question via Schema Brain MCP.
+"""End-to-end demo: Claude Haiku answers a database question via SchemaBrain MCP.
 
-A standalone Anthropic-SDK demo that proves Schema Brain plugs into
+A standalone Anthropic-SDK demo that proves SchemaBrain plugs into
 any agent loop, not just Claude Desktop:
 
   1. Spawn `schemabrain serve` as a stdio subprocess.
@@ -54,7 +54,7 @@ _MAX_OUTPUT_TOKENS = 4096
 _SYSTEM_PROMPT = (
     "You are a senior data engineer answering questions about an "
     "unfamiliar database. The user has indexed the database with "
-    "Schema Brain. Use the provided MCP tools to discover relevant "
+    "SchemaBrain. Use the provided MCP tools to discover relevant "
     "tables (`find_relevant_tables`) and inspect them in detail "
     "(`describe_table`) before answering. When you have enough to "
     "answer concisely, do so without further tool calls."
@@ -78,7 +78,7 @@ def _mcp_tool_to_anthropic_tool(tool: Any) -> dict[str, Any]:
 def _content_to_text(content: list[Any]) -> str:
     """Flatten an MCP `CallToolResult.content` block list into a single
     string the LLM can consume. MCP returns rich content (text, images,
-    embedded resources); for v0 every Schema Brain tool returns text
+    embedded resources); for v0 every SchemaBrain tool returns text
     blocks only, so we just concatenate them.
     """
     parts: list[str] = []
@@ -98,7 +98,7 @@ async def _run_agent_loop(
     max_turns: int,
     api_key: str,
 ) -> int:
-    """Drive a tool-use conversation between Haiku and Schema Brain MCP.
+    """Drive a tool-use conversation between Haiku and SchemaBrain MCP.
 
     Returns the process exit code (0 on success, 1 on max-turns trip,
     2 on a tool failure).
@@ -189,14 +189,14 @@ async def _run_agent_loop(
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="anthropic_demo",
-        description="Drive Schema Brain MCP from Claude Haiku via the Anthropic SDK.",
+        description="Drive SchemaBrain MCP from Claude Haiku via the Anthropic SDK.",
     )
     parser.add_argument(
         "--url-env",
         dest="url_env",
         required=True,
         help="Name of the environment variable that holds the database URL "
-        "(e.g. DATABASE_URL). The same variable Schema Brain's CLI reads "
+        "(e.g. DATABASE_URL). The same variable SchemaBrain's CLI reads "
         "via --url-env. Keeps the URL out of argv / ps output / shell "
         "history. Standard Postgres URL formats accepted; bare "
         "postgresql:// is silently normalised to postgresql+psycopg://.",

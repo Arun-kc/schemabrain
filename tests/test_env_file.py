@@ -107,7 +107,7 @@ class TestLoadEnvFileIntoEnviron:
     def test_unreadable_file_warns_and_returns_zero(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # Round-2 fold HIGH convergent (python-reviewer + silent-failure-hunter):
+        # Regression coverage:
         # a `.env` that exists but isn't readable (chmod 000, NFS
         # permission revoke) must NOT crash main() with a raw
         # PermissionError traceback. Skip + warn so every subcommand
@@ -128,7 +128,7 @@ class TestLoadEnvFileIntoEnviron:
     def test_non_utf8_file_warns_and_returns_zero(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # Round-2 fold HIGH convergent: a `.env` containing non-UTF-8
+        # Regression coverage (high): a `.env` containing non-UTF-8
         # bytes (Windows-1252-encoded password, embedded null, binary
         # paste) must NOT crash with UnicodeDecodeError traceback.
         env_file = tmp_path / ".env"

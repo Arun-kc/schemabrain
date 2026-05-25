@@ -1,7 +1,7 @@
 # Observability
 
 The observability layer is a thin substrate that exposes everything
-Schema Brain does in response to an MCP request, so a human can see —
+SchemaBrain does in response to an MCP request, so a human can see —
 in real time — what an agent is touching, what got refused, and what
 got returned. It has three pieces:
 

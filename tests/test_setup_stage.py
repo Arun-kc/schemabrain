@@ -560,7 +560,7 @@ class TestWaitForPostgresReady:
     def test_breaks_early_on_argument_error_without_full_timeout(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Round-2 fold MED (silent-failure-hunter): a malformed URL
+        # Regression coverage: a malformed URL
         # is deterministic — polling for 30s won't help and the
         # operator deserves the error fast. Pre-fold, the broad
         # `except Exception` caught ArgumentError, set last_error,
@@ -625,7 +625,7 @@ class TestWaitForPostgresReady:
     ) -> None:
         # Bare `postgresql://` would default SQLAlchemy to psycopg2
         # (not installed). Helper must rewrite to `postgresql+psycopg://`
-        # so the connect actually uses the v3 driver Schema Brain ships.
+        # so the connect actually uses the v3 driver SchemaBrain ships.
         from schemabrain.setup import setup_stage
 
         captured_urls: list[str] = []
@@ -792,8 +792,8 @@ class TestSafeSubprocess:
         assert "hello" in result.stdout
 
     def test_returns_none_on_permission_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Round-2 fold HIGH convergent (silent-failure-hunter +
-        # Reality Checker B1): pre-fold, only FileNotFoundError +
+        # regression test HIGH convergent (silent-failure +
+        # reality check B1): pre-fold, only FileNotFoundError +
         # TimeoutExpired were caught. A binary on PATH but not
         # executable (mode 0555 stripped, snap confinement, macOS
         # quarantine, non-docker-group user on Linux) raised

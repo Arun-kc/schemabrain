@@ -35,7 +35,7 @@ from schemabrain.pii.categories import ColumnPiiTag
 
 @runtime_checkable
 class Store(Protocol):  # pragma: no cover
-    """The persistence boundary for Schema Brain.
+    """The persistence boundary for SchemaBrain.
 
     Protocol class — method bodies are ellipses, never executed at
     runtime; coverage tracks the concrete `SQLiteStore` instead.

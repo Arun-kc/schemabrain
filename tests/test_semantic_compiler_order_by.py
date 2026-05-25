@@ -1,6 +1,6 @@
 """Tests for `order_by` parameter on `get_metric` + auto tie-breaking.
 
-Locks the contract introduced in PR-6h.2 (Gap #6 + Gap #7):
+Locks the contract introduced in PR-6h.2 (an earlier gap + an earlier gap):
 
   - `order_by` defaults to `()` → no ORDER BY emitted (backward
     compatible — every prior caller of `resolve_metric_plan` continues

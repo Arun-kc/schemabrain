@@ -61,6 +61,25 @@ PII_CATEGORIES: frozenset[PIICategory] = frozenset(
     }
 )
 
+# Catastrophic-leak categories — the subset where no plausible
+# aggregate-analytics use case exists and a single leak is reportable
+# under GDPR / CCPA / PCI-DSS / HIPAA. Two layers consume this:
+# (1) `schemabrain serve` defaults `--pii-block` to this set when the
+# flag is absent, so a zero-config operator gets safe-by-default
+# enforcement; (2) `describe_entity` always redacts the column
+# description when any of these categories appears, even with an
+# empty `--pii-block`, so the agent never reads "password hash" or
+# "social security number" semantics regardless of operator policy.
+# Pinned so the closed set is auditable and a future addition is a
+# minor charter bump (see ADR 0001).
+CATASTROPHIC_LEAK_CATEGORIES: frozenset[PIICategory] = frozenset(
+    {
+        "credential",
+        "payment_card",
+        "government_id",
+    }
+)
+
 # Per-column tag pair carried across the classifier → store → compiler
 # → audit chain. Aliasing the tuple shape in one place so every layer
 # (Store Protocol, SQLiteStore, get_metric, audit writer) agrees on the

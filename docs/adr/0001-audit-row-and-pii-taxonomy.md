@@ -6,7 +6,7 @@
 
 ## Context
 
-Schema Brain today describes databases — it never executes queries against
+SchemaBrain today describes databases — it never executes queries against
 them. Every MCP tool shipped through v0.5 returns derived metadata
 (column descriptions, join paths, suggested example queries) and the
 audit trail is implicit in the MCP transport logs.
@@ -46,7 +46,7 @@ what the fingerprint **excludes**, not how it's computed.
 Every MCP tool invocation that touches the source database, returns a
 refusal, or completes a charter-defined status writes exactly one row
 to `mcp_audit`. The table lives in the same SQLite store as the rest of
-Schema Brain's state.
+SchemaBrain's state.
 
 ```sql
 CREATE TABLE mcp_audit (
@@ -329,7 +329,7 @@ category names in its description and recovery contract.
 
 ## References
 
-- [Schema Brain MCP Charter v1.0.1](../agent-ux-charter.md) —
+- [SchemaBrain MCP Charter v1.0.1](../agent-ux-charter.md) —
   status enum, refusal kinds, recovery contracts.
 - GDPR Articles 4 (definitions) and 9 (special categories).
 - CCPA / CPRA §1798.140(o) personal information categories.
