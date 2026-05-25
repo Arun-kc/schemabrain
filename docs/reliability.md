@@ -1,6 +1,6 @@
 # Reliability contract
 
-Schema Brain's reliability targets, what they cover, and how each one maps
+SchemaBrain's reliability targets, what they cover, and how each one maps
 to an observable signal in the event bus or the audit log. The numbers are
 operator-facing promises. They are aspirational at the current release —
 we publish them so the conversation about reliability is concrete instead
@@ -8,7 +8,7 @@ of vague.
 
 ## Why publish targets we have not yet defended at scale
 
-Schema Brain has shipped against a bundled six-table fixture and a
+SchemaBrain has shipped against a bundled six-table fixture and a
 fifteen-table real-world schema (Pagila). The local p95 measurements for
 read-side tools sit well inside the targets below. We have **no**
 production-scale measurements yet — that comes when the first donor
@@ -56,7 +56,7 @@ operator's `statement_timeout`.
 
 The 1500 ms target assumes a small-result metric query on a healthy
 source. Long-running aggregations are bounded by the source-side
-`statement_timeout`, which Schema Brain sets to 30 s by default; a
+`statement_timeout`, which SchemaBrain sets to 30 s by default; a
 query that exceeds it returns `status: error` with `error_kind:
 statement_timeout` and counts against the error budget.
 
@@ -118,7 +118,7 @@ hard gate on the deployment pipeline.
 
 ## What is explicitly out of scope
 
-- **Availability of the source database.** Schema Brain is a client;
+- **Availability of the source database.** SchemaBrain is a client;
   source availability is the operator's existing infrastructure.
 - **Availability of the Anthropic API.** `index` retries with
   exponential backoff and surfaces a guided error when retries are
@@ -127,7 +127,7 @@ hard gate on the deployment pipeline.
   rotates at 10 MiB; the store grows with the schema. Disk monitoring
   is at the OS layer.
 - **Network reliability between the agent and the MCP stdio server.**
-  Stdio is in-process; the agent and Schema Brain share a parent.
+  Stdio is in-process; the agent and SchemaBrain share a parent.
 
 ## How this document is maintained
 

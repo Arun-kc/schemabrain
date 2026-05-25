@@ -1,9 +1,9 @@
-# Schema Brain — Setup
+# SchemaBrain — Setup
 
 Two paths from "I have a Postgres database" to "an AI agent can answer questions about it":
 
 1. **MCP client (Claude Desktop or Cursor)** — for everyday use; click into the chat and ask questions.
-2. **Anthropic SDK demo** — for verifying the install end-to-end without Claude Desktop, and for adapting Schema Brain into your own agent code.
+2. **Anthropic SDK demo** — for verifying the install end-to-end without Claude Desktop, and for adapting SchemaBrain into your own agent code.
 
 The recommended path is the activation wizard (`schemabrain init`). It runs the source check, indexer, entity suggestion, and host wiring in one command. The manual `index` flow below still works and is the right choice for power users who want explicit control over each step.
 
@@ -19,7 +19,7 @@ pip install schemabrain
 # (source-install users prefix the runtime commands below with `uv run`)
 
 # Put the connection string in an env var so the password never lands
-# in shell history, `ps`, or journald. Schema Brain reads it via
+# in shell history, `ps`, or journald. SchemaBrain reads it via
 # --url-env. URL MUST use the postgresql+psycopg:// scheme (psycopg v3;
 # the bare postgresql:// scheme fails with ModuleNotFoundError).
 export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"
@@ -194,7 +194,7 @@ with a recovery hint pointed at this section.
 
 ## Path 1 — Claude Desktop (or Cursor)
 
-Add Schema Brain to Claude Desktop's MCP server config:
+Add SchemaBrain to Claude Desktop's MCP server config:
 
 ```bash
 # macOS path; Windows uses %APPDATA%\Claude\claude_desktop_config.json
@@ -280,17 +280,17 @@ The script is **bounded by `--max-turns` (default 8)** and aborts cleanly if the
 This is the same path Claude Desktop takes internally (stdio MCP + tool-use loop), just without the chat UI. Use it to:
 
 - Verify your install before debugging Claude Desktop config.
-- Smoke-test Schema Brain in CI.
+- Smoke-test SchemaBrain in CI.
 - Crib the agent loop into your own application.
 
 ## Logs
 
-Schema Brain has a single, deliberately simple logging system: **one stream,
+SchemaBrain has a single, deliberately simple logging system: **one stream,
 stderr.** No log files, no rotation, no JSON output. The default level is
 `WARNING`, so healthy runs are essentially silent. Raise the level when you
 need to debug; lower it when the noise gets in the way.
 
-How you raise the level depends on **how** Schema Brain is running.
+How you raise the level depends on **how** SchemaBrain is running.
 
 ### When you're running `schemabrain` in a terminal
 
@@ -318,7 +318,7 @@ You **don't have a terminal**. Claude Desktop spawns the server in the
 background, so `-v` is not an option — there's no command line you control.
 
 Instead, you set an environment variable in **Claude Desktop's** config
-file (not Schema Brain's — Schema Brain has no config file). On macOS that
+file (not SchemaBrain's — SchemaBrain has no config file). On macOS that
 file lives at:
 
 ```
@@ -381,7 +381,7 @@ flags (i.e. Claude Desktop). In a terminal, prefer the flag.
 |---|---|
 | Log files | One stream is simpler. Use shell redirection if you need persistence. |
 | JSON / structured logging | Only one call site exists today (the MCP boundary catch). Will revisit if more land. |
-| Per-module level overrides | Schema Brain has one namespace. Third-party loggers (`mcp`, `anyio`, `httpx`, `httpcore`, `fastembed`) are pinned at WARNING regardless of our level so `-vv` doesn't drown you in SDK chatter. |
+| Per-module level overrides | SchemaBrain has one namespace. Third-party loggers (`mcp`, `anyio`, `httpx`, `httpcore`, `fastembed`) are pinned at WARNING regardless of our level so `-vv` doesn't drown you in SDK chatter. |
 | Log rotation | Not our concern. Claude Desktop manages rotation of `mcp-server-schemabrain.log` on its side; for terminal runs, your shell redirect manages the file. |
 
 ## Troubleshooting
@@ -399,7 +399,7 @@ flags (i.e. Claude Desktop). In a terminal, prefer the flag.
 
 The Model Context Protocol team publishes an interactive inspector
 that connects to any MCP server over stdio. It's the cleanest way to
-see the JSON schemas Schema Brain exposes — including the per-arg
+see the JSON schemas SchemaBrain exposes — including the per-arg
 descriptions — without needing Claude Desktop, Cursor, or the
 Anthropic SDK.
 
@@ -428,7 +428,7 @@ subprocess and inherits your environment.
 
 ## Validating SQL Claude generates
 
-Schema Brain gives Claude rich context, but it doesn't run the SQL. The agent
+SchemaBrain gives Claude rich context, but it doesn't run the SQL. The agent
 produces queries that *should* be correct — but you should still verify before
 trusting the output, especially on real data. A four-step ladder, cheapest to
 most thorough:

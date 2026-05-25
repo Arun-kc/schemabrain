@@ -29,9 +29,9 @@
 
 Three guarantees that close the trust gap between AI agents and your database:
 
-- **[Read-only by architecture](#2-read-only-by-architecture-not-configuration)** — twelve MCP tools, none of which can write. No `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database.
-- **[PII refusal at retrieval](#4-pii-aware-refusal-at-the-get_metric-tool-boundary)** — PII tags propagate from the physical schema through joins and metrics. If a query touches a blocked category, SchemaBrain refuses *before* the database is queried.
-- **[Cryptographic audit chain](#5-tamper-evident-audit-log)** — every call, refusal, and recovery lands in a SHA256-hashed append-only log. `audit verify` exits non-zero if any past row was rewritten.
+- **[Read-only by architecture](#1-read-only-by-architecture-not-configuration)** — twelve MCP tools, none of which can write. No `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database.
+- **[PII refusal at retrieval](#2-pii-aware-refusal-at-the-get_metric-tool-boundary)** — PII tags propagate from the physical schema through joins and metrics. If a query touches a blocked category, SchemaBrain refuses *before* the database is queried.
+- **[Cryptographic audit chain](#3-tamper-evident-audit-log)** — every call, refusal, and recovery lands in a SHA256-hashed append-only log. `audit verify` exits non-zero if any past row was rewritten.
 
 ---
 
@@ -138,45 +138,14 @@ Six properties SchemaBrain enforces at the SQL boundary today:
 <tr>
 <td width="50%" valign="top">
 
-### 1. Agent never writes raw SQL
-
-Entities, metrics, and canonical joins compile to parameterized SQL SchemaBrain runs on its side. The agent sees rows + the SQL that was run — never arbitrary statements at your database. LLM-suggested definitions during `init` are reviewed and applied explicitly; nothing reaches the runtime store until you accept it.
-
-[Build your semantic layer →](docs/semantic-layer.md)
-
-</td>
-<td width="50%" valign="top">
-
-### 2. Read-only by architecture, not configuration
+### 1. Read-only by architecture, not configuration
 
 The MCP surface exposes twelve tools — **none of which can write**. There is no `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database, regardless of session state. The read-only guarantee is structural, not a session flag the agent can flip. Stage 1 of `init` additionally pins `default_transaction_read_only=on` on the connection as belt-and-suspenders against a misconfigured downstream.
 
 </td>
-</tr>
-<tr>
 <td width="50%" valign="top">
 
-### 3. Failure is a contract, not a string
-
-Refused and degraded calls return a structured `recovery.suggested_args` block — not a message agents have to parse. PII blocks ship the entity name to retry; ambiguous time dimensions ship the candidate to pick; unknown joins ship the next tool to call. Agents act on the contract programmatically.
-
-```json
-{
-  "status": "refused",
-  "kind": "ambiguous_time_dimension",
-  "recovery": {
-    "suggested_tool": "get_metric",
-    "suggested_args": {"time_dimension": "order.placed_at"}
-  }
-}
-```
-
-[Charter v1.2 envelope reference →](docs/agent-ux-charter.md#3-errors-are-prompts-for-the-next-tool-call)
-
-</td>
-<td width="50%" valign="top">
-
-### 4. PII-aware refusal at the `get_metric` tool boundary
+### 2. PII-aware refusal at the `get_metric` tool boundary
 
 Any `get_metric` touching a blocked PII category returns a `refused` envelope; the compiled SQL never runs and the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`. `describe_entity` enforces the same policy at the column level — the agent still sees the entity and its non-PII columns, but blocked columns ship with `redacted=True` and the LLM-enriched description cleared. `schemabrain init` writes `--pii-block contact` into the Claude Desktop snippet by default so email / phone / address columns are blocked on a fresh install; widen with `--pii-block contact,health` and other categories as needed.
 
@@ -195,7 +164,7 @@ Twelve categories from GDPR, CCPA/CPRA, HIPAA, PCI DSS, ISO 27018 — tagged per
 <tr>
 <td width="50%" valign="top">
 
-### 5. Tamper-evident audit log
+### 3. Tamper-evident audit log
 
 Every tool call under `schemabrain serve` writes one row to an append-only `mcp_audit` table — PII categories per row, content-addressable fingerprints, sha256 hash chain. `audit verify` re-walks the chain and exits non-zero if any past row was rewritten. Detects post-hoc tampering by any process without write access to the audit table; streaming the chain to an external immutable store is on the v3 roadmap (`mcp_audit` is local SQLite today).
 
@@ -204,6 +173,37 @@ schemabrain audit verify   # exit 0 = chain clean
 ```
 
 [Tamper-evident audit log →](docs/observability.md#audit-log-alpha)
+
+</td>
+<td width="50%" valign="top">
+
+### 4. Failure is a contract, not a string
+
+Refused and degraded calls return a structured `recovery.suggested_args` block — not a message agents have to parse. PII blocks ship the entity name to retry; ambiguous time dimensions ship the candidate to pick; unknown joins ship the next tool to call. Agents act on the contract programmatically.
+
+```json
+{
+  "status": "refused",
+  "kind": "ambiguous_time_dimension",
+  "recovery": {
+    "suggested_tool": "get_metric",
+    "suggested_args": {"time_dimension": "order.placed_at"}
+  }
+}
+```
+
+[Charter v1.2 envelope reference →](docs/agent-ux-charter.md#3-errors-are-prompts-for-the-next-tool-call)
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 5. Compile path: definitions → parameterized SQL
+
+Entities, metrics, and canonical joins compile to parameterized SQL SchemaBrain runs on its side. The agent sees rows + the SQL that was run — never arbitrary statements at your database. LLM-suggested definitions during `init` are reviewed and applied explicitly; nothing reaches the runtime store until you accept it.
+
+[Build your semantic layer →](docs/semantic-layer.md)
 
 </td>
 <td width="50%" valign="top">
@@ -270,6 +270,8 @@ The differentiator is what *didn't* happen: most LLM-over-database tools, asked 
 **Cost.** ~$0.001/column with Claude Haiku 4.5 + Sonnet 4.6 (Sonnet for the structured curation prompt). The bundled 7-table fixture (30 columns, 6 entities + 10 metrics + 5 joins) indexes + curates for **~$0.03 in ~85s**. The Pagila DVD-rental sample (87 columns after partition deduplication) runs for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
 
 To verify Claude's SQL is mechanically correct (and that flagged caveats are the actual data behavior), see [Validating SQL Claude generates](docs/setup.md#validating-sql-claude-generates).
+
+**Run this exact session yourself:** `schemabrain init` walks you to a wired Claude Desktop in one command; then ask Claude *"Using SchemaBrain, write me a SQL query to compute each customer's total spend by product category."* and watch the refuse-then-pivot live.
 
 ---
 

@@ -1,6 +1,6 @@
 # Architecture
 
-How Schema Brain is put together, the contracts the tool layer keeps, and what
+How SchemaBrain is put together, the contracts the tool layer keeps, and what
 "validated" actually means today.
 
 ## The pipeline
@@ -218,7 +218,7 @@ final answer depends on the question:
 - **When the user just asks for the SQL** with no priming, surfacing
   varies. Across multiple Haiku runs on identical inputs, sometimes
   the agent mentions M:N inline as a parenthetical, sometimes it omits
-  it. The variance is downstream of LLM sampling, not Schema Brain.
+  it. The variance is downstream of LLM sampling, not SchemaBrain.
 
 Either way, the warning is present in every relevant column description
 and is retrievable via `describe_column` / `describe_table`. Agents
@@ -233,7 +233,7 @@ backstop for production queries.
 
 ## Scalability frontier
 
-Schema Brain has three known architectural ceilings. None trip on today's
+SchemaBrain has three known architectural ceilings. None trip on today's
 real workloads but each will trip on extreme or adversarial inputs. We
 publish them up front because an honest "here is where we will hurt" is a
 better trust signal than a vague "scales well."
@@ -285,6 +285,6 @@ Concretely, v2 adds:
   `source_tables touched, latency_ms, timestamp}`. Powers the v3
   fleet-signature aggregation layer.
 
-Until v2 ships, treating Schema Brain as a safety layer would be
+Until v2 ships, treating SchemaBrain as a safety layer would be
 premature. The v0 surface gives agents better schema context, not better
 SQL safety.

@@ -6,7 +6,7 @@
 
 ## Context
 
-Schema Brain persists everything that survives a process restart in
+SchemaBrain persists everything that survives a process restart in
 one place: tables, columns, descriptions, embeddings, entities, joins,
 metrics, example queries, audit rows, PII tags, the cost ledger, and
 the source-config fingerprint. v1 ships a single concrete
@@ -24,7 +24,7 @@ tests fight the filesystem and the schema migrations.
 
 Three pressures converge:
 
-1. **v1 substrate must not constrain v3 transport.** A Schema Brain
+1. **v1 substrate must not constrain v3 transport.** A SchemaBrain
    that requires SQLite forever cannot ship a hosted plane without a
    substrate migration that breaks every reader.
 2. **Testability across the codebase.** Every CLI command, every MCP
