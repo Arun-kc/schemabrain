@@ -14,6 +14,14 @@ The agent still sees the column exists (name, data_type, nullable)
 but cannot read the model-generated semantics — moving refusal from
 "whole entity blocked" to "specific columns redacted".
 
+Catastrophic-leak floor: columns tagged with `credential`,
+`payment_card`, or `government_id` are redacted unconditionally
+regardless of the operator's `--pii-block` policy. The intent here
+is minimum decency — even an operator who explicitly disabled PII
+enforcement (`--pii-block ''`) should not let the agent read
+"password hash" or "social security number" as part of the column
+description string. The agent still sees the column exists.
+
 The bound-table lookup relies on the store-side FK invariant: an
 entity can only reference an indexed table, so a non-None entity
 implies a non-None bound table. Defensive None-handling would be
@@ -29,7 +37,7 @@ from schemabrain.mcp.shapes import (
     EntityDetail,
     EntityNotFoundError,
 )
-from schemabrain.pii import PIICategory
+from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES, PIICategory
 
 
 def describe_entity_impl(
@@ -99,15 +107,22 @@ def describe_entity_impl(
 
     columns: list[EntityColumn] = []
     redacted_names: list[str] = []
+    # Effective redaction floor: the operator's `--pii-block` set
+    # union the catastrophic-leak categories that are always redacted
+    # even when the operator opted out of enforcement. This is the
+    # minimum-decency rule — an `--pii-block ''` operator still
+    # should not let the agent read the description of a `password`
+    # or `ssn` column. See module docstring.
+    effective_block: frozenset[PIICategory] = pii_block | CATASTROPHIC_LEAK_CATEGORIES
     for col in table.columns:
         sensitivity, categories = pii_tags.get(col.name, ("public", frozenset()))
         sorted_categories = tuple(sorted(categories))
         # A column is redacted when ANY of its tagged PII categories
-        # appears in the server's blocked set. The intersection is the
-        # smallest possible check — even one matching category warrants
-        # redaction because the operator's intent is "do not expose
-        # this kind of data to the agent regardless of column".
-        is_redacted = bool(categories & pii_block)
+        # appears in the effective block set (operator policy OR the
+        # catastrophic-leak floor). Even one matching category
+        # warrants redaction because the operator's intent is "do not
+        # expose this kind of data to the agent regardless of column".
+        is_redacted = bool(categories & effective_block)
         if is_redacted:
             redacted_names.append(col.name)
         description = (
