@@ -1,4 +1,4 @@
-"""Schema Brain eval harness.
+"""SchemaBrain eval harness.
 
 Scores retrieval against a hand-curated `GoldenSet` of natural-language
 questions paired with the qualified table names a correct retriever
@@ -6,7 +6,7 @@ should surface. **Domain-agnostic**: the harness works against any
 indexed schema, with any user-authored golden set. The bundled
 `golden_sets/ecommerce.json` (paired with `fixtures/ecommerce.sql`) is
 ONE example domain — picked because its tables are universally legible,
-not because Schema Brain is e-commerce-specific.
+not because SchemaBrain is e-commerce-specific.
 
 Public API:
 - `GoldenQuestion`, `GoldenSet`, `load_golden`, `DEFAULT_GOLDEN_PATH`

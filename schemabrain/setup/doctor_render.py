@@ -79,7 +79,7 @@ _DOCTOR_STATUS_TO_TIER: Final[dict[str, str]] = {
 # Column widths from the design's CSS grid
 # (``2ch · 1ch · 18ch · 1fr · auto``). The design's reference mock
 # used short display labels (``python``, ``primary keys``,
-# ``database url``); Schema Brain check names are snake_case
+# ``database url``); SchemaBrain check names are snake_case
 # identifiers and run up to 24 chars (``source_session_read_only``,
 # ``host_config_uses_url_env``). Bumped to 25 so the longest check
 # fits without ellipsis truncation — the alignment hook value is

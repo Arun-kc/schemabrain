@@ -1,4 +1,4 @@
-"""Schema Brain CLI.
+"""SchemaBrain CLI.
 
 Entry point: `schemabrain <subcommand>`.
 
@@ -2785,7 +2785,7 @@ def _cmd_mine_queries(
 
     When the view isn't readable the pipeline soft-skips: the handler
     prints an actionable message and exits 0 (this is operator config,
-    not a Schema Brain bug).
+    not a SchemaBrain bug).
 
     The engine is built with `default_transaction_read_only=on` —
     mining is strictly a read operation and the session-level
@@ -3034,7 +3034,7 @@ def _cmd_entities_apply(
                             message=f"store-level error during write: {exc}",
                             why="the SQLite store reported an error other than a foreign-key violation",
                             fix="check the store file integrity, available disk "
-                            "space, and that no other Schema Brain process is "
+                            "space, and that no other SchemaBrain process is "
                             "writing to the same store",
                             next_step=f"inspect {store_path} with `sqlite3 .schema`",
                         )
@@ -6334,7 +6334,7 @@ def _render_wizard_header(*, host_display: str | None, console: object) -> None:
     )
     console.print()  # type: ignore[attr-defined]
     console.print(  # type: ignore[attr-defined]
-        f"[cyan]{GLYPH_BRAND}[/] [bold]Schema Brain init[/] [dim]{activating}[/]"
+        f"[cyan]{GLYPH_BRAND}[/] [bold]SchemaBrain init[/] [dim]{activating}[/]"
     )
     console.print()  # type: ignore[attr-defined]
 
@@ -6358,8 +6358,8 @@ def _render_wizard_result(result: object, *, host_display: str | None = None) ->
 
     Layout:
 
-      Schema Brain
-      Activating Schema Brain for Claude Desktop. ~30s.
+      SchemaBrain
+      Activating SchemaBrain for Claude Desktop. ~30s.
 
         [N/7] <stage display name>
               <glyph> <message>
@@ -6603,7 +6603,7 @@ def _render_closing_block(
 
       ──────────────────────────────────────────────────────────────
       Restart Claude Desktop, then ask:
-      > list the entities Schema Brain knows about
+      > list the entities SchemaBrain knows about
 
       [pending-action block, only when stage 3 did not curate entities]
 
@@ -6637,7 +6637,7 @@ def _render_closing_block(
     else:
         target = host_display or "your MCP host"
         console.print(f"Restart {target}, then ask:")  # type: ignore[attr-defined]
-    console.print("[cyan]>[/] list the entities Schema Brain knows about")  # type: ignore[attr-defined]
+    console.print("[cyan]>[/] list the entities SchemaBrain knows about")  # type: ignore[attr-defined]
     # UX audit #12: show the config path so the operator knows where
     # the entry landed without scrolling back up to stage 6 or running
     # `schemabrain doctor`. Surfaces only for claude-desktop where the
@@ -6707,7 +6707,7 @@ def _render_pending_entity_block(wizard_result: object, *, console: object) -> N
         return
     if entities_outcome.message.startswith("ANTHROPIC_API_KEY not set"):
         console.print(  # type: ignore[attr-defined]
-            "To curate entities (let Schema Brain understand customer/order/...):"
+            "To curate entities (let SchemaBrain understand customer/order/...):"
         )
         console.print("  [dim]export[/] ANTHROPIC_API_KEY=sk-ant-...")  # type: ignore[attr-defined]
         console.print("  schemabrain entities suggest --apply")  # type: ignore[attr-defined]
@@ -7686,7 +7686,7 @@ def _resolve_url(url: str) -> str | None:
             GuidedError(
                 kind="url_invalid",
                 message=str(e),
-                why="Schema Brain needs a Postgres URL to connect to your source database",
+                why="SchemaBrain needs a Postgres URL to connect to your source database",
                 fix="use the form postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME",
                 next_step="see docs/setup.md for the canonical URL format",
             )

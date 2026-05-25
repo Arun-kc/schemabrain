@@ -124,7 +124,7 @@ def mine_queries(
 
     for raw in raw_rows:
         if is_profiler_query(raw.query):
-            # Schema Brain's own profiler statements get captured by
+            # SchemaBrain's own profiler statements get captured by
             # pg_stat_statements when the user runs `mine-queries`
             # against a Postgres they also ran `schemabrain index`
             # against. Dropping them here keeps `get_example_queries`
@@ -134,7 +134,7 @@ def mine_queries(
             # missing from get_example_queries?" can trace it back
             # to the filter without flooding stderr on a busy run.
             _logger.debug(
-                "skipping Schema Brain profiler query: %.120s",
+                "skipping SchemaBrain profiler query: %.120s",
                 raw.query,
             )
             continue

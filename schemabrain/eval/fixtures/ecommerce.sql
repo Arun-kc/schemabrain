@@ -1,8 +1,8 @@
--- ONE example fixture for the bundled Schema Brain eval set.
+-- ONE example fixture for the bundled SchemaBrain eval set.
 --
 -- E-commerce was chosen as the bundled example domain only because its
 -- tables (users/orders/products/order_items) are universally legible —
--- NOT because Schema Brain targets e-commerce. Schema Brain is a
+-- NOT because SchemaBrain targets e-commerce. SchemaBrain is a
 -- generic semantic layer for ANY production database. Future bundled
 -- fixtures (HR, analytics, healthcare-light) drop into this same
 -- `fixtures/` directory; users author their own `.sql` + matching

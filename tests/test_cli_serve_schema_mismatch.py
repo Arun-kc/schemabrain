@@ -3,7 +3,7 @@ instead of a Python traceback when the local store is on a different
 schema version.
 
 Before this fix, Claude Desktop launched the bundled `serve` binary
-against a store written by an older Schema Brain version, hit
+against a store written by an older SchemaBrain version, hit
 `SchemaVersionMismatchError` inside `SQLiteStore.__init__`, and let
 the traceback bubble up to MCP stderr. Claude Desktop's UI just
 showed "Server disconnected"; the operator had to dig into Claude

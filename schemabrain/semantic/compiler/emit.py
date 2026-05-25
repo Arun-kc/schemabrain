@@ -111,7 +111,7 @@ def emit_sql(plan: MetricPlan) -> tuple[str, dict[str, Any]]:
     # versions when the field argument is parameter-bound vs literal-
     # quoted. Inlining is unambiguous, has zero injection surface,
     # and matches how dbt's semantic layer emits the same construct.
-    # Identifiers in the emitted SQL are double-quoted so Schema Brain
+    # Identifiers in the emitted SQL are double-quoted so SchemaBrain
     # entity / column names that happen to be SQL reserved words
     # (`order`, `user`, `select`, `from`, `where`, `group`, etc.) stay
     # safe at execution. The store-validated `_IDENT_RE` shape rules
@@ -290,7 +290,7 @@ def _quote_qualified_table(qualified: str) -> str:
     dot) — the dot is a separator, not part of the identifier. Each
     side must be quoted independently: `"schema"."table"`.
 
-    Schema Brain entity validation guarantees exactly one dot via the
+    SchemaBrain entity validation guarantees exactly one dot via the
     `_QUALIFIED_TABLE_RE` regex, so splitting on `.` is safe.
     """
     schema, table = qualified.split(".", 1)

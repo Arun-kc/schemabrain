@@ -1,4 +1,4 @@
-"""Tests pinning `NullPool` on every Postgres engine Schema Brain
+"""Tests pinning `NullPool` on every Postgres engine SchemaBrain
 creates against a source database.
 
 SQLAlchemy's default `QueuePool` recycles connections without

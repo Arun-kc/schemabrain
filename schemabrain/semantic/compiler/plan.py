@@ -537,7 +537,7 @@ class ResolvedOrderBy:
 class ResolvedColumn:
     """A `<entity>.<column>` reference resolved against the store.
 
-    `entity` is the Schema Brain entity name; `column` is the bare
+    `entity` is the SchemaBrain entity name; `column` is the bare
     column on that entity's bound table. `qualified_table` is the
     `schema.table` form ready for FROM/JOIN emission. `alias` is the
     SQL alias the emitter uses (defaults to the entity name) so
@@ -545,7 +545,7 @@ class ResolvedColumn:
     stay unambiguous.
 
     `quoted_alias` is the SQL-safe form of `alias` — entity names
-    like `order`, `user`, `select` are valid Schema Brain identifiers
+    like `order`, `user`, `select` are valid SchemaBrain identifiers
     but reserved keywords in Postgres. Double-quoting makes them safe
     as alias names while preserving case. Column names from
     `entities` rows are validated by `_IDENT_RE` and also need

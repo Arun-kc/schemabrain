@@ -625,7 +625,7 @@ class TestWaitForPostgresReady:
     ) -> None:
         # Bare `postgresql://` would default SQLAlchemy to psycopg2
         # (not installed). Helper must rewrite to `postgresql+psycopg://`
-        # so the connect actually uses the v3 driver Schema Brain ships.
+        # so the connect actually uses the v3 driver SchemaBrain ships.
         from schemabrain.setup import setup_stage
 
         captured_urls: list[str] = []

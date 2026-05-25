@@ -19,7 +19,7 @@
 
 <p align="center">
   <strong>Stop giving AI agents raw database connection strings.</strong><br>
-  SchemaBrain is the SQL firewall, semantic layer, and audit chain designed for the Agentic Era.
+  SchemaBrain is the SQL firewall between AI agents and your production database — twelve read-only tools, validated metrics, tamper-evident audit.
 </p>
 
 > **The agent never writes SQL. SchemaBrain does, from definitions you control.**
@@ -49,7 +49,7 @@ SchemaBrain provides the **safety and semantic 'plumbing'** that sits between an
 ```bash
 pip install schemabrain
 schemabrain init
-# then ask your MCP host: "list the entities Schema Brain knows about"
+# then ask your MCP host: "list the entities SchemaBrain knows about"
 ```
 
 **Cost.** ~$0.03 to index + curate the bundled 7-table demo (30 columns, 6 entities + 10 metrics) · ~$0.03 for a 87-column Pagila sample · **$0** to re-index unchanged schemas. Bounded by per-stage cost caps; index step runs on Claude Haiku 4.5, curation on Claude Sonnet 4.6.
@@ -61,7 +61,7 @@ schemabrain init
 ## Contents
 
 - [Quickstart](#quickstart) — 3 steps from `pip install` to a working agent
-- [The firewall](#the-firewall) — what Schema Brain enforces at the SQL boundary
+- [The firewall](#the-firewall) — what SchemaBrain enforces at the SQL boundary
 - [Sample session](#sample-session) — real Claude Desktop interaction against the bundled fixture
 - [Where it's going](#where-its-going) — honest disclaimer about what's not built yet
 - [Roadmap](#roadmap) — shipped + in progress + planned
@@ -107,7 +107,7 @@ schemabrain init
 - **An `ANTHROPIC_API_KEY`** — optional. Skip and the wizard still wires Claude Desktop; entity curation can run later.
 
 ```
-Schema Brain init — activation wizard
+SchemaBrain init — activation wizard
 
   [1/7] Source check       ✓ source reachable + read-only
   [2/7] Index schema       ✓ 7 tables, 30 columns indexed
@@ -115,7 +115,7 @@ Schema Brain init — activation wizard
   [4/7] Curate metrics     ✓ 10 metrics suggested + applied (cost: $0.03)
   [5/7] Curate joins       ✓ 5 canonical joins created (FK-mined, no LLM)
   [6/7] Wire host          ✓ wrote schemabrain entry to claude_desktop_config.json
-  [7/7] Next               ✓ restart your MCP host, then ask: "list the entities Schema Brain knows about"
+  [7/7] Next               ✓ restart your MCP host, then ask: "list the entities SchemaBrain knows about"
 ```
 
 Full wizard reference (stages explained, flags, dbt auto-detection, `--print-only` for non-Claude-Desktop hosts, `--no-entities` / `--no-metrics` / `--no-joins` opt-outs, cost-cap pauses): [`docs/setup.md`](docs/setup.md#0-activation-wizard-recommended).
@@ -126,7 +126,7 @@ Full wizard reference (stages explained, flags, dbt auto-detection, `--print-onl
 2. Relaunch.
 3. New conversation:
 
-   > list the entities Schema Brain knows about
+   > list the entities SchemaBrain knows about
 
 If Claude calls `list_entities` and reports `user`, `order`, etc., you're done. If not, see [Troubleshooting](#troubleshooting).
 
@@ -143,7 +143,7 @@ After the wizard, `schemabrain inspect` shows what the agent has and `schemabrai
   </picture>
 </p>
 
-Six properties Schema Brain enforces at the SQL boundary today:
+Six properties SchemaBrain enforces at the SQL boundary today:
 
 <table>
 <tr>
@@ -151,7 +151,7 @@ Six properties Schema Brain enforces at the SQL boundary today:
 
 ### 1. Agent never writes raw SQL
 
-Entities, metrics, and canonical joins compile to parameterized SQL Schema Brain runs on its side. The agent sees rows + the SQL that was run — never arbitrary statements at your database.
+Entities, metrics, and canonical joins compile to parameterized SQL SchemaBrain runs on its side. The agent sees rows + the SQL that was run — never arbitrary statements at your database.
 
 [Build your semantic layer →](docs/semantic-layer.md)
 
@@ -243,7 +243,7 @@ python examples/anthropic_demo.py \
 
 Real Claude Desktop session against the bundled e-commerce fixture (7 tables, 30 columns, 6 entities curated for **~$0.03**):
 
-> **You:** Using Schema Brain, write me a SQL query to compute each customer's total spend by product category.
+> **You:** Using SchemaBrain, write me a SQL query to compute each customer's total spend by product category.
 >
 > **Claude:** *(calls `describe_entity` for `order_item`, then chains `resolve_join` along `user → order → order_item → product`. Each FK-derived hop returns `inference_method: fk_constraint` / `confidence: HIGH`. The last hop — `resolve_join(product, category)` — refuses:)*
 >
@@ -276,7 +276,7 @@ Real Claude Desktop session against the bundled e-commerce fixture (7 tables, 30
 > - **Status filter omitted.** `orders.status` is free TEXT and I haven't inspected its values; this counts every order. If you only want paid/fulfilled spend, add `WHERE o.status = …` once you confirm the allowed values.
 > - **PII flag.** `full_name` is `pii_sensitivity: pii / categories: [contact] / redacted: true` in the semantic layer. Fine if you're running this yourself; not fine if it's flowing into an agent context.
 
-The differentiator is what *didn't* happen: most LLM-over-database tools, asked this exact question, would confidently emit `JOIN categories c ON p.category_id = c.id` and produce SQL that errors against a column that isn't there. Schema Brain refused — `resolve_join` returned `kind: no_canonical_join` with `recovery.suggested_tool: suggest_joins`, not prose. The agent **acted on the structured recovery contract programmatically** instead of fabricating a join. Refusal-not-fabrication is the safety mechanism, demonstrated live.
+The differentiator is what *didn't* happen: most LLM-over-database tools, asked this exact question, would confidently emit `JOIN categories c ON p.category_id = c.id` and produce SQL that errors against a column that isn't there. SchemaBrain refused — `resolve_join` returned `kind: no_canonical_join` with `recovery.suggested_tool: suggest_joins`, not prose. The agent **acted on the structured recovery contract programmatically** instead of fabricating a join. Refusal-not-fabrication is the safety mechanism, demonstrated live.
 
 **Cost.** ~$0.001/column with Claude Haiku 4.5 + Sonnet 4.6 (Sonnet for the structured curation prompt). The bundled 7-table fixture (30 columns, 6 entities + 10 metrics + 5 joins) indexes + curates for **~$0.03 in ~85s**. The Pagila DVD-rental sample (87 columns after partition deduplication) runs for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
 
@@ -286,7 +286,7 @@ To verify Claude's SQL is mechanically correct (and that flagged caveats are the
 
 ## Where it's going
 
-Schema Brain is being built as the **SQL-boundary safety layer for AI agents** — the layer that parses what your agent is about to ask the database and refuses (or rewrites) before it runs.
+SchemaBrain is being built as the **SQL-boundary safety layer for AI agents** — the layer that parses what your agent is about to ask the database and refuses (or rewrites) before it runs.
 
 That layer needs a semantic substrate underneath it. You can't refuse "this query touches PII" without knowing which columns are PII. You can't rewrite "join through this junction" without canonical-join definitions. You can't validate a metric without knowing its grain.
 
@@ -338,8 +338,8 @@ The five most common first-run failures. Full troubleshooter in [`docs/setup.md`
 - **`pip install schemabrain` gave me an older version.** Check `schemabrain --version`. If it doesn't match the [latest release](https://pypi.org/project/schemabrain/) your pip cache is stale — run `pip install --upgrade schemabrain`. `schemabrain init` writes the same version into the Claude Desktop snippet (`uvx schemabrain==<pin>`) so it stays reproducible across restarts; bump the pin in the snippet manually after upgrading via pip.
 - **`init` reports `source unreachable`.** Postgres may not be ready on first run — wait a few seconds and re-run. For your own database, verify host, port, and credentials. Connection URLs in any form are accepted (`postgresql://`, `postgres://`, `postgresql+psycopg://`).
 - **The first `init` or `schemabrain index` hangs for ~60 seconds.** Normal. The first index downloads the ONNX embedding model (~67 MB) and makes one LLM call per column. Subsequent runs are fast.
-- **`init` fails at stage 6 "wire host".** Claude Desktop must be installed first — Schema Brain writes into its config file, which doesn't exist until Claude Desktop has launched at least once.
-- **Claude Desktop doesn't show Schema Brain after restart.** Cmd+Q is required (close-window doesn't trigger a re-read of MCP config). Run `schemabrain doctor` to verify the config landed. If `doctor` says everything's good but Claude Desktop still doesn't see the tool, check `~/Library/Logs/Claude/mcp*.log`.
+- **`init` fails at stage 6 "wire host".** Claude Desktop must be installed first — SchemaBrain writes into its config file, which doesn't exist until Claude Desktop has launched at least once.
+- **Claude Desktop doesn't show SchemaBrain after restart.** Cmd+Q is required (close-window doesn't trigger a re-read of MCP config). Run `schemabrain doctor` to verify the config landed. If `doctor` says everything's good but Claude Desktop still doesn't see the tool, check `~/Library/Logs/Claude/mcp*.log`.
 
 ---
 
@@ -369,7 +369,7 @@ Only LLM-enriched column descriptions and the redacted sample values that feed t
 Postgres 16+ (primary target) and SQLite (for development and demos). Adding Snowflake / BigQuery / MySQL is mostly a new `DataSource` implementation plus a profiler tweak — on the v1.x roadmap.
 
 **Why MCP and not a REST API?**
-The consumer is an agent, not a service. MCP standardizes tool registration, schema description, and request/response transport. Agents discover Schema Brain natively and get its tool surface — no API wrapper, no SDK to maintain per language.
+The consumer is an agent, not a service. MCP standardizes tool registration, schema description, and request/response transport. Agents discover SchemaBrain natively and get its tool surface — no API wrapper, no SDK to maintain per language.
 
 More questions answered in [`docs/landscape.md`](docs/landscape.md) (is this a semantic layer like Cube?) and [`docs/setup.md`](docs/setup.md#troubleshooting) (why local embeddings, more troubleshooting).
 

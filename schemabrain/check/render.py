@@ -6,7 +6,7 @@ same `CheckReport` shape its own way.
 
 Output shape:
 
-    Schema Brain check — prod_warehouse
+    SchemaBrain check — prod_warehouse
     8 entities (8 healthy) · 12 metrics (11 healthy) · 5 joins (5 healthy)
 
       ✓ 8 entities healthy
@@ -71,7 +71,7 @@ def render_report(
     against multiple sources can disambiguate at a glance.
     """
     drift_count = len(report.drifts)
-    console.print(f"[bold]Schema Brain check[/] — {source_label}")
+    console.print(f"[bold]SchemaBrain check[/] — {source_label}")
     console.print(
         f"{report.total_entities} entit"
         f"{'y' if report.total_entities == 1 else 'ies'} "

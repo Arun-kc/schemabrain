@@ -498,10 +498,10 @@ class TestDesignBrandLineSummary:
         assert "◆ store" in out
 
     def test_old_header_no_longer_renders(self) -> None:
-        # Regression guard: the pre-PR-#7 ``Schema Brain inspect``
+        # Regression guard: the pre-PR-#7 ``SchemaBrain inspect``
         # plain-text header must not return on a future revert.
         out = _capture(render_summary, self._empty_but_populated_summary())
-        assert "Schema Brain inspect" not in out
+        assert "SchemaBrain inspect" not in out
 
     def test_summary_panel_entities_count_renders(self) -> None:
         out = _capture(render_summary, self._empty_but_populated_summary())

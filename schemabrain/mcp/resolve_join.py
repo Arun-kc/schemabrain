@@ -191,7 +191,7 @@ def _render_join_info(
 
     Identifiers (aliases + columns + table qualified names) are
     double-quoted so entity names like `order`, `user`, `select` (valid
-    Schema Brain identifiers, reserved Postgres keywords) survive when
+    SchemaBrain identifiers, reserved Postgres keywords) survive when
     a user pastes the skeleton into a query.
 
     Composite-key joins render with `AND`-joined predicates.

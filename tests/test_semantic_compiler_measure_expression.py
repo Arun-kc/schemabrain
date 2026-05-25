@@ -1,6 +1,6 @@
 """Tests for the composite-measure-expression parser/renderer.
 
-Schema Brain v0.3.0 supports only `agg(single_column)` measures. v0.4
+SchemaBrain v0.3.0 supports only `agg(single_column)` measures. v0.4
 adds composite expressions like `SUM(unit_price * quantity)` via a
 strict whitelist grammar: identifier-shaped column names, integer +
 float literals, unary `-`, binary `+ - * /`, and parens. Anything

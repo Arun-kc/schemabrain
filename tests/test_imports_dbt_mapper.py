@@ -1,4 +1,4 @@
-"""Tests for the dbt model → Schema Brain Entity mapper.
+"""Tests for the dbt model → SchemaBrain Entity mapper.
 
 Pins the third piece of the dbt import substrate. The mapper combines
 the step-1 parser output (a `DbtModelNode`) with the step-2 identity
@@ -184,7 +184,7 @@ class TestUpstreamSourceResolution:
 
         result = dbt_model_to_entity(model, manifest)
         # Sources are recorded as qualified table names (schema.identifier),
-        # not as opaque dbt unique IDs. Schema Brain's domain is the
+        # not as opaque dbt unique IDs. SchemaBrain's domain is the
         # physical tables.
         assert result.upstream_sources == ("raw.users",)
 

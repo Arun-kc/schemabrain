@@ -172,7 +172,7 @@ class TestInitCliPrintOnly:
         stub_uvx: None,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        # Polish: render the Schema Brain wordmark + manual-mode
+        # Polish: render the SchemaBrain wordmark + manual-mode
         # orientation + "Add this to your MCP host's config:" so the
         # JSON block has a labelled top, not just naked output.
         main(
@@ -186,7 +186,7 @@ class TestInitCliPrintOnly:
             ]
         )
         captured = capsys.readouterr()
-        assert "Schema Brain" in captured.err
+        assert "SchemaBrain" in captured.err
         assert "manual mode" in captured.err
         assert "Add this to your MCP host's config" in captured.err
 
@@ -1236,7 +1236,7 @@ class TestWizardRenderer:
 
         long_message = (
             "Store schema version '2' does not match expected '12'. "
-            "Schema Brain is pre-alpha and does not yet provide migrations "
+            "SchemaBrain is pre-alpha and does not yet provide migrations "
             "— delete or move the store file (path passed to SQLiteStore) "
             "and re-run `schemabrain index` to rebuild from scratch."
         )
@@ -1448,7 +1448,7 @@ class TestWizardRenderer:
         captured = capsys.readouterr()
         # Wordmark line stands alone (no "init" suffix), orientation
         # line mentions the host target.
-        assert "Schema Brain" in captured.err
+        assert "SchemaBrain" in captured.err
         assert "Claude Desktop" in captured.err
         # Orientation duration hint sets expectations.
         assert "~" in captured.err
@@ -1467,7 +1467,7 @@ class TestWizardRenderer:
         # paths invoke render before stage 4 had a chance to set host).
         _render_wizard_result(result)
         captured = capsys.readouterr()
-        assert "Schema Brain" in captured.err
+        assert "SchemaBrain" in captured.err
         # Generic orientation — no host name promised.
         assert "Claude Desktop" not in captured.err
         assert "Claude Code" not in captured.err
@@ -2096,7 +2096,7 @@ class TestPendingEntityBlock:
         captured = capsys.readouterr()
         # Closing-block invariants still hold.
         assert "Restart Claude Desktop" in captured.err
-        assert "list the entities Schema Brain knows about" in captured.err
+        assert "list the entities SchemaBrain knows about" in captured.err
         # Pending-action copy absent.
         assert "To curate entities" not in captured.err
         assert "Curate entities when ready" not in captured.err
@@ -2206,7 +2206,7 @@ class TestPendingEntityBlock:
         assert "Curate entities when ready" not in captured.err
         assert "Stage 3 did not curate entities" not in captured.err
         # Standard closing-block invariants still hold.
-        assert "list the entities Schema Brain knows about" in captured.err
+        assert "list the entities SchemaBrain knows about" in captured.err
 
     def test_pending_block_for_failed_stage(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

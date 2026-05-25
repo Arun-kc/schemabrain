@@ -637,7 +637,7 @@ class TestStageSourceCheck:
         err = GuidedError(
             kind="init_source_not_read_only",
             message="source session reports default_transaction_read_only='off'",
-            why="Schema Brain requires a read-only session",
+            why="SchemaBrain requires a read-only session",
             fix="grant the role permission to SET read-only",
             next_step=None,
         )

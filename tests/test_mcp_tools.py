@@ -1234,7 +1234,7 @@ class TestSuggestJoinsImpl:
         junction) MUST be reachable at the default `max_hops`. Without
         this guard, the documented demo path returns `unreachable` on
         the fixture, which is a confusing first-touch experience for
-        users evaluating Schema Brain.
+        users evaluating SchemaBrain.
         """
         store = SQLiteStore(tmp_path / "deep.db")
         sid = "src1"

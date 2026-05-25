@@ -1,4 +1,4 @@
-"""Schema Brain: the SQL firewall between AI agents and your production database."""
+"""SchemaBrain: the SQL firewall between AI agents and your production database."""
 
 from importlib.metadata import version
 

@@ -34,7 +34,7 @@ Workarounds for operators with JSONB-heavy schemas:
     and index that view as a "table" (Postgres treats views as relations
     for reflection purposes when explicitly selected).
   - Use `--from-dbt` so dbt's own JSONB-aware modelling is the source
-    of truth for entities and metrics; Schema Brain inherits the
+    of truth for entities and metrics; SchemaBrain inherits the
     normalized shape via the dbt manifest importer.
 
 JSONB-path decomposition is a deliberate v1 non-goal — adding it requires
