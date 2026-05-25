@@ -515,3 +515,157 @@ class TestPiiBlockColumnRedaction:
         email_col = next(c for c in detail.columns if c.name == "email")
         assert email_col.redacted is True
         assert detail.redacted_columns == ("email",)
+
+
+class TestCatastrophicCategoriesAlwaysRedact:
+    """Catastrophic-leak floor: `credential`, `payment_card`, and
+    `government_id` are always redacted in `describe_entity` output,
+    even when the operator passed an empty `--pii-block`. The intent
+    is minimum decency — an operator who opted out of refusal
+    enforcement still should not let the agent read a `password_hash`
+    or `ssn` column description. The column metadata (name,
+    data_type, nullable) still surfaces so the agent knows the
+    column exists; only the LLM-enriched semantic description and
+    the description-bearing payload are scrubbed.
+    """
+
+    def _users_table_with_credential(self) -> Table:
+        return Table(
+            name="users",
+            schema_name="public",
+            columns=(
+                Column(
+                    name="id",
+                    table_name="users",
+                    schema_name="public",
+                    data_type="bigint",
+                    nullable=False,
+                    ordinal_position=1,
+                    is_primary_key=True,
+                ),
+                Column(
+                    name="password_hash",
+                    table_name="users",
+                    schema_name="public",
+                    data_type="text",
+                    nullable=False,
+                    ordinal_position=2,
+                ),
+                Column(
+                    name="email",
+                    table_name="users",
+                    schema_name="public",
+                    data_type="text",
+                    nullable=False,
+                    ordinal_position=3,
+                ),
+            ),
+        )
+
+    @pytest.mark.parametrize(
+        "category",
+        ["credential", "payment_card", "government_id"],
+    )
+    def test_catastrophic_category_redacts_with_empty_pii_block(
+        self, tmp_path: Path, category: str
+    ) -> None:
+        with SQLiteStore(tmp_path / "s.db") as store:
+            store.write_table(self._users_table_with_credential(), source_connection_id="sid")
+            store.write_entity(_customer_entity(), source_connection_id="sid")
+            store.write_column_pii_tags(
+                qualified_table="public.users",
+                tags={"password_hash": ("pii", frozenset({category}))},
+                source_connection_id="sid",
+            )
+            store.write_table_descriptions(
+                schema_name="public",
+                name="users",
+                source_connection_id="sid",
+                descriptions={
+                    "password_hash": ColumnDescription(
+                        text="bcrypt-hashed user password",
+                        model="m",
+                        prompt_version="v",
+                        input_tokens=1,
+                        cached_input_tokens=0,
+                        output_tokens=1,
+                        cost_usd=0.0,
+                    ),
+                },
+            )
+            detail = describe_entity_impl(
+                store=store,
+                source_connection_id="sid",
+                name="customer",
+                pii_block=frozenset(),
+            )
+        hashed = next(c for c in detail.columns if c.name == "password_hash")
+        assert hashed.redacted is True
+        assert hashed.description == ""
+        assert "password_hash" in detail.redacted_columns
+
+    def test_non_catastrophic_contact_category_not_force_redacted(self, tmp_path: Path) -> None:
+        # `contact` is NOT in the catastrophic-leak floor — with an
+        # empty operator policy, a `contact`-tagged column ships
+        # un-redacted. This is the negative case that proves the
+        # always-redact set is a SUBSET of the full PII taxonomy,
+        # not the whole thing.
+        with SQLiteStore(tmp_path / "s.db") as store:
+            store.write_table(_users_table(), source_connection_id="sid")
+            store.write_entity(_customer_entity(), source_connection_id="sid")
+            store.write_column_pii_tags(
+                qualified_table="public.users",
+                tags={"email": ("pii", frozenset({"contact"}))},
+                source_connection_id="sid",
+            )
+            store.write_table_descriptions(
+                schema_name="public",
+                name="users",
+                source_connection_id="sid",
+                descriptions={
+                    "email": ColumnDescription(
+                        text="Primary contact email",
+                        model="m",
+                        prompt_version="v",
+                        input_tokens=1,
+                        cached_input_tokens=0,
+                        output_tokens=1,
+                        cost_usd=0.0,
+                    ),
+                },
+            )
+            detail = describe_entity_impl(
+                store=store,
+                source_connection_id="sid",
+                name="customer",
+                pii_block=frozenset(),
+            )
+        email_col = next(c for c in detail.columns if c.name == "email")
+        assert email_col.redacted is False
+        assert email_col.description == "Primary contact email"
+        assert detail.redacted_columns == ()
+
+    def test_catastrophic_floor_unions_with_operator_policy(self, tmp_path: Path) -> None:
+        # When the operator's `--pii-block` set includes its own
+        # categories, the effective block set is the UNION with the
+        # catastrophic floor — both contact AND credential columns
+        # land in `redacted_columns`.
+        with SQLiteStore(tmp_path / "s.db") as store:
+            store.write_table(self._users_table_with_credential(), source_connection_id="sid")
+            store.write_entity(_customer_entity(), source_connection_id="sid")
+            store.write_column_pii_tags(
+                qualified_table="public.users",
+                tags={
+                    "email": ("pii", frozenset({"contact"})),
+                    "password_hash": ("pii", frozenset({"credential"})),
+                },
+                source_connection_id="sid",
+            )
+            detail = describe_entity_impl(
+                store=store,
+                source_connection_id="sid",
+                name="customer",
+                pii_block=frozenset({"contact"}),
+            )
+        redacted = set(detail.redacted_columns)
+        assert redacted == {"email", "password_hash"}

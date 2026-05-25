@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- `schemabrain serve` defaults `--pii-block` to `{credential, payment_card, government_id}` when the flag is absent (previously empty frozenset — no enforcement). Surfaces a one-line stderr confirmation so the choice is visible. Pass `--pii-block ''` to explicitly disable enforcement (an explicit-empty branch with its own warning). ([#110])
+- `schemabrain init` gains `--pii-block` flag mirroring `serve`. Under `--yes` / non-TTY, the prior silent fall-through to `("contact",)` is replaced with the catastrophic-leak default plus stderr confirmation. Explicit `--pii-block ''` writes no flag into the host snippet (operator opt-out). The interactive-TTY prompt is unchanged.
+- `WizardConfig.pii_block` default changed from `("contact",)` to `("credential", "government_id", "payment_card")` for defense-in-depth — programmatic callers constructing `WizardConfig` directly now also get safe-by-default enforcement.
+
+### Fixed
+- `get_metric` refusal envelope no longer leaks `attempted_categories` (probe oracle) — surfaces only `blocked_categories` (the policy intersection that triggered refusal). The full `attempted` set stays in the audit row via the `PiiBlockedError` exception fields for operator forensics. The refusal message text is updated to the same subset. ([#110])
+- `describe_entity` always redacts column descriptions whose tagged categories include `credential`, `payment_card`, or `government_id` — even when the operator passed an empty `--pii-block`. Column metadata (name, type, nullable) still surfaces so the agent knows the column exists; only the LLM-enriched semantic description is scrubbed. ([#110])
+
 ## [0.4.0] - 2026-05-23
 
 **Highlights** — 0.4.0 lands the charter v1.2 2D trust signal,
@@ -1169,3 +1178,4 @@ First public preview. Live on PyPI as `schemabrain==0.1.0a1`.
 [#100]: https://github.com/Arun-kc/schemabrain/pull/100
 [#101]: https://github.com/Arun-kc/schemabrain/pull/101
 [#102]: https://github.com/Arun-kc/schemabrain/pull/102
+[#110]: https://github.com/Arun-kc/schemabrain/pull/110
