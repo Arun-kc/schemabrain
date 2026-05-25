@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -220,6 +220,406 @@ class TestAuditVerifyStoreMissing:
         assert exit_code == 2
         err = capsys.readouterr().err
         assert "cannot open" in err or "SQLite" in err
+
+
+def _row_chain_hash_hex(store_path: Path, row_id: int) -> str:
+    """Helper: read the stored chain_hash hex for a specific audit row.
+
+    Used by `--since <hash>` tests to construct the prefix string the
+    operator would type after archiving a known-good chain head
+    externally.
+    """
+    conn = sqlite3.connect(store_path)
+    try:
+        row = conn.execute("SELECT chain_hash FROM mcp_audit WHERE id = ?", (row_id,)).fetchone()
+        assert row is not None, f"no audit row with id={row_id}"
+        return bytes(row[0]).hex()
+    finally:
+        conn.close()
+
+
+class TestAuditVerifySinceHash:
+    """`audit verify --since <hash-prefix>` anchors the walk to a
+    known-good cursor row. Rows AT or BEFORE the cursor are not
+    verified — that segment can be tampered without the post-cursor
+    walk reporting any mismatch. Rows AFTER the cursor are verified
+    using the cursor's stored `chain_hash` as the trusted baseline.
+    """
+
+    def test_since_hash_verifies_post_cursor_segment_clean(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=5)
+        anchor_hex = _row_chain_hash_hex(store_path, row_id=3)
+        prefix = anchor_hex[:8]
+
+        exit_code = cli_main(
+            ["audit", "verify", "--store-path", str(store_path), "--since", prefix]
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        # Headline narrows to the post-cursor claim — operator must
+        # not misread a since-walk as a full-chain proof.
+        assert "after row 3" in out
+        # The "all N rows" claim line uses post-cursor count (2),
+        # not the table's total (5).
+        assert "2 row(s) after the cursor" in out
+
+    def test_since_hash_skips_pre_cursor_tampering(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The load-bearing contract: rows at or before the cursor
+        are NOT verified, so tampering in that segment does not
+        surface in a `--since` walk. This is by design — operator
+        archived a trusted chain_hash externally and only cares
+        about anything appended since."""
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=5)
+        anchor_hex = _row_chain_hash_hex(store_path, row_id=3)
+        prefix = anchor_hex[:8]
+
+        # Tamper row 2 (before the cursor) — a full walk would catch
+        # this; the since-walk explicitly does not.
+        conn = sqlite3.connect(store_path)
+        try:
+            conn.execute("DROP TRIGGER mcp_audit_no_update")
+            conn.execute("UPDATE mcp_audit SET tool_name = 'tampered' WHERE id = 2")
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Confirm the tamper IS detected by a full walk first (sanity).
+        full_exit = cli_main(["audit", "verify", "--store-path", str(store_path)])
+        assert full_exit == 1
+
+        # Now --since <row-3-hash> walks only rows 4 + 5; row 2's
+        # tamper does not surface.
+        exit_code = cli_main(
+            ["audit", "verify", "--store-path", str(store_path), "--since", prefix]
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "after row 3" in out
+
+    def test_since_hash_detects_post_cursor_tampering(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The other side of the contract: tampering AFTER the cursor
+        IS caught. Without this, the since-walk would be a no-op
+        instead of a narrowed integrity check."""
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=5)
+        anchor_hex = _row_chain_hash_hex(store_path, row_id=3)
+        prefix = anchor_hex[:8]
+
+        # Tamper row 4 (after the cursor).
+        conn = sqlite3.connect(store_path)
+        try:
+            conn.execute("DROP TRIGGER mcp_audit_no_update")
+            conn.execute("UPDATE mcp_audit SET tool_name = 'tampered' WHERE id = 4")
+            conn.commit()
+        finally:
+            conn.close()
+
+        exit_code = cli_main(
+            ["audit", "verify", "--store-path", str(store_path), "--since", prefix]
+        )
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        assert "row 4" in out
+        assert "mismatch" in out
+
+    def test_since_hash_unknown_prefix_returns_two(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=3)
+        # A hex prefix that is well-formed (≥8 hex chars) but does
+        # not match any stored chain_hash.
+        exit_code = cli_main(
+            ["audit", "verify", "--store-path", str(store_path), "--since", "deadbeef"]
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "deadbeef" in err
+        assert "no audit row" in err
+
+    def test_since_short_hex_prefix_falls_through_to_duration_parser(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A 7-char (<8) hex string is NOT treated as a hash prefix —
+        the false-positive rate on a busy chain climbs fast below 8
+        chars. Such input falls through to the duration / ISO parser,
+        which rejects it with a clear malformed-spec error.
+        """
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=3)
+        # `1234567` (7 chars hex) parses as neither hash, duration,
+        # nor ISO timestamp.
+        exit_code = cli_main(
+            ["audit", "verify", "--store-path", str(store_path), "--since", "1234567"]
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        # Surfaces the parse_since error, not the hash-prefix error.
+        assert "could not parse" in err or "expected duration" in err
+
+
+class TestAuditVerifySinceDuration:
+    """`--since <duration>` (e.g. `1h`, `7d`) anchors the walk to the
+    LAST audit row strictly before the threshold and verifies rows at
+    or after the threshold using the cursor's chain_hash.
+    """
+
+    def test_since_duration_verifies_recent_rows(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=2)
+        # Re-time row 1 to 2 hours ago and row 2 to "just now" so a
+        # `--since 1h` cursor lands on row 1 and walks row 2 forward.
+        old_iso = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        conn = sqlite3.connect(store_path)
+        try:
+            conn.execute("DROP TRIGGER mcp_audit_no_update")
+            conn.execute("UPDATE mcp_audit SET occurred_at = ? WHERE id = 1", (old_iso,))
+            conn.commit()
+        finally:
+            conn.close()
+
+        exit_code = cli_main(["audit", "verify", "--store-path", str(store_path), "--since", "1h"])
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "after row 1" in out
+
+    def test_since_duration_no_cursor_returns_two(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """All audit rows are newer than `1h` → no cursor row precedes
+        the threshold → exit 2 (cannot anchor)."""
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=3)
+        exit_code = cli_main(["audit", "verify", "--store-path", str(store_path), "--since", "1h"])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "cannot anchor" in err
+
+    def test_since_iso_timestamp_resolves(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """ISO 8601 with timezone works the same as duration."""
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=2)
+        old_iso = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        conn = sqlite3.connect(store_path)
+        try:
+            conn.execute("DROP TRIGGER mcp_audit_no_update")
+            conn.execute("UPDATE mcp_audit SET occurred_at = ? WHERE id = 1", (old_iso,))
+            conn.commit()
+        finally:
+            conn.close()
+
+        threshold = (datetime.now(UTC) - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        exit_code = cli_main(
+            ["audit", "verify", "--store-path", str(store_path), "--since", threshold]
+        )
+        assert exit_code == 0
+
+
+class TestAuditVerifySinceAmbiguity:
+    """A hex prefix that matches multiple chain_hash rows raises an
+    operator-facing disambiguation error rather than silently picking
+    one. Important because a 4-byte (8-hex) prefix is statistically
+    unique up to ~256 rows but a longer chain can land collisions.
+    """
+
+    def test_ambiguous_hex_prefix_returns_two(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=3)
+        # Construct an artificially ambiguous case: rewrite rows 1
+        # AND 2 to share a leading hex byte. The trigger has to be
+        # dropped first to allow the update.
+        conn = sqlite3.connect(store_path)
+        try:
+            conn.execute("DROP TRIGGER mcp_audit_no_update")
+            conn.execute(
+                "UPDATE mcp_audit SET chain_hash = ? WHERE id = 1",
+                (b"\xab\xcd\xef\x01" + b"\x00" * 28,),
+            )
+            conn.execute(
+                "UPDATE mcp_audit SET chain_hash = ? WHERE id = 2",
+                (b"\xab\xcd\xef\x02" + b"\x00" * 28,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # `abcdef0` (7 hex chars) is too short to be treated as a
+        # prefix (8-char minimum); use `abcdef01`/`abcdef02` would be
+        # unique. Pass a 8-char prefix `abcdef01` and see if it picks
+        # row 1 cleanly — sanity. Then pass the shorter common prefix
+        # `abcdef00` which matches NEITHER → no-match exit 2.
+        # For the ambiguous case, use 8 chars that BOTH start with:
+        # the 4 hex of byte `0xab,0xcd,0xef` plus `0` covers the
+        # first byte of the differentiating hex. We need a prefix
+        # that matches both. `abcdef0` is 7 chars (under min); push
+        # to 8 chars by appending `*` is not how GLOB works in our
+        # parameter binding. Instead, use a chain_hash that BOTH
+        # rows share for 4+ bytes. Re-tune:
+        conn = sqlite3.connect(store_path)
+        try:
+            conn.execute(
+                "UPDATE mcp_audit SET chain_hash = ? WHERE id = 1",
+                (b"\xab\xcd\xef\x01\xab" + b"\x00" * 27,),
+            )
+            conn.execute(
+                "UPDATE mcp_audit SET chain_hash = ? WHERE id = 2",
+                (b"\xab\xcd\xef\x01\xcd" + b"\x00" * 27,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # First 8 hex chars (`abcdef01`) now match both rows.
+        exit_code = cli_main(
+            ["audit", "verify", "--store-path", str(store_path), "--since", "abcdef01"]
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "matches multiple" in err
+        assert "disambiguate" in err
+
+
+class TestAuditListFooter:
+    """The audit list footer renders status + cost-class breakdown
+    under the rich table. Omitted in --json mode (footer is human-
+    readable only) and on empty results. Aggregates over the
+    rendered rows (limit-bounded), not all-time, so the summary
+    mirrors what the operator sees.
+    """
+
+    def _seed_mixed_rows(self, store_path: Path) -> None:
+        """Mix success / refused / degraded statuses so the footer
+        renders a multi-class summary. The audit row's cost_class is
+        derived from status — refused → 'refused', everything else
+        → 'small' at writer time — so testing the cost-class line
+        primarily tests the small/refused split.
+        """
+        SQLiteStore(store_path).close()
+        writer = AuditWriter(store_path)
+        try:
+            for status in ("success", "success", "success", "refused", "degraded"):
+                draft = build_audit_row(
+                    tool_name="describe_table",
+                    source_connection_id="src1",
+                    response=_FakeResponse(status=status),
+                )
+                writer.write(draft)
+        finally:
+            writer.close()
+
+    def test_footer_renders_after_table(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_path = tmp_path / "store.db"
+        self._seed_mixed_rows(store_path)
+        exit_code = cli_main(["audit", "list", "--store-path", str(store_path)])
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        # The footer separator row is Unicode box-drawing horizontal;
+        # 5 contiguous chars is plenty to distinguish from other rule
+        # characters Rich's table renderer might emit.
+        assert "─────" in out
+        # Two summary lines — both labels are stable copy.
+        assert "Summary:" in out
+        assert "Cost class:" in out
+
+    def test_footer_reports_total_calls(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_path = tmp_path / "store.db"
+        self._seed_mixed_rows(store_path)
+        cli_main(["audit", "list", "--store-path", str(store_path)])
+        out = capsys.readouterr().out
+        # 5 rows seeded; the rich-rendered text is wrapped + carries
+        # ANSI escape sequences for colour, but the count is intact.
+        assert "5 calls" in out
+
+    def test_footer_aggregates_status_counts(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_path = tmp_path / "store.db"
+        self._seed_mixed_rows(store_path)
+        cli_main(["audit", "list", "--store-path", str(store_path)])
+        out = capsys.readouterr().out
+        # 3 success + 1 refused + 1 degraded
+        assert "3 success" in out
+        assert "1 refused" in out
+        assert "1 degraded" in out
+        # Zero-count statuses must NOT appear (`empty`, `partial`,
+        # `error` were not seeded).
+        assert "0 empty" not in out
+        assert "0 partial" not in out
+        assert "0 error" not in out
+
+    def test_footer_aggregates_cost_class_counts(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_path = tmp_path / "store.db"
+        self._seed_mixed_rows(store_path)
+        cli_main(["audit", "list", "--store-path", str(store_path)])
+        out = capsys.readouterr().out
+        # 4 small + 1 refused (refused-status rows get cost_class=refused
+        # by `build_audit_row`; everything else → small).
+        assert "4 small" in out
+        assert "1 refused" in out
+
+    def test_footer_aggregates_over_limited_rows_only(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The footer must mirror what the operator sees in the table
+        — so when `--limit 2` truncates the view, the footer summarizes
+        2 rows, not all 5. Otherwise the footer would silently
+        contradict the table above it.
+        """
+        store_path = tmp_path / "store.db"
+        self._seed_mixed_rows(store_path)
+        cli_main(["audit", "list", "--store-path", str(store_path), "--limit", "2"])
+        out = capsys.readouterr().out
+        # `audit list` sorts by id DESC; the 2 newest rows are the
+        # `refused` (id 4) and `degraded` (id 5) ones from the seed.
+        assert "2 calls" in out
+
+    def test_footer_omitted_in_json_mode(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--json output is for machine consumption (jq / awk). The
+        human-readable footer would break json-lines parsing, so it
+        must not render in --json mode."""
+        store_path = tmp_path / "store.db"
+        self._seed_mixed_rows(store_path)
+        cli_main(["audit", "list", "--store-path", str(store_path), "--json"])
+        out = capsys.readouterr().out
+        assert "Summary:" not in out
+        assert "Cost class:" not in out
+        assert "─────" not in out
+
+    def test_footer_omitted_when_no_rows_match(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The empty-state branch returns BEFORE the footer renders.
+        An operator who filtered everything out should see the
+        friendly empty message, not a "Summary: 0 calls" footer.
+        """
+        store_path = tmp_path / "store.db"
+        _seed_store_with_audit_rows(store_path, n=3)
+        cli_main(["audit", "list", "--store-path", str(store_path), "--tool", "nonexistent"])
+        out = capsys.readouterr().out
+        assert "Summary:" not in out
+        assert "Cost class:" not in out
 
 
 class TestAuditList:
