@@ -8,7 +8,6 @@
 <!-- <h1 align="center">schemabrain</h1> -->
 
 <p align="center">
-  <a href="https://github.com/Arun-kc/schemabrain/stargazers"><img src="https://img.shields.io/github/stars/Arun-kc/schemabrain?style=flat-square&labelColor=0A0A0A&color=3ECF8E" alt="GitHub stars"></a>
   <a href="https://github.com/Arun-kc/schemabrain/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Arun-kc/schemabrain/ci.yml?style=flat-square&label=CI&labelColor=0A0A0A&color=3ECF8E" alt="CI"></a>
   <a href="https://pypi.org/project/schemabrain/"><img src="https://img.shields.io/pypi/v/schemabrain?style=flat-square&label=pypi&labelColor=0A0A0A&color=3ECF8E" alt="PyPI version"></a>
   <a href="https://pypi.org/project/schemabrain/"><img src="https://img.shields.io/pypi/dm/schemabrain?style=flat-square&label=downloads&labelColor=0A0A0A&color=3ECF8E" alt="PyPI downloads"></a>
@@ -18,41 +17,31 @@
 </p>
 
 <p align="center">
+  <em>Works with Claude Desktop · Claude Code · Cursor · Zed · any MCP host</em>
+</p>
+
+<p align="center">
   <strong>Stop giving AI agents raw database connection strings.</strong><br>
   SchemaBrain is the SQL firewall between AI agents and your production database — twelve read-only tools, validated metrics, tamper-evident audit.
 </p>
 
 > **The agent never writes SQL. SchemaBrain does, from definitions you control.**
 
-SchemaBrain sits between your AI agent (Claude, Cursor, Zed, or custom MCP hosts) and your production database. It solves the "Trust Gap" by ensuring agents never run destructive commands, leak PII, or get stuck in schema-guessing loops.
+Three guarantees that close the trust gap between AI agents and your database:
 
-- **One command from `pip install` to wired agent** — `schemabrain init` walks you through the 7-stage activation wizard.
-- **Structured Recovery Envelopes** — When a query fails, the agent receives a suggested fix (e.g., "Missing Join", "PII Blocked"), allowing for self-healing loops.
-- **Tamper-Evident Audit Chain** — Every query and response is cryptographically hashed (SHA256) for SOC2/HIPAA compliance.
-- **PII-Aware by Architecture** — Automatic PII detection and propagation through joins and aliases.
-- **Production Ready** — Mature alpha (v0.4.0) with 4,500+ tests and 99% coverage.
-
----
-
-## Why SchemaBrain?
-
-You cannot trust an AI agent with a raw database connection string. If you do, you risk:
-- **Data Loss:** Agents can (and will) run destructive commands if not restricted.
-- **PII Leaks:** Agents might accidentally query sensitive user data.
-- **Costly Loops:** Agents often get stuck in "schema-guessing" loops when they don't understand the data model.
-- **Compliance Failures:** No audit trail means no SOC2 or HIPAA compliance for your AI systems.
-
-SchemaBrain provides the **safety and semantic 'plumbing'** that sits between an AI agent and your production database.
+- **[Read-only by architecture](#2-read-only-by-architecture-not-configuration)** — twelve MCP tools, none of which can write. No `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database.
+- **[PII refusal at retrieval](#4-pii-aware-refusal-at-the-get_metric-tool-boundary)** — PII tags propagate from the physical schema through joins and metrics. If a query touches a blocked category, SchemaBrain refuses *before* the database is queried.
+- **[Cryptographic audit chain](#5-tamper-evident-audit-log)** — every call, refusal, and recovery lands in a SHA256-hashed append-only log. `audit verify` exits non-zero if any past row was rewritten.
 
 ---
 
 ```bash
 pip install schemabrain
 schemabrain init
-# then ask your MCP host: "list the entities SchemaBrain knows about"
+# then: Cmd+Q Claude Desktop, relaunch, and ask: "list the entities SchemaBrain knows about"
 ```
 
-**Cost.** ~$0.03 to index + curate the bundled 7-table demo (30 columns, 6 entities + 10 metrics) · ~$0.03 for a 87-column Pagila sample · **$0** to re-index unchanged schemas. Bounded by per-stage cost caps; index step runs on Claude Haiku 4.5, curation on Claude Sonnet 4.6.
+**Cost:** ~$0.03 to index the bundled demo · **$0** to re-index unchanged schemas. Detail in [Sample session](#sample-session).
 
 **Status: 0.4.0 (alpha).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap.
 
@@ -84,7 +73,7 @@ schemabrain init
 
 ## Quickstart
 
-Three steps from `pip install` to a working Claude Desktop integration. ~45s once Docker and the embedding model are cached; budget a couple of minutes on a true first run while the `postgres:16-alpine` image and the ~67 MB ONNX embedding model download.
+Three steps from `pip install` to a working Claude Desktop integration. If you paste your own Postgres URL — no Docker needed, ~30s. Press Enter for the bundled demo and `init` invokes Docker + downloads a ~67 MB embedding model first time; ~45s once cached.
 
 ### 1. Install
 
@@ -93,7 +82,7 @@ pip install schemabrain
 schemabrain --version
 ```
 
-Source install (`git clone` + `uv sync --extra dev`) is documented in [`docs/setup.md`](docs/setup.md#0-activation-wizard-recommended).
+Source install (`git clone` + [`uv`](https://docs.astral.sh/uv/) `sync --extra dev`) is documented in [`docs/setup.md`](docs/setup.md#0-activation-wizard-recommended).
 
 ### 2. Run the activation wizard
 
@@ -151,7 +140,7 @@ Six properties SchemaBrain enforces at the SQL boundary today:
 
 ### 1. Agent never writes raw SQL
 
-Entities, metrics, and canonical joins compile to parameterized SQL SchemaBrain runs on its side. The agent sees rows + the SQL that was run — never arbitrary statements at your database.
+Entities, metrics, and canonical joins compile to parameterized SQL SchemaBrain runs on its side. The agent sees rows + the SQL that was run — never arbitrary statements at your database. LLM-suggested definitions during `init` are reviewed and applied explicitly; nothing reaches the runtime store until you accept it.
 
 [Build your semantic layer →](docs/semantic-layer.md)
 
@@ -160,7 +149,7 @@ Entities, metrics, and canonical joins compile to parameterized SQL SchemaBrain 
 
 ### 2. Read-only by architecture, not configuration
 
-The MCP surface exposes twelve tools — none of which can write. There is no `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database, regardless of session state. Stage 1 of `init` additionally pins `default_transaction_read_only=on` on the source connection and refuses activation against a Postgres that won't honor it. Belt and suspenders.
+The MCP surface exposes twelve tools — **none of which can write**. There is no `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database, regardless of session state. The read-only guarantee is structural, not a session flag the agent can flip. Stage 1 of `init` additionally pins `default_transaction_read_only=on` on the connection as belt-and-suspenders against a misconfigured downstream.
 
 </td>
 </tr>
@@ -195,7 +184,7 @@ Any `get_metric` touching a blocked PII category returns a `refused` envelope; t
 schemabrain serve --pii-block contact,health
 ```
 
-Twelve categories from GDPR, CCPA/CPRA, HIPAA, PCI DSS, ISO 27018 — tagged per-column at index time.
+Twelve categories from GDPR, CCPA/CPRA, HIPAA, PCI DSS, ISO 27018 — tagged per-column at index time. Detection is column-name patterns + redacted-sample inspection — see [`schemabrain/pii/classifier.py`](schemabrain/pii/classifier.py) for the full rule set.
 
 **Enforcement scope:** binding is at the `get_metric` compile path today. Lower-level tools (`describe_entity`, `resolve_join`, `describe_table`) surface the `redacted=True` flag + `pii_categories` as advisory metadata so the agent can self-regulate, but they don't refuse. Uniform SQL-layer enforcement against agent-emitted SQL ships in v2 — see [Where it's going](#where-its-going).
 
@@ -208,7 +197,7 @@ Twelve categories from GDPR, CCPA/CPRA, HIPAA, PCI DSS, ISO 27018 — tagged per
 
 ### 5. Tamper-evident audit log
 
-Every tool call under `schemabrain serve` writes one row to an append-only `mcp_audit` table — PII categories per row, content-addressable fingerprints, sha256 hash chain. `audit verify` re-walks the chain and exits non-zero if any past row was rewritten. Every claim is verifiable end-to-end against the bundled fixture.
+Every tool call under `schemabrain serve` writes one row to an append-only `mcp_audit` table — PII categories per row, content-addressable fingerprints, sha256 hash chain. `audit verify` re-walks the chain and exits non-zero if any past row was rewritten. Detects post-hoc tampering by any process without write access to the audit table; streaming the chain to an external immutable store is on the v3 roadmap (`mcp_audit` is local SQLite today).
 
 ```bash
 schemabrain audit verify   # exit 0 = chain clean
@@ -371,7 +360,10 @@ Postgres 16+ (primary target) and SQLite (for development and demos). Adding Sno
 **Why MCP and not a REST API?**
 The consumer is an agent, not a service. MCP standardizes tool registration, schema description, and request/response transport. Agents discover SchemaBrain natively and get its tool surface — no API wrapper, no SDK to maintain per language.
 
-More questions answered in [`docs/landscape.md`](docs/landscape.md) (is this a semantic layer like Cube?) and [`docs/setup.md`](docs/setup.md#troubleshooting) (why local embeddings, more troubleshooting).
+**Is this a semantic layer like Cube or dbt Semantic Layer?**
+Partially. SchemaBrain ships entities, metrics, and canonical joins as first-class persisted definitions today — agents call them via `list_entities`, `describe_entity`, `resolve_join`, `get_metric`. But the semantic layer isn't the headline; it's the **substrate** that makes the SQL-boundary safety primitives possible. Full comparison vs Cube / dbt-mcp / Vanna / WrenAI in [`docs/landscape.md`](docs/landscape.md).
+
+More questions answered in [`docs/setup.md`](docs/setup.md#troubleshooting) (why local embeddings, more troubleshooting).
 
 ---
 
