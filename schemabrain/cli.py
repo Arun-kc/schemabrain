@@ -465,6 +465,7 @@ def _dispatch(argv: list[str] | None) -> int:
             return _cmd_audit_verify(
                 store_path=args.store_path,
                 full=args.full,
+                since=args.since,
             )
         if args.audit_action == "list":
             return _cmd_audit_list(
@@ -1778,6 +1779,18 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Walk every row and report all mismatches. Default stops "
         "at the first mismatch for a fast yes/no integrity check.",
+    )
+    p_audit_verify.add_argument(
+        "--since",
+        default=None,
+        help="Anchor the walk to a known-good cursor row instead of "
+        "walking from genesis. Accepts: a leading hex prefix (≥8 "
+        "chars) of a previously-archived chain_hash; a compact "
+        "duration like '7d' / '2h' / '30s' / '5m'; or an ISO 8601 "
+        "timestamp with timezone like '2026-05-17T10:00:00Z'. The "
+        "cursor row's own integrity is NOT re-verified (operator "
+        "must have archived a trusted copy externally) — only rows "
+        "after it are. Default: walk from genesis.",
     )
 
     p_audit_list = audit_sub.add_parser(
@@ -5744,18 +5757,27 @@ def _warn_on_schema_drift(conn: sqlite3.Connection, path: Path) -> None:
         )
 
 
-def _cmd_audit_verify(*, store_path: str, full: bool) -> int:
+def _cmd_audit_verify(*, store_path: str, full: bool, since: str | None) -> int:
     """Walk `mcp_audit`'s chain hash; report mismatches.
 
     Opens the store as a read-only cursor so a concurrent `serve`
     process can keep writing audit rows. Exit code 0 means the chain
-    is intact (no mismatches found); 1 means at least one mismatch.
+    is intact (no mismatches found); 1 means at least one mismatch;
+    2 means an operational error (missing store, malformed --since,
+    --since resolves to no cursor row).
+
+    `since` (optional) anchors the walk to a known-good cursor row:
+    a hex prefix of `chain_hash` (≥8 chars), a duration like `7d`,
+    or an ISO 8601 timestamp. The cursor row's own integrity is NOT
+    verified — operator must have archived a trusted copy of the
+    chain_hash separately. Rows after the cursor are verified using
+    the cursor's stored chain_hash as the trusted baseline.
     """
     import sqlite3 as _sqlite3
     import sys as _sys
     from pathlib import Path as _Path
 
-    from schemabrain.audit.verify import walk_chain
+    from schemabrain.audit.verify import SinceCursorError, resolve_since_cursor, walk_chain
 
     path = _Path(store_path).expanduser()
     if not path.exists():
@@ -5775,8 +5797,25 @@ def _cmd_audit_verify(*, store_path: str, full: bool) -> int:
         # unexpected raise from either still closes `conn`.
         conn.row_factory = _sqlite3.Row
         _warn_on_schema_drift(conn, path)
+
+        # Resolve `--since` to a cursor row id BEFORE the walk so the
+        # operator gets a clean exit-2 error when the spec is malformed
+        # or unmatched, rather than a confusing zero-mismatch result.
+        start_after_row_id: int | None = None
+        if since is not None:
+            try:
+                start_after_row_id = resolve_since_cursor(conn, since)
+            except SinceCursorError as exc:
+                print(f"error: {exc}", file=_sys.stderr)
+                return 2
+            except ValueError as exc:
+                # `parse_since` raises bare ValueError for malformed
+                # duration / ISO strings; surface the same exit code.
+                print(f"error: {exc}", file=_sys.stderr)
+                return 2
+
         try:
-            mismatches = list(walk_chain(conn, full=full))
+            mismatches = list(walk_chain(conn, full=full, start_after_row_id=start_after_row_id))
             # Stats are only read on the success path — when the
             # chain has zero mismatches we render the intact-summary
             # block; mismatched runs go straight to per-row mismatch
@@ -5784,7 +5823,11 @@ def _cmd_audit_verify(*, store_path: str, full: bool) -> int:
             # the assignment co-located with the chain walk shares
             # the same `conn` + outer `except` and avoids re-opening
             # the connection in a second branch.
-            stats = _read_audit_chain_stats(conn) if not mismatches else None
+            stats = (
+                _read_audit_chain_stats(conn, start_after_row_id=start_after_row_id)
+                if not mismatches
+                else None
+            )
         except _sqlite3.DatabaseError as exc:
             print(f"error: SQLite read failed: {exc}", file=_sys.stderr)
             return 2
@@ -5795,7 +5838,7 @@ def _cmd_audit_verify(*, store_path: str, full: bool) -> int:
         # `stats is not None` follows from `not mismatches` (same
         # guard above gated the read); narrow for mypy.
         assert stats is not None
-        _render_audit_chain_intact(stats)
+        _render_audit_chain_intact(stats, since_cursor_row_id=start_after_row_id)
         return 0
 
     for m in mismatches:
@@ -5804,7 +5847,11 @@ def _cmd_audit_verify(*, store_path: str, full: bool) -> int:
     return 1
 
 
-def _read_audit_chain_stats(conn: sqlite3.Connection) -> dict[str, object]:
+def _read_audit_chain_stats(
+    conn: sqlite3.Connection,
+    *,
+    start_after_row_id: int | None = None,
+) -> dict[str, object]:
     """Read summary stats for a chain-verified `mcp_audit` table.
 
     Only called once `walk_chain` returned zero mismatches, so the
@@ -5812,25 +5859,49 @@ def _read_audit_chain_stats(conn: sqlite3.Connection) -> dict[str, object]:
     table is normal (fresh store) — row_count == 0 then signals the
     renderer to skip the "all N rows preserve..." claim line.
 
+    When `start_after_row_id` is set (`--since` cursor walk), stats
+    are restricted to the post-cursor segment — otherwise the footer
+    counts would silently contradict the headline ("intact after row
+    N" with "all M rows preserve invariant" where M is total, not
+    post-cursor).
+
     Fingerprint version aggregates as the distinct set rather than a
     single value so a multi-version table doesn't silently report one
     of them — operators auditing a long-running deployment want to see
     every version that landed.
     """
-    row = conn.execute(
-        "SELECT COUNT(*) AS n, "
-        "MIN(occurred_at) AS earliest, "
-        "MAX(occurred_at) AS latest "
-        "FROM mcp_audit"
-    ).fetchone()
-    fp_versions = [
-        r["fingerprint_version"]
-        for r in conn.execute(
-            "SELECT DISTINCT fingerprint_version FROM mcp_audit "
-            "WHERE fingerprint_version IS NOT NULL "
-            "ORDER BY fingerprint_version"
-        )
-    ]
+    if start_after_row_id is None:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, "
+            "MIN(occurred_at) AS earliest, "
+            "MAX(occurred_at) AS latest "
+            "FROM mcp_audit"
+        ).fetchone()
+        fp_versions = [
+            r["fingerprint_version"]
+            for r in conn.execute(
+                "SELECT DISTINCT fingerprint_version FROM mcp_audit "
+                "WHERE fingerprint_version IS NOT NULL "
+                "ORDER BY fingerprint_version"
+            )
+        ]
+    else:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, "
+            "MIN(occurred_at) AS earliest, "
+            "MAX(occurred_at) AS latest "
+            "FROM mcp_audit WHERE id > ?",
+            (start_after_row_id,),
+        ).fetchone()
+        fp_versions = [
+            r["fingerprint_version"]
+            for r in conn.execute(
+                "SELECT DISTINCT fingerprint_version FROM mcp_audit "
+                "WHERE id > ? AND fingerprint_version IS NOT NULL "
+                "ORDER BY fingerprint_version",
+                (start_after_row_id,),
+            )
+        ]
     return {
         "row_count": int(row["n"]),
         "earliest": row["earliest"],
@@ -5839,7 +5910,11 @@ def _read_audit_chain_stats(conn: sqlite3.Connection) -> dict[str, object]:
     }
 
 
-def _render_audit_chain_intact(stats: dict[str, object]) -> None:
+def _render_audit_chain_intact(
+    stats: dict[str, object],
+    *,
+    since_cursor_row_id: int | None = None,
+) -> None:
     """Render the verified-intact summary as a Rich stats block + claim lines.
 
     Writes to stdout (success output, not error) so callers piping to
@@ -5850,6 +5925,11 @@ def _render_audit_chain_intact(stats: dict[str, object]) -> None:
     we cannot prove it from the read-only verifier alone (the
     no-update trigger lives in the schema; verifying it requires a
     separate check), and a false claim is worse than a missing one.
+
+    `since_cursor_row_id` (optional) names a trust-anchor row from a
+    `--since <hash>` / `<duration>` / `<iso>` walk. When set, the
+    headline narrows the integrity claim to "after row N" so the
+    operator does not misread a since-walk as a full-chain proof.
     """
     from rich.console import Console
 
@@ -5857,7 +5937,12 @@ def _render_audit_chain_intact(stats: dict[str, object]) -> None:
     row_count = int(stats["row_count"])
     fp_versions = list(stats["fp_versions"])  # type: ignore[arg-type]
     fp_label = ", ".join(fp_versions) if fp_versions else "n/a"
-    console.print("[dim]Verifying audit chain integrity...[/]")
+    header = (
+        "[dim]Verifying audit chain integrity...[/]"
+        if since_cursor_row_id is None
+        else f"[dim]Verifying audit chain integrity (since row {since_cursor_row_id})...[/]"
+    )
+    console.print(header)
     console.print()
     console.print(f"  Audit rows:           [bold]{row_count}[/]")
     console.print(f"  Chain length:         [bold]{row_count}[/] hops")
@@ -5880,11 +5965,29 @@ def _render_audit_chain_intact(stats: dict[str, object]) -> None:
     # redundant; the glyph would lose its semantic colour and the
     # corroborating lines would visually drift from the primary
     # green-✓ headline above.
-    console.print("[green]✓[/] audit chain intact — no tampering detected")
-    if row_count > 0:
-        console.print(
-            f"[dim][green]✓[/green] all {row_count} row(s) preserve append-only invariant[/dim]"
+    primary_claim = (
+        "[green]✓[/] audit chain intact — no tampering detected"
+        if since_cursor_row_id is None
+        else (
+            f"[green]✓[/] audit chain intact after row {since_cursor_row_id} "
+            "— no tampering detected in the post-cursor segment"
         )
+    )
+    console.print(primary_claim)
+    if row_count > 0:
+        # Pre-cursor rows are skipped, not verified — soften the
+        # "all N rows" claim to "N rows after the cursor" when a
+        # since-walk is in effect so the operator does not infer
+        # a full-history guarantee from a since-anchored result.
+        if since_cursor_row_id is None:
+            console.print(
+                f"[dim][green]✓[/green] all {row_count} row(s) preserve append-only invariant[/dim]"
+            )
+        else:
+            console.print(
+                f"[dim][green]✓[/green] {row_count} row(s) after the cursor "
+                "preserve append-only invariant[/dim]"
+            )
     if len(fp_versions) <= 1:
         console.print("[dim][green]✓[/green] fingerprint version consistent across all rows[/dim]")
     else:
@@ -6074,7 +6177,58 @@ def _cmd_audit_list(
             bytes(row["fingerprint"]).hex()[:16],
         )
     console.print(table)
+    _render_audit_list_footer(console, rows)
     return 0
+
+
+def _render_audit_list_footer(console: object, rows: list[sqlite3.Row]) -> None:
+    """Render the status + cost-class summary footer under `audit list`.
+
+    Aggregates over the rendered rows only (NOT all-time), so the
+    footer mirrors what the operator sees in the table above. The
+    `mcp_audit` schema has no dollar `cost_usd` field and no
+    confidence/trust column — both would need a schema migration to
+    surface honestly per call. The footer ships what the persisted
+    data supports today: status counts + cost-class counts. The
+    Charter-v1.2 trust signal lives on entity / metric / join
+    provenance, not on audit rows, so an operator who wants a
+    per-call trust footer is asking for a v15-schema feature.
+
+    Empty `rows` is impossible at this call site (the caller's
+    empty-branch returns before this function fires), so no
+    early-return guard is needed.
+    """
+    # Collections.Counter would be more idiomatic but adds an import
+    # for two small dicts; a plain loop is clearer at this size.
+    status_counts: dict[str, int] = {}
+    cost_counts: dict[str, int] = {}
+    for row in rows:
+        status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
+        cost_counts[row["cost_class"]] = cost_counts.get(row["cost_class"], 0) + 1
+
+    # Deterministic order: status follows the Charter enum sequence;
+    # cost_class is small → medium → large → refused.
+    status_order = ("success", "empty", "partial", "degraded", "error", "refused")
+    cost_order = ("small", "medium", "large", "refused")
+
+    def _fmt(parts: dict[str, int], order: tuple[str, ...]) -> str:
+        present = [f"{parts[k]} {k}" for k in order if parts.get(k)]
+        return " · ".join(present)
+
+    total = len(rows)
+    status_breakdown = _fmt(status_counts, status_order)
+    cost_breakdown = _fmt(cost_counts, cost_order)
+
+    # The footer separator (Unicode box-drawing horizontal) reads as
+    # a faint rule under the table without competing with Rich's own
+    # table border glyphs. Two summary lines below it.
+    console.print()  # type: ignore[attr-defined]
+    console.print("[dim]" + ("─" * 60) + "[/]")  # type: ignore[attr-defined]
+    console.print(  # type: ignore[attr-defined]
+        f"[dim]Summary:[/] [bold]{total}[/] call{'' if total == 1 else 's'} "
+        f"([dim]{status_breakdown}[/])"
+    )
+    console.print(f"[dim]Cost class:[/] {cost_breakdown}")  # type: ignore[attr-defined]
 
 
 def _stderr_is_interactive_tty() -> bool:

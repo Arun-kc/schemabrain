@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `schemabrain audit verify --since <spec>` — anchor the chain walk to a known-good cursor row instead of walking from genesis. Three spec forms: leading hex prefix (≥8 chars, git-like) of a previously-archived `chain_hash`; compact duration (`7d`, `2h`, `30s`, `5m`); ISO 8601 with timezone. The cursor row's own integrity is NOT re-verified — operator must archive a trusted copy externally — but rows after it are verified using the cursor's stored hash as the trusted baseline. Ambiguous hex prefixes raise a disambiguation error; non-matching specs return exit 2 with a clear message.
+- `schemabrain audit list` renders a status + cost-class summary footer under the table (omitted in `--json` mode and on empty results). Aggregates over the rendered rows (limit-bounded) so the footer mirrors what the operator sees, not an all-time count. Status counts follow the Charter envelope sequence (`success → empty → partial → degraded → error → refused`); cost-class counts follow `small → medium → large → refused`. **Trust-signal counts deliberately omitted**: `mcp_audit` has no `confidence` column at the v14 schema; a per-call trust footer would require a schema migration. Tracked for v0.5.
+
 ### Security
 - `schemabrain serve` defaults `--pii-block` to `{credential, payment_card, government_id}` when the flag is absent (previously empty frozenset — no enforcement). Surfaces a one-line stderr confirmation so the choice is visible. Pass `--pii-block ''` to explicitly disable enforcement (an explicit-empty branch with its own warning). ([#110])
 - `schemabrain init` gains `--pii-block` flag mirroring `serve`. Under `--yes` / non-TTY, the prior silent fall-through to `("contact",)` is replaced with the catastrophic-leak default plus stderr confirmation. Explicit `--pii-block ''` writes no flag into the host snippet (operator opt-out). The interactive-TTY prompt is unchanged.
