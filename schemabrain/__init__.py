@@ -1,4 +1,4 @@
-"""Schema Brain: an MCP server that gives AI agents deep semantic understanding of any production database."""
+"""Schema Brain: the SQL firewall between AI agents and your production database."""
 
 from importlib.metadata import version
 

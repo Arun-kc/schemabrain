@@ -184,7 +184,9 @@ def _server_icons() -> list[Any]:
 
 
 _SERVER_INSTRUCTIONS = (
-    "Schema Brain — semantic understanding of an indexed database. "
+    "Schema Brain — a SQL firewall between AI agents and a Postgres "
+    "database. You never write raw SQL; you call these 12 read-only "
+    "tools to learn the schema and request validated aggregations. "
     "Physical-schema tools: `find_relevant_tables` to discover tables, "
     "`describe_table` for one table's full shape, `describe_column` to "
     "drill into a single column (with join graph), `suggest_joins` for "

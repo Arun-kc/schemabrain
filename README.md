@@ -5,9 +5,10 @@
   </picture>
 </p>
 
-<h1 align="center">schemabrain</h1>
+<!-- <h1 align="center">schemabrain</h1> -->
 
 <p align="center">
+  <a href="https://github.com/Arun-kc/schemabrain/stargazers"><img src="https://img.shields.io/github/stars/Arun-kc/schemabrain?style=flat-square&labelColor=0A0A0A&color=3ECF8E" alt="GitHub stars"></a>
   <a href="https://github.com/Arun-kc/schemabrain/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Arun-kc/schemabrain/ci.yml?style=flat-square&label=CI&labelColor=0A0A0A&color=3ECF8E" alt="CI"></a>
   <a href="https://pypi.org/project/schemabrain/"><img src="https://img.shields.io/pypi/v/schemabrain?style=flat-square&label=pypi&labelColor=0A0A0A&color=3ECF8E" alt="PyPI version"></a>
   <a href="https://pypi.org/project/schemabrain/"><img src="https://img.shields.io/pypi/dm/schemabrain?style=flat-square&label=downloads&labelColor=0A0A0A&color=3ECF8E" alt="PyPI downloads"></a>
@@ -17,18 +18,33 @@
 </p>
 
 <p align="center">
-  <strong>The SQL firewall between AI agents and your production database.</strong>
+  <strong>Stop giving AI agents raw database connection strings.</strong><br>
+  SchemaBrain is the SQL firewall, semantic layer, and audit chain designed for the Agentic Era.
 </p>
 
-> **The agent never writes SQL against your database. Schema Brain does, from definitions you control.**
+> **The agent never writes SQL. SchemaBrain does, from definitions you control.**
 
-Your agent gets twelve read-only MCP tools — none of which can write. Schema Brain compiles the parameterized SQL from definitions you control and runs it on its side. Refused calls return a structured `recovery` block agents act on programmatically; every call lands in a tamper-evident audit log.
+SchemaBrain sits between your AI agent (Claude, Cursor, Zed, or custom MCP hosts) and your production database. It solves the "Trust Gap" by ensuring agents never run destructive commands, leak PII, or get stuck in schema-guessing loops.
 
-- **One command from `pip install` to wired agent** — bare `schemabrain init` walks the 7-stage activation wizard end-to-end. Auto-detects a dbt project and routes through the importer when one is present.
-- **Validated metrics, not invented SQL** — entities, metrics, and canonical joins compile to parameterized SQL the agent never sees.
-- **Read-only by architecture, not configuration** — no `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database. Stage 1 of `init` pins `default_transaction_read_only=on` on the source connection as belt-and-suspenders.
-- **Failure is a contract, not a string** — refused calls return structured `recovery.suggested_args` agents act on programmatically. PII blocks ship the entity name to retry; ambiguous time dimensions ship the candidate to pick.
-- **Pluggable into any agent loop** — Claude Desktop, Claude Code, Cursor, or your own Anthropic / OpenAI / LangGraph loop over MCP stdio. 230-LOC drop-in proof at [`examples/anthropic_demo.py`](examples/anthropic_demo.py).
+- **One command from `pip install` to wired agent** — `schemabrain init` walks you through the 7-stage activation wizard.
+- **Structured Recovery Envelopes** — When a query fails, the agent receives a suggested fix (e.g., "Missing Join", "PII Blocked"), allowing for self-healing loops.
+- **Tamper-Evident Audit Chain** — Every query and response is cryptographically hashed (SHA256) for SOC2/HIPAA compliance.
+- **PII-Aware by Architecture** — Automatic PII detection and propagation through joins and aliases.
+- **Production Ready** — Mature alpha (v0.4.0) with 4,500+ tests and 99% coverage.
+
+---
+
+## Why SchemaBrain?
+
+You cannot trust an AI agent with a raw database connection string. If you do, you risk:
+- **Data Loss:** Agents can (and will) run destructive commands if not restricted.
+- **PII Leaks:** Agents might accidentally query sensitive user data.
+- **Costly Loops:** Agents often get stuck in "schema-guessing" loops when they don't understand the data model.
+- **Compliance Failures:** No audit trail means no SOC2 or HIPAA compliance for your AI systems.
+
+SchemaBrain provides the **safety and semantic 'plumbing'** that sits between an AI agent and your production database.
+
+---
 
 ```bash
 pip install schemabrain
@@ -38,7 +54,7 @@ schemabrain init
 
 **Cost.** ~$0.03 to index + curate the bundled 7-table demo (30 columns, 6 entities + 10 metrics) · ~$0.03 for a 87-column Pagila sample · **$0** to re-index unchanged schemas. Bounded by per-stage cost caps; index step runs on Claude Haiku 4.5, curation on Claude Sonnet 4.6.
 
-**Status: 0.3.0 (alpha).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap. The longer-term position is the SQL-boundary safety layer for AI agents — see [Where it's going](#where-its-going).
+**Status: 0.4.0 (alpha).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap.
 
 ---
 

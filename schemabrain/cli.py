@@ -630,7 +630,7 @@ class _GroupedInitHelpAction(argparse.Action):
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="schemabrain",
-        description="MCP-ready semantic understanding of any production database.",
+        description="The SQL firewall between AI agents and your production database.",
     )
     parser.add_argument(
         "--version",
