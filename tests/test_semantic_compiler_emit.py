@@ -696,11 +696,11 @@ class TestParameterisationInvariant:
         assert params["p_filter_0"] == 12345
 
 
-# ----- Round-2 fold: topological-order invariant defense -------------------
+# ----- Regression coverage: topological-order invariant defense -------------------
 
 
 class TestTopologicalOrderDefense:
-    """Round-2 fold (silent-failure-hunter F6): `MetricPlan.joins` is
+    """regression test (silent-failure F6): `MetricPlan.joins` is
     contracted to be in topological chain order. If a future refactor
     or a programmatic caller violates that, the emitter would silently
     produce SQL that references an alias before it's introduced — a

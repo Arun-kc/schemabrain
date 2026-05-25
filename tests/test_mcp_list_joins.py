@@ -475,7 +475,7 @@ class TestJunctionBridges:
 
 
 class TestEnvelopeStoreFailure:
-    """Round-2 fold (Reality Checker): the `_wrap_internal_error`
+    """Regression coverage: the `_wrap_internal_error`
     branch in `list_joins` was uncovered post-commit. A store that
     raises should surface as a structurally-valid `error` envelope,
     not propagate the exception as a raw traceback.

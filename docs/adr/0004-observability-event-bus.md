@@ -5,7 +5,7 @@
 
 ## Context
 
-Schema Brain has to expose, in real time, what an agent is doing
+SchemaBrain has to expose, in real time, what an agent is doing
 when it touches a database — for trust, for debugging, for demo
 storytelling, and (when v2's `execute` line lands) for safety
 auditability. The simple framing is "ship a UI." The right framing is

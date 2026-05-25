@@ -1,6 +1,6 @@
 # Architecture
 
-How Schema Brain is put together, the contracts the tool layer keeps, and what
+How SchemaBrain is put together, the contracts the tool layer keeps, and what
 "validated" actually means today.
 
 ## The pipeline
@@ -149,23 +149,26 @@ text-to-SQL execution accuracy.
 
 ## What's validated
 
-As of v0.3.0 (2026-05-20), against two anchors: the bundled e-commerce
+As of v0.4.0 (2026-05-23), against two anchors: the bundled e-commerce
 fixture (7 tables / 30 columns) and the Pagila DVD-rental sample
 (15 tables / 87 columns after declarative-partition deduplication;
 22 / 129 raw):
 
 - ✅ Indexes Postgres 16 schema with FK-aware introspection (both anchors)
 - ✅ Partitioned tables are deduplicated; only the parent is enriched
+- ✅ Partition-parent FKs unioned from children (Pagila pattern) so
+  declaratively-partitioned tables aren't seen as relationship-less
 - ✅ Junction (M:N) tables are detected structurally; descriptions
-  explicitly warn that joining through them multiplies result rows
+  explicitly warn that joining through them multiplies result rows;
+  `list_joins` synthesises logical bridges across junctions
 - ✅ Generates LLM descriptions via Anthropic Claude (Haiku 4.5 default,
   Sonnet 4.6 for cryptic columns)
 - ✅ Local embeddings via `fastembed` (no second API vendor)
-- ✅ All 10 MCP tools tested via Claude Desktop AND headless Anthropic SDK,
-  on both anchors. The 10: `list_entities`, `describe_entity`,
-  `describe_table`, `describe_column`, `find_relevant_tables`,
-  `find_relevant_entities`, `suggest_joins`, `resolve_join`,
-  `get_example_queries`, `get_metric`
+- ✅ All 12 MCP tools tested via Claude Desktop AND headless Anthropic SDK,
+  on both anchors. The 12: `list_entities`, `list_metrics`, `list_joins`,
+  `describe_entity`, `describe_table`, `describe_column`,
+  `find_relevant_tables`, `find_relevant_entities`, `suggest_joins`,
+  `resolve_join`, `get_example_queries`, `get_metric`
 - ✅ Adversarial questions handled honestly ("not in indexed schema" with
   explicit qualifier) — Pagila negative-question test correctly distinguished
   internal `payment_id` from external payment-processor transaction IDs
@@ -176,7 +179,7 @@ fixture (7 tables / 30 columns) and the Pagila DVD-rental sample
 - ✅ Cache-aware re-index ($0 on unchanged schemas)
 - ✅ Fresh-machine quickstart works from a stripped shell
 - ✅ Continuous integration (lint + unit + integration with 99% coverage
-  gate; 4238 tests on `main` at the v0.3.0 cut)
+  gate; 4557 tests on `main` at the v0.4.0 cut)
 
 Not yet validated:
 
@@ -215,7 +218,7 @@ final answer depends on the question:
 - **When the user just asks for the SQL** with no priming, surfacing
   varies. Across multiple Haiku runs on identical inputs, sometimes
   the agent mentions M:N inline as a parenthetical, sometimes it omits
-  it. The variance is downstream of LLM sampling, not Schema Brain.
+  it. The variance is downstream of LLM sampling, not SchemaBrain.
 
 Either way, the warning is present in every relevant column description
 and is retrievable via `describe_column` / `describe_table`. Agents
@@ -230,7 +233,7 @@ backstop for production queries.
 
 ## Scalability frontier
 
-Schema Brain has three known architectural ceilings. None trip on today's
+SchemaBrain has three known architectural ceilings. None trip on today's
 real workloads but each will trip on extreme or adversarial inputs. We
 publish them up front because an honest "here is where we will hurt" is a
 better trust signal than a vague "scales well."
@@ -282,6 +285,6 @@ Concretely, v2 adds:
   `source_tables touched, latency_ms, timestamp}`. Powers the v3
   fleet-signature aggregation layer.
 
-Until v2 ships, treating Schema Brain as a safety layer would be
+Until v2 ships, treating SchemaBrain as a safety layer would be
 premature. The v0 surface gives agents better schema context, not better
 SQL safety.

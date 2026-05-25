@@ -1,6 +1,6 @@
-# Schema Brain MCP Charter v1.2.0
+# SchemaBrain MCP Charter v1.2.0
 
-> **Status:** locked 2026-05-12 as the public design contract for Schema Brain's
+> **Status:** locked 2026-05-12 as the public design contract for SchemaBrain's
 > MCP surface. Living document; version bumps governed by the Versioning section
 > below. All MCP tools shipped from v0.5 onward conform to this charter unless
 > explicitly noted in their docstring.
@@ -35,19 +35,19 @@
 
 ## Preamble
 
-This charter is the design law for Schema Brain's MCP server. It exists because
+This charter is the design law for SchemaBrain's MCP server. It exists because
 **every existing semantic layer and database catalog was designed for humans
 first** (analysts, BI tools, data engineers), with MCP retrofitted on top.
-Schema Brain is the opposite: the primary consumer of every tool is an LLM, and
+SchemaBrain is the opposite: the primary consumer of every tool is an LLM, and
 the design choices follow from that.
 
 This document is for three audiences:
 
 1. **Contributors** adding or modifying MCP tools — every PR is reviewed against
    the principles and enforcement levels below.
-2. **Operators** integrating Schema Brain into agent stacks — the response
+2. **Operators** integrating SchemaBrain into agent stacks — the response
    envelope and per-tool metadata are the stable contracts you can build on.
-3. **Other MCP authors** — Schema Brain commits publicly to these principles
+3. **Other MCP authors** — SchemaBrain commits publicly to these principles
    because no canonical "agent-first MCP design" reference exists yet.
    Adoption, criticism, and divergence are all welcome.
 
@@ -55,7 +55,7 @@ This document is for three audiences:
 
 Six design choices follow from "the primary consumer is an LLM":
 
-| Choice | Human-first server | Schema Brain |
+| Choice | Human-first server | SchemaBrain |
 |---|---|---|
 | Definition entry | Hand-authored YAML / API docs | Auto-inferred from schema + behavior |
 | Response shape | Optimized for human parsing | Optimized for LLM composition |
@@ -273,7 +273,7 @@ provenance: {
 
 ### 5. Tools document composition patterns
 
-Most useful agent behavior over Schema Brain is multi-tool: discover, then
+Most useful agent behavior over SchemaBrain is multi-tool: discover, then
 describe, then drill in. The charter declares **canonical workflows** so the
 LLM doesn't have to derive them from scratch every session.
 
@@ -323,7 +323,7 @@ them, but they reduce the chance of dead-end branches.
 
 #### Transport integration
 
-Schema Brain delivers the envelope inside MCP's `structuredContent` field,
+SchemaBrain delivers the envelope inside MCP's `structuredContent` field,
 with a serialized JSON mirror in `content[0].text` for backward compatibility
 with clients that don't yet read `structuredContent`. The envelope shape is
 published as each tool's `outputSchema` so spec-compliant clients can
@@ -364,13 +364,13 @@ by the MCP transport layer.
   },
   latency_hint: "fast" | "moderate" | "slow",
 
-  // Schema Brain semantic fields
+  // SchemaBrain semantic fields
   idempotent: <bool>,
   side_effects: "none" | "read" | "write",
 
   // Canonical MCP spec annotations — emitted alongside ours so spec-compliant
   // clients can drive confirmation prompts, graduated trust, and routing
-  // decisions without parsing Schema Brain-specific fields.
+  // decisions without parsing SchemaBrain-specific fields.
   readOnlyHint: <bool>,
   destructiveHint: <bool>,
   idempotentHint: <bool>,
@@ -388,9 +388,9 @@ Hint semantics:
   `write` = mutates the store. Only `read` / `none` in v1.0; `write` reserved
   for v2 (e.g. `execute_query`).
 
-Canonical MCP hint mapping (Schema Brain emits both layers):
+Canonical MCP hint mapping (SchemaBrain emits both layers):
 
-| Schema Brain field | Canonical MCP hint |
+| SchemaBrain field | Canonical MCP hint |
 |---|---|
 | `side_effects: "none"` | `readOnlyHint: true`, `destructiveHint: false`, `openWorldHint: false` |
 | `side_effects: "read"` | `readOnlyHint: true`, `destructiveHint: false`, `openWorldHint: true` |
@@ -401,7 +401,7 @@ Canonical MCP hint mapping (Schema Brain emits both layers):
 The canonical hints are defined in the [MCP tool annotations
 specification (March 2026)](https://blog.modelcontextprotocol.io/posts/2026-03-16-tool-annotations/).
 Well-behaved clients use them to drive UX choices like confirmation prompts
-before destructive actions. Schema Brain emits both layers so spec-compliant
+before destructive actions. SchemaBrain emits both layers so spec-compliant
 clients get what they expect while agents reading our finer-grained semantics
 get the richer information.
 
@@ -425,7 +425,7 @@ emits the **shape contract** version (`major.minor` only — e.g. `"1.0"`,
 `"1.1"`, `"1.2"`, `"2.0"`); patch bumps are documentation-only and do not change
 the wire emission. A consumer pinning on `"1.0"` therefore receives all
 1.0.x doc clarifications transparently. Consumers can pin or negotiate.
-Schema Brain commits to maintaining the most-recent two major versions
+SchemaBrain commits to maintaining the most-recent two major versions
 simultaneously when a major bump occurs.
 
 ---
@@ -494,7 +494,7 @@ implementation reaches readiness.
   anchors and beyond.
 - **Code-execution surface (paradigm watch)** — Anthropic's November 2025
   [code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp)
-  reframes tools as code APIs loaded on demand. Schema Brain's
+  reframes tools as code APIs loaded on demand. SchemaBrain's
   `find_relevant_tables` → `describe_table` chain is a candidate for a
   single `schemabrain.py` module exposing typed Python functions to a
   code-executing agent. Decision deferred until v0.7 once query-log data
@@ -537,5 +537,5 @@ The Feb 2026 study of MCP tool description quality
 ([arXiv 2602.14878](https://arxiv.org/html/2602.14878v1)) provided the
 measured baseline cited in Principle 2's verification block.
 
-This is a living document and Schema Brain's most public design commitment.
+This is a living document and SchemaBrain's most public design commitment.
 Pull requests welcome.

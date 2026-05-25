@@ -2,7 +2,7 @@
 
 The contract under test:
 
-  - Schema Brain's logs ALWAYS go to stderr, never stdout. In MCP-stdio
+  - SchemaBrain's logs ALWAYS go to stderr, never stdout. In MCP-stdio
     mode, stdout is the JSON-RPC wire — any byte written to stdout
     corrupts the protocol. CI catches this regression here.
   - Verbosity ladder: 0 → WARNING, 1 → INFO, 2+ → DEBUG.

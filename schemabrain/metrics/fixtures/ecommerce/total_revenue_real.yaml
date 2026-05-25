@@ -1,4 +1,4 @@
-# Composite-expression metric for the bundled Schema Brain ecommerce
+# Composite-expression metric for the bundled SchemaBrain ecommerce
 # demo. Computes line-level revenue as `SUM(unit_price_cents * quantity)`
 # — the actual revenue, not a pre-aggregated `total_cents` column.
 #

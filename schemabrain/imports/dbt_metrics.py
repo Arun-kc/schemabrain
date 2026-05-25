@@ -1,4 +1,4 @@
-"""dbt metric import — `manifest.json` → Schema Brain `Metric` instances.
+"""dbt metric import — `manifest.json` → SchemaBrain `Metric` instances.
 
 The third dbt-import surface (after entities + the deferred relationships).
 Scope at v1:
@@ -7,7 +7,7 @@ Scope at v1:
     over one bare-column measure. dbt's `ratio`, `derived`, `cumulative`,
     `conversion` types skip with structured reason.
 
-  - dbt `average` maps to Schema Brain `avg`; the other agg names
+  - dbt `average` maps to SchemaBrain `avg`; the other agg names
     (`sum`, `count`, `count_distinct`, `min`, `max`) match directly.
 
   - The metric's anchor entity is the primary entity declared on the
@@ -23,7 +23,7 @@ Scope at v1:
     `time_dimension=None, time_grains=()`.
 
   - `time_dimension` is rendered as `<anchor_entity>.<time_column>` —
-    same form the Schema Brain metric YAML grammar accepts.
+    same form the SchemaBrain metric YAML grammar accepts.
 
 This module is intentionally self-contained — it doesn't reuse the
 `parse_dbt_manifest` parser machinery from `imports/dbt.py` because
@@ -64,12 +64,12 @@ _VALID_REASONS: frozenset[str] = frozenset(get_args(DbtMetricSkipReason))
 
 # dbt's measure `expr` can be any SQL expression. v1 only handles bare
 # column references; anything that doesn't pass this identifier shape
-# skips with `non_column_expr`. Matches the same alphabet Schema Brain
+# skips with `non_column_expr`. Matches the same alphabet SchemaBrain
 # uses for column identifiers elsewhere.
 _BARE_COLUMN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 
-# dbt's agg names → Schema Brain agg names. dbt uses `average`;
-# Schema Brain uses `avg`. The other names match directly. Open dbt
+# dbt's agg names → SchemaBrain agg names. dbt uses `average`;
+# SchemaBrain uses `avg`. The other names match directly. Open dbt
 # aggs (e.g. `percentile`, `median`) aren't in this map → skip.
 _AGG_MAP: dict[str, AggFunction] = {
     "sum": "sum",
@@ -81,8 +81,8 @@ _AGG_MAP: dict[str, AggFunction] = {
 }
 
 # Closed set of dbt time granularities the importer recognises. Maps
-# directly to Schema Brain `TimeGrain` since both use the same lowercase
-# names. dbt also accepts `hour` etc., but Schema Brain v1 starts at
+# directly to SchemaBrain `TimeGrain` since both use the same lowercase
+# names. dbt also accepts `hour` etc., but SchemaBrain v1 starts at
 # `day` — those would skip the dimension entirely (treated as
 # non-temporal at v1).
 _VALID_DBT_GRANULARITIES: frozenset[str] = frozenset(get_args(TimeGrain))
@@ -135,7 +135,7 @@ def parse_dbt_metrics(
     *,
     imported_entity_names: set[str],
 ) -> tuple[tuple[Metric, ...], tuple[DbtMetricSkip, ...]]:
-    """Parse `manifest.json` and extract Schema Brain `Metric` instances.
+    """Parse `manifest.json` and extract SchemaBrain `Metric` instances.
 
     `imported_entity_names` is the set of entity names the entity
     importer just wrote (or already existed) — used to refuse metrics
@@ -265,7 +265,7 @@ def _map_one_metric(
     measure_index: dict[str, _MeasureBinding],
     imported_entity_names: set[str],
 ) -> Metric | DbtMetricSkip:
-    """Map one dbt metric node to a Schema Brain `Metric` or skip.
+    """Map one dbt metric node to a SchemaBrain `Metric` or skip.
 
     Returns either a `Metric` (ready for `store.write_metric`) or a
     `DbtMetricSkip` carrying the reason this metric couldn't be mapped.
@@ -309,7 +309,7 @@ def _map_one_metric(
             ),
         )
 
-    # Map the dbt agg to a Schema Brain agg.
+    # Map the dbt agg to a SchemaBrain agg.
     sb_agg = _AGG_MAP.get(binding.agg)
     if sb_agg is None:
         return DbtMetricSkip(
@@ -397,10 +397,10 @@ def _extract_time(
 
     Returns `(None, ())` when the semantic_model declares no time
     dimension or when the declared dimension's granularity is finer
-    than `day` (Schema Brain v1 starts at day).
+    than `day` (SchemaBrain v1 starts at day).
 
     `time_dimension` is rendered as `<anchor_entity>.<column_name>`
-    so the Schema Brain `Metric` invariant holds.
+    so the SchemaBrain `Metric` invariant holds.
 
     `time_grains` honours the semantic_model's `granularity_options`
     list if present (canonical-sorted), or falls back to the single
@@ -419,7 +419,7 @@ def _extract_time(
         granularity_options = type_params.get("granularity_options") or []
 
         # Collect candidate grains; drop anything outside the closed
-        # Schema Brain `TimeGrain` set (sub-day grains, custom names).
+        # SchemaBrain `TimeGrain` set (sub-day grains, custom names).
         candidates: list[str] = []
         if isinstance(primary_grain, str) and primary_grain in _VALID_DBT_GRANULARITIES:
             candidates.append(primary_grain)
@@ -434,7 +434,7 @@ def _extract_time(
         if not candidates:  # pragma: no cover — a time dim with no recognised grain is rare; treated as non-temporal
             continue
 
-        # Canonical sort by rank — Schema Brain `Metric` dataclass
+        # Canonical sort by rank — SchemaBrain `Metric` dataclass
         # rejects unsorted time_grains.
         sorted_grains = tuple(sorted(set(candidates), key=lambda g: _TIME_GRAIN_RANK[g]))
         return f"{anchor_entity}.{dim_name}", sorted_grains  # type: ignore[return-value]

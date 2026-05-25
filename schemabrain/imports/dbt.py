@@ -1,4 +1,4 @@
-"""Parse dbt `manifest.json` into typed Schema Brain shapes.
+"""Parse dbt `manifest.json` into typed SchemaBrain shapes.
 
 This module is the substrate of the dbt import write-path. It turns the
 deep, version-shifting JSON dbt emits at compile time into a small,
@@ -9,14 +9,14 @@ Scope boundaries — by design:
 
   - **Parse, don't map.** This module produces `DbtModelNode` /
     `DbtSourceNode` / `DbtColumn` shapes that mirror dbt's own
-    concepts. Mapping a `DbtModelNode` to a Schema Brain `Entity`
+    concepts. Mapping a `DbtModelNode` to a SchemaBrain `Entity`
     (identity resolution, source provenance, name validation) is a
     separate concern that consumes this module's output.
   - **No live-schema contact.** The parser never opens a database
     connection. The verification step that checks dbt's claims against
     the running source DB is a separate concern.
   - **No `dbt-core` runtime dep.** We read `manifest.json` as plain
-    JSON. Adding `dbt-core` as a dep would lock Schema Brain to a
+    JSON. Adding `dbt-core` as a dep would lock SchemaBrain to a
     specific dbt version + pull in a heavy + opinionated runtime tree
     of Jinja, networkx, etc. The cost is that we own the manifest
     schema interpretation — bounded by the version-range guard below.
@@ -128,7 +128,7 @@ class DbtIdentityResolutionError(ValueError):
         not_null test pair). The user needs to add an identity
         declaration to their dbt YAML.
       - Multiple columns match WITHIN the same tier. This signals a
-        composite-PK declaration, which Schema Brain v1 doesn't
+        composite-PK declaration, which SchemaBrain v1 doesn't
         support (single-table single-column identity only;
         multi-column identity is part of the v2 multi-table-binding
         work).
@@ -144,7 +144,7 @@ class DbtEntityMappingError(ValueError):
 
     Wraps a deeper `ValueError` from the `Entity` / `SingleTableBinding`
     constructors when the dbt model's name or compiled identifier
-    doesn't satisfy Schema Brain's identifier-shape constraints.
+    doesn't satisfy SchemaBrain's identifier-shape constraints.
 
     The error message names the dbt `unique_id` of the offending
     model so the user can locate it in `dbt ls` output and fix the
@@ -222,7 +222,7 @@ class DbtColumn:
 
 @dataclass(frozen=True)
 class DbtModelNode:
-    """A `resource_type=model` node distilled to Schema Brain's shape.
+    """A `resource_type=model` node distilled to SchemaBrain's shape.
 
     `name` is the dbt model name (logical); `identifier` is the
     physical table name (dbt's `alias` if set, else `name`). Schema
@@ -268,7 +268,7 @@ class DbtSkipCounts:
     Surfaces in the CLI's end-of-run stderr breadcrumb so a user who
     expected their `metrics:` block to be imported sees the count of
     skipped items rather than silent absence. dbt metric import lands
-    alongside the Schema Brain metric model in a later release.
+    alongside the SchemaBrain metric model in a later release.
 
     `other` counts resource types the parser doesn't recognise (e.g.
     future dbt additions like `semantic_model`). It surfaces in the
@@ -409,7 +409,7 @@ def _parse_schema_version(metadata: dict, path: Path) -> int:
     if version < _MIN_MANIFEST_VERSION:
         raise DbtManifestParseError(
             f"manifest at {path} uses schema v{version}; "
-            f"Schema Brain requires v{_MIN_MANIFEST_VERSION} or newer "
+            f"SchemaBrain requires v{_MIN_MANIFEST_VERSION} or newer "
             "(upgrade dbt-core to >=1.7 and re-run `dbt compile`)"
         )
     return version
@@ -681,7 +681,7 @@ def _format_ambiguity_error(
     names = ", ".join(repr(c.name) for c in candidates)
     return (
         f"dbt model {model.name!r} has multiple identity candidates at the "
-        f"{tier_label} tier ({names}); Schema Brain v1 supports single-column "
+        f"{tier_label} tier ({names}); SchemaBrain v1 supports single-column "
         "identity only. Drop the duplicate declaration in your dbt YAML, or "
         "wait for v2 multi-table bindings."
     )
@@ -718,7 +718,7 @@ class DbtImportedEntity:
 
     `upstream_sources` is a tuple of qualified table names (e.g.
     `("raw.users",)`) — the schema-qualified physical tables this
-    dbt model `depends_on`. Schema Brain doesn't materialise source
+    dbt model `depends_on`. SchemaBrain doesn't materialise source
     nodes as entities at v1, but the lineage signal lives on the
     envelope for the audit log + future downstream tooling.
     """
@@ -743,14 +743,14 @@ class DbtImportedEntity:
 
 
 def dbt_model_to_entity(model: DbtModelNode, manifest: DbtManifest) -> DbtImportedEntity:
-    """Map a parsed dbt model + resolved identity → a Schema Brain `Entity`.
+    """Map a parsed dbt model + resolved identity → a SchemaBrain `Entity`.
 
     Composes the identity resolver with `Entity` construction.
     Raises:
       - `DbtIdentityResolutionError` when identity resolution fails
         (caller decides whether to skip + log or escalate).
       - `DbtEntityMappingError` when the dbt model's name or the
-        compiled `schema.identifier` don't satisfy Schema Brain's
+        compiled `schema.identifier` don't satisfy SchemaBrain's
         identifier-shape constraints. Wraps the underlying
         `Entity` / `SingleTableBinding` `ValueError` with dbt
         context (the model's `unique_id`).
@@ -770,7 +770,7 @@ def dbt_model_to_entity(model: DbtModelNode, manifest: DbtManifest) -> DbtImport
         )
     except ValueError as exc:
         raise DbtEntityMappingError(
-            f"dbt model {model.unique_id!r} does not map to a valid Schema Brain entity: {exc}"
+            f"dbt model {model.unique_id!r} does not map to a valid SchemaBrain entity: {exc}"
         ) from exc
     upstream_sources = _resolve_upstream_sources(model, manifest)
     return DbtImportedEntity(

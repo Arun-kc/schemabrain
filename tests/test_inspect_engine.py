@@ -219,11 +219,11 @@ class TestStoreSummary:
             summary.table_count = 1  # type: ignore[misc]
 
 
-# ----- multi-source dedup (smoke 2026-05-19 Bug 4) -------------------------
+# ----- multi-source dedup (operator-reported) -------------------------
 
 
 class TestStoreSummaryMultiSource:
-    """Smoke 2026-05-19: an operator's pre-existing store carried 6
+    """Regression coverage: an operator's pre-existing store carried 6
     entities under an older source-id scheme; a fresh `init` wrote 6
     NEW entities under the current source-id. `inspect` rendered all
     12 names with no signal the same logical entities appeared twice.

@@ -3,7 +3,7 @@
 Pins the second piece of the dbt import substrate:
 
   - `resolve_dbt_identity(model)` returns the column to bind as the
-    Schema Brain entity's `identity`, plus a `method` label naming
+    SchemaBrain entity's `identity`, plus a `method` label naming
     which priority tier matched (audit-log surface).
   - 3-tier priority order:
       1. Explicit `primary_key` constraint on a single column

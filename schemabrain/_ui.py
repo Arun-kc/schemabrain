@@ -1,4 +1,4 @@
-"""Schema Brain CLI shell vocabulary — palette tokens, glyph constants,
+"""SchemaBrain CLI shell vocabulary — palette tokens, glyph constants,
 severity routing, and the single ``rich.console.Console`` factory.
 
 This is the foundation layer for the design-system migration. It does
@@ -230,7 +230,7 @@ def make_console(
     width: int | None = None,
     record: bool = False,
 ) -> Console:
-    """Build a ``rich.console.Console`` configured for Schema Brain.
+    """Build a ``rich.console.Console`` configured for SchemaBrain.
 
     Single hook so a future ``--no-color`` flag, ``--json`` quiet
     mode, palette swap, or test-mode override flips one place rather
@@ -247,7 +247,7 @@ def make_console(
     that quietly toggles ``stderr``.
 
     ``stderr=True`` directs output to standard error rather than
-    standard output. The Schema Brain CLI writes progress, status,
+    standard output. The SchemaBrain CLI writes progress, status,
     and guided-error chrome to stderr so stdout stays clean for
     pipe consumers (JSON, SQL, audit rows).
 
@@ -594,7 +594,7 @@ def prompt_for_anthropic_key(
 
     Renders a four-line preamble before the prompt:
 
-        ◆ Schema Brain uses Claude to {purpose}.
+        ◆ SchemaBrain uses Claude to {purpose}.
 
           ◇ Cost:  ~${cost} (capped at ${cap})
           ◇ Time:  ~30s
@@ -619,7 +619,7 @@ def prompt_for_anthropic_key(
     from rich.prompt import Prompt
 
     with pause_active_spinner():
-        console.print(f"  [bold]{GLYPH_BRAND} Schema Brain uses Claude to {purpose}.[/]")
+        console.print(f"  [bold]{GLYPH_BRAND} SchemaBrain uses Claude to {purpose}.[/]")
         console.print()
         console.print(
             f"    [bright_black]{GLYPH_PENDING} Cost:  "

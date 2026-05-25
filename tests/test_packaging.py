@@ -20,7 +20,7 @@ class TestPyTypedMarker:
 
     Without a `py.typed` marker file inside the package, type checkers
     (mypy, pyright, pyrefly) running in *user* projects treat
-    Schema Brain as untyped — they silently ignore the type hints in
+    SchemaBrain as untyped — they silently ignore the type hints in
     the installed source, even though every function signature carries
     them. The marker is an empty file; its presence is the contract.
 
@@ -35,13 +35,13 @@ class TestPyTypedMarker:
         marker = _PACKAGE_ROOT / "py.typed"
         assert marker.is_file(), (
             "PEP 561 marker `schemabrain/py.typed` is missing — type "
-            "checkers in downstream projects will ignore Schema Brain's "
+            "checkers in downstream projects will ignore SchemaBrain's "
             "type hints. Create an empty file at that path."
         )
 
     def test_py_typed_marker_is_empty(self) -> None:
         """PEP 561 leaves room for an optional `partial` literal but
-        the typical contract is an empty marker file. Schema Brain is
+        the typical contract is an empty marker file. SchemaBrain is
         fully typed (no `Any` escape hatches in the public surface),
         so an empty marker is correct.
         """
@@ -49,6 +49,6 @@ class TestPyTypedMarker:
         if marker.is_file():
             assert marker.read_text() == "", (
                 "py.typed should be empty for a fully-typed package; "
-                "Schema Brain has no Any-typed public surface that "
+                "SchemaBrain has no Any-typed public surface that "
                 "would justify the 'partial' literal."
             )

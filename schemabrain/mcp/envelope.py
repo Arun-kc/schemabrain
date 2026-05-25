@@ -12,7 +12,7 @@ Every MCP tool wraps its return value in a `ToolResponse[T]`:
       "charter_version": "1.2"
     }
 
-The envelope is the public contract for Schema Brain's MCP surface. See
+The envelope is the public contract for SchemaBrain's MCP surface. See
 `docs/agent-ux-charter.md` for the full design rationale.
 
 This module is intentionally free of FastMCP / transport concerns —
@@ -425,7 +425,7 @@ class ToolError(BaseModel):
 
 
 class ToolResponse(BaseModel, Generic[T]):
-    """The envelope every Schema Brain MCP tool returns.
+    """The envelope every SchemaBrain MCP tool returns.
 
     Invariants enforced by `_validate_status_data_invariant`:
 

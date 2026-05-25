@@ -232,7 +232,7 @@ class TestParseHappyPath:
     def test_parses_column_description_defaults_to_empty_string(self, tmp_path: Path) -> None:
         # dbt allows omitting `description` per-column; the parser should
         # not require it. Empty string is the canonical default — matches
-        # Schema Brain's Entity dataclass shape.
+        # SchemaBrain's Entity dataclass shape.
         unique_id, node = _model_node(
             name="customer_dim",
             columns={"id": {"name": "id"}},
@@ -271,7 +271,7 @@ class TestParseHappyPath:
 
     def test_alias_overrides_name_for_identifier(self, tmp_path: Path) -> None:
         # The physical table name dbt writes to is `alias` if set, else
-        # `name`. Schema Brain binds to the physical table, so we use
+        # `name`. SchemaBrain binds to the physical table, so we use
         # `alias` (the `identifier` field on DbtModelNode).
         unique_id, node = _model_node(
             name="customer_dim",
@@ -336,7 +336,7 @@ class TestSourcesAndDependsOn:
         manifest = parse_dbt_manifest(manifest_path)
         # Only source.* IDs are captured as `depends_on_sources`. Model
         # refs are out of scope for v1 — they're for lineage, not
-        # provenance, and Schema Brain doesn't yet model model→model
+        # provenance, and SchemaBrain doesn't yet model model→model
         # lineage.
         assert manifest.models[0].depends_on_sources == (source_id,)
 

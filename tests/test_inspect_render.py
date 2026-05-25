@@ -119,7 +119,7 @@ class TestRenderSummary:
         assert "0 columns" not in out
 
     def test_summary_with_multiple_source_ids_renders_warning_banner(self) -> None:
-        # Smoke 2026-05-19 Bug 4: when the store carries data from
+        # Operator-reported issue: when the store carries data from
         # more than one source-id (typically: orphan rows from an
         # older schemabrain version), the renderer surfaces a banner
         # so the operator can diagnose the duplication. Without the
@@ -498,10 +498,10 @@ class TestDesignBrandLineSummary:
         assert "◆ store" in out
 
     def test_old_header_no_longer_renders(self) -> None:
-        # Regression guard: the pre-PR-#7 ``Schema Brain inspect``
+        # Regression guard: the pre-PR-#7 ``SchemaBrain inspect``
         # plain-text header must not return on a future revert.
         out = _capture(render_summary, self._empty_but_populated_summary())
-        assert "Schema Brain inspect" not in out
+        assert "SchemaBrain inspect" not in out
 
     def test_summary_panel_entities_count_renders(self) -> None:
         out = _capture(render_summary, self._empty_but_populated_summary())
@@ -642,7 +642,7 @@ class TestDiscoveryBlock:
     drill into and needs to know what commands exist next."""
 
     def test_empty_store_renders_discovery_block(self) -> None:
-        # Smoke 2026-05-20: empty-state branch was early-returning
+        # Regression coverage: empty-state branch was early-returning
         # before the discovery block; new operators saw the "no
         # definitions yet" hint and nothing else.
         summary = StoreSummary(

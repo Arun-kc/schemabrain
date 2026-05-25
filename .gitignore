@@ -73,7 +73,7 @@ dmypy.json
 # Ruff
 .ruff_cache/
 
-# Schema Brain local artifacts
+# SchemaBrain local artifacts
 schemabrain.db
 schemabrain.db-journal
 schemabrain.db-wal

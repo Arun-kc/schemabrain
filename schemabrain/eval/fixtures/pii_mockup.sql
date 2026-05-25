@@ -1,4 +1,4 @@
--- Synthetic PII regression fixture for Schema Brain's heuristic classifier.
+-- Synthetic PII regression fixture for SchemaBrain's heuristic classifier.
 --
 -- Designed to exercise EVERY category in `schemabrain/pii/categories.py`
 -- (12 PIICategory values) plus the four bug shapes documented below:

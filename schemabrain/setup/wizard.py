@@ -566,7 +566,7 @@ def _stage_source_check(ctx: WizardContext) -> StageOutcome:
 # Walk this many parents up from cwd looking for a `dbt_project.yml`
 # sentinel. Empirical: 3 levels covers nested-monorepo layouts where
 # the dbt project sits under `analytics/` or `etl/` from the
-# Schema Brain run directory. Beyond 3 invites cross-project misfires.
+# SchemaBrain run directory. Beyond 3 invites cross-project misfires.
 _DBT_DETECT_PARENT_LIMIT: int = 3
 
 

@@ -1,12 +1,12 @@
 # Threat model
 
-Schema Brain's attack surface, the threats we model against, what we mitigate
+SchemaBrain's attack surface, the threats we model against, what we mitigate
 today, and the residual risk we accept. This is a living document; assumptions
 and mitigations are updated per release.
 
 ## Trust model
 
-Schema Brain runs as a local single-process MCP server on the operator's own
+SchemaBrain runs as a local single-process MCP server on the operator's own
 machine. It connects to a Postgres database the operator controls, reads
 schema and sample values, calls Anthropic for enrichment, and exposes read-only
 tools to an agent (Claude Desktop, Cursor, or a custom harness) over stdio.
@@ -150,7 +150,7 @@ LLM credit (Anthropic side) and database load (Postgres side).
 **Current mitigations**
 
 - T3.1: The agent's budget is enforced at the agent layer (Anthropic API
-  keys, per-conversation limits). Schema Brain's `--max-cost` default of
+  keys, per-conversation limits). SchemaBrain's `--max-cost` default of
   $1 per `index` run caps the enrichment side; once exceeded the run halts
   with `status: degraded`. Read-side tools (`describe_table`,
   `find_relevant_tables`, etc.) are read-only from the store and cost
@@ -195,7 +195,7 @@ oversized identifiers, Unicode confusables, or embedded ANSI escape sequences.
 - T4.1: `_validate_ident` rejects any identifier longer than 63 characters.
   Error messages bound their echoed input via `_bounded_repr` (capped at
   three identifier lengths). An adversary cannot force a 150 KB string back
-  into agent context through Schema Brain.
+  into agent context through SchemaBrain.
 - T4.2, T4.3: The identifier regex `^[A-Za-z_][A-Za-z0-9_$]*$` rejects
   control characters, ANSI escapes, and Unicode confusables outside the
   ASCII alphabet. Quoted-identifier syntax (`"Order Items"`) is not
@@ -205,7 +205,7 @@ oversized identifiers, Unicode confusables, or embedded ANSI escape sequences.
 
 - A schema may legitimately contain identifiers that fail the regex
   (multi-word names with spaces, names containing diacritics). Those tables
-  are rejected by Schema Brain today; the operator must rename the column,
+  are rejected by SchemaBrain today; the operator must rename the column,
   use a view, or wait for a future quoted-identifier mode.
 
 ## Threats explicitly out of scope
@@ -221,7 +221,7 @@ oversized identifiers, Unicode confusables, or embedded ANSI escape sequences.
 - **Supply-chain attacks on PyPI dependencies.** Closed by a separate
   programme: SECURITY.md, Dependabot, `pip-audit`, Bandit, and Semgrep
   all run in CI. See [SECURITY.md](../SECURITY.md).
-- **Multi-tenant isolation.** Schema Brain is single-tenant by design.
+- **Multi-tenant isolation.** SchemaBrain is single-tenant by design.
   Multi-tenancy is a hosted-variant concern.
 
 ## How this document is maintained

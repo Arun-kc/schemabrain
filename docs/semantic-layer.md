@@ -1,6 +1,6 @@
 # Building a semantic layer
 
-Three concepts compose Schema Brain's semantic layer:
+Three concepts compose SchemaBrain's semantic layer:
 
 - **Entities** — a domain name (e.g. `customer`, `order`) bound to one physical table.
 - **Metrics** — aggregations anchored on an entity, with grain (e.g. `total_revenue` by `month`).
@@ -103,7 +103,7 @@ Once applied, the agent-facing `resolve_join` MCP tool returns the canonical joi
 
 ## Import from dbt
 
-If you already curate entities in dbt, point Schema Brain at your compiled `target/manifest.json` and dbt becomes the source of truth. Two entry points:
+If you already curate entities in dbt, point SchemaBrain at your compiled `target/manifest.json` and dbt becomes the source of truth. Two entry points:
 
 **During `init` (auto-detected or explicit):** the wizard's stage 1 auto-detects a manifest from `$DBT_PROJECT_DIR/target/manifest.json` or by walking up from the cwd looking for `dbt_project.yml`. When found, stages 3 (entities) and 4 (metrics) route through the importer instead of the LLM. Force a specific manifest with `--from-dbt PATH`:
 
@@ -119,7 +119,7 @@ Stage 5 (joins) still uses FK + query-log mining since dbt has no canonical-join
 schemabrain import dbt path/to/target/manifest.json --url-env DATABASE_URL
 ```
 
-Each dbt model with a single-column primary key lands as a Schema Brain entity with `origin="dbt_import"`. Re-running is idempotent; entities that previously had `origin="manual"` or `"suggested"` flip to `"dbt_import"` (dbt takes ownership). Subsequent manual edits to dbt-owned rows are refused at the store boundary.
+Each dbt model with a single-column primary key lands as a SchemaBrain entity with `origin="dbt_import"`. Re-running is idempotent; entities that previously had `origin="manual"` or `"suggested"` flip to `"dbt_import"` (dbt takes ownership). Subsequent manual edits to dbt-owned rows are refused at the store boundary.
 
 | Flag | Behaviour |
 |---|---|

@@ -1,4 +1,4 @@
-# Schema Brain demo stack.
+# SchemaBrain demo stack.
 #
 # `docker compose up` brings up three containers:
 #
@@ -14,7 +14,7 @@
 # copy-paste config block. The store volume (`sb-data`) survives
 # `docker compose down` so re-indexing is unnecessary across runs.
 #
-# This file is the demo path. For production wiring point Schema Brain
+# This file is the demo path. For production wiring point SchemaBrain
 # at your real DATABASE_URL via `schemabrain init --url-env DATABASE_URL`
 # and skip the demo stack entirely.
 #

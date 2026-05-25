@@ -1,4 +1,4 @@
-"""Local SQLite store for Schema Brain models.
+"""Local SQLite store for SchemaBrain models.
 
 Single-file persistence for `Table`, `Column`, `ForeignKey`. Idempotent
 upserts keyed on `(schema_name, name, source_connection_id)`. The store
@@ -184,7 +184,7 @@ class SchemaVersionMismatchError(RuntimeError):
     the version this code expects.
 
     Indicates the store was created (or last migrated) by a different
-    Schema Brain release. Re-create the store, or implement a migration.
+    SchemaBrain release. Re-create the store, or implement a migration.
     """
 
 
@@ -890,7 +890,7 @@ class SQLiteStore:
         SQLite mechanism.
 
         Connection-level PRAGMA hardening tunes the store for the
-        realistic Schema Brain workload. The WAL group
+        realistic SchemaBrain workload. The WAL group
         (`journal_mode=WAL` + `synchronous=NORMAL`) only applies to
         file-backed stores; in-memory stores have no fsync to schedule
         and SQLite forces `journal_mode=MEMORY` regardless, so we
@@ -1819,7 +1819,7 @@ class SQLiteStore:
 
         Single SQL round-trip with a UNION → DISTINCT → ORDER BY. The
         union shape is exhaustive on purpose: a store written by an
-        older Schema Brain version that only populated `entities`
+        older SchemaBrain version that only populated `entities`
         (no metrics, no joins) still surfaces here, so the inspect
         renderer can warn about orphan data instead of silently
         merging it with new rows from a different source.

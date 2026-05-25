@@ -445,11 +445,11 @@ class TestFingerprintDifferentiation:
             store.close()
 
 
-# ----- Round-2 fold: PII propagation through multi-hop JOIN ON pairs ---------
+# ----- Regression coverage: PII propagation through multi-hop JOIN ON pairs ---------
 
 
 class TestPiiPropagatesAcrossJoinOnPairs:
-    """Round-2 fold (silent-failure-hunter F5): multi-hop chains
+    """regression test (silent-failure F5): multi-hop chains
     introduce intermediate JOIN ON columns that the agent's metric
     request never names directly (they live in `plan.joins[*].on_pairs`,
     not in `group_by` or `filter`). Before the fold, those columns
@@ -624,7 +624,7 @@ class TestPiiPropagatesAcrossJoinOnPairs:
         """Same scenario but with `--pii-block=contact` — must refuse,
         not silently execute. Before the fold, the JOIN-key column
         bypassed `pii_block` entirely and the call would have
-        succeeded — that's the security gap silent-failure-hunter
+        succeeded — that's the security gap previously
         flagged.
         """
         store = SQLiteStore(tmp_path / "sb.db")

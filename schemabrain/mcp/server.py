@@ -1,4 +1,4 @@
-"""FastMCP server wiring for Schema Brain.
+"""FastMCP server wiring for SchemaBrain.
 
 `build_server(store, source_connection_id, embedder)` returns a
 configured `FastMCP` instance with ten tools registered. Five
@@ -7,7 +7,7 @@ physical-schema tools: `find_relevant_tables`, `describe_table`,
 semantic-layer tools: `find_relevant_entities`, `list_entities`,
 `describe_entity`, `resolve_join`, `get_metric`.
 
-This module is the *boundary* between Schema Brain's pure-function tool
+This module is the *boundary* between SchemaBrain's pure-function tool
 implementations (in `mcp/*.py`) and the MCP transport. Two boundary
 concerns live here:
 
@@ -184,7 +184,9 @@ def _server_icons() -> list[Any]:
 
 
 _SERVER_INSTRUCTIONS = (
-    "Schema Brain — semantic understanding of an indexed database. "
+    "SchemaBrain — a SQL firewall between AI agents and a Postgres "
+    "database. You never write raw SQL; you call these 12 read-only "
+    "tools to learn the schema and request validated aggregations. "
     "Physical-schema tools: `find_relevant_tables` to discover tables, "
     "`describe_table` for one table's full shape, `describe_column` to "
     "drill into a single column (with join graph), `suggest_joins` for "
@@ -505,7 +507,7 @@ def build_server(
     # FastMCP doesn't accept a `version` kwarg, so the underlying
     # low-level Server defaults `server_version` to the `mcp` package
     # version (e.g. "1.27.1") in the `initialize` response. Pin it to
-    # Schema Brain's own version string so MCP clients see the
+    # SchemaBrain's own version string so MCP clients see the
     # right server identity instead of the SDK's internal version.
     app._mcp_server.version = _SCHEMABRAIN_VERSION
 
