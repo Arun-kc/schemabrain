@@ -205,10 +205,6 @@ class TestVerifyMockAgentHappyPath:
         `fail`. The substrate is otherwise green; semantic retrieval
         is an optional capability whose absence shouldn't flag the
         whole verify as broken.
-
-        This is the CI failure mode: brand-new runner installs lack
-        the cached model and the embedder construction raises
-        `NoSuchFile` from onnxruntime before any search runs.
         """
         from schemabrain.enrichment import embeddings
 
@@ -223,6 +219,36 @@ class TestVerifyMockAgentHappyPath:
         assert "embedder unavailable" in stage.message
         assert "substrate is still green" in stage.message
         # The whole verify exits 0 — `find_relevant_entities` is
+        # best-effort, not required.
+        assert result.exit_code == 0
+
+    def test_find_relevant_skips_when_search_raises_during_embed(
+        self, seeded_store: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The actual CI failure: `fastembed_default()` SUCCEEDS
+        (returns an embedder object) but the ONNX model loads
+        LAZILY inside `find_relevant_entities_impl`'s first
+        `.embed()` call, which raises `NoSuchFile` from onnxruntime.
+
+        The previous shape caught only embedder-construction failures.
+        This test pins the broader contract: any failure along the
+        embedder + search path is `skipped`, not `fail`.
+        """
+        from schemabrain.mcp import find_relevant_entities
+
+        def boom(**_kwargs: object) -> object:
+            raise FileNotFoundError(
+                "NoSuchFile: [ONNXRuntimeError] : 3 : NO_SUCHFILE : "
+                "model_optimized.onnx failed. File doesn't exist"
+            )
+
+        monkeypatch.setattr(find_relevant_entities, "find_relevant_entities_impl", boom)
+        result = verify_mock_agent(store_path=seeded_store, source_url=None)
+        by_name = {s.name: s for s in result.stages}
+        stage = by_name["find_relevant_entities"]
+        assert stage.status == "skipped"
+        assert "embedder unavailable" in stage.message
+        # Whole verify still exits 0 — `find_relevant_entities` is
         # best-effort, not required.
         assert result.exit_code == 0
 

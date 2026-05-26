@@ -263,15 +263,33 @@ def _run_find_relevant(*, store: object, source_id: str) -> VerifyStage:
 
     from schemabrain.mcp.find_relevant_entities import find_relevant_entities_impl
 
-    # Embedder construction can fail on a clean machine — the fastembed
-    # model file is downloaded on first use, and a brand-new install
-    # (no cache, no network) raises NoSuchFile / OSError before any
-    # search runs. Treat that as `skipped` (the substrate is otherwise
-    # green; semantic retrieval is an optional capability), not `fail`
-    # (which would propagate to exit_code=2 and falsely flag the whole
-    # verify as broken).
+    # `find_relevant_entities` is a best-effort stage: any failure
+    # along the embedder + search path surfaces as `skipped`, never
+    # `fail`. The substrate-broken signal must come only from the
+    # required stages (`list_entities`, `describe_entity`).
+    #
+    # Realistic failure modes here are ALL embedder-related:
+    #
+    # - ImportError on the fastembed package itself
+    # - Embedder construction (`fastembed_default()`) raising on a
+    #   clean machine with no cached model AND no network
+    # - Lazy ONNX model load inside `find_relevant_entities_impl`'s
+    #   first `.embed()` call raising NoSuchFile when the model file
+    #   hasn't been downloaded yet (the CI failure mode)
+    #
+    # All three mean "semantic retrieval is unavailable on this
+    # machine"; none mean "the substrate is broken." A `fail` here
+    # would propagate to exit_code=2 and falsely flag the whole
+    # verify on every fresh install — the worst possible UX.
     try:
         embedder = fastembed_default()
+        hits = find_relevant_entities_impl(
+            store=store,  # type: ignore[arg-type]
+            source_connection_id=source_id,
+            embedder=embedder,
+            query=_VERIFY_QUERY,
+            limit=3,
+        )
     except Exception as exc:
         return VerifyStage(
             name="find_relevant_entities",
@@ -280,22 +298,6 @@ def _run_find_relevant(*, store: object, source_id: str) -> VerifyStage:
                 f"embedder unavailable ({type(exc).__name__}); "
                 "semantic retrieval is optional — substrate is still green"
             ),
-            duration_s=time.perf_counter() - started,
-        )
-
-    try:
-        hits = find_relevant_entities_impl(
-            store=store,  # type: ignore[arg-type]
-            source_connection_id=source_id,
-            embedder=embedder,
-            query=_VERIFY_QUERY,
-            limit=3,
-        )
-    except Exception as exc:  # pragma: no cover — defensive
-        return VerifyStage(
-            name="find_relevant_entities",
-            status="fail",
-            message=f"{type(exc).__name__}: {exc}",
             duration_s=time.perf_counter() - started,
         )
     if not hits:
