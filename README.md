@@ -232,6 +232,76 @@ python examples/anthropic_demo.py \
 
 ---
 
+## Works with
+
+SchemaBrain speaks the [Model Context Protocol](https://modelcontextprotocol.io) over **stdio**. The `schemabrain init --host <X>` wizard ships first-party wiring for four MCP clients; everything else that speaks MCP stdio works via `--host manual` (prints the snippet, you paste).
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### First-party wiring
+
+`schemabrain init --host <X>` writes the MCP entry directly into the host's config file.
+
+| Client | Setup | Where the entry lands |
+|---|---|---|
+| **Claude Desktop** | [`/setup/claude-desktop`](docs/setup/claude-desktop.md) | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) · `%APPDATA%\Claude\claude_desktop_config.json` (Windows) |
+| **Claude Code** | [`/setup/claude-code`](docs/setup/claude-code.md) | Shells out to `claude mcp add` |
+| **Cursor** | [`/setup/cursor`](docs/setup/cursor.md) | `~/.cursor/mcp.json` |
+| **Windsurf** | [`/setup/windsurf`](docs/setup/windsurf.md) | `~/.codeium/windsurf/mcp_config.json` |
+
+</td>
+<td width="50%" valign="top">
+
+### Any other MCP stdio host
+
+`schemabrain init --host manual` prints the JSON entry to stdout — paste it into whatever host config you're using. Any client that launches a subprocess and speaks MCP stdio should work in principle; we have not exhaustively tested each. Common targets:
+
+- **Zed** — paste into the assistant MCP settings
+- **Cline** (VS Code) — paste into the MCP server settings
+- **Continue** — paste into `~/.continue/config.json`
+- **Codex CLI** — paste into Codex's MCP config
+- **Your own agent loop** — see [`examples/anthropic_demo.py`](examples/anthropic_demo.py) for a 230-LOC Anthropic-SDK reference
+
+The 12-tool surface, PII firewall, audit chain, and recovery contracts are transport-agnostic — any compliant stdio MCP client gets the same guarantees.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### Agent frameworks
+
+The same stdio MCP surface is reachable from any framework that can spawn an MCP server. The Anthropic SDK path is the one we ship + test; the others work if the framework's MCP integration speaks stdio.
+
+- **Anthropic SDK** — first-party walkthrough at [`docs/setup.md`](docs/setup.md#path-2--anthropic-sdk-demo-no-claude-desktop-required); reference loop at [`examples/anthropic_demo.py`](examples/anthropic_demo.py)
+- **LangChain / LangGraph** — via [`langchain-mcp-adapters`](https://github.com/langchain-ai/langchain-mcp-adapters)
+- **Pydantic AI** — via its [built-in MCP support](https://ai.pydantic.dev/mcp/)
+- **Any other framework** that can launch a subprocess and speak MCP stdio — CrewAI, AutoGen, Agno, custom loops — works in principle; we have not tested each.
+
+We don't ship per-framework adapters; the framework's standard MCP client is sufficient.
+
+</td>
+<td width="50%" valign="top">
+
+### Not yet supported (cloud / HTTPS hosts)
+
+SchemaBrain v0.4 ships stdio only — no HTTPS / SSE transport. Clients that require a cloud HTTPS endpoint do **not** work today:
+
+- **ChatGPT Connectors** — see the [honest gap page](docs/setup/chatgpt.md) for workarounds and the v0.5+ roadmap
+- **Hosted MCP gateways** — by design (local-first wedge; see [vs Querybear](docs/compare/querybear.md))
+
+If you need ChatGPT support today, a community stdio→HTTPS bridge (`mcp-remote`, `mcp-proxy`, etc.) may work; we have not validated any specific bridge against the PII / audit / recovery semantics.
+
+</td>
+</tr>
+</table>
+
+[Security posture for procurement / review →](docs/security.md)
+
+---
+
 ## Sample session
 
 Real Claude Desktop session against the bundled e-commerce fixture (7 tables, 30 columns, 6 entities curated for **~$0.03**):
