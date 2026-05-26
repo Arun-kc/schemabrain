@@ -1,0 +1,149 @@
+# SchemaBrain vs Anthropic Reference Postgres MCP Server
+
+> The Anthropic-published reference Postgres MCP server is where most developers start. It's a 143-line `index.ts` that ships one tool that accepts arbitrary SQL. Anthropic archived it on May 29, 2025 — but it remains the default mental model. SchemaBrain is what you graduate to.
+
+If you found the Anthropic reference MCP in the [`modelcontextprotocol/servers-archived`](https://github.com/modelcontextprotocol/servers-archived/tree/main/src/postgres) repo and started wiring it into Claude Desktop, this page is for you. The reference does exactly enough to demonstrate MCP works against a database. It is not a production posture.
+
+---
+
+## The 30-second version
+
+| | **Anthropic reference Postgres MCP** | **SchemaBrain** |
+|---|---|---|
+| **Status** | Archived May 29, 2025 (the repo is read-only) | Active, v0.4.0 (pre-1.0) |
+| **MCP tools** | 1 (`query`, accepts arbitrary SQL string) | 12 (typed structured-argument; none accept SQL) |
+| **Read-only enforcement** | `BEGIN TRANSACTION READ ONLY` + `ROLLBACK` (one layer) | No write tool exists + session-level `default_transaction_read_only=on` + `NullPool` (three layers) |
+| **PII handling** | None | 12-category taxonomy with compiler-layer propagation |
+| **Audit log** | None | Append-only SQLite with SHA256 chain (`audit verify`) |
+| **Refusal shape** | Generic MCP error | Typed [recovery contract](../mechanism/structured-recovery.md) (`kind`, `recovery.suggested_tool`, `recovery.suggested_args`) |
+| **Trust signal** | None | 2D: `inference_method × validation_state` ([Charter v1.2](../agent-ux-charter.md)) |
+| **Semantic layer** | None — agent does all SQL writing | Entities, metrics, canonical joins compiled at the server |
+| **Wire transport** | stdio | stdio (HTTPS roadmap for v0.5+) |
+| **License** | MIT, archived | MIT, active |
+
+---
+
+## What the reference actually ships
+
+The entire safety story is two lines of TypeScript:
+
+```typescript
+await client.query("BEGIN TRANSACTION READ ONLY");
+// ... runs the agent's SQL string ...
+await client.query("ROLLBACK");
+```
+
+And the input schema:
+
+```json
+{
+  "type": "object",
+  "properties": { "sql": { "type": "string" } }
+}
+```
+
+That's the full surface. Whatever string the agent's LLM emits gets executed inside a read-only transaction. No allowlists, no PII filter, no row cap, no statement timeout, no rate limit, no audit log, no recovery hints.
+
+For a learning project or a demo against a throwaway database, that's fine. For production data, the gap is the entire point of SchemaBrain.
+
+---
+
+## Where the reference is enough
+
+Be honest — there *are* situations where the reference is the right tool:
+
+- **You're learning MCP itself.** 143 lines you can read in five minutes is a teaching artifact.
+- **The database is throwaway** (a local fixture, a CI test container, an evaluation harness). No PII, no compliance, no production exposure.
+- **You're building your own MCP server** and want a reference for transport plumbing and tool registration.
+
+If any of those applies, use the reference and move on. SchemaBrain is overkill for those cases.
+
+---
+
+## Where SchemaBrain is what you graduate to
+
+For everything else — any database you'd be sad to leak from, any agent loop that might run unattended, any compliance obligation — the gaps in the reference become load-bearing.
+
+### 1. The reference accepts arbitrary SQL
+
+The reference's `query` tool takes a SQL string. The agent's LLM writes that string. SchemaBrain's 12 tools are [structured-argument calls](../mechanism/read-only.md):
+
+```typescript
+// Anthropic reference
+query({ sql: "SELECT email FROM users WHERE id = 42" })
+
+// SchemaBrain
+describe_entity({ name: "user" })
+get_metric({ name: "user_count", group_by: ["user.country"] })
+```
+
+The first form puts the agent in the SQL author seat. The second form has the operator (you) author the SQL once, at definition time, with PII propagation and audit. The agent composes calls; it doesn't compose SQL.
+
+### 2. The reference has no PII model
+
+If your `users` table has an `email` column, the reference happily returns it. The agent's prompt determines whether that's appropriate.
+
+SchemaBrain [tags every column at index time](../mechanism/pii-taxonomy.md) with one or more of 12 categories grounded in GDPR / CCPA / HIPAA / PCI DSS. The metric compiler propagates those tags through `JOIN ON` pairs, `group_by` columns, filter predicates, measure columns (including composite expressions), and time-dimension columns. A `get_metric` whose path touches a blocked category refuses *before* the database is queried. Three catastrophic-leak categories (`credential`, `payment_card`, `government_id`) are blocked by default on a zero-config install.
+
+### 3. The reference has no audit log
+
+The reference doesn't record what the agent asked for. SchemaBrain's [audit chain](../mechanism/audit-chain.md) records every tool call in an append-only `mcp_audit` table with a SHA256 hash chain. `schemabrain audit verify` re-walks the chain and exits non-zero if any past row was rewritten. Two SQL triggers forbid `UPDATE`/`DELETE` at the SQLite layer.
+
+If your security review asks "can you prove what the agent saw three weeks ago?", the reference says no and SchemaBrain says yes (exit 0 from `audit verify`).
+
+### 4. The reference has no recovery contract
+
+The reference returns generic MCP errors. SchemaBrain returns [typed recovery envelopes](../mechanism/structured-recovery.md):
+
+```json
+{
+  "status": "error",
+  "error": {
+    "kind": "no_canonical_join",
+    "recovery": {
+      "suggested_tool": "suggest_joins"
+    }
+  }
+}
+```
+
+The agent reads `recovery.suggested_tool`, pivots to the right tool, retries. The closed `ErrorKind` Literal has 26 values an agent can switch on programmatically rather than parsing English error messages.
+
+### 5. The reference has no trust signal
+
+If a metric definition was hand-typed by you, or LLM-suggested during `init`, or FK-derived from a constraint — the reference can't tell. Every result is "trust this" or "the query failed."
+
+SchemaBrain's [2D trust signal](../mechanism/trust-signal.md) labels every fact with `inference_method` (`manually_authored | llm_suggested | fk_constraint | dbt_import | observed_in_query_log`) and `validation_state` (`draft | applied | confirmed`). The agent can branch on either axis. An LLM-suggested metric the operator never confirmed comes back with `confidence: MEDIUM`; the well-behaved agent flags that to the user. The FK-derived join comes back `confidence: HIGH`; the agent writes the answer confidently.
+
+---
+
+## "But the reference is archived"
+
+Yes — Anthropic archived `servers-archived/src/postgres` on May 29, 2025. That doesn't mean it's been replaced by an official equivalent; it means Anthropic stopped maintaining it without naming a successor. The reference still runs and still works for the use cases it was meant for. But there's no upgrade path within Anthropic's own surface area.
+
+Several projects fill the gap — SchemaBrain is one of them, alongside community-maintained Postgres MCP servers from teams like Supabase, Neon, and `crystaldba/postgres-mcp`. We're explicit about our shape (firewall + semantic layer + audit), our scope (Postgres + SQLite today, MySQL roadmap), and our trade-offs (local-first, no hosted gateway).
+
+---
+
+## Pick the reference if
+
+- You're learning MCP and want a teaching artifact
+- The database is throwaway / fixture / eval-only
+- You're building your own MCP server and want plumbing reference
+
+## Pick SchemaBrain if
+
+- The agent's queries hit real data
+- Any column matters (PII, financial, health, credential)
+- You need an audit trail you can defend in a review
+- You want a semantic layer instead of "agent writes raw SQL"
+- "No write tool in the binary" is a meaningful guarantee for your threat model
+
+---
+
+## Sources & further reading
+
+- Reference repo: [github.com/modelcontextprotocol/servers-archived/tree/main/src/postgres](https://github.com/modelcontextprotocol/servers-archived/tree/main/src/postgres)
+- SchemaBrain's mechanism docs: [`/mechanism/read-only`](../mechanism/read-only.md) · [`/mechanism/pii-taxonomy`](../mechanism/pii-taxonomy.md) · [`/mechanism/audit-chain`](../mechanism/audit-chain.md) · [`/mechanism/structured-recovery`](../mechanism/structured-recovery.md) · [`/mechanism/trust-signal`](../mechanism/trust-signal.md)
+- Compare with the other live alternative: [vs Querybear](querybear.md)
+- Try SchemaBrain in 60 seconds: [`/setup/claude-desktop`](../setup/claude-desktop.md) · [`/setup/cursor`](../setup/cursor.md) · [`/setup/windsurf`](../setup/windsurf.md) · [`/setup/claude-code`](../setup/claude-code.md)
