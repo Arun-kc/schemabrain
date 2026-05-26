@@ -1482,8 +1482,11 @@ def build_server(
             # different `group_by` columns, read which categories
             # surface, and reconstruct the full PII tagging in
             # O(columns) calls without ever calling `describe_entity`.
-            # The full `attempted_categories` tuple stays operator-
-            # visible in the audit row (see `_resolve_pii_categories`).
+            # The audit row currently records the same `blocked` set
+            # the envelope returns (via `audit/writer.py`); the full
+            # `attempted_categories` tuple lives only on the in-process
+            # `PiiBlockedError` exception. Persisting `attempted` as a
+            # separate operator-visible audit column is on the backlog.
             return ToolResponse(
                 status="refused",
                 error=ToolError(

@@ -373,8 +373,10 @@ class ToolError(BaseModel):
     """Structured error returned inside a `ToolResponse` with status='error'
     or status='refused' (charter v1.2).
 
-    `kind` is one of the fourteen registered kinds (7 from v1.0 + 3
-    refusal kinds + 4 canonical-join kinds added in a later release).
+    `kind` is one of the 26 registered kinds enumerated in the `ErrorKind`
+    Literal above (7 from v1.0 + 3 v1.1 refusal kinds + 4 canonical-join
+    kinds + 8 metric-surface kinds + 2 time-grain kinds + 1 v1.2
+    ambiguous-time-dimension kind + 1 internal `invalid_argument` kind).
     `message` is a single human-readable sentence.
     `recovery`
     carries the agent's next-move hint — never empty in practice, though
