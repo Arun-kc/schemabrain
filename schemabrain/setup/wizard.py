@@ -210,6 +210,13 @@ class WizardConfig:
     no_metrics: bool = False
     metrics_max_cost_usd: float | None = None
     no_joins: bool = False
+    # When True, the wizard's index stage skips fastembed and the
+    # store carries no column embeddings. `find_relevant_entities`
+    # then degrades from vector similarity to keyword/substring
+    # matching; everything else works unchanged. The required escape
+    # hatch for Apple Silicon + Python 3.12+, where onnxruntime
+    # (transitive via fastembed) has no wheel.
+    no_embed: bool = False
     from_dbt: Path | None = None
     skip_llm_confirm: bool = False
     # Default `--pii-block` categories written into the host snippet.
@@ -857,7 +864,14 @@ def _run_indexer(*, cfg: WizardConfig, source_id: str, api_key: str | None) -> I
                 store=store,
                 source_connection_id=source_id,
             )
-            embedder = fastembed_default()
+            if not cfg.no_embed:
+                # `--no-embed` skips the embedder construction (and the
+                # implicit `fastembed` import) so the wizard runs on
+                # Apple Silicon + Python 3.12+ where onnxruntime
+                # has no wheel. Without the embedder, `index()` writes
+                # no column embeddings; `find_relevant_entities`
+                # downgrades to keyword/substring matching.
+                embedder = fastembed_default()
         return index(
             source=source,
             profiler=profiler,

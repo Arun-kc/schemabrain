@@ -317,6 +317,177 @@ class TestInitCliRefusals:
         assert exit_code == 0
 
 
+class TestInitAppleSiliconFastembedPreflight:
+    """The Apple Silicon + Python 3.12+ + missing-fastembed preflight
+    refuses fast (rc=2) BEFORE any URL prompt fires. `--skip-index`
+    and `--no-embed` both bypass the embedder path, so neither
+    triggers the gate.
+    """
+
+    def test_refuses_when_gap_detected_and_no_embed_unset(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        store_path = tmp_path / "store.db"
+        SQLiteStore(path=store_path).close()
+        # Force the detector to return the gap message.
+        monkeypatch.setattr(
+            "schemabrain.setup.preflight.detect_apple_silicon_fastembed_gap",
+            lambda: "Apple Silicon (arm64) + Python 3.12 without fastembed installed.",
+        )
+        # Need to also patch the import inside cli.py since `_cmd_init`
+        # imports the symbol locally — the lazy-import means the
+        # module-level patch above doesn't propagate.
+        from schemabrain.setup import preflight
+
+        monkeypatch.setattr(
+            preflight,
+            "detect_apple_silicon_fastembed_gap",
+            lambda: "Apple Silicon (arm64) + Python 3.12 without fastembed installed.",
+        )
+        exit_code = main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(store_path),
+                "--host",
+                "manual",
+            ]
+        )
+        captured = capsys.readouterr()
+        assert exit_code == 2
+        # The refusal surfaces both recovery paths so the operator
+        # can pick the one that fits their environment.
+        assert "Apple Silicon" in captured.err
+        assert "--no-embed" in captured.err
+        assert "pyenv" in captured.err
+
+    def test_skip_index_bypasses_preflight(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_uvx: None
+    ) -> None:
+        """`--skip-index` means the wizard never reaches the embedder
+        path — the preflight is a no-op even if the gap would fire."""
+        store_path = tmp_path / "store.db"
+        SQLiteStore(path=store_path).close()
+        from schemabrain.setup import preflight
+
+        monkeypatch.setattr(
+            preflight,
+            "detect_apple_silicon_fastembed_gap",
+            lambda: "would refuse if not for --skip-index",
+        )
+        exit_code = main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(store_path),
+                "--host",
+                "manual",
+                "--skip-index",
+            ]
+        )
+        assert exit_code == 0
+
+    def test_no_embed_bypasses_preflight(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_uvx: None
+    ) -> None:
+        """`--no-embed` is the explicit operator opt-out: they've
+        accepted keyword-only `find_relevant_entities` in exchange
+        for a working wizard. Don't refuse them again at preflight."""
+        # Seed a store with one entity so the wizard's empty-store
+        # guard doesn't fire — the test is about the preflight
+        # bypass, not the empty-store path.
+        store_path = tmp_path / "store.db"
+        store = SQLiteStore(path=store_path)
+        try:
+            from schemabrain.core.entity import Entity, SingleTableBinding
+            from schemabrain.core.models import Column, Table
+
+            store.write_table(
+                Table(
+                    name="orders",
+                    schema_name="public",
+                    columns=(
+                        Column(
+                            name="id",
+                            table_name="orders",
+                            schema_name="public",
+                            data_type="bigint",
+                            nullable=False,
+                            ordinal_position=1,
+                            is_primary_key=True,
+                        ),
+                    ),
+                ),
+                source_connection_id="src",
+            )
+            store.write_entity(
+                Entity(
+                    name="order",
+                    description="",
+                    binding=SingleTableBinding(qualified_table="public.orders"),
+                    identity="id",
+                ),
+                source_connection_id="src",
+            )
+        finally:
+            store.close()
+        from schemabrain.setup import preflight
+
+        monkeypatch.setattr(
+            preflight,
+            "detect_apple_silicon_fastembed_gap",
+            lambda: "would refuse if not for --no-embed",
+        )
+        exit_code = main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(store_path),
+                "--host",
+                "manual",
+                "--no-embed",
+            ]
+        )
+        # SQLite source means index/entities/metrics stages skip
+        # cleanly; --no-embed bypasses preflight; rc=0 confirms.
+        assert exit_code == 0
+
+    def test_clean_env_does_not_refuse(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_uvx: None
+    ) -> None:
+        """Operators on supported platform combinations must NOT see
+        the gate fire — guards against the preflight becoming a
+        false-positive refusal source on Linux / Intel Mac / py3.11.
+        """
+        store_path = tmp_path / "store.db"
+        SQLiteStore(path=store_path).close()
+        from schemabrain.setup import preflight
+
+        monkeypatch.setattr(preflight, "detect_apple_silicon_fastembed_gap", lambda: None)
+        exit_code = main(
+            [
+                "init",
+                "--source",
+                "sqlite:///:memory:",
+                "--store-path",
+                str(store_path),
+                "--host",
+                "manual",
+                "--skip-index",
+            ]
+        )
+        assert exit_code == 0
+
+
 class TestInitCliUrlEnv:
     """The --url-env path (preferred over --source so creds stay out
     of argv) needs end-to-end happy-path coverage at the CLI layer."""

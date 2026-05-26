@@ -487,6 +487,7 @@ def _dispatch(argv: list[str] | None) -> int:
             no_entities=args.no_entities,
             no_metrics=args.no_metrics,
             no_joins=args.no_joins,
+            no_embed=args.no_embed,
             enrich=args.enrich,
             entities_max_cost_usd=args.entities_max_cost_usd,
             metrics_max_cost_usd=args.metrics_max_cost_usd,
@@ -1952,6 +1953,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "still wires the MCP host; you can curate joins later via "
         "`schemabrain joins suggest --apply`. The join suggester is "
         "deterministic (FK + query-log mining) — no LLM cost, no API key.",
+    )
+    g_stages.add_argument(
+        "--no-embed",
+        dest="no_embed",
+        action="store_true",
+        help="Skip local sentence-embedding generation during the index "
+        "stage. Required to run the wizard on Apple Silicon + Python "
+        "3.12+ where `fastembed`'s `onnxruntime` dependency has no wheel. "
+        "Degrades `find_relevant_entities` from vector similarity to "
+        "keyword/substring matching; everything else works unchanged.",
     )
 
     g_host = p_init.add_argument_group(
@@ -6041,6 +6052,7 @@ def _cmd_init(
     no_entities: bool,
     no_metrics: bool,
     no_joins: bool,
+    no_embed: bool,
     enrich: bool,
     entities_max_cost_usd: float | None,
     metrics_max_cost_usd: float | None,
@@ -6081,6 +6093,7 @@ def _cmd_init(
     from typing import get_args as _get_args
 
     from schemabrain.setup.hosts import HostName
+    from schemabrain.setup.preflight import detect_apple_silicon_fastembed_gap
     from schemabrain.setup.wizard import WizardConfig, run_default_wizard
 
     effective_host = "manual" if print_only else host
@@ -6099,6 +6112,33 @@ def _cmd_init(
             )
         )
         return 2
+
+    # Stage 0 preflight: refuse fast on the Apple Silicon + Python
+    # 3.12+ + missing-fastembed combination, before any URL prompt
+    # fires. `--skip-index` and `--no-embed` both bypass the embedder
+    # path, so neither needs the gate. Without this guard the wizard
+    # runs through host validation and source-URL prompts before
+    # crashing at stage 2 with an opaque ImportError when the
+    # indexer tries to load `fastembed`.
+    if not skip_index and not no_embed:
+        gap = detect_apple_silicon_fastembed_gap()
+        if gap is not None:
+            _render_guided(
+                GuidedError(
+                    kind="init_apple_silicon_fastembed_gap",
+                    message=gap,
+                    why="the wizard's index stage will try to build embeddings "
+                    "via `fastembed` and crash with an ImportError on this "
+                    "platform combination",
+                    fix="re-run with `--no-embed` to skip embedding generation "
+                    "(degrades `find_relevant_entities` from vector to keyword "
+                    "matching but the wizard completes), OR switch to "
+                    "Python 3.11 via pyenv (`pyenv install 3.11.10 && "
+                    "pyenv local 3.11.10`) where onnxruntime ships a wheel",
+                    next_step="see CONTRIBUTING.md for the supported Python/platform matrix",
+                )
+            )
+            return 2
 
     # Stage 0 — the day-one UX overhaul's demo-vs-own-DB fork prompt.
     # Runs ONLY when no URL was supplied via CLI flag or env AND
@@ -6249,6 +6289,7 @@ def _cmd_init(
         "no_metrics": no_metrics,
         "metrics_max_cost_usd": metrics_max_cost_usd,
         "no_joins": no_joins,
+        "no_embed": no_embed,
         "from_dbt": Path(from_dbt) if from_dbt else None,
         "skip_llm_confirm": effective_skip_llm_confirm,
     }
