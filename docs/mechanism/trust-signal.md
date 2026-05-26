@@ -1,0 +1,136 @@
+# Mechanism: 2D trust signal
+
+> **One-line claim:** Every fact SchemaBrain returns carries two orthogonal labels — *how it was derived* (`inference_method`) and *how validated* it is (`validation_state`). The agent can tell an FK-derived join apart from an LLM-guessed metric without parsing English.
+
+Most semantic layers and catalogs ship a single `confidence` field — a `HIGH` / `MEDIUM` / `LOW` bucket or a raw float. That conflates two different things: *where did this fact come from* (the database's FK constraint, an LLM's guess, a hand-typed YAML file) and *who has signed off on it* (no one yet, applied to the store, explicitly confirmed by an operator).
+
+Charter v1.2 ([`docs/agent-ux-charter.md`](../agent-ux-charter.md)) splits those into two closed-set labels. The legacy `confidence` field is preserved and now *derived* from the 2D signal, so old clients still see a meaningful single label and new clients can read the richer signal directly.
+
+---
+
+## The two axes
+
+### `inference_method` — how the fact was derived
+
+```
+Literal["manually_authored", "llm_suggested", "fk_constraint",
+        "dbt_import", "observed_in_query_log"]
+```
+
+| Method | What it means |
+|---|---|
+| `manually_authored` | An operator hand-typed the entity / metric / join definition (YAML or `--apply` from CLI). |
+| `fk_constraint` | Derived directly from a Postgres declared foreign key. The strongest non-human source. |
+| `dbt_import` | Imported from a dbt project's `schema.yml` / `manifest.json`. Inherits dbt's source-of-truth claim. |
+| `llm_suggested` | A model (Claude Haiku 4.5 in the bundled flow) proposed it during `init`. Unverified by definition. |
+| `observed_in_query_log` | Inferred from real warehouse traffic — repeated co-occurrence in observed queries. The literal is part of the v1.2 charter and live in the type system; the producer side (which populates it on inferred facts) lands in a later minor version. |
+
+### `validation_state` — how validated the fact is
+
+```
+Literal["draft", "applied", "confirmed"]
+```
+
+| State | What it means |
+|---|---|
+| `draft` | Proposed but not yet in the store. An LLM suggestion you haven't accepted, a YAML file you haven't `apply`'d. |
+| `applied` | In the store and used by the compiler. An operator pressed apply (or `schemabrain apply ./schemabrain/`). |
+| `confirmed` | An operator explicitly signed off on the fact after seeing it in context. The highest trust state. |
+
+The axes are **orthogonal**. An LLM-suggested join the operator manually confirmed is `(llm_suggested, confirmed)` → HIGH. An FK-derived join still in draft is `(fk_constraint, draft)` → MEDIUM. Both pieces of information matter, and the agent (or operator) can branch on either axis.
+
+---
+
+## The derivation matrix
+
+The legacy `confidence` field is derived from the 2D signal via [`derive_confidence()`](../../schemabrain/mcp/envelope.py):
+
+```
+validation_state == "confirmed"                                      → HIGH
+
+validation_state == "applied":
+    inference_method in {manually_authored, fk_constraint, dbt_import} → HIGH
+    inference_method in {llm_suggested, observed_in_query_log}         → MEDIUM
+
+validation_state == "draft":
+    inference_method in {manually_authored, fk_constraint, dbt_import} → MEDIUM
+    inference_method in {llm_suggested, observed_in_query_log}         → LOW
+```
+
+The matrix is intentionally conservative: **an LLM-suggested entity that the operator merely `apply`'d (without confirming) is NOT equivalent to a hand-authored or FK-derived one.** The pre-1.2 behavior — every producer hardcoded `confidence="HIGH"` regardless of derivation — conflated those cases. Charter v1.2 fixes that without removing the `confidence` field: old clients still read a meaningful 1D label; new clients can read the 2D signal directly.
+
+---
+
+## Why this matters to the agent
+
+An agent chaining `resolve_join(user, order)` on a fresh `init` sees:
+
+```json
+{
+  "status": "success",
+  "data": { "join_path": [...] },
+  "confidence": "HIGH",
+  "provenance": {
+    "source": "schema",
+    "inference_method": "fk_constraint",
+    "validation_state": "applied"
+  }
+}
+```
+
+It can write the SQL with no qualifying language.
+
+Same agent calls `get_metric(name="customer_lifetime_value")` against an LLM-suggested metric that hasn't been operator-confirmed:
+
+```json
+{
+  "status": "success",
+  "data": { "rows": [...] },
+  "confidence": "MEDIUM",
+  "provenance": {
+    "source": "llm",
+    "model": "claude-haiku-4-5",
+    "inference_method": "llm_suggested",
+    "validation_state": "applied"
+  }
+}
+```
+
+A well-behaved agent flags this to the user: *"The CLTV definition was suggested by Claude and applied during setup but never operator-confirmed. Confirming or correcting it in `./schemabrain/metrics/customer_lifetime_value.yaml` will upgrade this answer from MEDIUM to HIGH next time."*
+
+Without the 2D signal, both responses would have looked identical (`confidence: "HIGH"`), and the agent would have shipped the LLM-guessed metric with the same authority as the FK-derived join.
+
+---
+
+## What this is *not*
+
+- **It is not calibration.** The buckets force a commit to a trust judgment, but the threshold between "MEDIUM" and "LOW" is a design choice, not an empirical floor. The published calibration literature is split on bucketed-vs-continuous confidence. Charter v1.2's rationale is in [`docs/agent-ux-charter.md`](../agent-ux-charter.md) §4.
+- **It is not provenance for arbitrary content.** Schema-sourced facts (table names, column types) don't carry the 2D signal — their source is obvious. Only LLM-generated or inference-derived content carries it.
+- **It is not a substitute for review.** A confirmed-by-mistake fact is `(any_method, confirmed)` → HIGH. The system trusts the operator's confirmation gesture. Re-review and confirm-then-unconfirm is the operator's path; SchemaBrain doesn't second-guess.
+- **It is not a calibrated probability.** `HIGH` / `MEDIUM` / `LOW` is the *commitment*, not the *probability*. Anyone treating these as Bayesian priors should read [`docs/agent-ux-charter.md`](../agent-ux-charter.md) §4 first.
+
+---
+
+## Verify it yourself
+
+```bash
+# Run init, then inspect a metric the LLM suggested
+schemabrain init  # accept LLM suggestions during stages 3/4/5
+schemabrain metrics show customer_count
+
+# Look at provenance.inference_method + validation_state in the output
+
+# Apply, but don't confirm — see confidence stays MEDIUM
+# Confirm explicitly — see confidence flip to HIGH on the next describe_entity call
+```
+
+The 2D signal lives on the envelope only — it is not currently persisted to the `mcp_audit` table (the audit row carries `tool_name`, `status`, `pii_categories`, `cost_class`, and the hash chain, but not `inference_method` / `validation_state` / `confidence`). To inspect the trust signal historically, drive the agent and log envelopes from your client.
+
+---
+
+## Related mechanisms
+
+- [`/mechanism/structured-recovery`](structured-recovery.md) — what comes back when trust is too low to resolve
+- [`/mechanism/audit-chain`](audit-chain.md) — every fact and refusal lands in the audit row with its trust signal preserved
+- [`docs/agent-ux-charter.md`](../agent-ux-charter.md) §4 — the design rationale, including why we picked buckets over floats
+- [`schemabrain/mcp/envelope.py`](../../schemabrain/mcp/envelope.py) — the typed contract (`InferenceMethod`, `ValidationState`, `derive_confidence`)

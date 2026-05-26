@@ -1,0 +1,188 @@
+# Mechanism: PII taxonomy
+
+> **One-line claim:** Every column carries a typed PII category tag at index time; the tags propagate through joins and aggregations at *compile* time, so `get_metric` refuses queries that *would* touch blocked PII before the database is ever queried.
+
+Most "PII protection" in catalogs is a documentation feature — a column gets a `pii: true` annotation that a human reviewer looks at. SchemaBrain's PII tags are **structural inputs to the SQL compiler.** A metric whose join path crosses a blocked-category column refuses with a typed `pii_blocked` envelope, and the compiled SQL never reaches the database.
+
+This page documents the four mechanisms — the closed category set, the column-level classifier, the propagation rules, and the catastrophic-leak defaults.
+
+---
+
+## 1. The closed category set — 12 categories from real regulation
+
+`PIICategory` is a Pydantic Literal — a closed set of 12 strings. Adding a new category is a minor charter bump.
+
+```
+Literal["contact", "financial", "payment_card", "health", "genetic",
+        "biometric", "behavioral", "online_identifier", "credential",
+        "government_id", "location", "demographic_protected"]
+```
+
+| Category | Regulation that defines it | Example columns |
+|---|---|---|
+| `contact` | GDPR Art. 4(1) "identifiable natural person" | `email`, `phone`, `address`, `first_name` |
+| `financial` | GLBA "non-public personal information"; GDPR Art. 9 income | `salary`, `balance`, `revenue`, `transaction_amount` |
+| `payment_card` | PCI DSS scope (PAN, CVV, cardholder data) | `card_number`, `cvv`, `iban`, `account_number` |
+| `health` | HIPAA PHI, GDPR Art. 9 health data | `diagnosis`, `medication`, `mrn`, `patient_id`, `encounter_id` |
+| `genetic` | GDPR Art. 9 genetic data | `genome`, `genotype`, `dna_seq`, `rsid` |
+| `biometric` | GDPR Art. 9 biometric data | `fingerprint`, `face_embedding`, `iris`, `voiceprint` |
+| `behavioral` | GDPR Recital 30 (browse / clickstream patterns) | `purchase_history`, `clickstream`, `event_log` |
+| `online_identifier` | GDPR Art. 4(1); CCPA "unique personal identifier" | `ip`, `cookie_id`, `device_id`, `wallet_address` |
+| `credential` | PCI DSS Req. 8; SOX access control | `password`, `api_key`, `token`, `private_key` |
+| `government_id` | HIPAA Safe Harbor; ISO 27018 | `ssn`, `passport`, `national_id`, `npi`, `tax_id` |
+| `location` | GDPR Art. 4(1) location data | `latitude`, `longitude`, `gps`, `geolocation` |
+| `demographic_protected` | GDPR Art. 9 special categories; HIPAA age | `dob`, `race`, `ethnicity`, `religion`, `political_party` |
+
+The closed set means an agent or audit pipeline can switch on the category without parsing strings. New regulatory categories (e.g., AI Act biometric-emotion data) trigger a minor charter bump rather than a free-form additions.
+
+---
+
+## 2. Column-level classification — regex + integer-FK guard
+
+[`schemabrain/pii/classifier.py`](../../schemabrain/pii/classifier.py) takes a column name (plus its declared type and primary-key flag) and returns `(sensitivity, frozenset[PIICategory])`. The classifier is regex-based but with two refinements that pure regex can't express.
+
+### Layer 1 — regex with snake_case-aware boundaries
+
+The standard `\b` regex boundary treats `_` as a word character, so `\bemail\b` doesn't match `email` inside `email_address`. SQL columns are snake_case overwhelmingly, so we use custom boundary semantics:
+
+```python
+# schemabrain/pii/classifier.py — _kw()
+re.compile(rf"(?<![A-Za-z0-9])(?:{alts})(?![A-Za-z0-9])", re.IGNORECASE)
+```
+
+`email` now matches inside `email_address`, `user_email`, and `e_mail`, but not inside `emailish`. The rule table is *closed* at v1: when an operator hits a column name our rules miss, the fix is to add a rule. CI pins (a) the rule count and (b) that every `PIICategory` has at least one producing rule — drift fails CI before merge.
+
+### Layer 2 — S1 `<noun>_name` denylist
+
+`product_name` in a catalog table previously matched the bare `name` rule and tagged the column as `contact` (a person's name). The S1 guard suppresses the name rule when the column matches `^<denylist>_name$` for a closed list of obviously-not-personal nouns (`product`, `brand`, `category`, `language`, `currency`, `tag`, …). Bare `name` on a denylisted *table* (`products.name`, `categories.name`) also skips the rule.
+
+The denylist is deliberately conservative — `company_name`, `team_name`, and `region_name` stay tagged because they can refer to a natural person's affiliation in CRM contexts.
+
+### Layer 3 — S2 integer-FK guard
+
+An integer-FK column whose name contains a category keyword (e.g., `address_id BIGINT` matching the `address` rule → `contact`) tags the FK as PII even though the actual PII lives on the referenced table. The S2 guard, when the column is integer-typed AND matches the `<word>_id` shape AND is not a primary key, intersects the matched categories with `_FK_SAFE_CATEGORIES`:
+
+```python
+# schemabrain/pii/classifier.py — _FK_SAFE_CATEGORIES
+frozenset({
+    "credential", "online_identifier", "government_id",
+    "health", "demographic_protected", "behavioral", "location",
+})
+```
+
+These are the categories where the FK *itself* remains PII as an integer reference (`patient_id` is HIPAA-sensitive even without the patient's name; `cookie_id` is GDPR-sensitive). Other categories (`contact`, `financial`, `payment_card`, `biometric`, `genetic`) are stripped from FK columns because the integer doesn't leak that content — only the referenced row does.
+
+---
+
+## 3. Propagation through joins and aggregations — the compiler-layer mechanism
+
+This is the load-bearing claim. Column tags don't just sit in the catalog; they propagate through the metric compiler so a `get_metric` whose join path *touches* a blocked column refuses, even when the touched column appears nowhere in the projected SQL.
+
+[`schemabrain/mcp/get_metric.py`](../../schemabrain/mcp/get_metric.py) walks **five propagation surfaces** before policy intersection:
+
+1. **The measure column(s)** — including composite-expression operands (e.g., `email_hash * weight` walks both operands, not just the projected column).
+2. **The `time_dimension` column** — when the metric declares one.
+3. **The `group_by` columns** — every column the agent groups by.
+4. **The filter predicates** — every column referenced in a `WHERE` clause.
+5. **The JOIN ON pairs** — every column on either side of every join hop, including pure-FK columns that never appear in projection or filters.
+
+All five contribute to the *attempted* (propagated) set. The set is intersected with `--pii-block`. If the intersection is non-empty, the compiler raises `PiiBlockedError`. The compiled SQL never runs. The agent receives a `pii_blocked` refusal with only the *blocked* categories surfaced — see [`/mechanism/structured-recovery`](structured-recovery.md) for the envelope shape, and the §"Probe oracle" section below for why we report only the blocked subset.
+
+### The Willison Mirror scenario
+
+The compiler-layer propagation closes the Simon-Willison "lethal trifecta" attack (private data exposure × untrusted content × external communication). Concretely:
+
+- An innocent metric `staff_count` defined as `COUNT(*)` over the `staff` table is **not** PII-tagged in isolation.
+- A prompt-injected agent calls `get_metric(name="staff_count", group_by=["staff.password"])`.
+- `group_by` walking adds `credential` to the attempted set.
+- Policy intersection finds `credential ∈ pii_block`.
+- The compiler raises `PiiBlockedError`. The SQL never runs. The agent gets a refusal envelope.
+
+The same defense applies if the password column appears only in a JOIN ON pair or only as a composite-measure operand — every surface walks every column. A row-level filter would have been too late.
+
+---
+
+## 4. Catastrophic-leak defaults — `credential` / `payment_card` / `government_id`
+
+These three categories have **no plausible aggregate-analytics use case** — there is no legitimate dashboard that groups by SSN or sums credit-card numbers. They are pinned as `CATASTROPHIC_LEAK_CATEGORIES`:
+
+```python
+# schemabrain/pii/categories.py
+CATASTROPHIC_LEAK_CATEGORIES: frozenset[PIICategory] = frozenset(
+    {"credential", "payment_card", "government_id"}
+)
+```
+
+Two layers consume this set:
+
+1. **`schemabrain serve` defaults `--pii-block` to this set** when the flag is absent. A zero-config operator running `schemabrain serve` on a fresh install gets safe-by-default enforcement: `password`, `credit_card`, and `ssn` are all refused without explicit configuration.
+
+2. **`describe_entity` always redacts the column description** when any of these categories appears, even with an empty `--pii-block`. The agent never reads "password hash" or "social security number" semantics regardless of operator policy. Override is possible per-column but requires deliberate configuration.
+
+The closed set is auditable; additions are a minor charter bump. `contact` is *not* in the set — there are legitimate aggregate analytics over contact data (newsletter open rates by region, etc.), so blocking it by default would break common workflows.
+
+---
+
+## Probe oracle — why the refusal envelope reports only `blocked`, not `attempted`
+
+A naive refusal envelope would return *all* categories the query touched:
+
+```json
+// NAIVE — leaks every category the schema has
+{"pii_categories": ["contact", "credential"]}
+```
+
+An attacker could iterate `get_metric` with different `group_by` columns, read which categories surface in the refusal, and reconstruct the entire PII tagging in O(columns) calls. The PII policy itself becomes a probe oracle.
+
+SchemaBrain's refusal envelope reports only the *blocked* set — the intersection of attempted ∩ `--pii-block`:
+
+```json
+// SchemaBrain — surfaces only what triggered the refusal
+{"pii_categories": ["credential"]}
+```
+
+The operator's full `--pii-block` set is never leaked. Note: the audit row records the same `blocked` set the envelope returns, not the full *attempted* set — the latter currently lives only inside the in-process `PiiBlockedError` exception. A separate operator-visible field carrying the attempted set is on the backlog; see [`/mechanism/audit-chain`](audit-chain.md) §"What this is not" for the caveat.
+
+---
+
+## What this is *not*
+
+- **It is not yet content-aware.** The v0.4 classifier is name-based + structural (integer-FK guard). A column literally named `attr_1` holding email addresses gets `public`. Data-profile-aware classification (sample-based content matching) is deferred to a future minor version — the sampling pipeline already exists for the LLM-enrichment path, but plumbing it through the classifier with appropriate sampling caps and safe redaction is non-trivial.
+- **It is not a substitute for column-level access control at the database.** SchemaBrain refuses queries it would have run. A direct database connection bypasses SchemaBrain entirely. Postgres role-level grants are the right complement.
+- **It is not a single classifier the operator can swap.** The rule table is a Python module today. YAML-overlay extensibility was deferred to first real demand — see [`schemabrain/pii/classifier.py`](../../schemabrain/pii/classifier.py) docstring for the rationale.
+- **It is not the same posture across all tools.** `get_metric` *refuses* on blocked-category touch. `describe_entity` and `describe_column` mark blocked columns with `redacted=True` and clear the LLM description, but they don't refuse — the agent still sees the entity name and its non-PII columns. Uniform SQL-layer enforcement against agent-emitted SQL is a v2 surface.
+
+---
+
+## Verify it yourself
+
+```bash
+# Confirm the closed category set
+python -c "from schemabrain.pii.categories import PII_CATEGORIES; print(sorted(PII_CATEGORIES))"
+
+# Confirm catastrophic-leak defaults
+python -c "from schemabrain.pii.categories import CATASTROPHIC_LEAK_CATEGORIES; print(sorted(CATASTROPHIC_LEAK_CATEGORIES))"
+
+# Classify a column
+python -c "from schemabrain.pii.classifier import classify_column; print(classify_column('email', 'TEXT'))"
+# ('pii', frozenset({'contact'}))
+
+python -c "from schemabrain.pii.classifier import classify_column; print(classify_column('product_name', 'TEXT'))"
+# ('public', frozenset())  — S1 denylist kicked in
+
+python -c "from schemabrain.pii.classifier import classify_column; print(classify_column('patient_id', 'BIGINT'))"
+# ('pii', frozenset({'health'}))  — S2 FK guard kept the category
+```
+
+The rule table itself is in [`schemabrain/pii/classifier.py`](../../schemabrain/pii/classifier.py); the propagation logic is in [`schemabrain/mcp/get_metric.py`](../../schemabrain/mcp/get_metric.py).
+
+---
+
+## Related mechanisms
+
+- [`/mechanism/read-only`](read-only.md) — the *absence* of write tools that makes the read-side firewall the load-bearing surface
+- [`/mechanism/structured-recovery`](structured-recovery.md) — the `pii_blocked` refusal envelope shape, including the probe-oracle closure
+- [`/mechanism/audit-chain`](audit-chain.md) — every refusal lands in the audit row with the *attempted* category set preserved for forensic queries
+- [`/mechanism/trust-signal`](trust-signal.md) — the orthogonal trust signal that the operator-confirmed-vs-LLM-suggested tagging system rides on
+- [`docs/threat-model.md`](../threat-model.md) — full attack-surface analysis, including residual risks
+- ADR 0001 in [`docs/adr/`](../adr/) — the two-layer taxonomy decision (sensitivity × category)

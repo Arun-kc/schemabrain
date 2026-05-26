@@ -1,0 +1,147 @@
+# Mechanism: tamper-evident audit chain
+
+> **One-line claim:** Every tool call lands in an append-only SQLite table; each row's `chain_hash = sha256(prev_chain_hash || canonical_row)`. `schemabrain audit verify` re-walks the chain and exits non-zero if any past row was rewritten.
+
+The audit log is **detection, not prevention.** An attacker with filesystem write access to the SQLite file can rewrite a row — but rewriting the chain coherently requires recomputing every subsequent `chain_hash`, *and* any external snapshot of a prior `chain_hash` (a backup, a CI artifact, an off-host copy) will diverge from the new local value. The chain turns silent tampering into noisy tampering.
+
+This page documents the three mechanisms that make detection load-bearing.
+
+---
+
+## Mechanism 1 — SQL triggers forbid UPDATE and DELETE
+
+The `mcp_audit` table is append-only at the SQLite layer. Two triggers raise on any non-INSERT mutation:
+
+```sql
+-- schemabrain/audit/ddl.py:64
+CREATE TRIGGER IF NOT EXISTS mcp_audit_no_update
+    BEFORE UPDATE ON mcp_audit
+BEGIN
+    SELECT RAISE(ABORT, 'mcp_audit is append-only');
+END;
+
+-- schemabrain/audit/ddl.py:71
+CREATE TRIGGER IF NOT EXISTS mcp_audit_no_delete
+    BEFORE DELETE ON mcp_audit
+BEGIN
+    SELECT RAISE(ABORT, 'mcp_audit is append-only');
+END;
+```
+
+Tampering through a normal SQLite connection — even one with full write privileges to the database — is rejected by the trigger before the row mutates. To rewrite a row, an attacker must drop the trigger first. Dropping the trigger leaves a forensic signal: the DDL is part of the schema, and any anomaly-detector watching `sqlite_master` sees it.
+
+---
+
+## Mechanism 2 — per-row SHA256 chain hash
+
+Each audit row stores a 32-byte `chain_hash`:
+
+```
+chain_hash[N] = sha256(chain_hash[N-1] || canonical(row[N]))
+```
+
+The genesis row uses 32 zero bytes for the previous hash ([`audit/chain.py`](../../schemabrain/audit/chain.py)). The `canonical(row[N])` function ([`audit/canonical.py`](../../schemabrain/audit/canonical.py)) emits a deterministic byte string for the 13 content fields — ordering, encoding, and null-handling are pinned so two writers producing the same logical row produce byte-identical output.
+
+To rewrite row N coherently, an attacker must:
+1. Compute a new `canonical(row[N]')` for the falsified row.
+2. Compute a new `chain_hash[N]'` from `prev_chain_hash || canonical(row[N]')`.
+3. Re-derive `chain_hash[N+1], N+2, … END` because each depends on the previous.
+4. Rewrite all those `chain_hash` columns *and* drop the append-only triggers first.
+
+Any external system that captured the old `chain_hash[N]` — a nightly backup, a CI artifact, a cron job that emails the head hash — now disagrees with the local file. The cover-up fails at the external comparison.
+
+---
+
+## Mechanism 3 — `schemabrain audit verify` re-walks locally
+
+[`schemabrain/audit/verify.py`](../../schemabrain/audit/verify.py) walks `mcp_audit` rows in id order, recomputing each row's `chain_hash` from the previous STORED chain hash plus the row's canonical bytes. A `ChainMismatch` is yielded for every row where recomputed ≠ stored.
+
+```bash
+schemabrain audit verify
+# exit 0 = chain intact (all rows preserve the hash invariant)
+# exit 1 = at least one mismatch (chain has been tampered)
+# exit 2 = operational error (missing store, malformed --since, etc.)
+```
+
+By default the walk stops at the first mismatch — most operator-day questions are yes/no. Forensic walks use `--full` to collect every mismatch:
+
+```bash
+schemabrain audit verify --full
+```
+
+`--since` accepts a hash prefix (≥8 hex chars), an ISO 8601 timestamp, or a compact duration. Use case: an operator who archived a known-good chain head externally wants to confirm only the rows since that head, without re-walking the (potentially huge) earlier history.
+
+```bash
+schemabrain audit verify --since 7d
+schemabrain audit verify --since 2026-05-25T12:00:00Z
+schemabrain audit verify --since a3f9b2c1
+```
+
+Rows at or before the cursor are **not** verified — by design — so tampering in that segment will not be reported by a since-cursor walk. The trade-off is explicit: if you want full history coverage, run without `--since`.
+
+---
+
+## What gets recorded
+
+Every MCP tool call writes exactly one row, regardless of outcome. The 14 fields ([`audit/ddl.py`](../../schemabrain/audit/ddl.py)):
+
+| Field | Meaning |
+|---|---|
+| `id` | Monotonically-increasing rowid |
+| `occurred_at` | ISO 8601 timestamp |
+| `source_connection_id` | Which Postgres source the call resolved against |
+| `caller_id` | Optional agent / session identifier (operator-configured) |
+| `tool_name` | The MCP tool that was called |
+| `status` | One of `success / empty / partial / degraded / error / refused` |
+| `refusal_reason` | When `status='refused'`: `pii_blocked / allowlist_violation / fragment_unsafe / cost_cap_exceeded / ambiguous_resolution / schema_drift` |
+| `cost_class` | `small / medium / large / refused` — bucketed dollar cost |
+| `pii_categories` | The category set the envelope returned. On `pii_blocked` refusals this is the *blocked* set (the policy intersection that triggered refusal). |
+| `ast_shape_hash` | Hash of the SQL AST shape (when applicable) — for clustering similar calls |
+| `rule_id` | Allowlist or policy rule that fired, if any |
+| `fingerprint` | Content-addressable fingerprint of the row body |
+| `fingerprint_version` | Lets the schema evolve without breaking old rows |
+| `chain_hash` | The 32-byte SHA256 chain hash described above |
+
+`pii_categories` on the refusal path stores **only** the blocked set — the same value the agent envelope surfaces. The full attempted (propagated) set that would let an operator see *what categories the agent was trying to touch* is not currently persisted; it lives only in the `PiiBlockedError` exception object. See [`/mechanism/pii-taxonomy`](pii-taxonomy.md) §"Probe oracle" for the rationale on why the envelope returns only `blocked`, and the §"What this is not" caveat below.
+
+---
+
+## What this is *not*
+
+- **It is not write-prevention against root.** An attacker with root access to the host can drop the triggers and rewrite the chain coherently *if and only if* no external snapshot exists. Defense against root is the operator's filesystem-encryption + backup discipline, not ours.
+- **It is not append-only against the OS.** `chmod 0600` keeps the file out of other users' reach but not out of root's. Full-disk encryption is the right layer for that defense.
+- **It is not a network-tamper detector.** SchemaBrain runs locally; there is no remote audit sink. The chain is local-file integrity, not network-transport integrity.
+- **It does not (yet) carry the full `attempted` PII set.** The audit row's `pii_categories` matches the envelope (blocked only). Forensic analysis of "what categories did the agent's `group_by` actually touch on this refusal?" requires reading `PiiBlockedError.attempted_categories` from the event bus rather than the audit row. A separate operator-visible field carrying the attempted set is on the backlog.
+- **It is not yet anchored externally.** Operators wanting external anchoring can cron `schemabrain audit verify --full && sqlite3 ~/.schemabrain/store.db "SELECT chain_hash FROM mcp_audit ORDER BY id DESC LIMIT 1;"` and store the result. A first-class `audit checkpoint` subcommand is not currently scheduled.
+
+---
+
+## Verify it yourself
+
+```bash
+# Find a refused row, run verify
+schemabrain audit list --status refused
+schemabrain audit verify
+# exit 0
+
+# Tamper with the chain manually (requires DROP TRIGGER first)
+sqlite3 ~/.schemabrain/store.db << 'SQL'
+DROP TRIGGER mcp_audit_no_update;
+UPDATE mcp_audit SET tool_name = 'list_entities' WHERE id = 1;
+SQL
+
+schemabrain audit verify
+# exit 1 — ChainMismatch at row 1
+```
+
+`schemabrain audit list` is the cursor-aware reader; pair it with `--since` for windowed forensics.
+
+---
+
+## Related mechanisms
+
+- [`/mechanism/read-only`](read-only.md) — why there are no write tools in the first place
+- [`/mechanism/pii-taxonomy`](pii-taxonomy.md) — the probe-oracle reasoning behind the envelope surfacing only the blocked category set
+- [`/mechanism/structured-recovery`](structured-recovery.md) — what a refused call returns to the agent
+- [`docs/threat-model.md`](../threat-model.md) §T1.3 — full threat statement and residual risk
+- ADR 0001 in [`docs/adr/`](../adr/) — the original design decision
