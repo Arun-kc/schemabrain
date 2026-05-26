@@ -344,6 +344,8 @@ def _dispatch(argv: list[str] | None) -> int:
             no_events=args.no_events,
             no_audit=args.no_audit,
             pii_block_csv=args.pii_block,
+            statement_timeout_ms=args.statement_timeout_ms,
+            max_rows_per_result=args.max_rows_per_result,
         )
     if args.command == "fixture-path":
         return _cmd_fixture_path(args.name)
@@ -948,6 +950,31 @@ def _build_parser() -> argparse.ArgumentParser:
         "plausible aggregate-analytics use case exists. Pass "
         "--pii-block '' to explicitly disable enforcement (PII tags "
         "still flow to the audit row).",
+    )
+    p_serve.add_argument(
+        "--statement-timeout-ms",
+        dest="statement_timeout_ms",
+        type=int,
+        default=None,
+        metavar="MS",
+        help="Postgres-level statement_timeout (milliseconds) applied "
+        "to every get_metric query. Caps query runtime at the source "
+        "DB; a runaway query aborts with a clear `OperationalError` "
+        "rather than blocking the MCP server's process pool. Injected "
+        "into `connect_args.options` so it CAN'T be overridden via "
+        "URL query params. Omitted (default) means no timeout.",
+    )
+    p_serve.add_argument(
+        "--max-rows-per-result",
+        dest="max_rows_per_result",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Application-level cap on rows returned by each "
+        "get_metric call. Counts after the SQL executes (the source DB "
+        "still does the full scan), so this is a payload-size guard, "
+        "not a query-cost guard — use `--statement-timeout-ms` for "
+        "the latter. Omitted (default) means no cap.",
     )
 
     p_mine = sub.add_parser(
@@ -2954,6 +2981,8 @@ def _cmd_serve(
     no_events: bool = False,
     no_audit: bool = False,
     pii_block_csv: str | None = None,
+    statement_timeout_ms: int | None = None,
+    max_rows_per_result: int | None = None,
 ) -> int:
     """Run the MCP server on stdio against the local store.
 
@@ -3072,16 +3101,26 @@ def _cmd_serve(
     # compiled SQL against. Same posture as `PostgresProfiler` from
     # PR #9: `default_transaction_read_only=on` is defense-in-depth on
     # top of the read-only role we already enforce at index time.
+    #
+    # `statement_timeout` (when set via --statement-timeout-ms) is
+    # injected into the connect_args options string rather than the
+    # URL query allowlist. The allowlist comment at
+    # connectors/_url.py warns that statement_timeout via URL would
+    # be operator-overridable and thus bypassable; the connect_args
+    # path is the bind-time fence the source role cannot relax.
+    options_parts = ["-c default_transaction_read_only=on"]
+    if statement_timeout_ms is not None:
+        options_parts.append(f"-c statement_timeout={statement_timeout_ms}")
     try:
         engine = sqlalchemy.create_engine(
             safe_engine_url(source_url),
-            connect_args={"options": "-c default_transaction_read_only=on"},
+            connect_args={"options": " ".join(options_parts)},
         )
     except (sqlalchemy.exc.ArgumentError, ValueError) as exc:  # pragma: no cover — defensive
         print(f"error: cannot construct read-only engine: {exc}", file=sys.stderr)
         return 2
 
-    metric_executor = EngineMetricExecutor(engine)
+    metric_executor = EngineMetricExecutor(engine, max_rows=max_rows_per_result)
 
     # Construct the audit writer alongside the bus — same fallback
     # posture: an OSError during construction (read-only store dir,

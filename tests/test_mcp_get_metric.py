@@ -1259,3 +1259,119 @@ class TestEngineMetricExecutor:
                 executor.execute("SELECT * FROM table_that_does_not_exist", {})
         finally:
             engine.dispose()
+
+    def test_max_rows_default_none_returns_all_rows(self) -> None:
+        """Back-compat: callers that don't pass max_rows see the full
+        result set, exactly as before the flag landed."""
+        import sqlalchemy
+
+        from schemabrain.mcp.metric_executor import EngineMetricExecutor
+
+        engine = sqlalchemy.create_engine("sqlite+pysqlite:///:memory:")
+        try:
+            # Generate 5 rows via a recursive CTE (SQLite-portable
+            # without needing a real table).
+            executor = EngineMetricExecutor(engine)
+            rows = executor.execute(
+                """
+                WITH RECURSIVE seq(n) AS (
+                    SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 5
+                )
+                SELECT n FROM seq
+                """,
+                {},
+            )
+            assert len(rows) == 5
+        finally:
+            engine.dispose()
+
+    def test_max_rows_caps_returned_list(self) -> None:
+        """`max_rows=3` against a 5-row query returns 3 rows.
+
+        The SQL still runs in full (the cap is application-layer);
+        the executor slices after `Result.mappings()` materialises.
+        """
+        import sqlalchemy
+
+        from schemabrain.mcp.metric_executor import EngineMetricExecutor
+
+        engine = sqlalchemy.create_engine("sqlite+pysqlite:///:memory:")
+        try:
+            executor = EngineMetricExecutor(engine, max_rows=3)
+            rows = executor.execute(
+                """
+                WITH RECURSIVE seq(n) AS (
+                    SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 5
+                )
+                SELECT n FROM seq
+                """,
+                {},
+            )
+            # Truncated to the first 3 rows.
+            assert len(rows) == 3
+            assert [r["n"] for r in rows] == [1, 2, 3]
+        finally:
+            engine.dispose()
+
+    def test_max_rows_no_op_when_result_is_smaller(self) -> None:
+        """`max_rows=10` against a 3-row query returns all 3 — no slice
+        and no log spam from the truncation branch."""
+        import sqlalchemy
+
+        from schemabrain.mcp.metric_executor import EngineMetricExecutor
+
+        engine = sqlalchemy.create_engine("sqlite+pysqlite:///:memory:")
+        try:
+            executor = EngineMetricExecutor(engine, max_rows=10)
+            rows = executor.execute(
+                """
+                WITH RECURSIVE seq(n) AS (
+                    SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 3
+                )
+                SELECT n FROM seq
+                """,
+                {},
+            )
+            assert len(rows) == 3
+        finally:
+            engine.dispose()
+
+    def test_max_rows_truncation_logs_warning(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Truncations log a WARNING so operators can see the cap firing
+        in their logs / events stream rather than silently shipping
+        fewer rows than the SQL produced.
+
+        Uses a captured-call sentinel on the logger rather than caplog
+        — the module's logger doesn't propagate to the pytest root
+        handler in this test config.
+        """
+        import sqlalchemy
+
+        from schemabrain.mcp.metric_executor import EngineMetricExecutor
+
+        warnings: list[tuple[str, tuple[object, ...]]] = []
+
+        def _capture(msg: str, *args: object, **_kwargs: object) -> None:
+            warnings.append((msg, args))
+
+        monkeypatch.setattr("schemabrain.mcp.metric_executor._logger.warning", _capture)
+
+        engine = sqlalchemy.create_engine("sqlite+pysqlite:///:memory:")
+        try:
+            executor = EngineMetricExecutor(engine, max_rows=2)
+            executor.execute(
+                """
+                WITH RECURSIVE seq(n) AS (
+                    SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 5
+                )
+                SELECT n FROM seq
+                """,
+                {},
+            )
+            assert any("truncated result" in msg for msg, _ in warnings)
+            assert any("--max-rows-per-result" in msg for msg, _ in warnings)
+        finally:
+            engine.dispose()
+        del capsys  # parameter for symmetry; not used
