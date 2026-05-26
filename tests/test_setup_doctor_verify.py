@@ -85,15 +85,89 @@ class TestVerifyMockAgentGuards:
         assert result.exit_code == 2
 
     def test_returns_single_failing_stage_when_no_source_connection(self, tmp_path: Path) -> None:
-        """Store file exists with audit schema but no `entities` rows —
-        verify cannot resolve a source_connection_id and refuses fast
-        with a clear `source_resolved` failure rather than letting
+        """Store file exists with schema but no `tables` rows — verify
+        cannot resolve a source_connection_id and refuses fast with a
+        clear `source_resolved` failure rather than letting
         list_entities run against an unknown source."""
         path = tmp_path / "empty.db"
         SQLiteStore(path=path).close()
         result = verify_mock_agent(store_path=path, source_url=None)
         assert any(s.name == "source_resolved" and s.status == "fail" for s in result.stages)
         assert result.exit_code == 2
+
+    def test_list_entities_fails_fast_when_no_entities_after_index(self, tmp_path: Path) -> None:
+        """Store has indexed `tables` (so source_id resolves) but no
+        curated `entities` — list_entities returns []. Verify must
+        surface this as a `list_entities` fail with the actionable
+        hint to run entity suggest, not as a `source_resolved` fail.
+        """
+        path = tmp_path / "indexed.db"
+        store = SQLiteStore(path=path)
+        try:
+            store.write_table(
+                Table(
+                    name="orders",
+                    schema_name="public",
+                    columns=(
+                        Column(
+                            name="id",
+                            table_name="orders",
+                            schema_name="public",
+                            data_type="bigint",
+                            nullable=False,
+                            ordinal_position=1,
+                            is_primary_key=True,
+                        ),
+                    ),
+                ),
+                source_connection_id="src",
+            )
+        finally:
+            store.close()
+        result = verify_mock_agent(store_path=path, source_url=None)
+        by_name = {s.name: s for s in result.stages}
+        assert by_name["list_entities"].status == "fail"
+        assert "entities suggest" in by_name["list_entities"].message
+        # No subsequent stages ran — verify fail-fast worked.
+        assert "describe_entity" not in by_name
+        assert result.exit_code == 2
+
+    def test_describe_entity_failure_short_circuits_remaining_stages(
+        self, seeded_store: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When describe_entity raises, verify records a fail stage
+        and short-circuits — no find_relevant / get_metric stages run.
+
+        Exercises the early-return branch in verify_mock_agent at the
+        describe_stage != pass guard.
+        """
+        from schemabrain.mcp import describe_entity
+
+        def boom(**_kwargs: object) -> object:
+            raise RuntimeError("describe_entity boom")
+
+        monkeypatch.setattr(describe_entity, "describe_entity_impl", boom)
+        result = verify_mock_agent(store_path=seeded_store, source_url=None)
+        by_name = {s.name: s for s in result.stages}
+        assert by_name["describe_entity"].status == "fail"
+        assert "describe_entity boom" in by_name["describe_entity"].message
+        # find_relevant and get_metric must NOT have run.
+        assert "find_relevant_entities" not in by_name
+        assert "get_metric" not in by_name
+        assert result.exit_code == 2
+
+    def test_get_metric_skipped_when_source_url_set_but_no_count_metric(
+        self, seeded_store: Path
+    ) -> None:
+        """The store has entities but no `*_count` metric — get_metric
+        skips with the `metrics suggest --apply` recovery hint.
+
+        Exercises the "source_url passed but nothing to execute" path
+        that the source_url=None test can't reach."""
+        result = verify_mock_agent(store_path=seeded_store, source_url="sqlite:///:memory:")
+        by_name = {s.name: s for s in result.stages}
+        assert by_name["get_metric"].status == "skipped"
+        assert "no `*_count` metric" in by_name["get_metric"].message
 
 
 class TestVerifyMockAgentHappyPath:
