@@ -22,15 +22,6 @@ lib64/
 # PR #125 CI 26448572653.
 !web/lib/
 
-# Dashboard static export — populated by `pnpm --dir web build` at
-# release-time CI from the `web/` source; never committed. The
-# `.gitkeep` + README.md sentinels keep the directory tracked so the
-# wheel artifacts glob in pyproject.toml finds a real path even when
-# the build hasn't been run yet.
-schemabrain/dashboard/static/*
-!schemabrain/dashboard/static/.gitkeep
-!schemabrain/dashboard/static/README.md
-
 parts/
 sdist/
 var/
@@ -79,6 +70,11 @@ venv.bak/
 *.swo
 *~
 .DS_Store
+# macOS AppleDouble resource forks (appear when copying via SMB/AFP)
+._*
+# JetBrains Fleet / Zed
+.fleet/
+.zed/
 
 # Type checking
 .mypy_cache/
@@ -103,6 +99,17 @@ schemabrain-*.db
 # Benchmark / cache artifacts not covered above
 .benchmarks/
 
+# Profiling output
+*.prof
+*.lprof
+prof/
+
+# Local override files (never committed)
+docker-compose.override.yml
+docker-compose.override.yaml
+*.local.yml
+*.local.yaml
+
 # Logs
 *.log
 logs/
@@ -117,3 +124,12 @@ logs/
 # Kept locally for engineering reference; not shipped to the public repo.
 docs/internal/
 schemabrain-prerelease.db*
+
+# Dashboard static export — populated by `pnpm --dir web build` at
+# release-time CI from the `web/` source; never committed. The
+# `.gitkeep` + README.md sentinels keep the directory tracked so the
+# wheel artifacts glob in pyproject.toml finds a real path even when
+# the build hasn't been run yet.
+schemabrain/dashboard/static/*
+!schemabrain/dashboard/static/.gitkeep
+!schemabrain/dashboard/static/README.md

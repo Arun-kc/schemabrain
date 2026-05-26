@@ -1,0 +1,679 @@
+/*
+ * The Ledger v2 — Direction A · Boardroom Brief.
+ *
+ * Single-table composition: leftmost entity column + 12 category
+ * columns. Catastrophic vs PII separation via a left-border + extra
+ * padding-left on the catastrophic-block boundary. This keeps row
+ * alignment intrinsic (table semantics) while reading as two
+ * visually separate sub-tables.
+ */
+
+/* ---------- Surface shell ---------- */
+
+.shell {
+  margin: 0 auto;
+  max-width: 75rem; /* constrained to 1200px for perfectly balanced SaaS-boardroom composition */
+  padding-inline: 2.5rem;
+  padding-block: 2.5rem 4rem;
+}
+
+/* ---------- Title strip ---------- */
+
+.titleStrip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 2.5rem;
+}
+
+.surfaceTitle {
+  font-family: var(--font-display);
+  font-size: 1.375rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+
+.titleMeta {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+/* ---------- Hero composition: slab + matrix ---------- */
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(13rem, 22rem) 1fr;
+  gap: 3rem;
+  align-items: start;
+}
+
+@media (max-width: 960px) {
+  .hero {
+    grid-template-columns: 1fr;
+    gap: 2rem;
+  }
+}
+
+/* ---------- Stat slab ---------- */
+
+.slab {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.slabLabel {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.slabNumberWrap {
+  position: relative;
+  margin-top: 0.75rem;
+  padding-block: 1.75rem;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  border: 1px solid var(--border-subtle);
+  background: linear-gradient(135deg, rgba(62, 207, 142, 0.06), rgba(5, 150, 105, 0.01));
+  border-radius: 8px;
+  box-shadow: inset 0 0 12px rgba(62, 207, 142, 0.04);
+  overflow: hidden;
+  transition: all var(--duration-normal) var(--ease-out-expo);
+}
+
+.slabNumberWrap[data-danger="true"] {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.06), rgba(239, 68, 68, 0.01));
+  border-color: rgba(239, 68, 68, 0.18);
+  box-shadow: inset 0 0 12px rgba(239, 68, 68, 0.04);
+}
+
+[data-theme="dark"] .slabNumberWrap {
+  background: linear-gradient(135deg, rgba(62, 207, 142, 0.12), rgba(19, 25, 34, 0.4));
+  border-color: rgba(62, 207, 142, 0.2);
+  box-shadow: inset 0 0 20px rgba(62, 207, 142, 0.08);
+}
+
+[data-theme="dark"] .slabNumberWrap[data-danger="true"] {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.12), rgba(19, 25, 34, 0.4));
+  border-color: rgba(239, 68, 68, 0.3);
+  box-shadow: inset 0 0 20px rgba(239, 68, 68, 0.08);
+}
+
+.slabNumberWrap::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--color-signal-green), #059669);
+  opacity: 0.8;
+  transition: background var(--duration-normal) var(--ease-out-expo);
+}
+
+.slabNumberWrap[data-danger="true"]::before {
+  background: linear-gradient(90deg, var(--color-signal-red), #dc2626);
+}
+
+.slabNumber {
+  font-family: var(--font-display);
+  font-size: 5.5rem;
+  font-weight: 600;
+  line-height: 0.9;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-signal-green);
+  text-shadow: 0 2px 12px rgba(62, 207, 142, 0.15);
+  transition: all var(--duration-normal) var(--ease-out-expo);
+}
+
+.slabNumber[data-danger="true"] {
+  color: var(--color-signal-red);
+  text-shadow: 0 2px 12px rgba(239, 68, 68, 0.2);
+}
+
+.slabSublabel {
+  margin-top: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
+.slabCategories {
+  margin-top: 1rem;
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.slabCategories li {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+}
+
+.slabBreakdown {
+  margin-top: 1.75rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-subtle);
+  display: grid;
+  grid-template-columns: 3rem 1fr;
+  row-gap: 0.4rem;
+  column-gap: 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.slabBreakdownNumber {
+  text-align: right;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.slabBreakdownLabel {
+  color: var(--text-muted);
+}
+
+.slabFooter {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-subtle);
+  display: grid;
+  grid-template-columns: 3rem 1fr;
+  row-gap: 0.4rem;
+  column-gap: 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Matrix (single table) ---------- */
+
+.matrixWrap {
+  overflow-x: auto;
+  /* Constrain matrix so it doesn't stretch to fill the whole right
+     column — keeps cells tight, gives the surface composed feel. */
+  max-width: 100%;
+  padding-top: 2rem;
+  margin-top: -2rem;
+}
+
+.matrixWrap .matrix {
+  width: auto;
+}
+
+.matrix {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Sub-table heading row */
+.matrix thead tr.groupRow th {
+  padding: 0 0.5rem 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  text-align: left;
+  border-bottom: none;
+}
+
+.matrix thead tr.groupRow th.groupCatastrophic {
+  padding-left: 1.5rem;
+  border-left: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.matrix thead tr.groupRow th.groupPii {
+  padding-left: 1.5rem;
+  border-left: 1px solid var(--border-subtle);
+}
+
+/* Category header row */
+.matrix thead tr.headRow th {
+  padding: 0.5rem 0.5rem;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.matrix thead tr.headRow th.entityHeader {
+  text-align: left;
+  padding-left: 0;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+}
+
+.matrix thead tr.headRow th.catastrophicHeader {
+  color: var(--text-primary);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.matrix thead tr.headRow th.boundaryStart {
+  padding-left: 1.5rem;
+  border-left: 1px solid var(--border-subtle);
+}
+
+.headerCell {
+  position: relative;
+  cursor: help;
+}
+
+.headerLabel {
+  display: inline-block;
+  border-bottom: 1px dashed var(--color-ink-300);
+  padding-bottom: 1px;
+}
+
+.tooltip {
+  visibility: hidden;
+  position: absolute;
+  bottom: 125%;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: var(--surface-overlay);
+  color: var(--text-primary);
+  border: 1px solid var(--border-emphasis);
+  padding: 0.35rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  z-index: 50;
+  opacity: 0;
+  border-radius: 3px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  transition: opacity var(--duration-fast) var(--ease-out-expo), transform var(--duration-fast) var(--ease-out-expo);
+  pointer-events: none;
+}
+
+.headerCell:hover .tooltip {
+  visibility: visible;
+  opacity: 1;
+  transform: translateX(-50%) translateY(-2px);
+}
+
+/* Body rows */
+.matrix tbody td {
+  padding: 0.875rem 0.875rem;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-subtle);
+  transition: background-color var(--duration-fast) var(--ease-out-expo), border-color var(--duration-fast) var(--ease-out-expo);
+  white-space: nowrap;
+  min-width: 2.5rem;
+}
+
+.matrix tbody td.entityCell {
+  text-align: left;
+  padding-left: 0;
+  padding-right: 1.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  position: relative;
+  font-weight: 500;
+  transition: all var(--duration-fast) var(--ease-out-expo);
+}
+
+.matrix tbody td.entityCell .entityName {
+  display: block;
+  color: var(--text-primary);
+}
+
+.matrix tbody td.entityCell .entityTable {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  margin-top: 0.15rem;
+}
+
+.matrix tbody td.boundaryStart {
+  padding-left: 1.5rem;
+  border-left: 1px solid var(--border-subtle);
+}
+
+.matrix tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.matrix tbody tr {
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out-expo);
+}
+
+.matrix tbody tr:hover td {
+  background-color: var(--surface-raised);
+}
+
+.matrix tbody tr.selected td {
+  background-color: var(--surface-raised);
+  border-bottom-color: var(--color-signal-green);
+}
+
+.matrix tbody tr.selected td.entityCell {
+  box-shadow: inset 4px 0 0 var(--color-signal-green);
+  padding-left: 1rem;
+}
+
+.matrix .zero {
+  color: var(--color-ink-500);
+  opacity: 0.55;
+}
+
+/* Catastrophic glyph and badge indicator */
+.catastrophicCell {
+  position: relative;
+}
+
+.catastrophicBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.125rem 0.5rem;
+  border-radius: 4px;
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  box-shadow: 0 1px 2px rgba(239, 68, 68, 0.02);
+  transition: all var(--duration-fast) var(--ease-out-expo);
+}
+
+[data-theme="dark"] .catastrophicBadge {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.catastrophicBadge:hover {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: var(--color-signal-red);
+  transform: scale(1.05);
+}
+
+.catastrophicGlyph {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35em;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Standard PII indicator badge */
+.piiBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.125rem 0.5rem;
+  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.06);
+  border: 1px solid rgba(245, 158, 11, 0.15);
+  color: var(--color-signal-amber);
+  font-weight: 600;
+  font-size: 0.8125rem;
+  transition: all var(--duration-fast) var(--ease-out-expo);
+}
+
+[data-theme="dark"] .piiBadge {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.25);
+}
+
+.piiBadge:hover {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: var(--color-signal-amber);
+  transform: scale(1.05);
+}
+
+/* Matrix caption */
+.matrixCaption {
+  margin-top: 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+
+.matrixCaption .glyph {
+  color: var(--color-signal-red);
+}
+
+/* ---------- Drilldown card ---------- */
+
+.drilldown {
+  margin-top: 3rem;
+  animation: slideUp var(--duration-normal) var(--ease-out-expo);
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.drilldownLabel {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+}
+
+.drilldownLabel strong {
+  color: var(--text-primary);
+  font-weight: 700;
+  margin-left: 0.5rem;
+}
+
+.drilldownCard {
+  border: 1px solid var(--border-emphasis);
+  background: var(--surface-overlay);
+  padding: 1.75rem 2.25rem;
+  box-shadow: 0 12px 48px -12px rgba(0, 0, 0, 0.06);
+  transition: all var(--duration-normal) var(--ease-out-expo);
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+[data-theme="dark"] .drilldownCard {
+  background: rgba(19, 25, 34, 0.65);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid var(--border-emphasis);
+  box-shadow: 0 12px 48px -12px rgba(0, 0, 0, 0.4);
+}
+
+
+.drilldownHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+
+.drilldownHeaderLeft {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+}
+
+.drilldownHeaderMeta {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  letter-spacing: 0.01em;
+}
+
+.columnList {
+  display: grid;
+  grid-template-columns: minmax(10rem, max-content) minmax(6rem, max-content) minmax(6rem, max-content) 1fr;
+  column-gap: 2.5rem;
+  row-gap: 0.75rem;
+  margin-top: 1.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+}
+
+.columnList > .colName {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.columnList > .colType {
+  color: var(--text-secondary);
+  opacity: 0.8;
+}
+
+.columnList > .colClass {
+  color: var(--text-muted);
+}
+
+.columnList > .colCategories {
+  color: var(--text-secondary);
+}
+
+.colCategories .catastrophic {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+/* ---------- Error card ---------- */
+
+.errorCard {
+  margin-top: 2rem;
+  border: 1px solid var(--color-ink-700);
+  background: var(--surface-overlay);
+  padding: 2rem 2.5rem;
+  display: grid;
+  grid-template-columns: 1.5rem 1fr;
+  column-gap: 1rem;
+  max-width: 56rem;
+}
+
+.errorIcon {
+  font-family: var(--font-mono);
+  font-size: 1.25rem;
+  color: var(--text-secondary);
+  line-height: 1.2;
+}
+
+.errorBody h2 {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 0.75rem;
+  letter-spacing: 0.02em;
+}
+
+.errorBody p {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 0.75rem;
+}
+
+.errorBody code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--color-signal-green);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  padding: 0.5rem 0.75rem;
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+
+/* ---------- Skeleton ---------- */
+
+.skeleton {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  padding-block: 2rem;
+}
+
+.skeleton::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .matrix tbody td {
+    transition: none;
+  }
+  .skeleton::before {
+    animation: none;
+  }
+}

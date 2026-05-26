@@ -136,3 +136,200 @@ def test_audit_verify_400_on_malformed_since(client: TestClient) -> None:
 def test_sse_stream_route_exists(app) -> None:
     paths = {getattr(r, "path", None) for r in app.routes}
     assert "/api/audit/stream" in paths
+
+
+def test_pii_matrix_409_when_no_sources(client: TestClient) -> None:
+    """Empty store has no sources — surface as 409 with actionable detail."""
+    response = client.get("/api/entities/pii-matrix")
+    assert response.status_code == 409
+
+
+def test_pii_matrix_returns_aggregated_shape(store_path, client: TestClient) -> None:
+    """One round-trip returns every entity + per-category counts + totals."""
+    from schemabrain.core.entity import Entity, SingleTableBinding
+    from schemabrain.core.models import Column, Table
+    from schemabrain.core.store import SQLiteStore
+    from schemabrain.pii.categories import ColumnPiiTag
+
+    src = "test-source"
+    with SQLiteStore(store_path) as store:
+        store.write_table(
+            Table(
+                schema_name="public",
+                name="users",
+                columns=(
+                    Column(
+                        schema_name="public",
+                        table_name="users",
+                        name="id",
+                        data_type="integer",
+                        nullable=False,
+                        ordinal_position=1,
+                    ),
+                    Column(
+                        schema_name="public",
+                        table_name="users",
+                        name="password_hash",
+                        data_type="text",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                    Column(
+                        schema_name="public",
+                        table_name="users",
+                        name="email",
+                        data_type="text",
+                        nullable=False,
+                        ordinal_position=3,
+                    ),
+                ),
+            ),
+            source_connection_id=src,
+        )
+        store.write_entity(
+            Entity(
+                name="user",
+                description="A registered account.",
+                binding=SingleTableBinding(qualified_table="public.users"),
+                identity="id",
+            ),
+            source_connection_id=src,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=src,
+            qualified_table="public.users",
+            tags={
+                "password_hash": ColumnPiiTag(("pii", frozenset({"credential"}))),
+                "email": ColumnPiiTag(("pii", frozenset({"contact"}))),
+            },
+        )
+
+    response = client.get(f"/api/entities/pii-matrix?source_connection_id={src}")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["source_connection_id"] == src
+    assert payload["totals"]["entities"] == 1
+    assert payload["totals"]["columns"] == 3
+    assert payload["totals"]["catastrophic_columns"] == 1
+    assert payload["totals"]["pii_columns"] == 2
+    assert payload["totals"]["internal_or_public_columns"] == 1
+
+    assert len(payload["entities"]) == 1
+    user = payload["entities"][0]
+    assert user["name"] == "user"
+    assert user["qualified_table"] == "public.users"
+    assert user["counts"]["credential"] == 1
+    assert user["counts"]["contact"] == 1
+    assert user["counts"]["payment_card"] == 0
+    assert user["catastrophic_column_count"] == 1
+    assert user["has_catastrophic"] is True
+
+    assert len(payload["categories"]) == 12
+    assert set(payload["catastrophic_categories"]) == {
+        "credential",
+        "payment_card",
+        "government_id",
+    }
+
+
+def test_pii_matrix_counts_confidential_and_internal_sensitivities(
+    store_path, client: TestClient
+) -> None:
+    """Cover the confidential + internal sensitivity bucket branches."""
+    from schemabrain.core.entity import Entity, SingleTableBinding
+    from schemabrain.core.models import Column, Table
+    from schemabrain.core.store import SQLiteStore
+    from schemabrain.pii.categories import ColumnPiiTag
+
+    src = "test-source"
+    with SQLiteStore(store_path) as store:
+        store.write_table(
+            Table(
+                schema_name="public",
+                name="mixed",
+                columns=(
+                    Column(
+                        schema_name="public",
+                        table_name="mixed",
+                        name="conf_col",
+                        data_type="text",
+                        nullable=False,
+                        ordinal_position=1,
+                    ),
+                    Column(
+                        schema_name="public",
+                        table_name="mixed",
+                        name="int_col",
+                        data_type="text",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                ),
+            ),
+            source_connection_id=src,
+        )
+        store.write_entity(
+            Entity(
+                name="mixed",
+                description="Mixed sensitivities.",
+                binding=SingleTableBinding(qualified_table="public.mixed"),
+                identity="conf_col",
+            ),
+            source_connection_id=src,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=src,
+            qualified_table="public.mixed",
+            tags={
+                "conf_col": ColumnPiiTag(("confidential", frozenset())),
+                "int_col": ColumnPiiTag(("internal", frozenset())),
+            },
+        )
+
+    response = client.get(f"/api/entities/pii-matrix?source_connection_id={src}")
+    payload = response.json()
+    assert payload["totals"]["confidential_columns"] == 1
+    assert payload["totals"]["internal_or_public_columns"] == 1
+    assert payload["totals"]["pii_columns"] == 0
+
+
+def test_pii_matrix_empty_state_when_no_catastrophic(store_path, client: TestClient) -> None:
+    """Entity with no PII columns — totals report zero catastrophic."""
+    from schemabrain.core.entity import Entity, SingleTableBinding
+    from schemabrain.core.models import Column, Table
+    from schemabrain.core.store import SQLiteStore
+
+    src = "test-source"
+    with SQLiteStore(store_path) as store:
+        store.write_table(
+            Table(
+                schema_name="public",
+                name="feature_flags",
+                columns=(
+                    Column(
+                        schema_name="public",
+                        table_name="feature_flags",
+                        name="id",
+                        data_type="integer",
+                        nullable=False,
+                        ordinal_position=1,
+                    ),
+                ),
+            ),
+            source_connection_id=src,
+        )
+        store.write_entity(
+            Entity(
+                name="feature_flag",
+                description="A toggleable feature.",
+                binding=SingleTableBinding(qualified_table="public.feature_flags"),
+                identity="id",
+            ),
+            source_connection_id=src,
+        )
+
+    response = client.get(f"/api/entities/pii-matrix?source_connection_id={src}")
+    payload = response.json()
+    assert payload["totals"]["catastrophic_columns"] == 0
+    assert payload["entities"][0]["has_catastrophic"] is False

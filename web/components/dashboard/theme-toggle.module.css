@@ -1,0 +1,35 @@
+.group {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-overlay);
+  font-family: var(--font-mono);
+}
+
+.btn {
+  padding: 0.25rem 0.625rem;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  transition: color var(--duration-fast) var(--ease-out-expo),
+    background-color var(--duration-fast) var(--ease-out-expo);
+}
+
+.btn:hover {
+  color: var(--text-secondary);
+}
+
+.btn.active {
+  background: var(--text-primary);
+  color: var(--surface-base);
+}
+
+.divider {
+  width: 1px;
+  background: var(--border-subtle);
+  flex-shrink: 0;
+}

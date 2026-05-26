@@ -51,6 +51,38 @@ export interface EntityDrilldownResponse {
   columns: readonly EntityColumn[];
 }
 
+/** One row in the PII Viz matrix — entity × category counts. */
+export interface PiiMatrixEntity {
+  name: string;
+  qualified_table: string;
+  identity: string;
+  origin: Origin;
+  inference_method: InferenceMethod;
+  validation_state: ValidationState;
+  /** Map from PIICategory to the number of columns on this entity carrying that category. */
+  counts: Record<string, number>;
+  catastrophic_column_count: number;
+  has_catastrophic: boolean;
+}
+
+/** /api/entities/pii-matrix response — drives The Ledger surface. */
+export interface PiiMatrixResponse {
+  source_connection_id: string;
+  entities: readonly PiiMatrixEntity[];
+  /** The 12 PII categories in canonical column order for the matrix. */
+  categories: readonly string[];
+  /** Subset of `categories` that get the catastrophic underline + stamp treatment. */
+  catastrophic_categories: readonly string[];
+  totals: {
+    entities: number;
+    columns: number;
+    catastrophic_columns: number;
+    pii_columns: number;
+    confidential_columns: number;
+    internal_or_public_columns: number;
+  };
+}
+
 /** /api/health response. */
 export interface HealthResponse {
   status: "ok";

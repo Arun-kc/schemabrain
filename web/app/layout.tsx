@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { Providers } from "./providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -12,10 +13,30 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
+// Inline script that runs before React hydrates, reading the
+// persisted theme and applying it to <html> so there's no flash
+// between SSR's default-light and the user's preferred dark.
+const THEME_INIT_SCRIPT = `
+try {
+  var t = localStorage.getItem("schemabrain.theme");
+  if (t === "dark") document.documentElement.setAttribute("data-theme", "dark");
+} catch (_) {}
+`;
+
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
-      <body>{children}</body>
+    // The inline THEME_INIT_SCRIPT below mutates data-theme on <html>
+    // before React hydrates, so the attribute intentionally differs
+    // from SSR output. suppressHydrationWarning scopes the suppression
+    // to this element's attributes only (one level deep) — children
+    // still hydrate normally.
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
+      <body>
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }
