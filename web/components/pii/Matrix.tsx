@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState, Fragment } from "react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { useSourceId } from "@/lib/useSourceId";
 import type { PiiMatrixEntity } from "@/lib/types";
 import { Drilldown } from "./Drilldown";
 import { HalfCircleIcon } from "../icons/HalfCircleIcon";
@@ -15,16 +16,24 @@ import styles from "./ledger.module.css";
  * Single-table composition: entity row labels on the left, then 3
  * catastrophic columns, then a vertical-rule + padding boundary,
  * then 9 PII columns. Row alignment is intrinsic to the table.
+ *
+ * `sourceId` is optional: when omitted, the Matrix resolves it via
+ * `useSourceId()` from /api/meta. Tests can pass an explicit value
+ * to pin a specific source without hitting the meta endpoint.
  */
 
 interface MatrixProps {
   sourceId?: string;
 }
 
-export function Matrix({ sourceId }: MatrixProps) {
+export function Matrix({ sourceId: sourceIdProp }: MatrixProps) {
+  const { sourceId: resolvedSourceId, status: sourceStatus } = useSourceId();
+  const sourceId = sourceIdProp ?? resolvedSourceId ?? undefined;
+
   const matrixQuery = useQuery({
     queryKey: ["pii-matrix", sourceId],
     queryFn: () => api.piiMatrix(sourceId),
+    enabled: sourceIdProp !== undefined || sourceStatus !== "loading",
   });
 
   const [selectedEntity, setSelectedEntity] = useState<string | null>(null);

@@ -12,8 +12,8 @@ export default function PiiPage() {
       <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-[#3ECF8E]/4 rounded-full blur-[120px] pointer-events-none" />
 
       <div className="relative z-10">
-        <HeaderStrip surface="pii ledger" sourceConnectionId="demo-source" />
-        <Matrix sourceId="demo-source" />
+        <HeaderStrip surface="pii ledger" />
+        <Matrix />
       </div>
     </main>
   );

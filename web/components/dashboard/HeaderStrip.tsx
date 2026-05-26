@@ -1,5 +1,8 @@
+"use client";
+
 import Link from "next/link";
 import { cn } from "@/lib/cn";
+import { useSourceId } from "@/lib/useSourceId";
 import { ThemeToggle } from "./ThemeToggle";
 import styles from "./header.module.css";
 
@@ -10,16 +13,19 @@ import styles from "./header.module.css";
  *   [LOGO] SCHEMABRAIN · dashboard / <surface>           ● <source>   [light │ dark]
  *
  * The 1px ink-700 underline (heavier than a generic hairline)
- * anchors the surface below it. Source status uses signal-green
- * dot when connected, amber when degraded, red when no source.
+ * anchors the surface below it. Source status uses signal-green dot
+ * when connected, amber while resolving, red when no source.
+ *
+ * The source connection id is resolved from /api/meta via the
+ * shared useSourceId() hook — never passed in as a prop. This keeps
+ * pages free of hardcoded source IDs that would break for any
+ * operator whose store has a different source hash.
  */
 
 type SourceStatus = "connected" | "degraded" | "absent";
 
 interface HeaderStripProps {
   surface: string;
-  sourceConnectionId: string | null;
-  sourceStatus?: SourceStatus;
   className?: string;
 }
 
@@ -29,14 +35,18 @@ const STATUS_VAR: Record<SourceStatus, string> = {
   absent: "var(--color-signal-red)",
 };
 
-export function HeaderStrip({
-  surface,
-  sourceConnectionId,
-  sourceStatus = "connected",
-  className,
-}: HeaderStripProps) {
-  const displaySource = sourceConnectionId ?? "no source connected";
-  const status: SourceStatus = sourceConnectionId ? sourceStatus : "absent";
+export function HeaderStrip({ surface, className }: HeaderStripProps) {
+  const { sourceId, status: resolveStatus } = useSourceId();
+  const displaySource =
+    resolveStatus === "loading"
+      ? "resolving…"
+      : (sourceId ?? "no source connected");
+  const status: SourceStatus =
+    resolveStatus === "loading"
+      ? "degraded"
+      : sourceId
+        ? "connected"
+        : "absent";
 
   return (
     <header className={cn(styles.strip, className)}>

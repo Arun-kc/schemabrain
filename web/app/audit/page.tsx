@@ -245,7 +245,7 @@ export default function AuditPage() {
       <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-[#3ECF8E]/4 rounded-full blur-[120px] pointer-events-none" />
 
       <div className="relative z-10">
-        <HeaderStrip surface="audit viewer" sourceConnectionId="demo-source" />
+        <HeaderStrip surface="audit viewer" />
         {renderContent()}
       </div>
     </main>
