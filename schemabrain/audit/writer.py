@@ -136,10 +136,13 @@ def _extract_pii_categories(response: Any) -> frozenset[PIICategory]:
 
     Success-side: `response.data.pii_categories` is the propagated
     set when present (today only `MetricResult` carries it).
-    Refusal-side: `response.error.pii_categories` is the attempted-
-    set populated by the `pii_blocked` refusal envelope. Either is
-    a sorted tuple of category strings (or any iterable of `PIICategory`-
-    valued strings).
+    Refusal-side: `response.error.pii_categories` is the *blocked* set
+    (policy intersection that triggered refusal) populated by the
+    `pii_blocked` refusal envelope at `mcp/server.py`. The full attempted
+    set is not currently persisted to the audit row — it lives only on
+    `PiiBlockedError.attempted_categories`. Either side returns a sorted
+    tuple of category strings (or any iterable of `PIICategory`-valued
+    strings).
 
     Returns `frozenset()` when neither path produces a value — the
     schema column defaults to `''` for "no PII touched" via the
