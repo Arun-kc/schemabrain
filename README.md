@@ -63,6 +63,7 @@ schemabrain init
 |---|---|
 | Try it on the bundled fixture | [Quickstart](#quickstart) |
 | Understand the firewall properties | [The firewall](#the-firewall) |
+| Wire up your MCP client | [Claude Desktop](docs/setup/claude-desktop.md) · [Claude Code](docs/setup/claude-code.md) · [Cursor](docs/setup/cursor.md) · [Windsurf](docs/setup/windsurf.md) · [ChatGPT](docs/setup/chatgpt.md) |
 | Plug into your own agent loop | [`docs/setup.md`](docs/setup.md#path-2--anthropic-sdk-demo-no-claude-desktop-required) |
 | Build a semantic layer | [`docs/semantic-layer.md`](docs/semantic-layer.md) |
 | Run in production (audit, drift, Docker) | [`docs/operations.md`](docs/operations.md) |
