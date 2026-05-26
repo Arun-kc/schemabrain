@@ -31,7 +31,7 @@ The wizard then introspects the schema, classifies columns for PII, optionally c
         "serve",
         "--url-env", "SCHEMABRAIN_DATABASE_URL",
         "--store-path", "/Users/you/.schemabrain/store.db",
-        "--pii-block", "credential,payment_card,government_id"
+        "--pii-block", "credential,government_id,payment_card"
       ],
       "env": {
         "SCHEMABRAIN_DATABASE_URL": "postgresql+psycopg://user:pass@host:5432/db"
