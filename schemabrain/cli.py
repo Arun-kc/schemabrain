@@ -461,6 +461,7 @@ def _dispatch(argv: list[str] | None) -> int:
             store_path=args.store_path,
             host=args.host,
             json_output=args.json,
+            verify=args.verify,
         )
     if args.command == "apply":
         return _cmd_apply_project(
@@ -1784,6 +1785,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit machine-readable JSON to stdout instead of the human-readable "
         "report to stderr. Useful for CI/monitoring scripts.",
+    )
+    p_doctor.add_argument(
+        "--verify",
+        action="store_true",
+        help="Run a mock-agent end-to-end smoke against the substrate "
+        "instead of the config-health report. Simulates one MCP tool "
+        "turn (list_entities → describe_entity → find_relevant_entities "
+        "→ get_metric) without needing an LLM key or a running MCP "
+        "host. Exits 0 if all required stages pass, 2 if any fail.",
     )
 
     # `schemabrain apply [PROJECT_DIR]` — walk a project tree
@@ -5995,6 +6005,7 @@ def _cmd_doctor(
     store_path: str,
     host: str,
     json_output: bool,
+    verify: bool = False,
 ) -> int:
     """Run `schemabrain doctor` and render the result.
 
@@ -6009,6 +6020,10 @@ def _cmd_doctor(
       - 1: doctor ran; at least one `fail` outcome
       - 2: operational refusal before doctor could run (e.g. --source
         + --url-env conflict, --url-env names an unset variable)
+
+    `verify=True` routes to the mock-agent smoke instead of the
+    config-health report — different surface, different exit code
+    semantics (0 = green, 2 = at least one required stage failed).
     """
     import time as _time
 
@@ -6020,6 +6035,13 @@ def _cmd_doctor(
         if source_url is None:
             # Guided error already rendered to stderr.
             return 2
+
+    if verify:
+        from schemabrain.setup.doctor_verify import render_verify, verify_mock_agent
+
+        result = verify_mock_agent(store_path=Path(store_path), source_url=source_url)
+        render_verify(result, console=_stderr_console())
+        return result.exit_code
     started = _time.perf_counter()
     result = doctor(
         source_url=source_url,
