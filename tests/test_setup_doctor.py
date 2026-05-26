@@ -802,6 +802,65 @@ class TestDoctorOrchestrator:
         assert host_checks[0].outcome == "warn"
         assert "OS" in host_checks[0].message
 
+    def test_adds_host_checks_for_cursor_when_config_resolves(
+        self, fresh_store: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cursor + Windsurf host support: doctor with `--host cursor` runs the same JSON
+        config checks as claude-desktop, against `~/.cursor/mcp.json`.
+        """
+        cfg = tmp_path / "mcp.json"
+        _write_host_config(
+            cfg,
+            entry={
+                "command": "uvx",
+                "args": [
+                    "schemabrain==0.2.0a1",
+                    "serve",
+                    "--url-env",
+                    "DB",
+                    "--store-path",
+                    str(fresh_store.resolve()),
+                ],
+                "env": {"DB": "postgresql://x"},
+                "type": "stdio",
+            },
+        )
+        monkeypatch.setattr("schemabrain.setup.doctor_flow.cursor_config_path", lambda: cfg)
+        monkeypatch.setattr("schemabrain.setup.doctor_flow._installed_version", lambda: "0.2.0a1")
+        result = doctor(source_url=None, store_path=fresh_store, host="cursor")
+        names = [c.name for c in result.checks]
+        assert "host_config_present" in names
+        assert "host_config_uses_url_env" in names
+
+    def test_adds_host_checks_for_windsurf_when_config_resolves(
+        self, fresh_store: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cursor + Windsurf host support: doctor with `--host windsurf` runs the same JSON
+        config checks against `~/.codeium/windsurf/mcp_config.json`.
+        """
+        cfg = tmp_path / "mcp_config.json"
+        _write_host_config(
+            cfg,
+            entry={
+                "command": "uvx",
+                "args": [
+                    "schemabrain==0.2.0a1",
+                    "serve",
+                    "--url-env",
+                    "DB",
+                    "--store-path",
+                    str(fresh_store.resolve()),
+                ],
+                "env": {"DB": "postgresql://x"},
+            },
+        )
+        monkeypatch.setattr("schemabrain.setup.doctor_flow.windsurf_config_path", lambda: cfg)
+        monkeypatch.setattr("schemabrain.setup.doctor_flow._installed_version", lambda: "0.2.0a1")
+        result = doctor(source_url=None, store_path=fresh_store, host="windsurf")
+        names = [c.name for c in result.checks]
+        assert "host_config_present" in names
+        assert "host_config_uses_url_env" in names
+
     def test_emits_warn_for_claude_code_unverifiable(self, fresh_store: Path) -> None:
         # Claude Code registration lives in the supported `claude mcp`
         # CLI, not in a programmatically-introspectable file. Doctor

@@ -214,6 +214,133 @@ class TestInitToClaudeDesktop:
         assert merged["mcpServers"]["other"] == {"command": "x"}
 
 
+class TestInitToCursor:
+    """Cursor + Windsurf host support: `init(host="cursor")` writes to ``~/.cursor/mcp.json``
+    via the same JSON-merge path as claude-desktop, and the entry
+    carries ``"type": "stdio"``.
+    """
+
+    def test_writes_cursor_config_with_stdio_type(
+        self,
+        seeded_store: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        stub_uvx: None,
+    ) -> None:
+        cursor_dir = tmp_path / ".cursor"
+        cursor_dir.mkdir()
+        cfg = cursor_dir / "mcp.json"
+        monkeypatch.setattr(
+            "schemabrain.setup.init_flow.cursor_config_path",
+            lambda: cfg,
+        )
+        result = init(
+            source_url="sqlite:///:memory:",
+            store_path=seeded_store,
+            host="cursor",
+            env_var_name="DB_URL",
+            skip_index=False,
+            assume_yes=False,
+        )
+        assert result.host == "cursor"
+        assert result.state == "written"
+        assert result.config_path == cfg
+        config = json.loads(cfg.read_text())
+        # Cursor's MCP entry shape: mcpServers.{name} with type: stdio.
+        entry = config["mcpServers"]["schemabrain"]
+        assert entry["type"] == "stdio"
+        # Load-bearing keys unchanged from claude-desktop shape.
+        assert "command" in entry
+        assert "args" in entry
+        assert "env" in entry
+
+    def test_refuses_when_cursor_dir_missing(
+        self,
+        seeded_store: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        stub_uvx: None,
+    ) -> None:
+        # `~/.cursor` not yet created — Cursor isn't installed.
+        # init refuses with a guided error pointing at the install URL.
+        ghost = tmp_path / "no-cursor" / "mcp.json"
+        monkeypatch.setattr(
+            "schemabrain.setup.init_flow.cursor_config_path",
+            lambda: ghost,
+        )
+        with pytest.raises(InitRefusal) as exc_info:
+            init(
+                source_url="sqlite:///:memory:",
+                store_path=seeded_store,
+                host="cursor",
+                env_var_name="DB_URL",
+                skip_index=False,
+                assume_yes=False,
+            )
+        assert "Cursor" in exc_info.value.error.message
+        assert "cursor.com" in exc_info.value.error.fix
+
+
+class TestInitToWindsurf:
+    """Cursor + Windsurf host support: `init(host="windsurf")` writes to
+    ``~/.codeium/windsurf/mcp_config.json`` via the JSON-merge path.
+    No extras — Windsurf uses the bare claude-desktop entry shape.
+    """
+
+    def test_writes_windsurf_config_without_extras(
+        self,
+        seeded_store: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        stub_uvx: None,
+    ) -> None:
+        windsurf_dir = tmp_path / ".codeium" / "windsurf"
+        windsurf_dir.mkdir(parents=True)
+        cfg = windsurf_dir / "mcp_config.json"
+        monkeypatch.setattr(
+            "schemabrain.setup.init_flow.windsurf_config_path",
+            lambda: cfg,
+        )
+        result = init(
+            source_url="sqlite:///:memory:",
+            store_path=seeded_store,
+            host="windsurf",
+            env_var_name="DB_URL",
+            skip_index=False,
+            assume_yes=False,
+        )
+        assert result.host == "windsurf"
+        assert result.state == "written"
+        config = json.loads(cfg.read_text())
+        entry = config["mcpServers"]["schemabrain"]
+        assert "type" not in entry  # bare shape
+        assert "command" in entry
+
+    def test_refuses_when_windsurf_dir_missing(
+        self,
+        seeded_store: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        stub_uvx: None,
+    ) -> None:
+        ghost = tmp_path / "no-windsurf" / "mcp_config.json"
+        monkeypatch.setattr(
+            "schemabrain.setup.init_flow.windsurf_config_path",
+            lambda: ghost,
+        )
+        with pytest.raises(InitRefusal) as exc_info:
+            init(
+                source_url="sqlite:///:memory:",
+                store_path=seeded_store,
+                host="windsurf",
+                env_var_name="DB_URL",
+                skip_index=False,
+                assume_yes=False,
+            )
+        assert "Windsurf" in exc_info.value.error.message
+        assert "codeium.com" in exc_info.value.error.fix
+
+
 class TestInitInstallToClaudeDesktopMalformedConfig:
     """Regression coverage: the TOCTOU mirror
     of the MalformedConfigError wrap in `compare_existing_claude_desktop_entry`.

@@ -43,7 +43,13 @@ from schemabrain.setup.config_io import (
     schemabrain_entry_in,
 )
 from schemabrain.setup.doctor_render import render_doctor
-from schemabrain.setup.hosts import HostName, claude_desktop_config_path, is_postgres_url
+from schemabrain.setup.hosts import (
+    HostName,
+    claude_desktop_config_path,
+    cursor_config_path,
+    is_postgres_url,
+    windsurf_config_path,
+)
 
 _STALE_AFTER_DAYS = 30
 _STALE_AFTER_SECONDS = _STALE_AFTER_DAYS * 24 * 60 * 60
@@ -526,8 +532,16 @@ def _build_check_list(
         check_uvx_invocable,
         check_installed_version,
     ]
-    if host == "claude-desktop":
-        cfg_path = claude_desktop_config_path()
+    if host in ("claude-desktop", "cursor", "windsurf"):
+        # All three hosts read an ``mcpServers.{name}`` JSON file on
+        # disk — the existing check_host_config_* helpers are
+        # parameterised on the path so they apply uniformly.
+        if host == "claude-desktop":
+            cfg_path = claude_desktop_config_path()
+        elif host == "cursor":
+            cfg_path = cursor_config_path()
+        else:  # host == "windsurf"
+            cfg_path = windsurf_config_path()
         if cfg_path is not None:
             checks.append(lambda: check_host_config_present(cfg_path))
             checks.append(lambda: check_host_config_uses_url_env(cfg_path))
@@ -541,6 +555,8 @@ def _build_check_list(
             # claude-desktop, so silently skipping all four config
             # checks would let doctor exit 0 having checked nothing
             # about host registration. Emit a single warn instead.
+            # cursor_config_path / windsurf_config_path always return
+            # a path so this branch is claude-desktop only.
             checks.append(_check_host_config_unsupported_os)
     elif host == "claude-code":
         # Claude Code's registration lives in ~/.claude.json but

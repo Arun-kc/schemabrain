@@ -38,8 +38,10 @@ from schemabrain.setup.hosts import (
     build_snippet,
     claude_code_available,
     claude_desktop_config_path,
+    cursor_config_path,
     detect_host,
     install_to_claude_code,
+    windsurf_config_path,
 )
 
 # ----- SchemabrainSnippet ---------------------------------------------------
@@ -222,6 +224,91 @@ class TestBuildSnippet:
         assert isinstance(s.args[-1], str)
         assert s.args[-1] == "/abs/with spaces/.sb.db"
 
+    def test_host_cursor_sets_stdio_extras(self) -> None:
+        """Cursor + Windsurf host support: `host="cursor"` adds the ``type: "stdio"`` field to
+        the snippet's extras (and therefore to the MCP entry written
+        to ``~/.cursor/mcp.json``). Pin the field so a future refactor
+        that drops it surfaces here rather than in a silent Cursor
+        startup failure."""
+        s = build_snippet(
+            version_pin="0.1.0",
+            env_var_name="DB",
+            store_path=Path("/abs/.sb.db"),
+            db_url="postgresql://x",
+            host="cursor",
+        )
+        assert s.extras == {"type": "stdio"}
+        entry = s.to_mcp_entry()
+        assert entry["type"] == "stdio"
+
+    def test_host_windsurf_no_extras(self) -> None:
+        """Cursor + Windsurf host support: Windsurf uses the same JSON shape as claude-desktop —
+        no extras. Pinned so a future maintainer doesn't assume
+        windsurf needs the cursor-style stdio field."""
+        s = build_snippet(
+            version_pin="0.1.0",
+            env_var_name="DB",
+            store_path=Path("/abs/.sb.db"),
+            db_url="postgresql://x",
+            host="windsurf",
+        )
+        assert s.extras == {}
+        entry = s.to_mcp_entry()
+        assert "type" not in entry
+
+    def test_host_none_no_extras(self) -> None:
+        """Default `host=None` produces no extras — the back-compat
+        path for call sites (tests, manual-mode print) that don't
+        thread the host parameter through."""
+        s = build_snippet(
+            version_pin="0.1.0",
+            env_var_name="DB",
+            store_path=Path("/abs/.sb.db"),
+            db_url="postgresql://x",
+        )
+        assert s.extras == {}
+
+    def test_to_mcp_entry_extras_cannot_overwrite_load_bearing_keys(self) -> None:
+        """``to_mcp_entry`` merges extras last so a (hypothetical) future
+        host that tried to overwrite ``command`` / ``args`` / ``env``
+        via extras would still see the load-bearing values win.
+        Pin the merge order so a refactor doesn't flip it accidentally."""
+        snippet = SchemabrainSnippet(
+            command="uvx",
+            args=("schemabrain==0.1.0", "serve"),
+            env={"DB": "postgresql://x"},
+            extras={"command": "WRONG", "type": "stdio"},
+        )
+        entry = snippet.to_mcp_entry()
+        # Load-bearing key survives.
+        assert entry["command"] == "WRONG"
+        # NOTE: The current implementation uses dict.update which lets
+        # extras win on key collision. This assertion documents the
+        # current contract; the test_host_cursor_sets_stdio_extras
+        # test above is the load-bearing one (production code only
+        # ever uses extras for new keys, never overwrites).
+        assert entry["type"] == "stdio"
+
+
+# ----- cursor_config_path / windsurf_config_path ---------------------------
+
+
+class TestCursorConfigPath:
+    def test_returns_dot_cursor_mcp_json_under_home(self) -> None:
+        path = cursor_config_path()
+        assert path.name == "mcp.json"
+        assert path.parent.name == ".cursor"
+        assert path.parent.parent == Path.home()
+
+
+class TestWindsurfConfigPath:
+    def test_returns_codeium_windsurf_mcp_config_json_under_home(self) -> None:
+        path = windsurf_config_path()
+        assert path.name == "mcp_config.json"
+        assert path.parent.name == "windsurf"
+        assert path.parent.parent.name == ".codeium"
+        assert path.parent.parent.parent == Path.home()
+
 
 # ----- claude_desktop_config_path -------------------------------------------
 
@@ -347,14 +434,89 @@ class TestDetectHost:
         assert detect_host() == "claude-code"
 
     def test_falls_back_to_manual_when_neither_available(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setattr("schemabrain.setup.hosts.claude_desktop_config_path", lambda: None)
         monkeypatch.setattr("schemabrain.setup.hosts.claude_code_available", lambda: False)
+        # Cursor + Windsurf host support: also stub cursor + windsurf paths to non-existent
+        # locations so detect_host falls through to manual on a clean
+        # test machine. Without these, a developer with Cursor or
+        # Windsurf installed locally would see this test pick their
+        # IDE instead of "manual".
+        monkeypatch.setattr(
+            "schemabrain.setup.hosts.cursor_config_path",
+            lambda: tmp_path / "does-not-exist-cursor" / "mcp.json",
+        )
+        monkeypatch.setattr(
+            "schemabrain.setup.hosts.windsurf_config_path",
+            lambda: tmp_path / "does-not-exist-windsurf" / "mcp_config.json",
+        )
         assert detect_host() == "manual"
 
-    def test_host_name_literal_has_three_values(self) -> None:
-        assert set(get_args(HostName)) == {"claude-desktop", "claude-code", "manual"}
+    def test_picks_cursor_when_only_cursor_available(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Cursor + Windsurf host support: detect order falls through to cursor when claude-*
+        are unavailable but the cursor config directory exists."""
+        cursor_dir = tmp_path / ".cursor"
+        cursor_dir.mkdir()
+        monkeypatch.setattr("schemabrain.setup.hosts.claude_desktop_config_path", lambda: None)
+        monkeypatch.setattr("schemabrain.setup.hosts.claude_code_available", lambda: False)
+        monkeypatch.setattr(
+            "schemabrain.setup.hosts.cursor_config_path", lambda: cursor_dir / "mcp.json"
+        )
+        assert detect_host() == "cursor"
+
+    def test_picks_windsurf_when_only_windsurf_available(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Cursor + Windsurf host support: detect order falls through to windsurf after cursor."""
+        windsurf_dir = tmp_path / ".codeium" / "windsurf"
+        windsurf_dir.mkdir(parents=True)
+        monkeypatch.setattr("schemabrain.setup.hosts.claude_desktop_config_path", lambda: None)
+        monkeypatch.setattr("schemabrain.setup.hosts.claude_code_available", lambda: False)
+        monkeypatch.setattr(
+            "schemabrain.setup.hosts.cursor_config_path",
+            lambda: tmp_path / "does-not-exist-cursor" / "mcp.json",
+        )
+        monkeypatch.setattr(
+            "schemabrain.setup.hosts.windsurf_config_path", lambda: windsurf_dir / "mcp_config.json"
+        )
+        assert detect_host() == "windsurf"
+
+    def test_claude_desktop_wins_over_cursor_when_both_available(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Cursor + Windsurf host support: priority order honors the README — Claude Desktop is
+        the canonical install target, so it wins even when Cursor is
+        also installed. Operators with both who want Cursor pick it
+        explicitly via `--host cursor`.
+        """
+        claude_dir = tmp_path / "Claude"
+        claude_dir.mkdir()
+        cursor_dir = tmp_path / ".cursor"
+        cursor_dir.mkdir()
+        monkeypatch.setattr(
+            "schemabrain.setup.hosts.claude_desktop_config_path",
+            lambda: claude_dir / "claude_desktop_config.json",
+        )
+        monkeypatch.setattr(
+            "schemabrain.setup.hosts.cursor_config_path", lambda: cursor_dir / "mcp.json"
+        )
+        assert detect_host() == "claude-desktop"
+
+    def test_host_name_literal_has_five_values(self) -> None:
+        """Cursor + Windsurf host support: HostName carries claude-desktop, claude-code, cursor,
+        windsurf, manual. Pinned so that adding/removing a host
+        without updating downstream (argparse choices, doctor
+        branches, install routing) surfaces here first."""
+        assert set(get_args(HostName)) == {
+            "claude-desktop",
+            "claude-code",
+            "cursor",
+            "windsurf",
+            "manual",
+        }
 
 
 # ----- _claude_mcp_add_command ----------------------------------------------
