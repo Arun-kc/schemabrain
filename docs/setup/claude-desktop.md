@@ -27,6 +27,8 @@ It then introspects the schema, classifies columns for PII, optionally calls Ant
 
 If Claude calls `list_entities` and reports `user`, `order`, etc., you're done. If not, run `schemabrain doctor --verify` to smoke-test the wiring without an Anthropic key.
 
+**Next:** [First 5 Queries](../first-5-queries.md) walks you through exercising each load-bearing mechanism (read-only, PII refusal, audit chain, structured recovery) in ~10 minutes.
+
 ---
 
 ## What you get

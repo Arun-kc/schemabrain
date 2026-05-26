@@ -51,6 +51,8 @@ Quit Windsurf fully and relaunch. The MCP config is only read on cold start.
 
 If Cascade calls `list_entities` and reports the entities curated during init, you're done. Otherwise run `schemabrain doctor --verify` for an end-to-end smoke test that doesn't require an Anthropic key.
 
+**Next:** [First 5 Queries](../first-5-queries.md) walks you through exercising each load-bearing mechanism (read-only, PII refusal, audit chain, structured recovery) in ~10 minutes.
+
 ---
 
 ## What you get
