@@ -1,0 +1,107 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens for the SchemaBrain dashboard.
+ *
+ * See `docs/internal/v0.4_ui_rfc.md` §6 for the locked palette + type
+ * + spacing rhythm. Anti-template enforcement (per
+ * `~/.claude/rules/web/design-quality.md`) lives in component CSS
+ * that consumes these tokens — the tokens themselves are the
+ * substrate; how they compose is what differentiates the surface
+ * from a generic shadcn template.
+ *
+ * Dark mode is opt-in via [data-theme="dark"] toggle in the header,
+ * NOT auto via prefers-color-scheme.
+ */
+:root {
+  /* Ink + ivory palette — high contrast, low chroma, intentional accent */
+  --color-ink-900: oklch(18% 0 0);
+  --color-ink-700: oklch(38% 0 0);
+  --color-ink-500: oklch(58% 0 0);
+  --color-ink-300: oklch(78% 0 0);
+  --color-ink-200: oklch(88% 0 0);
+  --color-ivory-50: oklch(98% 0.005 80);
+  --color-ivory-100: oklch(96% 0.005 80);
+  --color-signal-green: oklch(68% 0.16 145);
+  --color-signal-amber: oklch(78% 0.16 75);
+  --color-signal-red: oklch(62% 0.22 25);
+
+  /* Typography */
+  --font-display: "Söhne", "Inter", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --text-base: clamp(0.9375rem, 0.88rem + 0.25vw, 1rem);
+  --text-display: clamp(2rem, 1rem + 3vw, 4rem);
+
+  /* Spacing rhythm — intentional, not uniform */
+  --space-rhythm-tight: 0.5rem;
+  --space-rhythm-base: 1rem;
+  --space-rhythm-wide: 2.5rem;
+  --space-section: clamp(3rem, 2rem + 4vw, 6rem);
+
+  /* Motion */
+  --duration-fast: 150ms;
+  --duration-normal: 280ms;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Trust-badge sizing rhythm — used by the 2D trust glyph in PII
+     Viz cells / Refusal cards / Audit row tooltips. */
+  --trust-glyph-sm: 16px;
+  --trust-glyph-md: 24px;
+  --trust-glyph-lg: 32px;
+
+  /* Semantic surface tokens (light theme defaults) */
+  --surface-base: var(--color-ivory-50);
+  --surface-raised: var(--color-ivory-100);
+  --surface-overlay: oklch(100% 0 0);
+  --text-primary: var(--color-ink-900);
+  --text-secondary: var(--color-ink-700);
+  --text-muted: var(--color-ink-500);
+  --border-subtle: var(--color-ink-200);
+  --border-emphasis: var(--color-ink-300);
+}
+
+[data-theme="dark"] {
+  --color-ink-900: oklch(96% 0 0);
+  --color-ink-700: oklch(78% 0 0);
+  --color-ink-500: oklch(58% 0 0);
+  --color-ink-300: oklch(38% 0 0);
+  --color-ink-200: oklch(28% 0 0);
+  --color-ivory-50: oklch(15% 0 0);
+  --color-ivory-100: oklch(20% 0 0);
+
+  --surface-base: var(--color-ivory-50);
+  --surface-raised: var(--color-ivory-100);
+  --surface-overlay: oklch(25% 0 0);
+  --text-primary: var(--color-ink-900);
+  --text-secondary: var(--color-ink-700);
+  --text-muted: var(--color-ink-500);
+  --border-subtle: var(--color-ink-200);
+  --border-emphasis: var(--color-ink-300);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html,
+body {
+  background: var(--surface-base);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--color-signal-green);
+  color: var(--color-ink-900);
+}

@@ -1,0 +1,19 @@
+# Next.js
+.next/
+out/
+
+# Node
+node_modules/
+pnpm-lock.yaml
+*.log
+
+# Test outputs
+coverage/
+playwright-report/
+test-results/
+.vitest-cache/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

@@ -12,7 +12,7 @@
 #
 # Both jobs use `uv` for env management — same tool the dev workflow uses,
 # so CI failures reproduce locally with
-# `uv sync --extra dev --extra otel && uv run pytest`.
+# `uv sync --extra dev --extra otel --extra ui && uv run pytest`.
 #
 # OS matrix: ubuntu-latest only at v0. macOS is documented as supported
 # for local dev on Python 3.11, but `onnxruntime` (a fastembed transitive
@@ -76,9 +76,11 @@ jobs:
       - name: Install dependencies
         # `--extra otel` enables the OpenTelemetry test paths
         # (`test_observability_otel.py` + `test_observability_instrument_otel.py`).
-        # The extra adds ~5 MB and is required to keep the OTel module
-        # at full coverage when the integration job runs the gate.
-        run: uv sync --extra dev --extra otel --python ${{ matrix.python-version }}
+        # `--extra ui` enables the dashboard sidecar test paths
+        # (`tests/dashboard/`). Both extras add ~5–6 MB each and are
+        # required to keep the OTel + dashboard modules at full coverage
+        # when the integration job runs the gate.
+        run: uv sync --extra dev --extra otel --extra ui --python ${{ matrix.python-version }}
 
       - name: Lint (ruff check)
         run: uv run --python ${{ matrix.python-version }} ruff check schemabrain tests scripts
@@ -132,10 +134,10 @@ jobs:
         run: uv python install 3.11
 
       - name: Install dependencies
-        # `--extra otel` keeps the lockfile-derived install identical
-        # across all jobs so a security scan that depends on installed
-        # versions sees the same surface as lint-and-unit.
-        run: uv sync --extra dev --extra otel --python 3.11
+        # `--extra otel` + `--extra ui` keep the lockfile-derived install
+        # identical across all jobs so a security scan that depends on
+        # installed versions sees the same surface as lint-and-unit.
+        run: uv sync --extra dev --extra otel --extra ui --python 3.11
 
       - name: pip-audit (known-CVE deps)
         # Strict mode: any vulnerability fails the build.
@@ -226,9 +228,11 @@ jobs:
         # paths (20 tests across two files) skip with
         # `schemabrain[otel] not installed`, dropping branch coverage
         # below the 99% gate. Same posture as lint-and-unit so the
-        # tests that run locally with `uv sync --extra dev --extra otel`
-        # match the CI surface exactly.
-        run: uv sync --extra dev --extra otel --python 3.11
+        # tests that run locally with `uv sync --extra dev --extra otel
+        # --extra ui` match the CI surface exactly. `--extra ui` is
+        # similarly required so the `tests/dashboard/` paths run and
+        # keep dashboard sidecar coverage.
+        run: uv sync --extra dev --extra otel --extra ui --python 3.11
 
       - name: Pre-pull Postgres image (warm testcontainers cache)
         run: docker pull postgres:16-alpine
