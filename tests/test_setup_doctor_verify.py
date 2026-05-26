@@ -197,6 +197,35 @@ class TestVerifyMockAgentHappyPath:
         # since fastembed IS importable in the test env on supported
         # platforms. Either skip shape is acceptable.
 
+    def test_find_relevant_skips_when_embedder_construction_fails(
+        self, seeded_store: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When `fastembed_default()` raises (no cached ONNX model,
+        no network, etc.), the verify must surface `skipped` not
+        `fail`. The substrate is otherwise green; semantic retrieval
+        is an optional capability whose absence shouldn't flag the
+        whole verify as broken.
+
+        This is the CI failure mode: brand-new runner installs lack
+        the cached model and the embedder construction raises
+        `NoSuchFile` from onnxruntime before any search runs.
+        """
+        from schemabrain.enrichment import embeddings
+
+        def boom() -> object:
+            raise FileNotFoundError("NoSuchFile: model_optimized.onnx missing on this runner")
+
+        monkeypatch.setattr(embeddings, "fastembed_default", boom)
+        result = verify_mock_agent(store_path=seeded_store, source_url=None)
+        by_name = {s.name: s for s in result.stages}
+        stage = by_name["find_relevant_entities"]
+        assert stage.status == "skipped"
+        assert "embedder unavailable" in stage.message
+        assert "substrate is still green" in stage.message
+        # The whole verify exits 0 — `find_relevant_entities` is
+        # best-effort, not required.
+        assert result.exit_code == 0
+
     def test_total_duration_sums_stage_durations(self, seeded_store: Path) -> None:
         result = verify_mock_agent(store_path=seeded_store, source_url=None)
         # Total wall time should be >= the sum of stage durations

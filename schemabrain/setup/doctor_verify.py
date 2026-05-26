@@ -263,8 +263,27 @@ def _run_find_relevant(*, store: object, source_id: str) -> VerifyStage:
 
     from schemabrain.mcp.find_relevant_entities import find_relevant_entities_impl
 
+    # Embedder construction can fail on a clean machine — the fastembed
+    # model file is downloaded on first use, and a brand-new install
+    # (no cache, no network) raises NoSuchFile / OSError before any
+    # search runs. Treat that as `skipped` (the substrate is otherwise
+    # green; semantic retrieval is an optional capability), not `fail`
+    # (which would propagate to exit_code=2 and falsely flag the whole
+    # verify as broken).
     try:
         embedder = fastembed_default()
+    except Exception as exc:
+        return VerifyStage(
+            name="find_relevant_entities",
+            status="skipped",
+            message=(
+                f"embedder unavailable ({type(exc).__name__}); "
+                "semantic retrieval is optional — substrate is still green"
+            ),
+            duration_s=time.perf_counter() - started,
+        )
+
+    try:
         hits = find_relevant_entities_impl(
             store=store,  # type: ignore[arg-type]
             source_connection_id=source_id,
