@@ -62,13 +62,22 @@ class EngineMetricExecutor:
     of the MCP server). Each `execute` call opens a fresh transaction,
     runs the SELECT, and returns the rows as dicts.
 
+    `max_rows` (optional) caps the returned list size — the SELECT
+    still executes in full at the source DB (no `LIMIT` is appended
+    server-side; the cap is a payload-size guard, not a query-cost
+    guard). When None, no cap is applied. The wizard's MCP `serve`
+    surface exposes this via `--max-rows-per-result`. Pair with
+    `statement_timeout` (injected at engine-construct time via
+    `connect_args`) for the full payload + runtime envelope.
+
     Defensive: errors from the DB layer wrap as `RuntimeError` so
     callers can branch on one exception type. Bare SQLAlchemy errors
     would leak ORM concepts into the tool layer.
     """
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, *, max_rows: int | None = None) -> None:
         self._engine = engine
+        self._max_rows = max_rows
 
     def execute(
         self,
@@ -81,7 +90,7 @@ class EngineMetricExecutor:
                 # `Result.mappings()` yields read-only RowMapping views;
                 # `dict()` materialises to a plain dict so downstream
                 # JSON-encoding doesn't depend on SQLAlchemy types.
-                return [dict(row) for row in result.mappings()]
+                rows = [dict(row) for row in result.mappings()]
         except Exception as exc:
             # Log the original type before wrapping so triage can
             # distinguish a compiler bug (`ProgrammingError`) from a
@@ -94,3 +103,18 @@ class EngineMetricExecutor:
                 exc_info=exc,
             )
             raise RuntimeError(f"metric query failed ({type(exc).__name__}): {exc}") from exc
+
+        if self._max_rows is not None and len(rows) > self._max_rows:
+            # Clip the payload but log the truncation so the operator
+            # can see in the events stream that the cap fired (vs.
+            # the agent silently getting fewer rows than the SQL
+            # would have produced). The agent itself sees only the
+            # truncated list — no envelope-level "truncated" flag
+            # today; that's a v0.5 surface decision.
+            _logger.warning(
+                "metric executor truncated result: %d rows -> %d (--max-rows-per-result)",
+                len(rows),
+                self._max_rows,
+            )
+            return rows[: self._max_rows]
+        return rows

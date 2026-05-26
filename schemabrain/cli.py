@@ -344,6 +344,8 @@ def _dispatch(argv: list[str] | None) -> int:
             no_events=args.no_events,
             no_audit=args.no_audit,
             pii_block_csv=args.pii_block,
+            statement_timeout_ms=args.statement_timeout_ms,
+            max_rows_per_result=args.max_rows_per_result,
         )
     if args.command == "fixture-path":
         return _cmd_fixture_path(args.name)
@@ -461,6 +463,7 @@ def _dispatch(argv: list[str] | None) -> int:
             store_path=args.store_path,
             host=args.host,
             json_output=args.json,
+            verify=args.verify,
         )
     if args.command == "apply":
         return _cmd_apply_project(
@@ -487,6 +490,7 @@ def _dispatch(argv: list[str] | None) -> int:
             no_entities=args.no_entities,
             no_metrics=args.no_metrics,
             no_joins=args.no_joins,
+            no_embed=args.no_embed,
             enrich=args.enrich,
             entities_max_cost_usd=args.entities_max_cost_usd,
             metrics_max_cost_usd=args.metrics_max_cost_usd,
@@ -946,6 +950,31 @@ def _build_parser() -> argparse.ArgumentParser:
         "plausible aggregate-analytics use case exists. Pass "
         "--pii-block '' to explicitly disable enforcement (PII tags "
         "still flow to the audit row).",
+    )
+    p_serve.add_argument(
+        "--statement-timeout-ms",
+        dest="statement_timeout_ms",
+        type=int,
+        default=None,
+        metavar="MS",
+        help="Postgres-level statement_timeout (milliseconds) applied "
+        "to every get_metric query. Caps query runtime at the source "
+        "DB; a runaway query aborts with a clear `OperationalError` "
+        "rather than blocking the MCP server's process pool. Injected "
+        "into `connect_args.options` so it CAN'T be overridden via "
+        "URL query params. Omitted (default) means no timeout.",
+    )
+    p_serve.add_argument(
+        "--max-rows-per-result",
+        dest="max_rows_per_result",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Application-level cap on rows returned by each "
+        "get_metric call. Counts after the SQL executes (the source DB "
+        "still does the full scan), so this is a payload-size guard, "
+        "not a query-cost guard — use `--statement-timeout-ms` for "
+        "the latter. Omitted (default) means no cap.",
     )
 
     p_mine = sub.add_parser(
@@ -1784,6 +1813,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON to stdout instead of the human-readable "
         "report to stderr. Useful for CI/monitoring scripts.",
     )
+    p_doctor.add_argument(
+        "--verify",
+        action="store_true",
+        help="Run a mock-agent end-to-end smoke against the substrate "
+        "instead of the config-health report. Simulates one MCP tool "
+        "turn (list_entities → describe_entity → find_relevant_entities "
+        "→ get_metric) without needing an LLM key or a running MCP "
+        "host. Exits 0 if all required stages pass, 2 if any fail.",
+    )
 
     # `schemabrain apply [PROJECT_DIR]` — walk a project tree
     # (entities/, metrics/, joins/ subdirs) and apply each YAML to the
@@ -1952,6 +1990,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "still wires the MCP host; you can curate joins later via "
         "`schemabrain joins suggest --apply`. The join suggester is "
         "deterministic (FK + query-log mining) — no LLM cost, no API key.",
+    )
+    g_stages.add_argument(
+        "--no-embed",
+        dest="no_embed",
+        action="store_true",
+        help="Skip local sentence-embedding generation during the index "
+        "stage. Required to run the wizard on Apple Silicon + Python "
+        "3.12+ where `fastembed`'s `onnxruntime` dependency has no wheel. "
+        "Degrades `find_relevant_entities` from vector similarity to "
+        "keyword/substring matching; everything else works unchanged.",
     )
 
     g_host = p_init.add_argument_group(
@@ -2933,6 +2981,8 @@ def _cmd_serve(
     no_events: bool = False,
     no_audit: bool = False,
     pii_block_csv: str | None = None,
+    statement_timeout_ms: int | None = None,
+    max_rows_per_result: int | None = None,
 ) -> int:
     """Run the MCP server on stdio against the local store.
 
@@ -3051,16 +3101,26 @@ def _cmd_serve(
     # compiled SQL against. Same posture as `PostgresProfiler` from
     # PR #9: `default_transaction_read_only=on` is defense-in-depth on
     # top of the read-only role we already enforce at index time.
+    #
+    # `statement_timeout` (when set via --statement-timeout-ms) is
+    # injected into the connect_args options string rather than the
+    # URL query allowlist. The allowlist comment at
+    # connectors/_url.py warns that statement_timeout via URL would
+    # be operator-overridable and thus bypassable; the connect_args
+    # path is the bind-time fence the source role cannot relax.
+    options_parts = ["-c default_transaction_read_only=on"]
+    if statement_timeout_ms is not None:
+        options_parts.append(f"-c statement_timeout={statement_timeout_ms}")
     try:
         engine = sqlalchemy.create_engine(
             safe_engine_url(source_url),
-            connect_args={"options": "-c default_transaction_read_only=on"},
+            connect_args={"options": " ".join(options_parts)},
         )
     except (sqlalchemy.exc.ArgumentError, ValueError) as exc:  # pragma: no cover — defensive
         print(f"error: cannot construct read-only engine: {exc}", file=sys.stderr)
         return 2
 
-    metric_executor = EngineMetricExecutor(engine)
+    metric_executor = EngineMetricExecutor(engine, max_rows=max_rows_per_result)
 
     # Construct the audit writer alongside the bus — same fallback
     # posture: an OSError during construction (read-only store dir,
@@ -5984,6 +6044,7 @@ def _cmd_doctor(
     store_path: str,
     host: str,
     json_output: bool,
+    verify: bool = False,
 ) -> int:
     """Run `schemabrain doctor` and render the result.
 
@@ -5998,6 +6059,10 @@ def _cmd_doctor(
       - 1: doctor ran; at least one `fail` outcome
       - 2: operational refusal before doctor could run (e.g. --source
         + --url-env conflict, --url-env names an unset variable)
+
+    `verify=True` routes to the mock-agent smoke instead of the
+    config-health report — different surface, different exit code
+    semantics (0 = green, 2 = at least one required stage failed).
     """
     import time as _time
 
@@ -6009,6 +6074,13 @@ def _cmd_doctor(
         if source_url is None:
             # Guided error already rendered to stderr.
             return 2
+
+    if verify:
+        from schemabrain.setup.doctor_verify import render_verify, verify_mock_agent
+
+        result = verify_mock_agent(store_path=Path(store_path), source_url=source_url)
+        render_verify(result, console=_stderr_console())
+        return result.exit_code
     started = _time.perf_counter()
     result = doctor(
         source_url=source_url,
@@ -6041,6 +6113,7 @@ def _cmd_init(
     no_entities: bool,
     no_metrics: bool,
     no_joins: bool,
+    no_embed: bool,
     enrich: bool,
     entities_max_cost_usd: float | None,
     metrics_max_cost_usd: float | None,
@@ -6081,6 +6154,7 @@ def _cmd_init(
     from typing import get_args as _get_args
 
     from schemabrain.setup.hosts import HostName
+    from schemabrain.setup.preflight import detect_apple_silicon_fastembed_gap
     from schemabrain.setup.wizard import WizardConfig, run_default_wizard
 
     effective_host = "manual" if print_only else host
@@ -6099,6 +6173,33 @@ def _cmd_init(
             )
         )
         return 2
+
+    # Stage 0 preflight: refuse fast on the Apple Silicon + Python
+    # 3.12+ + missing-fastembed combination, before any URL prompt
+    # fires. `--skip-index` and `--no-embed` both bypass the embedder
+    # path, so neither needs the gate. Without this guard the wizard
+    # runs through host validation and source-URL prompts before
+    # crashing at stage 2 with an opaque ImportError when the
+    # indexer tries to load `fastembed`.
+    if not skip_index and not no_embed:
+        gap = detect_apple_silicon_fastembed_gap()
+        if gap is not None:
+            _render_guided(
+                GuidedError(
+                    kind="init_apple_silicon_fastembed_gap",
+                    message=gap,
+                    why="the wizard's index stage will try to build embeddings "
+                    "via `fastembed` and crash with an ImportError on this "
+                    "platform combination",
+                    fix="re-run with `--no-embed` to skip embedding generation "
+                    "(degrades `find_relevant_entities` from vector to keyword "
+                    "matching but the wizard completes), OR switch to "
+                    "Python 3.11 via pyenv (`pyenv install 3.11.10 && "
+                    "pyenv local 3.11.10`) where onnxruntime ships a wheel",
+                    next_step="see CONTRIBUTING.md for the supported Python/platform matrix",
+                )
+            )
+            return 2
 
     # Stage 0 — the day-one UX overhaul's demo-vs-own-DB fork prompt.
     # Runs ONLY when no URL was supplied via CLI flag or env AND
@@ -6249,6 +6350,7 @@ def _cmd_init(
         "no_metrics": no_metrics,
         "metrics_max_cost_usd": metrics_max_cost_usd,
         "no_joins": no_joins,
+        "no_embed": no_embed,
         "from_dbt": Path(from_dbt) if from_dbt else None,
         "skip_llm_confirm": effective_skip_llm_confirm,
     }
