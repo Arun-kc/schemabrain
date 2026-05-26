@@ -12,7 +12,7 @@
 #
 # Both jobs use `uv` for env management — same tool the dev workflow uses,
 # so CI failures reproduce locally with
-# `uv sync --extra dev --extra otel && uv run pytest`.
+# `uv sync --extra dev --extra otel --extra ui && uv run pytest`.
 #
 # OS matrix: ubuntu-latest only at v0. macOS is documented as supported
 # for local dev on Python 3.11, but `onnxruntime` (a fastembed transitive
@@ -65,7 +65,18 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        # Pinned to an immutable point tag (NOT @v8 or @v8.0) because
+        # astral-sh/setup-uv stopped publishing rolling major/minor tags
+        # in v8.0.0 as supply-chain hardening (response to the tj-actions
+        # incident; see
+        # https://github.com/astral-sh/setup-uv/releases/tag/v8.0.0).
+        # The previously-used `@v7` rolling tag was deleted upstream on
+        # 2026-05-26, breaking every CI in the world pinned to it. The
+        # 3 other usages of this action in this file + the 1 in
+        # `publish.yml` are pinned to the same point tag; bump them
+        # together. Dependabot manages bumps via the `github-actions`
+        # ecosystem in `.github/dependabot.yml`.
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -76,9 +87,11 @@ jobs:
       - name: Install dependencies
         # `--extra otel` enables the OpenTelemetry test paths
         # (`test_observability_otel.py` + `test_observability_instrument_otel.py`).
-        # The extra adds ~5 MB and is required to keep the OTel module
-        # at full coverage when the integration job runs the gate.
-        run: uv sync --extra dev --extra otel --python ${{ matrix.python-version }}
+        # `--extra ui` enables the dashboard sidecar test paths
+        # (`tests/dashboard/`). Both extras add ~5–6 MB each and are
+        # required to keep the OTel + dashboard modules at full coverage
+        # when the integration job runs the gate.
+        run: uv sync --extra dev --extra otel --extra ui --python ${{ matrix.python-version }}
 
       - name: Lint (ruff check)
         run: uv run --python ${{ matrix.python-version }} ruff check schemabrain tests scripts
@@ -123,7 +136,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -132,10 +145,10 @@ jobs:
         run: uv python install 3.11
 
       - name: Install dependencies
-        # `--extra otel` keeps the lockfile-derived install identical
-        # across all jobs so a security scan that depends on installed
-        # versions sees the same surface as lint-and-unit.
-        run: uv sync --extra dev --extra otel --python 3.11
+        # `--extra otel` + `--extra ui` keep the lockfile-derived install
+        # identical across all jobs so a security scan that depends on
+        # installed versions sees the same surface as lint-and-unit.
+        run: uv sync --extra dev --extra otel --extra ui --python 3.11
 
       - name: pip-audit (known-CVE deps)
         # Strict mode: any vulnerability fails the build.
@@ -213,7 +226,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -226,9 +239,11 @@ jobs:
         # paths (20 tests across two files) skip with
         # `schemabrain[otel] not installed`, dropping branch coverage
         # below the 99% gate. Same posture as lint-and-unit so the
-        # tests that run locally with `uv sync --extra dev --extra otel`
-        # match the CI surface exactly.
-        run: uv sync --extra dev --extra otel --python 3.11
+        # tests that run locally with `uv sync --extra dev --extra otel
+        # --extra ui` match the CI surface exactly. `--extra ui` is
+        # similarly required so the `tests/dashboard/` paths run and
+        # keep dashboard sidecar coverage.
+        run: uv sync --extra dev --extra otel --extra ui --python 3.11
 
       - name: Pre-pull Postgres image (warm testcontainers cache)
         run: docker pull postgres:16-alpine

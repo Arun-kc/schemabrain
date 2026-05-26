@@ -62,6 +62,26 @@ otel = [
     "opentelemetry-sdk>=1.42.1,<2.0",
     "opentelemetry-exporter-otlp-proto-http>=1.27,<2.0",
 ]
+# Optional dashboard sidecar — the v0.4 M1 read-only UI surface
+# (PII Visualization + Refusal Experience UI + Audit Viewer).
+# Activated when (1) this extra is installed, (2) the operator runs
+# `schemabrain dashboard`. Without the extra, `pip install schemabrain`
+# works identically — the sidecar's `create_sidecar` import raises a
+# clear "install with `pip install schemabrain[ui]`" message. The
+# pre-built Next.js static export ships inside the wheel at
+# `schemabrain/dashboard/static/`; end users never need Node.
+# See `docs/internal/v0.4_ui_rfc.md` §2 for the full architecture.
+ui = [
+    # Upper bound excludes 0.136.3 — that single release modified
+    # pyproject.toml to silently add an undocumented `fastar` typosquat
+    # dependency to the `[standard]` extra (advisory MAL-2026-4750).
+    # We don't use `fastapi[standard]`, but pip-audit still flags the
+    # version, and pinning away is the cleanest path. Revisit the
+    # upper bound when an audited 0.137+ release is available.
+    "fastapi>=0.115,!=0.136.3,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "sse-starlette>=2.0,<3.0",
+]
 dev = [
     "pytest>=9.0.3,<10.0",
     "pytest-cov>=5.0,<8.0",
@@ -141,6 +161,11 @@ artifacts = [
     "schemabrain/imports/fixtures/*.json",
     "schemabrain/joins/fixtures/**/*.yaml",
     "schemabrain/metrics/fixtures/**/*.yaml",
+    # Pre-built Next.js static export shipped with the [ui] extra.
+    # Populated by `pnpm --dir web build` at release time (see
+    # `schemabrain/dashboard/static/README.md`). The `**` glob picks
+    # up nested `_next/static/...` assets without listing every chunk.
+    "schemabrain/dashboard/static/**/*",
 ]
 
 [tool.ruff]
