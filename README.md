@@ -68,6 +68,7 @@ schemabrain init
 | Build a semantic layer | [`docs/semantic-layer.md`](docs/semantic-layer.md) |
 | Run in production (audit, drift, Docker) | [`docs/operations.md`](docs/operations.md) |
 | Observe the agent (tail, audit log, OTel) | [`docs/observability.md`](docs/observability.md) |
+| Compare with Querybear / Anthropic reference Postgres MCP | [vs Querybear](docs/compare/querybear.md) · [vs Anthropic reference](docs/compare/anthropic-postgres-mcp.md) |
 | Compare with Vanna / Atlan / dbt-mcp / WrenAI | [`docs/landscape.md`](docs/landscape.md) |
 
 ---

@@ -1,0 +1,132 @@
+# SchemaBrain vs Querybear
+
+> Both projects claim to sit between AI agents and your database. They use the same metaphor and overlap on roughly 70% of the buyer. They are not the same thing.
+
+If you searched for "Querybear alternatives" or "Postgres MCP firewall" you deserve a real comparison, not a sales pitch. Here's an honest one — where Querybear is better, where SchemaBrain is better, and which fits which job.
+
+---
+
+## The 30-second version
+
+| | **Querybear** | **SchemaBrain** |
+|---|---|---|
+| **Mechanism** | Thin SQL executor: parser blocks non-SELECT, role-level + transaction-level read-only, table allowlist, column blocklist, row cap, statement timeout[^1] | No SQL executor in the binary: 12 typed read-only MCP tools, agent never writes SQL, compiler builds parameterized SQL from operator-defined entities/metrics/joins |
+| **Surface** | 3 tools (`list_connections`, `get_schema`, `run_query`) — agent does all SQL writing | 12 tools (`describe_entity`, `resolve_join`, `get_metric`, ...) — semantic layer the agent composes against |
+| **PII** | Column blocklist by name | Tagged taxonomy (12 categories grounded in GDPR/CCPA/HIPAA/PCI DSS); propagated through joins at compile time |
+| **Audit** | Audit log (queryable) | Tamper-evident SHA256 chain (`audit verify` re-walks) |
+| **Trust signal** | None | 2D: `inference_method × validation_state` ([Charter v1.2](../agent-ux-charter.md)) |
+| **Refusal shape** | Plain error | Structured recovery envelope (`suggested_tool` + `suggested_args`) |
+| **Distribution** | Hosted gateway + macOS desktop app | Local-only; install via `pip` + `schemabrain init` |
+| **Databases** | Postgres, MySQL, SQLite | Postgres, SQLite (MySQL on v0.5 roadmap) |
+| **License** | Closed source | MIT, open source |
+| **Pricing** | Free tier + paid team plans | Free, forever (managed offering TBD) |
+
+---
+
+## Where Querybear wins
+
+Honest about their strengths:
+
+- **One-line hosted install.** `claude mcp add --transport http querybear https://mcp.querybear.com/mcp` and you're running. SchemaBrain requires `pip install schemabrain && schemabrain init`. Their hosted gateway is genuinely convenient.
+- **More databases today.** Querybear supports Postgres, MySQL, and SQLite today. SchemaBrain ships Postgres + SQLite, with MySQL targeted for v0.5.
+- **Polished native macOS desktop app.** SchemaBrain ships only the CLI + MCP server today.
+- **EXPLAIN-based cost cap before query execution.**[^1] SchemaBrain doesn't yet ship a cost-cap on the metric executor (statement timeout + max-rows are configurable; EXPLAIN dry-run is roadmap).
+- **Anti-prompt-injection at the data-retrieval layer.**[^1] Per their published [post on prompt injection at the SQL layer](https://querybear.com/blog/prompt-injection-sql-layer), they delimiter-wrap returned sample values and apply pattern-stripping for "ignore previous instructions"-shaped strings. SchemaBrain's PII classifier is name-based today; content-aware classification is roadmap.
+- **Programmatic SEO.** Querybear has been publishing per-client setup pages and compare pages since their March 2026 v1 launch. They're winning search.
+
+If you need a hosted gateway with multi-DB support today and you trust their service to hold your DB credentials, they're a reasonable choice.
+
+---
+
+## Where SchemaBrain wins
+
+The mechanism differences that we believe are load-bearing:
+
+### 1. There is no write tool to attack
+
+Querybear ships a `run_query` tool that takes a SQL string from the agent. Their parser rejects non-SELECT, the role is read-only, the transaction is `READ ONLY` — three layers of defense. But the attack surface (a `run_query` tool whose input is a SQL string the agent's LLM authored) is the surface their defenses live around.
+
+SchemaBrain ships [12 tools](../mechanism/read-only.md), none of which accept SQL. There is no `execute_query`, no `run_sql`, no `validate_query`. The agent calls structured-argument tools (`get_metric(name="customer_revenue", group_by=["category.name"])`); SchemaBrain's compiler emits parameterized SQL from operator-validated definitions. The agent cannot author SQL because there's no path to do so — not because parsing rejected its SQL.
+
+This is a different *shape* of guarantee. A parse-level firewall stops what it recognizes as unsafe; an architectural-read-only firewall doesn't have a write surface in the first place.
+
+### 2. PII is a typed taxonomy, not name matching
+
+Querybear's column blocklist matches column names. If you have a `users` table with a `password_hash` column, you blocklist `password_hash`.
+
+SchemaBrain [tags each column with one or more of 12 categories](../mechanism/pii-taxonomy.md) grounded in real regulation (GDPR, CCPA, HIPAA, PCI DSS). `password` → `credential`; `card_number` → `payment_card`; `ssn` → `government_id`. Three of those (`credential`, `payment_card`, `government_id`) are blocked by default on a zero-config install — no plausible aggregate-analytics use case justifies grouping by SSN.
+
+The tags propagate through the [metric compiler](../mechanism/pii-taxonomy.md#3-propagation-through-joins-and-aggregations--the-compiler-layer-mechanism) across five surfaces — `group_by` columns, `JOIN ON` pairs, filter predicates, measure columns (including composite-expression operands), and time-dimension columns. If a query *touches* a blocked-category column anywhere on the chain, the compiler refuses *before* the database is queried. This catches the Simon-Willison "lethal trifecta" pattern (innocent metric × adversarial group_by × external communication) — see the [Willison Mirror scenario](../mechanism/pii-taxonomy.md#the-willison-mirror-scenario).
+
+### 3. Audit is tamper-evident, not just queryable
+
+Querybear's audit log records who ran what and when. SchemaBrain's [audit chain](../mechanism/audit-chain.md) does that and then some: every row carries `chain_hash[N] = sha256(chain_hash[N-1] || canonical(row[N]))`. Two SQL triggers (`mcp_audit_no_update`, `mcp_audit_no_delete`) forbid mutations at the SQLite layer. `schemabrain audit verify` re-walks the chain and exits non-zero if any past row was rewritten.
+
+The difference matters in adversarial review (someone with filesystem write access tries to cover their tracks) and in compliance contexts that require cryptographic integrity, not just access logs.
+
+### 4. Refusals are structured recovery contracts
+
+Querybear's failures are messages. SchemaBrain's are [typed recovery contracts](../mechanism/structured-recovery.md):
+
+```json
+{
+  "status": "refused",
+  "error": {
+    "kind": "pii_blocked",
+    "recovery": {
+      "suggested_tool": "describe_entity",
+      "suggested_args": {"name": "user"}
+    },
+    "pii_categories": ["credential"]
+  }
+}
+```
+
+The agent reads `recovery.suggested_tool`, calls `describe_entity` to find non-PII columns, retries. No string-parsing, no human round-trip. The closed `ErrorKind` Literal has 26 values an agent can switch on programmatically.
+
+### 5. Local-first, no credentials leaving your machine
+
+Querybear's hosted gateway stores your database credentials server-side. That's the convenience-vs-trust tradeoff they ship. SchemaBrain runs as a local stdio MCP server in your own process; the connection URL never leaves your machine. There is no SchemaBrain SaaS today and the v0.5 roadmap doesn't add one — local-first is the architectural commitment.
+
+### 6. Open source
+
+SchemaBrain is MIT-licensed on GitHub. You can read the [PII classifier](../../schemabrain/pii/classifier.py), the [metric compiler](../../schemabrain/mcp/get_metric.py), the [audit verifier](../../schemabrain/audit/verify.py), and the [refusal envelope](../../schemabrain/mcp/server.py) yourself and verify our claims line by line. Querybear is closed source — you're trusting the marketing.
+
+---
+
+## Pick Querybear if
+
+- You want a hosted gateway with one-line install today and you're comfortable with credentials leaving your machine
+- MySQL or SQLite is your primary DB (we ship SQLite + Postgres; MySQL is v0.5)
+- A native macOS desktop app for ad-hoc data exploration is the right shape for your team
+- You can tolerate column-name-based PII rules
+- You don't need cryptographic audit integrity
+
+## Pick SchemaBrain if
+
+- You want **architectural read-only** (no write tool in the binary), not parser-level read-only
+- Your schema has PII that name-matching misses (joins, FKs, composite measures, filter predicates)
+- You need a tamper-evident audit log for compliance
+- You want a semantic layer (entities, metrics, canonical joins) — not just safe `SELECT` execution
+- Local-only is a hard requirement (no DB credentials leave your machine)
+- Open source matters
+
+---
+
+## Where the gap might close — and where it won't
+
+- If Querybear expands its MCP surface, a semantic layer would be the natural next move. Until then, the 3-tool surface keeps SQL authoring on the agent.
+- SchemaBrain will likely ship more defenses (EXPLAIN cost cap, content-aware PII, anti-prompt-injection at retrieval) in v0.5 / v0.6.
+- SchemaBrain does not plan to ship a hosted gateway that holds your DB credentials. That's not catching up — that's a different product.
+
+---
+
+## Sources & further reading
+
+- Querybear positioning: [querybear.com](https://querybear.com)
+- Querybear's compare-page template (we mirrored their format honestly): [querybear.com/compare/anthropic-postgres-mcp](https://querybear.com/compare/anthropic-postgres-mcp)
+- SchemaBrain's full mechanism docs: [`/mechanism/read-only`](../mechanism/read-only.md) · [`/mechanism/pii-taxonomy`](../mechanism/pii-taxonomy.md) · [`/mechanism/audit-chain`](../mechanism/audit-chain.md) · [`/mechanism/structured-recovery`](../mechanism/structured-recovery.md) · [`/mechanism/trust-signal`](../mechanism/trust-signal.md)
+- Try SchemaBrain in 60 seconds: [`/setup/claude-desktop`](../setup/claude-desktop.md) · [`/setup/cursor`](../setup/cursor.md) · [`/setup/windsurf`](../setup/windsurf.md) · [`/setup/claude-code`](../setup/claude-code.md)
+- Project memory of competitive intel: [docs/landscape.md](../landscape.md)
+
+[^1]: Querybear capability claims sourced from their homepage (https://querybear.com), their [`postgres-mcp-server-claude-code`](https://querybear.com/blog/postgres-mcp-server-claude-code) blog post (tool surface), and their [`prompt-injection-sql-layer`](https://querybear.com/blog/prompt-injection-sql-layer) post (anti-prompt-injection mechanism + EXPLAIN cost cap), accessed 2026-05-26. Update before publish if the surface has shifted.
