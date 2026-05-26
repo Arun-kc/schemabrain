@@ -1773,7 +1773,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_doctor.add_argument(
         "--host",
-        choices=("claude-desktop", "claude-code", "manual"),
+        choices=("claude-desktop", "claude-code", "cursor", "windsurf", "manual"),
         default="claude-desktop",
         help="Which host config to check. Use `manual` to skip host-config checks "
         "(default: claude-desktop)",
@@ -1960,7 +1960,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     g_host.add_argument(
         "--host",
-        choices=("claude-desktop", "claude-code", "manual"),
+        choices=("claude-desktop", "claude-code", "cursor", "windsurf", "manual"),
         default="claude-desktop",
         help="Which host to wire. `manual` prints the snippet without writing "
         "anywhere (default: claude-desktop)",
@@ -6153,6 +6153,17 @@ def _cmd_init(
     rewritten = silent_rewrite_to_psycopg(parsed_scheme, source_url)
     if rewritten is not None:
         source_url = rewritten
+        # One-line confirmation so the operator sees that we rewrote
+        # their pasted libpq URL to the SQLAlchemy/psycopg form. The
+        # rewrite itself stays silent in spirit (it doesn't abort or
+        # prompt), but a single dim stderr line means a developer who
+        # later inspects logs / pastes the same URL into another tool
+        # understands why the two strings differ.
+        print(
+            f"[schemabrain init] detected {parsed_scheme}:// URL; using "
+            "postgresql+psycopg:// for SQLAlchemy compatibility",
+            file=sys.stderr,
+        )
 
     # `--yes` is a superset shorthand: it implies the LLM-prompt
     # skip AND the host-overwrite auto-confirm. A user who only
@@ -7554,6 +7565,8 @@ def _host_display_name(host: str) -> str:
     return {
         "claude-desktop": "Claude Desktop",
         "claude-code": "Claude Code",
+        "cursor": "Cursor",
+        "windsurf": "Windsurf",
         "manual": "manual mode",
     }.get(host, host)
 
@@ -7899,10 +7912,12 @@ def _render_closing_block(
         console.print(  # type: ignore[attr-defined]
             f"[dim]config written: {host_result.config_path}[/]"
         )
+    _render_cold_start_flare(host_result, console=console)
     console.print()  # type: ignore[attr-defined]
     _render_pending_entity_block(wizard_result, console=console)
     _render_pending_metrics_block(wizard_result, console=console)
     _render_pending_joins_block(wizard_result, console=console)
+    _render_system_prompt_block(host_result, console=console)
     console.print("Inspect activity:  [bold]schemabrain tail --follow[/]")  # type: ignore[attr-defined]
     console.print("Review the audit:  [bold]schemabrain audit list[/]")  # type: ignore[attr-defined]
     # Day-one UX overhaul: discovery links for the other commands a
@@ -7917,6 +7932,100 @@ def _render_closing_block(
     console.print("Detect schema drift:   [bold]schemabrain check[/]")  # type: ignore[attr-defined]
     console.print()  # type: ignore[attr-defined]
     console.print("[dim]The agent reads. It doesn't write. That's the whole point.[/]")  # type: ignore[attr-defined]
+
+
+_SYSTEM_PROMPT_SNIPPET = (
+    "When the user asks about their data:\n"
+    "- Call find_relevant_entities(query) to find what's available.\n"
+    "- Call describe_entity(name) for fields, joins, and PII tags.\n"
+    "- Call get_metric(name, ...) to compute the answer.\n"
+    "- Don't guess table or column names. Don't fall back to list_tables."
+)
+"""Recommended system-prompt copy printed by `_render_system_prompt_block`.
+
+5 lines + a header line in the renderer (6 lines total — under the
+8-line spec ceiling). Steers the agent through the semantic-firewall
+flow (`find_relevant_entities` → `describe_entity` → `get_metric`) so
+the substrate's safety value lands on the first real query rather than
+the third. Without this nudge, agents default to `list_tables` /
+`describe_table` (physical-schema tools that exist in many Postgres
+MCPs) and bypass the PII-aware metric layer entirely.
+"""
+
+
+_CLAUDE_DESKTOP_COLD_START_BODY = (
+    "Claude Desktop only reads MCP configs on cold start. After init "
+    "writes the entry, fully quit Claude Desktop ([bold]Cmd+Q on macOS[/], "
+    "[bold]Ctrl+Q on Linux[/], [bold]File → Exit on Windows[/]) and "
+    "reopen — a regular window-close is not enough."
+)
+"""Body copy for `_render_cold_start_flare`.
+
+The flare fires only on the `claude-desktop` host because Claude Desktop
+is the host whose reload behavior tripped DevRel-flagged "doesn't work"
+reports (operators saw the wizard succeed, closed the Claude window,
+and assumed the wiring was broken when the MCP entry hadn't loaded).
+Claude Code's `claude mcp add` reloads in-process; the cursor and
+windsurf hosts read their configs on every prompt cycle — no panel
+needed for those.
+"""
+
+
+def _render_cold_start_flare(host_result: object, *, console: object) -> None:
+    """Bold-bordered Rich panel reminding Claude Desktop users to fully quit.
+
+    Renders only when the wizard wrote (or no-opped on) a claude-desktop
+    config. Skipped on:
+
+    - `claude-code` (shell-out reloads in-process)
+    - `manual` / `printed_only` (operator hasn't installed anything yet —
+      the cold-start instruction would land before the entry exists)
+    - `shell_out_failed` (the existing fallback Note covers recovery)
+
+    The body's cross-platform copy ([Cmd+Q] / [Ctrl+Q] / [File → Exit])
+    keeps the panel useful without requiring a `platform.system()` probe.
+    """
+    from rich.panel import Panel
+
+    from schemabrain.setup.init_flow import InitResult
+
+    if not isinstance(host_result, InitResult):
+        return  # pragma: no cover — defensive; caller already narrowed
+    if host_result.host != "claude-desktop":
+        return
+    if host_result.state not in ("written", "unchanged"):
+        return  # pragma: no cover — claude-desktop state in {shell_out_*, printed_only} is unreachable in real flow; defensive guard for future InitState additions
+    console.print(  # type: ignore[attr-defined]
+        Panel(
+            _CLAUDE_DESKTOP_COLD_START_BODY,
+            title="Restart Claude Desktop",
+            border_style="bold",
+            expand=False,
+            width=_wizard_panel_width(console),
+        )
+    )
+
+
+def _render_system_prompt_block(host_result: object, *, console: object) -> None:
+    """Render the recommended system-prompt snippet for agent steering.
+
+    Skipped on `printed_only` (manual mode) because manual-mode users
+    are already advanced operators who know how to wire system prompts;
+    the snippet adds noise without value for them. Renders on every
+    other state — written/unchanged for claude-desktop, shell_out_*
+    for claude-code — because both flows benefit from the same
+    semantic-firewall steering copy.
+    """
+    from schemabrain.setup.init_flow import InitResult
+
+    if not isinstance(host_result, InitResult):
+        return  # pragma: no cover — defensive; caller already narrowed
+    if host_result.state == "printed_only":
+        return
+    console.print("Steer the agent — paste into the system prompt:")  # type: ignore[attr-defined]
+    for line in _SYSTEM_PROMPT_SNIPPET.splitlines():
+        console.print(f"  [dim]{line}[/]")  # type: ignore[attr-defined]
+    console.print()  # type: ignore[attr-defined]
 
 
 def _render_pending_entity_block(wizard_result: object, *, console: object) -> None:

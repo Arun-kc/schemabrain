@@ -1,6 +1,6 @@
 """Per-host config-path resolution + snippet building + Claude Code shell-out.
 
-Three host targets are supported:
+Five host targets are supported:
 
   - **claude-desktop** (macOS / Windows). The MCP server entry is
     written to a JSON config file by `config_io.py`; this module only
@@ -11,6 +11,16 @@ Three host targets are supported:
     Anthropic's supported registration path is the CLI itself —
     editing `~/.claude.json` directly bypasses validation Claude Code
     does on registration, and is brittle when their schema evolves.
+  - **cursor**. Global MCP config at ``~/.cursor/mcp.json`` (Cursor
+    also supports project-local ``.cursor/mcp.json`` but init targets
+    the global one — it's the "install once, use everywhere" path
+    that matches the rest of the wizard's posture). Entries include
+    a ``"type": "stdio"`` field; Cursor accepts the entry without
+    it (defaulting to stdio) but explicit is safer when their
+    schema evolves.
+  - **windsurf**. Global MCP config at
+    ``~/.codeium/windsurf/mcp_config.json``. JSON shape is identical
+    to claude-desktop's ``mcpServers.{name}`` map — no extra fields.
   - **manual**. Always available. Doesn't write anywhere; the init
     flow prints the snippet for the user to paste into whatever
     host config they're targeting.
@@ -19,7 +29,16 @@ Auto-detect order:
 
   1. Claude Desktop, if its config directory exists.
   2. Claude Code, if `claude --version` succeeds.
-  3. Manual, as the always-available fallback.
+  3. Cursor, if its config directory exists.
+  4. Windsurf, if its config directory exists.
+  5. Manual, as the always-available fallback.
+
+Detection prioritizes Claude Desktop / Claude Code first because the
+README's hero-path examples target them — auto-detect should match
+what new users have already been steered toward. Cursor/Windsurf
+fall through next so users with both Claude Desktop + Cursor
+installed still land on Claude Desktop; they can override via
+explicit `--host cursor`.
 
 The snippet shape is locked: `--url-env VARNAME` is always used so DB
 credentials live in the host's env block rather than in argv (where
@@ -35,11 +54,11 @@ import os
 import platform
 import shutil
 import subprocess  # nosec B404 — used only for fixed-argv shell-outs to `claude`
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-HostName = Literal["claude-desktop", "claude-code", "manual"]
+HostName = Literal["claude-desktop", "claude-code", "manual", "cursor", "windsurf"]
 
 
 @dataclass(frozen=True)
@@ -50,23 +69,35 @@ class SchemabrainSnippet:
     the environment-variable block the host launches the server with.
     The env block is where DB credentials live (referenced by
     `--url-env`), keeping them out of argv.
+
+    `extras` carries per-host extra keys merged into the MCP entry
+    JSON (e.g., ``{"type": "stdio"}`` for Cursor). Defaults to empty
+    so claude-desktop / claude-code / windsurf entries stay exactly
+    the shape they were before — those hosts ignore unknown keys
+    but adding fields they don't expect noises up diffs in
+    operator-visible config files.
     """
 
     command: str
     args: tuple[str, ...]
     env: dict[str, str]
+    extras: dict[str, str] = field(default_factory=dict)
 
     def to_mcp_entry(self) -> dict[str, object]:
         """Return a JSON-serialisable dict for the `mcpServers.schemabrain` slot.
 
         Returns fresh containers so callers can merge into a larger
         config and mutate without contaminating the snippet itself.
+        Per-host `extras` are merged last so they can't accidentally
+        overwrite the load-bearing ``command``/``args``/``env`` keys.
         """
-        return {
+        entry: dict[str, object] = {
             "command": self.command,
             "args": list(self.args),
             "env": dict(self.env),
         }
+        entry.update(self.extras)
+        return entry
 
 
 @dataclass(frozen=True)
@@ -91,6 +122,7 @@ def build_snippet(
     db_url: str,
     runner: str = "uvx",
     pii_block: tuple[str, ...] = (),
+    host: HostName | None = None,
 ) -> SchemabrainSnippet:
     """Construct the schemabrain MCP entry.
 
@@ -110,6 +142,12 @@ def build_snippet(
     operator for which categories to block and passes the chosen
     set through here — the server-side firewall is opt-in, but
     the wizard surfaces the choice rather than burying it.
+
+    `host` lets per-host JSON quirks land in the snippet's ``extras``.
+    Today only Cursor adds anything (``"type": "stdio"``); other
+    hosts pass through unchanged. Defaults to None so call sites
+    that don't care about the host quirk (tests, the manual-mode
+    print path) keep working unchanged.
 
     Invariants enforced:
 
@@ -143,10 +181,19 @@ def build_snippet(
     else:
         command = runner
         args = serve_args
+    extras: dict[str, str] = {}
+    if host == "cursor":
+        # Cursor reads MCP entries with implicit stdio default but
+        # the explicit field is documented at
+        # https://docs.cursor.com/context/model-context-protocol —
+        # safer to write what Cursor's docs show than to rely on
+        # an implicit default that could change.
+        extras["type"] = "stdio"
     return SchemabrainSnippet(
         command=command,
         args=args,
         env={env_var_name: db_url},
+        extras=extras,
     )
 
 
@@ -185,6 +232,33 @@ def claude_desktop_config_path() -> Path | None:
     return None
 
 
+def cursor_config_path() -> Path:
+    """Return Cursor's global MCP config path.
+
+    Cursor reads ``~/.cursor/mcp.json`` (global) and project-local
+    ``.cursor/mcp.json`` (per-repo). Init targets the global path
+    because that matches the "install once, use everywhere" posture
+    of the rest of the wizard; project-local entries are an
+    operator-driven hand-edit.
+
+    Returns the path unconditionally — Cursor runs on every OS the
+    wizard cares about, so there's no per-platform None branch the
+    way claude-desktop has on Linux.
+    """
+    return Path.home() / ".cursor" / "mcp.json"
+
+
+def windsurf_config_path() -> Path:
+    """Return Windsurf's MCP config path.
+
+    Windsurf reads ``~/.codeium/windsurf/mcp_config.json`` — the
+    Codeium namespace persists from before Windsurf split out as
+    a standalone IDE. JSON shape matches claude-desktop's
+    ``mcpServers.{name}`` map exactly.
+    """
+    return Path.home() / ".codeium" / "windsurf" / "mcp_config.json"
+
+
 def claude_code_available() -> bool:
     """Check whether the `claude` CLI is on PATH and responsive.
 
@@ -209,17 +283,27 @@ def claude_code_available() -> bool:
 def detect_host() -> HostName:
     """Auto-detect the most appropriate host target.
 
-    Priority: Claude Desktop (most common; the README points here),
-    then Claude Code, then manual. The desktop check requires the
-    config directory to actually exist on disk — a stale path
-    returned by `claude_desktop_config_path()` (e.g. macOS user with
-    Claude Desktop never installed) falls through correctly.
+    Priority: Claude Desktop → Claude Code → Cursor → Windsurf →
+    manual. The first two stay highest because the README's
+    hero-path examples target them — auto-detect should match the
+    host the user has already been steered toward. Cursor/Windsurf
+    fall through next so operators with multiple IDEs installed
+    land on the Anthropic-first option; explicit `--host cursor`
+    or `--host windsurf` overrides the auto-pick.
+
+    Each path check requires the config DIRECTORY to exist
+    on disk — a stale path returned by the resolver (e.g. macOS
+    user with Cursor never installed) falls through correctly.
     """
     desktop_path = claude_desktop_config_path()
     if desktop_path is not None and desktop_path.parent.exists():
         return "claude-desktop"
     if claude_code_available():
         return "claude-code"
+    if cursor_config_path().parent.exists():
+        return "cursor"
+    if windsurf_config_path().parent.exists():
+        return "windsurf"
     return "manual"
 
 

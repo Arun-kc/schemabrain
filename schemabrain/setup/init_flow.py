@@ -58,8 +58,10 @@ from schemabrain.setup.hosts import (
     SchemabrainSnippet,
     build_snippet,
     claude_desktop_config_path,
+    cursor_config_path,
     install_to_claude_code,
     is_postgres_url,
+    windsurf_config_path,
 )
 
 InitState = Literal[
@@ -418,6 +420,7 @@ def init(
         db_url=source_url,
         runner=runner,
         pii_block=pii_block,
+        host=host,
     )
 
     if host == "manual":
@@ -427,13 +430,16 @@ def init(
             state="printed_only",
             skip_index=skip_index,
         )
-    if host == "claude-desktop":
-        # _resolve_host_target above already raised InitRefusal when
-        # config_path was None; this guard is defensive against future
-        # refactor that decouples the two.
+    if host in ("claude-desktop", "cursor", "windsurf"):
+        # All three hosts use the same JSON merge contract: an
+        # ``mcpServers.{name}`` map in a host-owned config file.
+        # `_resolve_host_target` already raised InitRefusal when
+        # config_path was None; this guard is defensive against a
+        # future refactor that decouples the two.
         if config_path is None:  # pragma: no cover
-            raise RuntimeError("claude-desktop host without resolved config_path")
-        return _install_to_claude_desktop(
+            raise RuntimeError(f"{host} host without resolved config_path")
+        return _install_via_mcp_json(
+            host=host,
             snippet=snippet,
             config_path=config_path,
             assume_yes=assume_yes,
@@ -629,6 +635,35 @@ def _resolve_host_target(host: HostName) -> Path | None:
         return None
     if host == "claude-code":
         return None
+    if host == "cursor":
+        cfg = cursor_config_path()
+        if not cfg.parent.exists():
+            raise InitRefusal(
+                GuidedError(
+                    kind="init_host_unavailable",
+                    message=f"Cursor config directory not found at {cfg.parent}",
+                    why=f"Cursor doesn't look installed at the expected path ({cfg.parent})",
+                    fix="install Cursor (https://cursor.com), or re-run with "
+                    "`--host manual` to print the snippet for hand-install",
+                    next_step=None,
+                )
+            )
+        return cfg
+    if host == "windsurf":
+        cfg = windsurf_config_path()
+        if not cfg.parent.exists():
+            raise InitRefusal(
+                GuidedError(
+                    kind="init_host_unavailable",
+                    message=f"Windsurf config directory not found at {cfg.parent}",
+                    why="Windsurf (Codeium) doesn't look installed at the expected path "
+                    f"({cfg.parent})",
+                    fix="install Windsurf (https://codeium.com/windsurf), or re-run "
+                    "with `--host manual` to print the snippet for hand-install",
+                    next_step=None,
+                )
+            )
+        return cfg
     # host == "claude-desktop"
     cfg = claude_desktop_config_path()
     if cfg is None:
@@ -638,7 +673,8 @@ def _resolve_host_target(host: HostName) -> Path | None:
                 message="Claude Desktop is not supported on this platform",
                 why="no official Claude Desktop build exists for this OS (Linux), "
                 "or APPDATA is unset on Windows",
-                fix="re-run with `--host claude-code` or `--host manual`",
+                fix="re-run with `--host claude-code`, `--host cursor`, "
+                "`--host windsurf`, or `--host manual`",
                 next_step=None,
             )
         )
@@ -648,23 +684,34 @@ def _resolve_host_target(host: HostName) -> Path | None:
                 kind="init_host_unavailable",
                 message=f"Claude Desktop config directory not found at {cfg.parent}",
                 why="Claude Desktop doesn't look installed at the expected path",
-                fix="install Claude Desktop, or re-run with `--host claude-code` or `--host manual`",
+                fix="install Claude Desktop, or re-run with `--host claude-code`, "
+                "`--host cursor`, `--host windsurf`, or `--host manual`",
                 next_step=None,
             )
         )
     return cfg
 
 
-# ----- install: claude-desktop ----------------------------------------------
+# ----- install: claude-desktop / cursor / windsurf (JSON merge) -------------
 
 
-def _install_to_claude_desktop(
+def _install_via_mcp_json(
     *,
+    host: HostName,
     snippet: SchemabrainSnippet,
     config_path: Path,
     assume_yes: bool,
     skip_index: bool,
 ) -> InitResult:
+    """Install ``snippet`` into a host that uses an ``mcpServers.{name}`` JSON file.
+
+    Shared by claude-desktop, cursor, and windsurf — all three read
+    the same ``mcpServers.{name}`` shape from a host-owned JSON file
+    on disk. The only per-host differences are the config path
+    (resolved upstream by ``_resolve_host_target``) and the optional
+    ``"type": "stdio"`` field in the entry (resolved upstream by
+    ``build_snippet(host=...)``).
+    """
     existing = None
     if config_path.exists():
         try:
@@ -691,7 +738,7 @@ def _install_to_claude_desktop(
     if existing_entry == new_entry:
         # Idempotent no-op.
         return InitResult(
-            host="claude-desktop",
+            host=host,
             snippet=snippet,
             state="unchanged",
             config_path=config_path,
@@ -711,7 +758,7 @@ def _install_to_claude_desktop(
     merged = merge_schemabrain_entry(existing, snippet)
     backup_made = write_mcp_config_atomic(config_path, merged)
     return InitResult(
-        host="claude-desktop",
+        host=host,
         snippet=snippet,
         state="written",
         config_path=config_path,

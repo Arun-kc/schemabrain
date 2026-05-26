@@ -471,9 +471,16 @@ class TestInitStageZeroAbortPaths:
         # and exits 130 — same shape as stage 0 abort.
         exit_code = main(["init"])
         assert exit_code == 130
+        captured = capsys.readouterr()
         # The wizard received the rewritten URL with +psycopg, not
-        # the bare scheme. This proves line 4994-4996 fired.
+        # the bare scheme. This proves the silent_rewrite branch fired.
         assert received["url"].startswith("postgresql+psycopg://")
+        # URL auto-fixer: the rewrite surfaces a one-line stderr
+        # confirmation so a developer who later sees the +psycopg
+        # suffix in logs understands why their pasted URL changed
+        # shape.
+        assert "detected postgresql:// URL" in captured.err
+        assert "postgresql+psycopg://" in captured.err
 
 
 class TestInitCliEnvVarFlag:
@@ -1776,6 +1783,131 @@ class TestWizardRenderer:
         # The clean-run thesis tagline does NOT — to avoid contradicting
         # the recovery hint.
         assert "The agent reads. It doesn't write." not in captured.err
+
+    def test_closing_block_renders_cold_start_flare_on_claude_desktop_written(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The Cmd+Q bold-bordered panel renders on a claude-desktop written run.
+
+        Pins the cold-start flare contract: operators who paid the
+        install cost must see the cold-start instruction before they
+        restart Claude Desktop and report "doesn't work" because
+        window-close wasn't Cmd+Q. The panel's title is the
+        unambiguous action verb ("Restart Claude Desktop") so it
+        reads as a directive, not a general note.
+        """
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._written_host_result(tmp_path),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        # Panel body copy — cross-platform key shortcuts means the
+        # message works on macOS / Linux / Windows without a
+        # platform.system() probe.
+        assert "MCP configs on cold start" in captured.err
+        assert "Cmd+Q on macOS" in captured.err
+        # Panel title surfaces the action verb above the box.
+        assert "Restart Claude Desktop" in captured.err
+
+    def test_closing_block_omits_cold_start_flare_on_claude_code(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """claude-code never needs the cold-start panel — `claude mcp add`
+        reloads MCP servers in-process. Rendering the panel here would
+        confuse the operator into restarting an app that doesn't need
+        restarting.
+        """
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.hosts import SchemabrainSnippet
+        from schemabrain.setup.init_flow import InitResult
+        from schemabrain.setup.wizard import WizardResult
+
+        snippet = SchemabrainSnippet(command="uvx", args=("schemabrain==0.2.0a1", "serve"), env={})
+        host_result = InitResult(
+            host="claude-code",
+            snippet=snippet,
+            state="shell_out_succeeded",
+            shell_out_command=("claude", "mcp", "add"),
+        )
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=host_result,
+        )
+        _render_wizard_result(result, host_display="Claude Code")
+        captured = capsys.readouterr()
+        assert "MCP configs on cold start" not in captured.err
+
+    def test_closing_block_omits_cold_start_flare_on_manual_mode(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Manual mode hasn't installed anything yet — the cold-start
+        instruction would land before the entry exists, which is
+        misdirection.
+        """
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._printed_only_host_result(),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="manual mode")
+        captured = capsys.readouterr()
+        assert "MCP configs on cold start" not in captured.err
+
+    def test_closing_block_renders_system_prompt_snippet_on_written_host(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The system-prompt snippet renders on every state except
+        manual/printed_only. Pin the load-bearing lines verbatim so
+        regressions (typos, accidental rewrites) surface in CI rather
+        than at first contact with a real agent.
+        """
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._written_host_result(tmp_path),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        assert "Steer the agent" in captured.err
+        # The three load-bearing semantic-firewall calls in order.
+        assert "find_relevant_entities(query)" in captured.err
+        assert "describe_entity(name)" in captured.err
+        assert "get_metric(name" in captured.err
+        # The anti-pattern guard — without this line agents default to
+        # `list_tables` and skip the metric layer.
+        assert "Don't fall back to list_tables" in captured.err
+
+    def test_closing_block_omits_system_prompt_on_manual_mode(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Manual-mode operators are already wiring system prompts by
+        hand; the snippet adds noise without value. Pin the omission so
+        a future renderer refactor doesn't accidentally surface it.
+        """
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._printed_only_host_result(),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="manual mode")
+        captured = capsys.readouterr()
+        assert "Steer the agent" not in captured.err
+        assert "find_relevant_entities(query)" not in captured.err
 
     def test_wizard_status_to_tier_routes_known_statuses(
         self, capsys: pytest.CaptureFixture[str]
