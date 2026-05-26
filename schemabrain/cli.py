@@ -78,6 +78,7 @@ from urllib.parse import urlparse
 
 import sqlalchemy
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.pool import NullPool
 
 from schemabrain import __version__
 from schemabrain._env import resolve_positive_float_env, resolve_positive_int_env
@@ -3108,12 +3109,21 @@ def _cmd_serve(
     # connectors/_url.py warns that statement_timeout via URL would
     # be operator-overridable and thus bypassable; the connect_args
     # path is the bind-time fence the source role cannot relax.
+    #
+    # `NullPool` opens a fresh connection per request and discards it
+    # on close, matching the introspection connector (postgres.py:54)
+    # and the query-log miner (cli.py:_cmd_mine_query_log). This
+    # eliminates the pool-state-pollution surface that would become
+    # live the moment any future feature issued a `SET` / `SET LOCAL`
+    # on a connection. Per-call cost is a few ms; `serve` is bounded
+    # by agent turn latency so connection reuse buys nothing observable.
     options_parts = ["-c default_transaction_read_only=on"]
     if statement_timeout_ms is not None:
         options_parts.append(f"-c statement_timeout={statement_timeout_ms}")
     try:
         engine = sqlalchemy.create_engine(
             safe_engine_url(source_url),
+            poolclass=NullPool,
             connect_args={"options": " ".join(options_parts)},
         )
     except (sqlalchemy.exc.ArgumentError, ValueError) as exc:  # pragma: no cover — defensive
