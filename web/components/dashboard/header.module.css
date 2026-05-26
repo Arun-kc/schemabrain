@@ -1,0 +1,74 @@
+/* Dashboard header strip — fixed full-bleed bar shared across surfaces. */
+
+.strip {
+  border-bottom: 1px solid var(--color-ink-700);
+  background: var(--surface-base);
+}
+
+.inner {
+  max-width: 88rem;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 0.875rem 2.5rem;
+}
+
+.brandGroup {
+  display: flex;
+  align-items: baseline;
+  gap: 0.875rem;
+}
+
+.brand {
+  font-family: var(--font-display);
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+
+.separator {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-ink-300);
+}
+
+.crumb {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.crumbActive {
+  color: var(--text-secondary);
+}
+
+.rightGroup {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.sourcePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  padding: 0.25rem 0.625rem;
+  background: var(--surface-overlay);
+  border: 1px solid var(--border-subtle);
+  letter-spacing: 0.01em;
+}
+
+.statusDot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}

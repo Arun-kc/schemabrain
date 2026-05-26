@@ -3,28 +3,57 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import {
-  CATASTROPHIC_LEAK_CATEGORIES,
-  type PIICategory,
-  type Sensitivity,
-} from "@/lib/types";
+import type { PIICategory, Sensitivity } from "@/lib/types";
 import { TrustBadge } from "./TrustBadge";
-
-interface DrilldownProps {
-  entityName: string;
-  sourceId?: string;
-}
+import { HalfCircleIcon } from "../icons/HalfCircleIcon";
+import styles from "./ledger.module.css";
 
 /**
- * Right-rail drill-down for the currently selected entity. Lists the
- * entity's columns with their per-column PII chips. Catastrophic
- * categories render in signal-red; sensitivity is shown as a small
- * mono label next to the column name.
+ * Drilldown for the currently selected entity. Per the Boardroom
+ * Brief redesign, this is a bottom-aligned bordered card (not a
+ * right-rail). When no entity is selected, the card is omitted —
+ * the matrix above is the surface; the drilldown is an optional
+ * companion.
  *
  * The fetch is lazy — only fires when an entity is selected, so the
- * initial matrix render isn't gated on N column requests.
+ * initial matrix render isn't gated on a column request.
  */
-export function Drilldown({ entityName, sourceId }: DrilldownProps) {
+
+interface DrilldownProps {
+  entityName: string | null;
+  sourceId?: string;
+  catastrophicCategories: readonly string[];
+}
+
+export function Drilldown({
+  entityName,
+  sourceId,
+  catastrophicCategories,
+}: DrilldownProps) {
+  if (entityName === null) return null;
+  return (
+    <section className={styles.drilldown} aria-live="polite">
+      <p className={styles.drilldownLabel}>
+        selected <strong>{entityName}</strong>
+      </p>
+      <DrilldownCard
+        entityName={entityName}
+        sourceId={sourceId}
+        catastrophicSet={new Set(catastrophicCategories)}
+      />
+    </section>
+  );
+}
+
+function DrilldownCard({
+  entityName,
+  sourceId,
+  catastrophicSet,
+}: {
+  entityName: string;
+  sourceId?: string;
+  catastrophicSet: Set<string>;
+}) {
   const query = useQuery({
     queryKey: ["entity-columns", entityName, sourceId],
     queryFn: () => api.entityColumns(entityName, sourceId),
@@ -32,97 +61,102 @@ export function Drilldown({ entityName, sourceId }: DrilldownProps) {
 
   if (query.isPending) {
     return (
-      <div className="font-mono text-xs text-(--text-muted)">
-        <p className="uppercase tracking-widest">drill</p>
-        <p className="mt-1 text-(--color-ink-300)">────</p>
-        <p className="mt-rhythm-base">loading {entityName}…</p>
+      <div className={styles.drilldownCard}>
+        <p className={styles.skeleton}>loading columns…</p>
       </div>
     );
   }
   if (query.isError) {
     return (
-      <p className="font-mono text-xs text-(--color-signal-red)">
-        {query.error.message}
-      </p>
+      <div className={styles.drilldownCard}>
+        <p className={styles.drilldownHeaderMeta} style={{ color: "var(--color-signal-red)" }}>
+          {query.error.message}
+        </p>
+      </div>
     );
   }
 
   const { entity, columns } = query.data;
-  const hasAnyTags = columns.some(
-    (c) => c.sensitivity !== "public" || c.pii_categories.length > 0,
-  );
 
   return (
-    <div aria-live="polite">
-      <div className="font-mono text-xs uppercase tracking-widest text-(--text-muted)">
-        drill
-      </div>
-      <p className="mt-1 font-mono text-xs text-(--color-ink-300)">────</p>
-      <p className="mt-rhythm-tight font-mono text-sm text-(--color-ink-900)">
-        {entity.qualified_table}
-      </p>
-      <div className="mt-rhythm-tight flex items-center gap-2">
-        <TrustBadge
-          inferenceMethod={entity.inference_method}
-          validationState={entity.validation_state}
-          size="md"
-        />
-        <span className="font-mono text-xs text-(--text-muted)">
-          {entity.inference_method.replace(/_/g, " ")} · {entity.validation_state}
+    <div className={styles.drilldownCard}>
+      <header className={styles.drilldownHeader}>
+        <div className={styles.drilldownHeaderLeft}>
+          <TrustBadge
+            inferenceMethod={entity.inference_method}
+            validationState={entity.validation_state}
+            size="md"
+            showTag
+          />
+          <span className={styles.drilldownHeaderMeta}>
+            {entity.qualified_table} · {entity.inference_method.replace(/_/g, " ")} ·{" "}
+            {entity.validation_state}
+          </span>
+        </div>
+        <span className={styles.drilldownHeaderMeta}>
+          {columns.length} {columns.length === 1 ? "column" : "columns"}
         </span>
+      </header>
+
+      <div className={styles.columnList} role="list" aria-label="column breakdown">
+        {columns.map((col) => (
+          <ColumnRow
+            key={col.name}
+            name={col.name}
+            sensitivity={col.sensitivity as Sensitivity}
+            categories={col.pii_categories as readonly PIICategory[]}
+            catastrophicSet={catastrophicSet}
+          />
+        ))}
       </div>
 
-      <ul className="mt-rhythm-wide space-y-rhythm-base">
-        {columns.map((col) => (
-          <li key={col.name} className="border-l-2 border-(--color-ink-200) pl-rhythm-tight">
-            <p className="font-mono text-sm text-(--color-ink-900)">{col.name}</p>
-            <div className="mt-1 flex flex-wrap items-center gap-1.5">
-              <SensitivityLabel sensitivity={col.sensitivity as Sensitivity} />
-              {col.pii_categories.map((cat) => (
-                <CategoryChip key={cat} category={cat as PIICategory} />
-              ))}
-            </div>
-          </li>
-        ))}
-      </ul>
-
-      {!hasAnyTags && (
-        <p className="mt-rhythm-wide font-mono text-xs text-(--text-muted)">
-          No PII tags on this entity. The classifier found no sensitive columns;
-          tag manually if you want SchemaBrain to refuse on a specific column.
+      {columns.length === 0 && (
+        <p className={styles.drilldownHeaderMeta} style={{ marginTop: "1rem" }}>
+          No columns indexed for this entity. The classifier hasn’t finished, or the
+          source has no introspectable schema for it.
         </p>
       )}
     </div>
   );
 }
 
-function SensitivityLabel({ sensitivity }: { sensitivity: Sensitivity }) {
-  const tone = {
-    public: "text-(--text-muted)",
-    internal: "text-(--color-ink-700)",
-    confidential: "text-(--color-signal-amber)",
-    pii: "text-(--color-signal-red)",
-  }[sensitivity];
+function ColumnRow({
+  name,
+  sensitivity,
+  categories,
+  catastrophicSet,
+}: {
+  name: string;
+  sensitivity: Sensitivity;
+  categories: readonly PIICategory[];
+  catastrophicSet: Set<string>;
+}) {
   return (
-    <span className={cn("font-mono text-xs", tone)} aria-label={`sensitivity ${sensitivity}`}>
-      [{sensitivity}]
-    </span>
-  );
-}
-
-function CategoryChip({ category }: { category: PIICategory }) {
-  const isCatastrophic = (CATASTROPHIC_LEAK_CATEGORIES as readonly string[]).includes(category);
-  return (
-    <span
-      className={cn(
-        "inline-block border px-1.5 py-0.5 font-mono text-[0.7rem]",
-        isCatastrophic
-          ? "border-(--color-signal-red) text-(--color-signal-red)"
-          : "border-(--color-ink-300) text-(--color-ink-700)",
-      )}
-      title={isCatastrophic ? `${category} (catastrophic-leak default)` : category}
-    >
-      {category}
-    </span>
+    <>
+      <span className={styles.colName} role="listitem">
+        {name}
+      </span>
+      <span className={styles.colType} aria-hidden="true">
+        ·
+      </span>
+      <span className={styles.colClass}>[{sensitivity}]</span>
+      <span className={styles.colCategories}>
+        {categories.length === 0 ? (
+          <span aria-hidden="true">·</span>
+        ) : (
+          categories.map((cat, i) => (
+            <span key={cat}>
+              <span className={cn(catastrophicSet.has(cat) && styles.catastrophic)}>
+                {catastrophicSet.has(cat) && (
+                  <HalfCircleIcon className="text-(--color-signal-red) w-3.5 h-3.5 mr-1 align-middle inline-block" />
+                )}
+                {cat}
+              </span>
+              {i < categories.length - 1 && ", "}
+            </span>
+          ))
+        )}
+      </span>
+    </>
   );
 }

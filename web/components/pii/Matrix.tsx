@@ -1,42 +1,40 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import type { PiiMatrixEntity } from "@/lib/types";
-import { TrustBadge } from "./TrustBadge";
 import { Drilldown } from "./Drilldown";
+import { HalfCircleIcon } from "../icons/HalfCircleIcon";
 import styles from "./ledger.module.css";
+
+/**
+ * The Ledger v2 — Direction A · Boardroom Brief.
+ *
+ * Single-table composition: entity row labels on the left, then 3
+ * catastrophic columns, then a vertical-rule + padding boundary,
+ * then 9 PII columns. Row alignment is intrinsic to the table.
+ */
 
 interface MatrixProps {
   sourceId?: string;
 }
 
-/**
- * The Ledger surface — entity × PII-category matrix + drill-down rail.
- *
- * Architecture:
- *   - One round-trip to /api/entities/pii-matrix fills the matrix.
- *   - Click on an entity row selects it; drill-down rail fetches
- *     /api/entities/{name}/columns lazily and renders per-column chips.
- *   - Catastrophic categories get a red column-header underline; rows
- *     that carry any catastrophic column get a red gutter tick; chips
- *     for catastrophic counts use the stamp clip-path treatment.
- *   - Empty-state branch fires when totals.catastrophic_columns === 0.
- */
 export function Matrix({ sourceId }: MatrixProps) {
   const matrixQuery = useQuery({
     queryKey: ["pii-matrix", sourceId],
     queryFn: () => api.piiMatrix(sourceId),
   });
 
-  // URL-sharing of the selected entity is a nice-to-have but out of D2 scope;
-  // local state keeps the surface snappy and doesn't fight React Server Components.
   const [selectedEntity, setSelectedEntity] = useState<string | null>(null);
 
   if (matrixQuery.isPending) {
-    return <MatrixSkeleton />;
+    return (
+      <div className={styles.shell}>
+        <p className={styles.skeleton}>loading matrix…</p>
+      </div>
+    );
   }
 
   if (matrixQuery.isError) {
@@ -44,40 +42,74 @@ export function Matrix({ sourceId }: MatrixProps) {
   }
 
   const data = matrixQuery.data;
-  const catastrophicSet = new Set(data.catastrophic_categories);
-  const noCatastrophic = data.totals.catastrophic_columns === 0;
+  const catastrophicCategories = data.catastrophic_categories;
+  const catastrophicSet = new Set(catastrophicCategories);
+  const piiCategories = data.categories.filter((c) => !catastrophicSet.has(c));
 
   return (
-    <div className="mx-auto max-w-[88rem] px-rhythm-wide py-section">
-      <Header
-        sourceId={data.source_connection_id}
-        entityCount={data.totals.entities}
-        columnCount={data.totals.columns}
-      />
-
-      <Headline
+    <div className={styles.shell}>
+      <TitleStrip
         catastrophicCount={data.totals.catastrophic_columns}
         entityCount={data.totals.entities}
-        noCatastrophic={noCatastrophic}
       />
 
-      <hr className="mt-rhythm-wide mb-rhythm-base border-(--color-ink-300)" />
+      <div className={styles.hero}>
+        <Slab
+          totals={data.totals}
+          catastrophicCategories={catastrophicCategories}
+        />
 
-      <div className="grid grid-cols-[1fr_18rem] gap-rhythm-wide max-[1100px]:grid-cols-1">
-        <div className="overflow-x-auto">
-          <table className={styles.matrix} role="grid">
+        <div className={styles.matrixWrap}>
+          <table className={styles.matrix} role="grid" aria-label="pii ledger matrix">
             <thead>
-              <tr>
+              <tr className={styles.groupRow}>
+                <th scope="col" />
+                <th
+                  scope="colgroup"
+                  colSpan={catastrophicCategories.length}
+                  className={styles.groupCatastrophic}
+                >
+                  catastrophic
+                </th>
+                <th
+                  scope="colgroup"
+                  colSpan={piiCategories.length}
+                  className={styles.groupPii}
+                >
+                  pii
+                </th>
+              </tr>
+              <tr className={styles.headRow}>
                 <th scope="col" className={styles.entityHeader}>
                   entity
                 </th>
-                {data.categories.map((cat) => (
+                {catastrophicCategories.map((cat, i) => (
                   <th
                     key={cat}
                     scope="col"
-                    className={cn(catastrophicSet.has(cat) && styles.catastrophicHeader)}
+                    className={cn(
+                      styles.catastrophicHeader,
+                      styles.headerCell,
+                      i === 0 && styles.boundaryStart,
+                    )}
+                    aria-label={cat}
                   >
-                    {abbreviateCategory(cat)}
+                    <span className={styles.headerLabel}>{abbreviateCategory(cat)}</span>
+                    <span className={styles.tooltip}>{cat.replace(/_/g, " ")}</span>
+                  </th>
+                ))}
+                {piiCategories.map((cat, i) => (
+                  <th
+                    key={cat}
+                    scope="col"
+                    className={cn(
+                      styles.headerCell,
+                      i === 0 && styles.boundaryStart
+                    )}
+                    aria-label={cat}
+                  >
+                    <span className={styles.headerLabel}>{abbreviateCategory(cat)}</span>
+                    <span className={styles.tooltip}>{cat.replace(/_/g, " ")}</span>
                   </th>
                 ))}
               </tr>
@@ -87,131 +119,133 @@ export function Matrix({ sourceId }: MatrixProps) {
                 <EntityRow
                   key={entity.name}
                   entity={entity}
-                  categories={data.categories}
-                  catastrophicSet={catastrophicSet}
+                  catastrophicCategories={catastrophicCategories}
+                  piiCategories={piiCategories}
                   isSelected={selectedEntity === entity.name}
-                  onSelect={() => setSelectedEntity(entity.name)}
+                  onSelect={() =>
+                    setSelectedEntity(selectedEntity === entity.name ? null : entity.name)
+                  }
                 />
               ))}
             </tbody>
           </table>
-
-          <Footer totals={data.totals} />
+          <p className={styles.matrixCaption}>
+            <span className={styles.glyph}>◐</span> catastrophic-leak column · click row
+            to drill in
+          </p>
         </div>
-
-        <aside className="border-l border-(--color-ink-200) pl-rhythm-base max-[1100px]:border-l-0 max-[1100px]:pl-0 max-[1100px]:border-t max-[1100px]:pt-rhythm-base">
-          {selectedEntity ? (
-            <Drilldown entityName={selectedEntity} sourceId={sourceId} />
-          ) : (
-            <DrilldownPlaceholder />
-          )}
-        </aside>
       </div>
 
-      {noCatastrophic && data.totals.entities > 0 && <EmptyStateAddendum />}
+      <Drilldown
+        entityName={selectedEntity}
+        sourceId={sourceId}
+        catastrophicCategories={catastrophicCategories}
+      />
     </div>
   );
 }
 
-function Header({
-  sourceId,
-  entityCount,
-  columnCount,
-}: {
-  sourceId: string;
-  entityCount: number;
-  columnCount: number;
-}) {
-  return (
-    <header className="mb-section flex items-baseline justify-between gap-rhythm-base">
-      <div>
-        <p className="font-mono text-xs uppercase tracking-widest text-(--text-muted)">
-          schemabrain · dashboard
-        </p>
-        <p className="mt-1 font-mono text-sm text-(--color-ink-700)">
-          ─────────────
-        </p>
-      </div>
-      <div className="text-right">
-        <p className="font-mono text-sm text-(--color-ink-700) flex items-center gap-2 justify-end">
-          <span className="h-2 w-2 rounded-full bg-(--color-signal-green)" aria-hidden />
-          {sourceId}
-        </p>
-        <p className="font-mono text-xs text-(--text-muted) mt-1">
-          {entityCount} entities · {columnCount} columns
-        </p>
-      </div>
-    </header>
-  );
-}
+/* ─────────── title strip ─────────── */
 
-function Headline({
+function TitleStrip({
   catastrophicCount,
   entityCount,
-  noCatastrophic,
 }: {
   catastrophicCount: number;
   entityCount: number;
-  noCatastrophic: boolean;
 }) {
-  if (noCatastrophic) {
-    return (
-      <section>
-        <h1
-          className="font-display text-(--text-primary) leading-[1.05]"
-          style={{ fontSize: "clamp(2rem, 1rem + 3vw, 4rem)" }}
-        >
-          No catastrophic-leak
-          <br />
-          columns detected.
-        </h1>
-        <p className="mt-rhythm-base font-mono text-sm text-(--text-muted)">
-          {entityCount} {entityCount === 1 ? "entity" : "entities"} scanned · the grid is the answer
-        </p>
-      </section>
-    );
-  }
+  const summary =
+    catastrophicCount === 0
+      ? "no catastrophic exposure"
+      : `${catastrophicCount} catastrophic across ${entityCount} ${entityCount === 1 ? "entity" : "entities"}`;
   return (
-    <section>
-      <h1
-        className="font-display text-(--text-primary) leading-[1.05]"
-        style={{ fontSize: "clamp(2rem, 1rem + 3vw, 4rem)" }}
-      >
-        {catastrophicCount}{" "}
-        {catastrophicCount === 1 ? "column carries" : "columns carry"}
-        <br />
-        catastrophic-leak
-        <br />
-        categories.
-      </h1>
-      <p className="mt-rhythm-base font-mono text-sm text-(--text-muted)">
-        Across {entityCount} {entityCount === 1 ? "entity" : "entities"} · click a row to drill in
-      </p>
-    </section>
+    <div className={styles.titleStrip}>
+      <h1 className={styles.surfaceTitle}>The Ledger</h1>
+      <p className={styles.titleMeta}>{summary}</p>
+    </div>
   );
 }
 
+/* ─────────── stat slab ─────────── */
+
+interface SidecarTotals {
+  entities: number;
+  columns: number;
+  catastrophic_columns: number;
+  pii_columns: number;
+  confidential_columns: number;
+  internal_or_public_columns: number;
+}
+
+function Slab({
+  totals,
+  catastrophicCategories,
+}: {
+  totals: SidecarTotals;
+  catastrophicCategories: readonly string[];
+}) {
+  const hasCatastrophic = totals.catastrophic_columns > 0;
+  return (
+    <aside className={styles.slab} aria-label="ledger summary">
+      <p className={styles.slabLabel}>catastrophic exposure</p>
+      <div className={styles.slabNumberWrap} data-danger={hasCatastrophic}>
+        <span className={styles.slabNumber} data-danger={hasCatastrophic}>{totals.catastrophic_columns}</span>
+      </div>
+      <p className={styles.slabSublabel}>
+        {hasCatastrophic
+          ? `cols across ${totals.entities} ${totals.entities === 1 ? "entity" : "entities"}`
+          : "the firewall has nothing to refuse yet"}
+      </p>
+      <ul className={styles.slabCategories} aria-label="catastrophic categories">
+        {catastrophicCategories.map((cat) => (
+          <li key={cat} className="flex items-center gap-1.5 py-0.5">
+            <HalfCircleIcon className="text-(--color-signal-red) w-3.5 h-3.5 shrink-0" />
+            <span>{cat.replace(/_/g, " ")}</span>
+          </li>
+        ))}
+      </ul>
+
+      <dl className={styles.slabBreakdown}>
+        <dt className={styles.slabBreakdownNumber}>{totals.pii_columns}</dt>
+        <dd className={styles.slabBreakdownLabel}>pii cols</dd>
+        <dt className={styles.slabBreakdownNumber}>{totals.confidential_columns}</dt>
+        <dd className={styles.slabBreakdownLabel}>confidential cols</dd>
+        <dt className={styles.slabBreakdownNumber}>{totals.internal_or_public_columns}</dt>
+        <dd className={styles.slabBreakdownLabel}>internal/public cols</dd>
+      </dl>
+
+      <dl className={styles.slabFooter}>
+        <dt className={styles.slabBreakdownNumber}>{totals.entities}</dt>
+        <dd className={styles.slabBreakdownLabel}>
+          {totals.entities === 1 ? "entity" : "entities"}
+        </dd>
+        <dt className={styles.slabBreakdownNumber}>{totals.columns}</dt>
+        <dd className={styles.slabBreakdownLabel}>columns total</dd>
+      </dl>
+    </aside>
+  );
+}
+
+/* ─────────── entity row ─────────── */
+
 interface EntityRowProps {
   entity: PiiMatrixEntity;
-  categories: readonly string[];
-  catastrophicSet: Set<string>;
+  catastrophicCategories: readonly string[];
+  piiCategories: readonly string[];
   isSelected: boolean;
   onSelect: () => void;
 }
 
 function EntityRow({
   entity,
-  categories,
-  catastrophicSet,
+  catastrophicCategories,
+  piiCategories,
   isSelected,
   onSelect,
 }: EntityRowProps) {
   return (
     <tr
-      className={cn(
-        entity.has_catastrophic && styles.hasCatastrophic,
-        isSelected && styles.selected,
-      )}
+      className={cn(isSelected && styles.selected)}
       onClick={onSelect}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -223,141 +257,138 @@ function EntityRow({
       aria-selected={isSelected}
     >
       <td className={styles.entityCell}>
-        <span className="inline-flex items-center gap-2">
-          <TrustBadge
-            inferenceMethod={entity.inference_method}
-            validationState={entity.validation_state}
-            size="sm"
-          />
-          {entity.qualified_table}
-        </span>
+        <span className={styles.entityName}>{entity.name}</span>
+        <span className={styles.entityTable}>{entity.qualified_table}</span>
       </td>
-      {categories.map((cat) => {
-        const count = entity.counts[cat] ?? 0;
-        const isCatastrophic = catastrophicSet.has(cat);
-        if (count === 0) {
-          return (
-            <td key={cat} aria-label={`${cat}: zero columns`}>
-              <span className={styles.zero} aria-hidden>
-                ·
-              </span>
-            </td>
-          );
-        }
-        if (isCatastrophic) {
-          return (
-            <td
-              key={cat}
-              aria-label={`${cat}: ${count} catastrophic column${count === 1 ? "" : "s"}`}
-            >
-              <span className={styles.catastrophicChip}>{count}</span>
-            </td>
-          );
-        }
-        return (
-          <td key={cat} aria-label={`${cat}: ${count} column${count === 1 ? "" : "s"}`}>
-            {count}
-          </td>
-        );
-      })}
+      {catastrophicCategories.map((cat, i) => (
+        <DataCell
+          key={cat}
+          count={entity.counts[cat] ?? 0}
+          isCatastrophic
+          entityName={entity.name}
+          category={cat}
+          atBoundary={i === 0}
+        />
+      ))}
+      {piiCategories.map((cat, i) => (
+        <DataCell
+          key={cat}
+          count={entity.counts[cat] ?? 0}
+          isCatastrophic={false}
+          entityName={entity.name}
+          category={cat}
+          atBoundary={i === 0}
+        />
+      ))}
     </tr>
   );
 }
 
-function Footer({
-  totals,
+function DataCell({
+  count,
+  isCatastrophic,
+  entityName,
+  category,
+  atBoundary,
 }: {
-  totals: {
-    entities: number;
-    columns: number;
-    catastrophic_columns: number;
-    confidential_columns: number;
-    pii_columns: number;
-    internal_or_public_columns: number;
-  };
+  count: number;
+  isCatastrophic: boolean;
+  entityName: string;
+  category: string;
+  atBoundary: boolean;
 }) {
-  return (
-    <p className="mt-rhythm-wide pt-rhythm-base border-t border-(--color-ink-300) font-mono text-xs text-(--text-muted)">
-      {totals.entities} entities · {totals.columns} columns · {totals.catastrophic_columns}{" "}
-      catastrophic · {totals.confidential_columns} confidential · {totals.pii_columns} pii ·{" "}
-      {totals.internal_or_public_columns} internal/public
-    </p>
-  );
-}
-
-function DrilldownPlaceholder() {
-  return (
-    <div className="font-mono text-xs text-(--text-muted)">
-      <p className="uppercase tracking-widest">drill</p>
-      <p className="mt-1 text-(--color-ink-300)">────</p>
-      <p className="mt-rhythm-base">
-        Click an entity row to inspect its columns + per-column PII tags.
-      </p>
-    </div>
-  );
-}
-
-function EmptyStateAddendum() {
-  return (
-    <section className="mt-section border-t border-(--color-ink-200) pt-section">
-      <p className="font-mono text-xs uppercase tracking-widest text-(--text-muted)">
-        two paths from here
-      </p>
-      <ol className="mt-rhythm-base space-y-rhythm-base font-mono text-sm text-(--color-ink-700)">
-        <li>
-          <strong className="text-(--color-ink-900)">1.</strong> Index a richer schema —{" "}
-          <code className="bg-(--surface-overlay) border border-(--color-ink-200) px-1 text-(--color-signal-green)">
-            schemabrain index --target postgres://…
-          </code>
-          <span className="block text-(--text-muted) pl-4">
-            The matrix populates entity-by-entity as it scans.
+  const boundaryClass = atBoundary ? styles.boundaryStart : "";
+  if (count === 0) {
+    return (
+      <td
+        className={cn(boundaryClass)}
+        aria-label={`${entityName} · ${category}: zero`}
+      >
+        <span className={styles.zero} aria-hidden="true">
+          ·
+        </span>
+      </td>
+    );
+  }
+  if (isCatastrophic) {
+    return (
+      <td
+        className={cn(styles.catastrophicCell, boundaryClass)}
+        aria-label={`${entityName} · ${category}: ${count} catastrophic`}
+      >
+        <span className={styles.catastrophicBadge}>
+          <span className={styles.catastrophicGlyph}>
+            <HalfCircleIcon className="text-(--color-signal-red) w-3 h-3 mr-1" />
+            {count}
           </span>
-        </li>
-        <li>
-          <strong className="text-(--color-ink-900)">2.</strong> Tag a column manually —{" "}
-          <code className="bg-(--surface-overlay) border border-(--color-ink-200) px-1 text-(--color-signal-green)">
-            schemabrain tag &lt;entity&gt; &lt;column&gt; --pii credential
-          </code>
-          <span className="block text-(--text-muted) pl-4">
-            Useful when you want to refuse on a column the classifier missed.
-          </span>
-        </li>
-      </ol>
-    </section>
+        </span>
+      </td>
+    );
+  }
+  return (
+    <td
+      className={cn(boundaryClass)}
+      aria-label={`${entityName} · ${category}: ${count} ${count === 1 ? "column" : "columns"}`}
+    >
+      <span className={styles.piiBadge}>{count}</span>
+    </td>
   );
 }
 
-function MatrixSkeleton() {
-  return (
-    <div className="mx-auto max-w-[88rem] px-rhythm-wide py-section">
-      <p className="font-mono text-sm text-(--text-muted)">loading matrix…</p>
-    </div>
-  );
-}
+/* ─────────── error state ─────────── */
 
 function MatrixError({ message }: { message: string }) {
+  const isNoSource =
+    message.includes("409") || message.toLowerCase().includes("no source");
   return (
-    <div className="mx-auto max-w-[88rem] px-rhythm-wide py-section">
-      <p className="font-mono text-sm text-(--color-signal-red)">
-        Matrix unavailable: {message}
-      </p>
-      <p className="mt-rhythm-base font-mono text-xs text-(--text-muted)">
-        Most common cause: no source indexed yet. Run{" "}
-        <code className="bg-(--surface-overlay) border border-(--color-ink-200) px-1">
-          schemabrain index --target postgres://…
-        </code>{" "}
-        against your source DB, then reload.
-      </p>
+    <div className={styles.shell}>
+      <div className={styles.titleStrip}>
+        <h1 className={styles.surfaceTitle}>The Ledger</h1>
+        <p className={styles.titleMeta}>
+          {isNoSource ? "status — no source connected" : "status — error"}
+        </p>
+      </div>
+      <div className={styles.errorCard}>
+        <span className={styles.errorIcon} aria-hidden="true">
+          {isNoSource ? (
+            <svg className="w-6 h-6 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+          ) : (
+            <svg className="w-6 h-6 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          )}
+        </span>
+        <div className={styles.errorBody}>
+          <h2>{isNoSource ? "The ledger needs a source." : "Matrix unavailable."}</h2>
+          {isNoSource ? (
+            <Fragment>
+              <p>
+                SchemaBrain hasn’t been pointed at a database yet. Once a source is
+                indexed, this surface fills in entity-by-entity as the classifier runs.
+              </p>
+              <code>$ schemabrain init</code>
+              <code>$ schemabrain index --target postgres://your-replica</code>
+              <p>Then refresh. Indexing 50 entities typically takes ~90 seconds.</p>
+            </Fragment>
+          ) : (
+            <Fragment>
+              <p>{message}</p>
+              <p>
+                The sidecar is running, but the matrix query failed. Check the sidecar
+                logs in your terminal for the underlying cause.
+              </p>
+            </Fragment>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
 
-/**
- * Map a long PII category name to a compact column header label.
- * The 12 names don't fit a 12-column grid at common viewport widths,
- * so we use the operator-recognizable abbreviations from RFC §5.1
- * wireframe. Full name lives in the column's aria-label.
- */
+/* ─────────── category abbreviations ─────────── */
+
 function abbreviateCategory(cat: string): string {
   const map: Record<string, string> = {
     contact: "contact",
