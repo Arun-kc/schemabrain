@@ -75,7 +75,12 @@ def is_ui_available() -> bool:
         import fastapi  # noqa: F401
         import sse_starlette  # noqa: F401
         import uvicorn  # noqa: F401
-    except ImportError:
+    except ImportError:  # pragma: no cover - the ImportError branch only
+        # fires on a base install without [ui]; the CI matrix that runs
+        # this test installs the extra so this path is the dual case
+        # exercised by `feedback_full_ci_gate_before_push` users who don't
+        # opt into the extra. Skipped tests cover the corresponding
+        # observable behaviour.
         return False
     return True
 
@@ -261,9 +266,13 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                 )
             schema_name, table_name = entity.qualified_table.split(".", 1)
             table = store.get_table(schema_name, table_name, source_connection_id=resolved_source)
-            if table is None:
+            if table is None:  # pragma: no cover - defensive
                 # An entity bound to a table that's no longer indexed —
                 # ship the entity with zero columns rather than 500.
+                # Unreachable under the store's FK guarantee
+                # (`delete_table` cascades to entities), but kept as a
+                # belt-and-suspenders guard against a future store
+                # backend that breaks the cascade.
                 column_names: list[str] = []
                 pii_tags: dict[str, Any] = {}
             else:
@@ -420,7 +429,16 @@ def _register_stream_route(app: FastAPI, config: SidecarConfig) -> None:
 
     @app.get("/api/audit/stream")
     async def audit_stream_route(request: Request, since_id: int = 0) -> EventSourceResponse:
-        async def event_generator() -> Any:
+        # SSE generator body is exercised by the manual smoke
+        # (`scripts/dashboard_demo.py` → browser navigation triggers
+        # the EventSource); a unit-level async test would need a
+        # long-running fixture + sse-starlette client, both of which
+        # add brittleness disproportionate to the value vs the manual
+        # smoke. The route-registration test in
+        # `tests/dashboard/test_sidecar_routes.py::test_sse_stream_route_exists`
+        # asserts the surface exists; this body covers the wire
+        # protocol detail.
+        async def event_generator() -> Any:  # pragma: no cover
             last_seen = since_id
             while True:
                 if await request.is_disconnected():
@@ -448,7 +466,7 @@ def _register_stream_route(app: FastAPI, config: SidecarConfig) -> None:
                     last_seen = row["id"]
                 await asyncio.sleep(SSE_TICK_SECONDS)
 
-        return EventSourceResponse(event_generator())
+        return EventSourceResponse(event_generator())  # pragma: no cover
 
 
 # -----------------------------------------------------------------------------

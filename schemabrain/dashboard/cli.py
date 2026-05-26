@@ -65,7 +65,11 @@ def run_dashboard(
 
     try:
         app = create_sidecar(config)
-    except ImportError as exc:
+    except ImportError as exc:  # pragma: no cover - unreachable after
+        # the uvicorn-import check above; create_sidecar's only
+        # ImportError path is fastapi/staticfiles missing, which would
+        # already have failed earlier in this function. Kept as a
+        # defensive belt for a future refactor that decouples the two.
         print(f"schemabrain dashboard: {exc}", file=sys.stderr)
         return 2
 
