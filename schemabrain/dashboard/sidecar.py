@@ -117,6 +117,11 @@ def create_sidecar(config: SidecarConfig) -> FastAPI:
     Calling ``create_sidecar`` on a base install raises ``ImportError``
     with an actionable message naming the extra.
     """
+    import mimetypes
+
+    mimetypes.add_type("text/css", ".css")
+    mimetypes.add_type("application/javascript", ".js")
+
     try:
         from fastapi import FastAPI
         from fastapi.staticfiles import StaticFiles
