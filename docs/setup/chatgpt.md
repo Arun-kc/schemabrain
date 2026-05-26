@@ -34,10 +34,10 @@ All four wrap the same 12-tool MCP surface, the same PII firewall, the same audi
 OpenAI's Codex CLI is a local stdio MCP client, much like Claude Code. You can register SchemaBrain in Codex's MCP config by hand:
 
 ```bash
-schemabrain init --host manual --url-env DATABASE_URL --env-var DATABASE_URL
+schemabrain init --host manual
 ```
 
-`--host manual` prints the JSON entry to stdout instead of writing into a host config. Paste the entry into Codex's MCP config (consult Codex's docs for the exact path) and Codex's agent will speak stdio to SchemaBrain the same way Claude Code does.
+The wizard prompts for your Postgres URL (or offers the bundled demo container), then `--host manual` prints the resulting JSON entry to stdout instead of writing into a host config. Paste the entry into Codex's MCP config (consult Codex's docs for the exact path) and Codex's agent will speak stdio to SchemaBrain the same way Claude Code does.
 
 ### Option 3 — Run a stdio→HTTPS bridge yourself
 

@@ -10,19 +10,18 @@ SchemaBrain is the SQL firewall between Claude Code and your Postgres database �
 
 ```bash
 pip install schemabrain
-export DATABASE_URL='postgresql+psycopg://user:pass@host:5432/db'
-schemabrain init --host claude-code --url-env DATABASE_URL --env-var DATABASE_URL
+schemabrain init --host claude-code
 ```
 
-The wizard introspects the schema, classifies columns for PII, optionally calls Anthropic to suggest entities/metrics/joins, then **shells out to `claude mcp add`** to register the server. We use the CLI rather than editing `~/.claude.json` directly because Anthropic's supported registration path validates the entry and is robust against schema changes.
+The wizard prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 7-table e-commerce fixture spins up in Docker; ~$0.03 to index). Press Enter to take the default (`2`).
 
-At the first prompt, pick option `2` (the default — just press Enter) to use the bundled demo container: a 7-table e-commerce fixture spins up in Docker (~$0.03 to index).
+The wizard then introspects the schema, classifies columns for PII, optionally calls Anthropic to suggest entities/metrics/joins, then **shells out to `claude mcp add`** to register the server. We use the CLI rather than editing `~/.claude.json` directly because Anthropic's supported registration path validates the entry and is robust against schema changes.
 
 ## Verify
 
 ```bash
 claude mcp list
-# schemabrain  uvx schemabrain==X.Y.Z serve --url-env DATABASE_URL --store-path ...
+# schemabrain  uvx schemabrain==X.Y.Z serve --url-env SCHEMABRAIN_DATABASE_URL --store-path ...
 ```
 
 Then in a new Claude Code session:
@@ -39,12 +38,12 @@ If Claude calls `list_entities` and reports the entities curated during init, yo
 
 ```bash
 claude mcp add \
-  -e DATABASE_URL=postgresql+psycopg://user:pass@host:5432/db \
+  -e SCHEMABRAIN_DATABASE_URL=postgresql+psycopg://user:pass@host:5432/db \
   schemabrain -- \
-  uvx schemabrain==X.Y.Z serve --url-env DATABASE_URL --store-path ~/.schemabrain/store.db
+  uvx schemabrain==X.Y.Z serve --url-env SCHEMABRAIN_DATABASE_URL --store-path ~/.schemabrain/store.db
 ```
 
-The `--` separator is load-bearing — without it, Claude Code's parser would try to interpret `--url-env` as one of its own flags.
+The `--` separator is load-bearing — without it, Claude Code's parser would try to interpret `--url-env` as one of its own flags. The `SCHEMABRAIN_DATABASE_URL` env-var name is the wizard's default — it's prefixed to avoid colliding with any app-level `DATABASE_URL` you already have in the host's environment.
 
 ---
 

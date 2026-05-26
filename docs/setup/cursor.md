@@ -10,13 +10,12 @@ SchemaBrain is the SQL firewall between Cursor's agent and your Postgres databas
 
 ```bash
 pip install schemabrain
-export DATABASE_URL='postgresql+psycopg://user:pass@host:5432/db'
-schemabrain init --host cursor --url-env DATABASE_URL --env-var DATABASE_URL
+schemabrain init --host cursor
 ```
 
-The wizard introspects the schema, classifies columns for PII, optionally calls Anthropic to suggest entities/metrics/joins, then writes the MCP entry to `~/.cursor/mcp.json` (Cursor's global config).
+The wizard prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 7-table e-commerce fixture spins up in Docker; ~$0.03 to index). Press Enter to take the default (`2`).
 
-At the first prompt, pick option `2` (the default — just press Enter) to use the bundled demo container: a 7-table e-commerce fixture spins up in Docker (~$0.03 to index).
+The wizard then introspects the schema, classifies columns for PII, optionally calls Anthropic to suggest entities/metrics/joins, then writes the MCP entry to `~/.cursor/mcp.json` (Cursor's global config).
 
 ## Resulting config entry
 
@@ -30,12 +29,12 @@ At the first prompt, pick option `2` (the default — just press Enter) to use t
       "args": [
         "schemabrain==X.Y.Z",
         "serve",
-        "--url-env", "DATABASE_URL",
+        "--url-env", "SCHEMABRAIN_DATABASE_URL",
         "--store-path", "/Users/you/.schemabrain/store.db",
         "--pii-block", "credential,payment_card,government_id"
       ],
       "env": {
-        "DATABASE_URL": "postgresql+psycopg://user:pass@host:5432/db"
+        "SCHEMABRAIN_DATABASE_URL": "postgresql+psycopg://user:pass@host:5432/db"
       },
       "type": "stdio"
     }
@@ -43,7 +42,7 @@ At the first prompt, pick option `2` (the default — just press Enter) to use t
 }
 ```
 
-The explicit `"type": "stdio"` is written per Cursor's documented schema. Cursor accepts entries without it (stdio is the default), but explicit is safer when their schema evolves.
+The explicit `"type": "stdio"` is written per Cursor's documented schema. Cursor accepts entries without it (stdio is the default), but explicit is safer when their schema evolves. The `SCHEMABRAIN_DATABASE_URL` env-var key is the wizard's default — prefixed to avoid colliding with any app-level `DATABASE_URL` you already have in Cursor's env.
 
 ## Restart Cursor
 

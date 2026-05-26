@@ -10,13 +10,12 @@ SchemaBrain is the SQL firewall between Claude Desktop and your Postgres databas
 
 ```bash
 pip install schemabrain
-export DATABASE_URL='postgresql+psycopg://user:pass@host:5432/db'
-schemabrain init --host claude-desktop --url-env DATABASE_URL --env-var DATABASE_URL
+schemabrain init --host claude-desktop
 ```
 
-The wizard takes ~45 seconds end-to-end on a warm cache: it introspects the schema, classifies columns for PII, optionally calls Anthropic to suggest entities/metrics/joins, and writes the MCP entry to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows).
+The wizard takes ~45 seconds end-to-end on a warm cache. It prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 7-table e-commerce fixture spins up in Docker; ~$0.03 to index). Just press Enter to take the default (`2`) and try the demo.
 
-At the first prompt, pick option `2` (the default — just press Enter) to use the bundled demo container: a 7-table e-commerce fixture spins up in Docker (~$0.03 to index).
+It then introspects the schema, classifies columns for PII, optionally calls Anthropic to suggest entities/metrics/joins, and writes the MCP entry to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows).
 
 ## Restart Claude Desktop
 

@@ -10,13 +10,12 @@ SchemaBrain is the SQL firewall between Windsurf's Cascade agent and your Postgr
 
 ```bash
 pip install schemabrain
-export DATABASE_URL='postgresql+psycopg://user:pass@host:5432/db'
-schemabrain init --host windsurf --url-env DATABASE_URL --env-var DATABASE_URL
+schemabrain init --host windsurf
 ```
 
-The wizard introspects the schema, classifies columns for PII, optionally calls Anthropic to suggest entities/metrics/joins, then writes the MCP entry to `~/.codeium/windsurf/mcp_config.json` (Windsurf's global MCP config — the Codeium namespace persists from before Windsurf split out as a standalone IDE).
+The wizard prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 7-table e-commerce fixture spins up in Docker; ~$0.03 to index). Press Enter to take the default (`2`).
 
-At the first prompt, pick option `2` (the default — just press Enter) to use the bundled demo container: a 7-table e-commerce fixture spins up in Docker (~$0.03 to index).
+The wizard then introspects the schema, classifies columns for PII, optionally calls Anthropic to suggest entities/metrics/joins, then writes the MCP entry to `~/.codeium/windsurf/mcp_config.json` (Windsurf's global MCP config — the Codeium namespace persists from before Windsurf split out as a standalone IDE).
 
 ## Resulting config entry
 
@@ -28,19 +27,19 @@ At the first prompt, pick option `2` (the default — just press Enter) to use t
       "args": [
         "schemabrain==X.Y.Z",
         "serve",
-        "--url-env", "DATABASE_URL",
+        "--url-env", "SCHEMABRAIN_DATABASE_URL",
         "--store-path", "/Users/you/.schemabrain/store.db",
         "--pii-block", "credential,payment_card,government_id"
       ],
       "env": {
-        "DATABASE_URL": "postgresql+psycopg://user:pass@host:5432/db"
+        "SCHEMABRAIN_DATABASE_URL": "postgresql+psycopg://user:pass@host:5432/db"
       }
     }
   }
 }
 ```
 
-The JSON shape matches Claude Desktop's `mcpServers.{name}` map exactly — no extra fields.
+The JSON shape matches Claude Desktop's `mcpServers.{name}` map exactly — no extra fields. The `SCHEMABRAIN_DATABASE_URL` env-var key is the wizard's default, prefixed to avoid colliding with any app-level `DATABASE_URL` you already have in Windsurf's env.
 
 ## Restart Windsurf
 
