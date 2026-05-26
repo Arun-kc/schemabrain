@@ -149,9 +149,18 @@ def create_sidecar(config: SidecarConfig) -> FastAPI:
         p.name not in {".gitkeep", "README.md"} for p in STATIC_DIR.iterdir()
     )
     if has_static_export:
-        # Mount the static Next.js export at the root. End-user install
-        # path: the wheel ships the export, the mount registers, the
-        # full React UI loads.
+        # End-user install path: the wheel ships the Next.js export,
+        # the mount registers, the full React UI loads.
+        #
+        # Next.js with `output: "export"` emits `pii.html` / `audit.html`
+        # at the file level, but routes the React app generates link to
+        # `/pii` / `/audit` (no `.html` suffix). FastAPI's `StaticFiles`
+        # `html=True` flag handles directory-index lookups (`/` →
+        # `/index.html`) but does NOT rewrite `/pii` → `/pii.html` on
+        # 404. The middleware below adds that one missing piece — it
+        # lets a single static export work without changing Next.js's
+        # default URL aesthetic or forcing trailing slashes everywhere.
+        _register_html_fallback(app)
         app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     else:
         # Dev / pre-build path: serve a minimal landing page so an
@@ -228,6 +237,101 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
     from fastapi import HTTPException
 
     from schemabrain.core.store import SQLiteStore
+    from schemabrain.pii.categories import (
+        CATASTROPHIC_LEAK_CATEGORIES,
+        PII_CATEGORIES,
+    )
+
+    @app.get("/api/entities/pii-matrix")
+    def pii_matrix_route(source_connection_id: str | None = None) -> dict[str, Any]:
+        """Aggregated entity x PII-category counts for The Ledger surface.
+
+        One round-trip replaces the (N entities) x (1 columns fetch) =
+        N+1 fan-out the matrix view would otherwise need. Per RFC §5.1,
+        each row reports per-category column counts + a derived
+        `has_catastrophic` flag the surface uses to render the gutter
+        tick. Bulk totals at the bottom drive the footer summary +
+        the "N columns carry catastrophic-leak categories" headline.
+
+        The shape is intentionally close to the wire shape the React
+        Server Component renders. Future bulk pagination
+        (catastrophic-only filter, sticky header) layers on top.
+        """
+        with SQLiteStore(config.store_path) as store:
+            resolved_source = _resolve_source(store, config, source_connection_id)
+            entities = store.list_entities(source_connection_id=resolved_source)
+            matrix_entries: list[dict[str, Any]] = []
+            total_columns = 0
+            total_pii = 0
+            total_confidential = 0
+            total_internal_or_public = 0
+            total_catastrophic_columns = 0
+            for entity in entities:
+                schema_name, table_name = entity.qualified_table.split(".", 1)
+                table = store.get_table(
+                    schema_name,
+                    table_name,
+                    source_connection_id=resolved_source,
+                )
+                column_names = [c.name for c in table.columns] if table else []
+                tags = store.get_column_pii_tags(
+                    source_connection_id=resolved_source,
+                    qualified_table=entity.qualified_table,
+                    columns=column_names,
+                )
+                # Counts: category → number of columns in this entity
+                # that carry that category. Sensitivity counters
+                # accumulate at the entity level (1 column = 1
+                # increment of its sensitivity bucket).
+                counts: dict[str, int] = dict.fromkeys(PII_CATEGORIES, 0)
+                catastrophic_columns_here = 0
+                for col_name in column_names:
+                    tag = tags.get(col_name)
+                    total_columns += 1
+                    if tag is None:
+                        total_internal_or_public += 1
+                        continue
+                    sensitivity, categories = tag
+                    if sensitivity == "pii":
+                        total_pii += 1
+                    elif sensitivity == "confidential":
+                        total_confidential += 1
+                    else:
+                        total_internal_or_public += 1
+                    for cat in categories:
+                        if cat in counts:
+                            counts[cat] += 1
+                    if any(c in CATASTROPHIC_LEAK_CATEGORIES for c in categories):
+                        catastrophic_columns_here += 1
+                has_catastrophic = catastrophic_columns_here > 0
+                total_catastrophic_columns += catastrophic_columns_here
+                matrix_entries.append(
+                    {
+                        "name": entity.name,
+                        "qualified_table": entity.qualified_table,
+                        "identity": entity.identity,
+                        "origin": entity.origin,
+                        "inference_method": entity.inference_method,
+                        "validation_state": entity.validation_state,
+                        "counts": counts,
+                        "catastrophic_column_count": catastrophic_columns_here,
+                        "has_catastrophic": has_catastrophic,
+                    }
+                )
+        return {
+            "source_connection_id": resolved_source,
+            "entities": matrix_entries,
+            "categories": list(PII_CATEGORIES),
+            "catastrophic_categories": sorted(CATASTROPHIC_LEAK_CATEGORIES),
+            "totals": {
+                "entities": len(matrix_entries),
+                "columns": total_columns,
+                "catastrophic_columns": total_catastrophic_columns,
+                "pii_columns": total_pii,
+                "confidential_columns": total_confidential,
+                "internal_or_public_columns": total_internal_or_public,
+            },
+        }
 
     @app.get("/api/entities")
     def list_entities_route(
@@ -654,6 +758,46 @@ def _refusal_message(reason: str | None, pii_categories: list[str]) -> str:
     if reason == "allowlist_violation":
         return "Refused: tool call falls outside the operator's allowlist scope."
     return f"Refused: {reason or 'reason_unknown'}."
+
+
+def _register_html_fallback(app: FastAPI) -> None:
+    """Rewrite extensionless GET requests to ``<path>.html`` when the
+    file exists on disk.
+
+    Bridges the gap between Next.js's static-export filename convention
+    (``pii.html``) and the React app's URL convention (``/pii``). Only
+    fires on GET, only for paths outside ``/api/...``, and only when
+    the ``.html`` sibling actually exists — so a real 404 (typo,
+    deleted route) still returns 404 cleanly.
+
+    Implemented as middleware that runs BEFORE the static mount so the
+    mount sees the rewritten path. The static mount then serves the
+    bytes the normal way.
+    """
+    from starlette.requests import Request
+    from starlette.responses import FileResponse, Response
+
+    @app.middleware("http")
+    async def html_fallback(request: Request, call_next: Any) -> Response:
+        path = request.url.path
+        # Pre-call rewrites only for plain GETs to non-/api extensionless paths.
+        if (
+            request.method == "GET"
+            and not path.startswith("/api/")
+            and "." not in path.rsplit("/", 1)[-1]
+            and path not in ("/", "")
+        ):
+            candidate = STATIC_DIR / f"{path.lstrip('/')}.html"
+            if candidate.is_file():
+                return FileResponse(
+                    candidate,
+                    media_type="text/html; charset=utf-8",
+                    headers={
+                        "X-Schemabrain-Charter-Version": "1.2",
+                        "X-Schemabrain-Dashboard-Schema": DASHBOARD_SCHEMA_VERSION,
+                    },
+                )
+        return await call_next(request)
 
 
 def _register_fallback_landing(app: FastAPI) -> None:

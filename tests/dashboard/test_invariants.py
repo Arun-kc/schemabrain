@@ -46,3 +46,39 @@ def test_openapi_docs_are_disabled(client) -> None:
     assert client.get("/docs").status_code == 404
     assert client.get("/redoc").status_code == 404
     assert client.get("/openapi.json").status_code == 404
+
+
+def test_html_fallback_serves_extensionless_path_when_html_sibling_exists(
+    store_path, tmp_path, monkeypatch
+):
+    """`/pii` should serve `pii.html` when the file exists on disk.
+
+    Bridges Next.js's static-export filename convention (`pii.html`)
+    with the React app's URL convention (`/pii`). Only fires for
+    non-API GETs and only when the `.html` sibling exists on disk.
+    """
+    from fastapi.testclient import TestClient
+
+    from schemabrain.dashboard import sidecar as sidecar_mod
+    from schemabrain.dashboard.sidecar import SidecarConfig, create_sidecar
+
+    # Seed a temporary static dir with a pii.html file so the mount
+    # registers and the html-fallback middleware activates.
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html><body>landing</body></html>")
+    (static_dir / "pii.html").write_text("<html><body>pii page</body></html>")
+    monkeypatch.setattr(sidecar_mod, "STATIC_DIR", static_dir)
+
+    app = create_sidecar(SidecarConfig(store_path=store_path))
+    with TestClient(app) as client:
+        # Extensionless path with a .html sibling — middleware rewrites
+        response = client.get("/pii")
+        assert response.status_code == 200
+        assert "pii page" in response.text
+
+        # Real 404 still 404s (no .html sibling)
+        assert client.get("/no-such-page").status_code == 404
+
+        # API routes are unaffected
+        assert client.get("/api/health").status_code == 200

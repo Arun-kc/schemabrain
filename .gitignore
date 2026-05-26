@@ -117,3 +117,12 @@ logs/
 # Kept locally for engineering reference; not shipped to the public repo.
 docs/internal/
 schemabrain-prerelease.db*
+
+# Dashboard static export — populated by `pnpm --dir web build` at
+# release-time CI from the `web/` source; never committed. The
+# `.gitkeep` + README.md sentinels keep the directory tracked so the
+# wheel artifacts glob in pyproject.toml finds a real path even when
+# the build hasn't been run yet.
+schemabrain/dashboard/static/*
+!schemabrain/dashboard/static/.gitkeep
+!schemabrain/dashboard/static/README.md

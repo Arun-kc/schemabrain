@@ -1,0 +1,143 @@
+/*
+ * The Ledger — bespoke styles that the spec calls for but Tailwind
+ * utilities can't express idiomatically:
+ *
+ *   - clip-path stamp shape for catastrophic chips (the wax-seal cue)
+ *   - 1px red underline on catastrophic column headers (not a border-box)
+ *   - 2px red gutter tick on entity rows that carry any catastrophic
+ *   - the selected-row left arrow + ink-900 emphasis
+ *
+ * Kept in a CSS module so the rules live next to the component that
+ * owns them — and so a future contributor renaming the surface
+ * doesn't have to grep through globals.css.
+ */
+
+.matrix {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.matrix thead th {
+  border-bottom: 1px solid var(--color-ink-300);
+  padding: 0.75rem 0.5rem;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: lowercase;
+  color: var(--color-ink-500);
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
+.matrix thead th.catastrophicHeader {
+  color: var(--color-signal-red);
+  font-weight: 600;
+  border-bottom: 1px solid var(--color-signal-red);
+}
+
+.matrix thead th.entityHeader {
+  text-align: left;
+  padding-left: 1rem;
+}
+
+.matrix tbody tr {
+  border-bottom: 1px solid var(--color-ink-200);
+}
+
+.matrix tbody tr:last-child {
+  border-bottom: none;
+}
+
+.matrix tbody td {
+  padding: 0.75rem 0.5rem;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--color-ink-700);
+  border-bottom: 1px solid var(--color-ink-200);
+  transition: background-color var(--duration-fast) var(--ease-out-expo);
+}
+
+.matrix tbody td.entityCell {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  letter-spacing: -0.01em;
+  color: var(--color-ink-900);
+  padding-left: 1rem;
+  position: relative;
+  white-space: nowrap;
+}
+
+.matrix tbody tr.hasCatastrophic td.entityCell::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 1rem;
+  width: 2px;
+  background: var(--color-signal-red);
+  transform: translateY(-50%);
+}
+
+.matrix tbody tr.selected td.entityCell {
+  color: var(--color-ink-900);
+  font-weight: 600;
+}
+
+.matrix tbody tr.selected td.entityCell::after {
+  content: "→";
+  position: absolute;
+  right: -0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-ink-900);
+}
+
+.matrix tbody tr {
+  cursor: pointer;
+}
+
+.matrix tbody tr:hover td {
+  background-color: var(--color-ivory-100);
+}
+
+.matrix tbody tr.selected td {
+  background-color: var(--color-ivory-100);
+}
+
+.matrix .zero {
+  color: var(--color-ink-300);
+}
+
+/* Catastrophic chip — clip-path stamp shape per spec §5.1 */
+.catastrophicChip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.75rem;
+  padding: 0.125rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-signal-red);
+  border: 1px solid var(--color-signal-red);
+  /* The wax-seal cue — slight parallelogram skew, not a uniform
+     rounded rect. The 8%/92% values keep the shape readable at
+     small sizes without losing too much vertical bite. */
+  clip-path: polygon(8% 0, 100% 0, 92% 100%, 0 100%);
+  background: oklch(98% 0.005 80);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .matrix tbody tr {
+    transition: none;
+  }
+  .matrix tbody td {
+    transition: none;
+  }
+}
