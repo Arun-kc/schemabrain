@@ -14,6 +14,13 @@ eggs/
 .eggs/
 lib/
 lib64/
+# Re-include the dashboard's frontend `lib/` directory — without
+# this negation, the generic `lib/` pattern above silently swallows
+# `web/lib/{api,cn}.ts` + `web/lib/types/*.ts` (the TypeScript
+# mirrors of the Python charter). Symptom: tests pass locally, fail
+# in CI with FileNotFoundError on the TS files. Discovered after
+# PR #125 CI 26448572653.
+!web/lib/
 parts/
 sdist/
 var/
