@@ -142,6 +142,8 @@ Six properties SchemaBrain enforces at the SQL boundary today:
 
 The MCP surface exposes twelve tools — **none of which can write**. There is no `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database, regardless of session state. The read-only guarantee is structural, not a session flag the agent can flip. Stage 1 of `init` additionally pins `default_transaction_read_only=on` on the connection as belt-and-suspenders against a misconfigured downstream.
 
+[Read-only by architecture →](docs/mechanism/read-only.md)
+
 </td>
 <td width="50%" valign="top">
 
@@ -157,7 +159,7 @@ Twelve categories from GDPR, CCPA/CPRA, HIPAA, PCI DSS, ISO 27018 — tagged per
 
 **Enforcement scope:** binding is at the `get_metric` compile path today. Lower-level tools (`describe_entity`, `resolve_join`, `describe_table`) surface the `redacted=True` flag + `pii_categories` as advisory metadata so the agent can self-regulate, but they don't refuse. Uniform SQL-layer enforcement against agent-emitted SQL ships in v2 — see [Where it's going](#where-its-going).
 
-[PII classification →](docs/observability.md#pii-classification-alpha)
+[PII taxonomy & propagation →](docs/mechanism/pii-taxonomy.md) · [Operations view →](docs/observability.md#pii-classification-alpha)
 
 </td>
 </tr>
@@ -172,7 +174,7 @@ Every tool call under `schemabrain serve` writes one row to an append-only `mcp_
 schemabrain audit verify   # exit 0 = chain clean
 ```
 
-[Tamper-evident audit log →](docs/observability.md#audit-log-alpha)
+[Tamper-evident audit chain →](docs/mechanism/audit-chain.md) · [Operations view →](docs/observability.md#audit-log-alpha)
 
 </td>
 <td width="50%" valign="top">
@@ -192,7 +194,7 @@ Refused and degraded calls return a structured `recovery.suggested_args` block �
 }
 ```
 
-[Charter v1.2 envelope reference →](docs/agent-ux-charter.md#3-errors-are-prompts-for-the-next-tool-call)
+[Structured recovery →](docs/mechanism/structured-recovery.md) · [Trust signal →](docs/mechanism/trust-signal.md) · [Charter v1.2 reference →](docs/agent-ux-charter.md#3-errors-are-prompts-for-the-next-tool-call)
 
 </td>
 </tr>

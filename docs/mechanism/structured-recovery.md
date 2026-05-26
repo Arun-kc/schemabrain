@@ -1,0 +1,185 @@
+# Mechanism: structured recovery
+
+> **One-line claim:** Every failure response is a contract, not a string. Errors and refusals ship a typed `Recovery` block — `suggested_tool`, `suggested_args`, `fuzzy_matches` — so the agent can self-heal programmatically instead of parsing English.
+
+The standard MCP server pattern returns errors as free-form strings: `"Table 'user' not found"`. An agent reading that has two options — give up, or ask the user. SchemaBrain returns the failure as a typed contract: *here's what failed, here's the next tool to call, here are the arguments*. The agent acts on the contract.
+
+This page documents the four shapes that make recovery actionable.
+
+---
+
+## The envelope: every response carries the same shape
+
+All 12 MCP tools return a typed `ToolResponse` envelope ([`schemabrain/mcp/envelope.py`](../../schemabrain/mcp/envelope.py)):
+
+```json
+{
+  "status": "success" | "empty" | "partial" | "degraded" | "error" | "refused",
+  "data": <tool-specific payload | null>,
+  "error": <ToolError | null>,
+  "confidence": "HIGH" | "MEDIUM" | "LOW" | null,
+  "provenance": <Provenance | null>,
+  "follow_up_hints": [<tool name>, ...] | null,
+  "degradation_reason": <closed-set string | null>,
+  "charter_version": "1.2"
+}
+```
+
+The agent never has to wonder *was that a real empty result or a silent miss?* The status enum has six values that disambiguate; the structural invariant ([`ToolResponse._validate_status_data_invariant`](../../schemabrain/mcp/envelope.py)) enforces that `error` is populated iff `status ∈ {error, refused}`. `data` must be populated for `success`; other statuses (`empty`, `partial`, `degraded`) allow either a payload or `None`.
+
+---
+
+## The `Recovery` block — the agent's next move
+
+When `status ∈ {error, refused}`, the `ToolError` carries a `Recovery`:
+
+```json
+{
+  "status": "error",
+  "error": {
+    "kind": "unknown_name",
+    "message": "Table 'user' not found in the indexed schema.",
+    "recovery": {
+      "suggested_tool": "find_relevant_entities",
+      "suggested_args": {"query": "user"},
+      "fuzzy_matches": ["users", "user_profiles", "auth.users"]
+    }
+  }
+}
+```
+
+| Field | Purpose |
+|---|---|
+| `suggested_tool` | The tool name to call next. The agent's tool registry has it; no resolution needed. |
+| `suggested_args` | A ready-to-pass arguments dict. The agent fills the call and goes. |
+| `fuzzy_matches` | Plausible alternatives (for `unknown_name`-shaped errors). The agent can pick one or chain the suggested tool. |
+| `suggested_rewrite` | (v1.1, populated by v2's refuse-with-rewrite path) A safe version of the original query. |
+| `widening_hint` | (v1.1, populated by `allowlist_violation`) The scope that would unblock the call. |
+
+The agent doesn't parse the message string. It reads `recovery.suggested_tool`, calls it, moves on.
+
+---
+
+## The error-kind registry — closed grammar, not free text
+
+`ToolError.kind` is a Pydantic Literal — a closed set of 26 strings that the agent can switch on without parsing. Adding a new kind is a minor charter version bump; the wire field announces the version.
+
+```
+v1.0 kinds (7):
+  unknown_name              malformed_name             missing_credential
+  index_not_ready           schema_drift               cost_cap_exceeded
+  internal_error
+
+v1.1 additions — refuse-before-execute (3):
+  pii_blocked               policy_blocked             allowlist_violation
+
+canonical-join resolution (4):
+  no_canonical_join         ambiguous_join             unknown_join_name
+  join_name_mismatch
+
+metric surface (8):
+  unknown_metric            unreachable_entity         ambiguous_path
+  unknown_via_join          unknown_order_by_column    unknown_group_by_column
+  unknown_filter_column     unknown_measure_column
+
+time-grain (2):
+  invalid_time_grain        grain_mismatch
+
+time-dimension inheritance (v1.2, 1):
+  ambiguous_time_dimension
+
+MCP dispatch (1):
+  invalid_argument          # used internally by strict-args rejection;
+                            # surfaces as FastMCPToolError at the protocol
+                            # layer, never appears inside a ToolResponse
+                            # returned to the agent
+```
+
+That is the full 26-kind surface. An agent encountering `kind: "ambiguous_time_dimension"` can branch on the literal without guessing — and the suggested recovery tool is structured: `recovery.suggested_args = {"time_dimension": "order.placed_at"}` says exactly which candidate the agent should retry with.
+
+---
+
+## The `degraded` path — partial success with a structured caveat
+
+Not every fallback is an error. `status: "degraded"` means the tool ran and returned data, but with a structured warning the agent should respect:
+
+```json
+{
+  "status": "degraded",
+  "data": { "rows": [...] },
+  "degradation_reason": "fan_out_join"
+}
+```
+
+`degradation_reason` is a closed Literal ([`DegradationReason`](../../schemabrain/mcp/envelope.py)) with exactly 3 values:
+
+| Reason | When |
+|---|---|
+| `fan_out_join` | The metric chain crossed a `one_to_many` / `many_to_many` canonical join; aggregates may be inflated by the cross-product. Agent should consider `count_distinct` over an identity column. |
+| `missing_order_by_with_limit` | `limit` is set + `group_by` is non-empty + `order_by` is empty; the LIMIT N slice is non-deterministic. Agent should pass `order_by=` to specify what "top N" means. |
+| `time_dimension_unavailable` | Caller passed `time_grain` but no reachable timestamp column was found; the plan ships unbucketed. |
+
+These are surface-able to the user as warnings, but the agent can continue. The closed grammar means clients can switch on the value programmatically.
+
+---
+
+## The `follow_up_hints` field — chain the next tool
+
+Most useful agent behavior over SchemaBrain is multi-tool: discover, then describe, then drill in. `follow_up_hints` is a 1-3 tool-name list every response can carry:
+
+```json
+{
+  "status": "success",
+  "data": { "entities": [...] },
+  "follow_up_hints": ["describe_entity", "suggest_joins"]
+}
+```
+
+The agent is free to ignore them, but they reduce the chance of dead-end branches. Combined with the per-tool description's "Use this when … combined with X" pattern (Charter v1.2 Principle 2), the hint surface encodes the canonical workflow into the tool responses themselves — the LLM doesn't have to derive it from scratch each session.
+
+---
+
+## What this is *not*
+
+- **It is not a guarantee of recovery success.** `recovery.suggested_tool` is a hint, not a promise. The suggested call might also fail (e.g., `find_relevant_entities("user")` returns empty). The agent gets another structured response and another recovery hint.
+- **It is not a defense against bad agent behavior.** A pathological agent can ignore `recovery` entirely and keep retrying the failing call. The audit trail ([`/mechanism/audit-chain`](audit-chain.md)) catches the loop pattern; per-call cost discipline catches the budget impact.
+- **It is not a substitute for tool descriptions.** Recovery contracts catch *runtime* failures. Tool descriptions (Charter v1.2 Principle 2) prevent the wrong-tool-from-the-start failures. Both layers ship.
+- **It is not yet a SQL rewrite path.** `Recovery.suggested_rewrite` is reserved in v1.1 — no current tool emits it. v2's planned refuse-with-rewrite primitives are the first producers; today's refusal responses use `suggested_tool` instead.
+
+---
+
+## Verify it yourself
+
+`schemabrain serve` is a stdio transport — it does not bind a TCP port. You can drive a structured-recovery response directly from a Python REPL by calling the tool implementation:
+
+```python
+# unknown_name path
+from schemabrain.core.store import SQLiteStore
+from schemabrain.mcp.describe_entity import describe_entity_impl
+import json
+
+with SQLiteStore("~/.schemabrain/store.db") as store:
+    resp = describe_entity_impl(
+        store=store,
+        source_connection_id="<your-source-id>",
+        name="nonexistent_table",
+    )
+    print(json.dumps(resp.model_dump(mode="json"), indent=2))
+# Response carries: status="error", error.kind="unknown_name",
+# error.recovery.suggested_tool="find_relevant_entities",
+# error.recovery.fuzzy_matches=[closest 3 matches]
+```
+
+A live MCP client (Claude Desktop, Cursor, Windsurf) wired through `schemabrain init` will also surface the recovery envelope naturally — drive the agent to a known-bad metric name and watch the structured `error` block come back.
+
+The full envelope contract lives in [`schemabrain/mcp/envelope.py`](../../schemabrain/mcp/envelope.py). Charter rationale is in [`docs/agent-ux-charter.md`](../agent-ux-charter.md) §3.
+
+---
+
+## Related mechanisms
+
+- [`/mechanism/trust-signal`](trust-signal.md) — the 2D label every success response carries
+- [`/mechanism/pii-taxonomy`](pii-taxonomy.md) — what triggers `pii_blocked` and why the refusal envelope reports only the *blocked* categories, not the *attempted* ones
+- [`/mechanism/audit-chain`](audit-chain.md) — every error and refusal lands in the audit row
+- [`/mechanism/read-only`](read-only.md) — why there's no `execute_query` tool in the recovery surface
+- [`docs/agent-ux-charter.md`](../agent-ux-charter.md) §3 — "Errors are prompts for the next tool call" — the design principle
