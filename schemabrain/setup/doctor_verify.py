@@ -389,8 +389,9 @@ def render_verify(result: VerifyResult, *, console: object) -> None:
     Glyphs match the existing wizard renderer's convention (✓ / ✗ / ⊘)
     so operators reading both surfaces get a consistent signal.
     """
-    # nosec B105 — Rich color tags, not credentials
-    glyphs = {"pass": "[green]✓[/]", "fail": "[red]✗[/]", "skipped": "[dim]⊘[/]"}  # noqa: S105 # nosec B105
+    # Rich color tags ([green], [red], [dim]) are stylistic, not credentials —
+    # bandit's B105 heuristic false-positives on bracketed substrings.
+    glyphs = {"pass": "[green]✓[/]", "fail": "[red]✗[/]", "skipped": "[dim]⊘[/]"}  # nosec B105
     width = max((len(s.name) for s in result.stages), default=0)
     console.print(  # type: ignore[attr-defined]
         f"Mock-agent smoke ([bold]{result.total_duration_s:.1f}s[/] total)"
