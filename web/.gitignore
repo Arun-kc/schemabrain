@@ -4,9 +4,19 @@ out/
 next-env.d.ts
 tsconfig.tsbuildinfo
 
-# Node
+# Next.js / Vercel / Turbo / SWC build caches
+.vercel/
+.turbo/
+.swc/
+
+# Node / pnpm
 node_modules/
 *.log
+.pnpm-store/
+.pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 # Note: pnpm-lock.yaml is intentionally tracked for reproducible
 # wheel-build static export. Do not add it back to this list.
 
@@ -14,9 +24,13 @@ node_modules/
 coverage/
 playwright-report/
 test-results/
+playwright/.cache/
 .vitest-cache/
 
 # Editor / OS
 .DS_Store
+._*
 .idea/
 .vscode/
+.fleet/
+.zed/

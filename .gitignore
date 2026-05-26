@@ -70,6 +70,11 @@ venv.bak/
 *.swo
 *~
 .DS_Store
+# macOS AppleDouble resource forks (appear when copying via SMB/AFP)
+._*
+# JetBrains Fleet / Zed
+.fleet/
+.zed/
 
 # Type checking
 .mypy_cache/
@@ -93,6 +98,17 @@ schemabrain-*.db
 
 # Benchmark / cache artifacts not covered above
 .benchmarks/
+
+# Profiling output
+*.prof
+*.lprof
+prof/
+
+# Local override files (never committed)
+docker-compose.override.yml
+docker-compose.override.yaml
+*.local.yml
+*.local.yaml
 
 # Logs
 *.log
