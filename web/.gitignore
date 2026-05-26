@@ -6,8 +6,9 @@ tsconfig.tsbuildinfo
 
 # Node
 node_modules/
-pnpm-lock.yaml
 *.log
+# Note: pnpm-lock.yaml is intentionally tracked for reproducible
+# wheel-build static export. Do not add it back to this list.
 
 # Test outputs
 coverage/
