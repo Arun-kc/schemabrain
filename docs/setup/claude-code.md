@@ -30,6 +30,8 @@ Then in a new Claude Code session:
 
 If Claude calls `list_entities` and reports the entities curated during init, you're done. Otherwise run `schemabrain doctor --verify` for an end-to-end smoke test that doesn't require an Anthropic key.
 
+**Next:** [First 5 Queries](../first-5-queries.md) walks you through exercising each load-bearing mechanism (read-only, PII refusal, audit chain, structured recovery) in ~10 minutes.
+
 ---
 
 ## If the shell-out failed

@@ -394,6 +394,7 @@ The five most common first-run failures. Full troubleshooter in [`docs/setup.md`
 | Doc | What's inside |
 |---|---|
 | [`docs/setup.md`](docs/setup.md) | Activation wizard, Claude Desktop / Code / Cursor wiring, Anthropic SDK demo, troubleshooting, validating Claude's SQL |
+| [`docs/first-5-queries.md`](docs/first-5-queries.md) | What to actually *do* after `init` — five queries that exercise read-only, PII refusal, audit chain, and structured recovery |
 | [`docs/semantic-layer.md`](docs/semantic-layer.md) | Building entities, metrics (incl. composite expressions), canonical joins (incl. multi-hop), dbt import |
 | [`docs/operations.md`](docs/operations.md) | `inspect`, `check` (drift), `index --dry-run`, Docker compose |
 | [`docs/observability.md`](docs/observability.md) | `tail`, audit log, OTel export, PII classification |

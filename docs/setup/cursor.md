@@ -54,6 +54,8 @@ Quit Cursor fully (Cmd+Q on macOS) and relaunch. Cursor only reads `mcp.json` on
 
 If Cursor's agent calls `list_entities` and reports the entities curated during init, you're done. Otherwise run `schemabrain doctor --verify` for an end-to-end smoke test.
 
+**Next:** [First 5 Queries](../first-5-queries.md) walks you through exercising each load-bearing mechanism (read-only, PII refusal, audit chain, structured recovery) in ~10 minutes.
+
 ---
 
 ## Project-local vs global
