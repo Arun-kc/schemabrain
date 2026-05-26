@@ -223,16 +223,33 @@ def _register_meta_route(app: FastAPI, config: SidecarConfig) -> None:
 
     @app.get("/api/meta")
     def meta() -> dict[str, Any]:
+        from schemabrain.core.source_id import (
+            looks_like_connection_url,
+            make_source_id,
+        )
+
         with SQLiteStore(config.store_path) as store:
             source_ids = store.list_distinct_source_connection_ids()
+        # Coerce config.source_connection_id to a credential-safe form
+        # before echoing it back. If it's a connection URL, hash it to
+        # the canonical short ID; otherwise treat it as a pre-computed
+        # label and pass through. Never emit the raw URL — it carries
+        # the DB password.
+        configured = config.source_connection_id
+        if configured and looks_like_connection_url(configured):
+            try:
+                configured = make_source_id(configured)
+            except ValueError:
+                # Unparseable URL — refuse to echo it back rather than
+                # leak partial credentials. Fall through to the store's
+                # indexed list.
+                configured = None
         return {
             "charter_version": CHARTER_VERSION,
             "dashboard_schema_version": DASHBOARD_SCHEMA_VERSION,
             "fingerprint_version": FINGERPRINT_VERSION,
             "store_path": str(config.store_path),
-            "default_source_connection_id": (
-                config.source_connection_id or (source_ids[0] if source_ids else None)
-            ),
+            "default_source_connection_id": (configured or (source_ids[0] if source_ids else None)),
             "source_connection_ids": source_ids,
         }
 

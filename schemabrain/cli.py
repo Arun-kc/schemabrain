@@ -63,7 +63,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
-import hashlib
 import json
 import os
 import sqlite3
@@ -9169,30 +9168,23 @@ def _resolve_url(url: str) -> str | None:
 def _canonical_url(url: str) -> str:
     """Return the credential-free, port-normalized form of a connection URL.
 
-    Raises ValueError if the URL has no scheme or an unsupported one.
+    Delegates to :func:`schemabrain.core.source_id.canonical_url` so the
+    dashboard sidecar can produce the same canonical form without
+    depending on this CLI module.
     """
-    parsed = urlparse(url)
-    if not parsed.scheme:
-        raise ValueError(f"Invalid connection URL (no scheme): {url!r}")
-    if parsed.scheme not in _POSTGRES_SCHEMES:
-        raise ValueError(
-            f"Unsupported scheme {parsed.scheme!r}; expected one of {sorted(_POSTGRES_SCHEMES)}"
-        )
-    port = parsed.port or _POSTGRES_SCHEMES[parsed.scheme]
-    host = parsed.hostname or ""
-    path = parsed.path.rstrip("/")
-    return f"{parsed.scheme}://{host}:{port}{path}"
+    from schemabrain.core.source_id import canonical_url
+
+    return canonical_url(url)
 
 
 def _make_source_id(url: str) -> str:
     """Stable short identifier for the source DB, derived from its URL.
 
-    Strips credentials and normalizes default port + trailing slash so the
-    same database produces the same source ID regardless of which user or
-    URL form indexed it.
+    Delegates to :func:`schemabrain.core.source_id.make_source_id`.
     """
-    canonical = _canonical_url(url)
-    return hashlib.sha256(canonical.encode()).hexdigest()[:_SOURCE_ID_LENGTH]
+    from schemabrain.core.source_id import make_source_id
+
+    return make_source_id(url)
 
 
 if __name__ == "__main__":  # pragma: no cover
