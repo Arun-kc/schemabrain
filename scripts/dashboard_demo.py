@@ -17,6 +17,7 @@ Nothing in your real ``schemabrain.db`` is touched.
 
 from __future__ import annotations
 
+import argparse
 import sqlite3
 import sys
 import tempfile
@@ -35,7 +36,20 @@ from schemabrain.pii.categories import ColumnPiiTag
 SOURCE_CONNECTION_ID = "demo-source"
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Boot the v0.4 dashboard sidecar against a fresh seeded demo store. "
+            "Pass --no-open to suppress the browser launch (CI / headless mode)."
+        )
+    )
+    parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Do not open the dashboard in a browser. Used by CI smoke jobs.",
+    )
+    args = parser.parse_args(argv)
+
     if not is_ui_available():
         print(
             "ERROR: the [ui] extra is not installed.\n"
@@ -71,7 +85,7 @@ def main() -> int:
     return run_dashboard(
         store_path=store_path,
         port=7878,
-        open_browser=True,
+        open_browser=not args.no_open,
         source_connection_id=SOURCE_CONNECTION_ID,
     )
 

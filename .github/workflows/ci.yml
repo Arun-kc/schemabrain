@@ -308,3 +308,160 @@ jobs:
           OUT=$(docker run --rm schemabrain:smoke --help)
           echo "$OUT"
           echo "$OUT" | grep -q "usage:"
+
+  dashboard-e2e:
+    name: Dashboard E2E (Playwright)
+    # Only runs when something the smoke could actually catch changes:
+    # the web app, the FastAPI sidecar package, the demo seed script
+    # (which boots the stack), or this workflow file itself. Skipping
+    # docs-only and core-Python-only PRs keeps the typical critical
+    # path lean while still catching dashboard regressions whenever
+    # they could have been introduced.
+    runs-on: ubuntu-latest
+    needs: lint-and-unit
+    # Generous because the job boots a sidecar, installs Chromium,
+    # and runs 5 Playwright specs against a real browser. Warm-cache
+    # local runs land in ~30 s; CI cold-cache + browser install pushes
+    # toward ~3-4 min. 12 min ceiling caps a hang without burning the
+    # default 6-hour quota.
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Detect dashboard-relevant changes
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            dashboard:
+              - 'web/**'
+              - 'schemabrain/dashboard/**'
+              - 'scripts/dashboard_demo.py'
+              - '.github/workflows/ci.yml'
+
+      - name: Install uv
+        if: steps.filter.outputs.dashboard == 'true'
+        # Same point-tag pin as the rest of this workflow. See the
+        # lint-and-unit job for the full rationale on why @v8 is unsafe.
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.11
+        if: steps.filter.outputs.dashboard == 'true'
+        run: uv python install 3.11
+
+      - name: Install Python dependencies (+ui extra)
+        # `--extra ui` pulls in fastapi + uvicorn + sse-starlette so the
+        # sidecar can boot. `--extra dev` covers everything `dashboard_demo.py`
+        # imports from `schemabrain.*`. OTel is not on this path.
+        if: steps.filter.outputs.dashboard == 'true'
+        run: uv sync --extra dev --extra ui --python 3.11
+
+      - name: Set up pnpm
+        if: steps.filter.outputs.dashboard == 'true'
+        # Pinned to v4 (immutable major); pnpm version comes from
+        # `web/package.json` engines.pnpm (>=9). Keep this in sync with
+        # the engines field if it ever bumps.
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node 20
+        if: steps.filter.outputs.dashboard == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install web dependencies
+        if: steps.filter.outputs.dashboard == 'true'
+        working-directory: web
+        # `--frozen-lockfile` is the CI default for pnpm but stating
+        # it explicitly fails loudly if anyone hand-edits package.json
+        # without regenerating the lockfile.
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache Playwright browsers
+        if: steps.filter.outputs.dashboard == 'true'
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          # Browser binaries live under ~/.cache/ms-playwright; cache
+          # key is bound to the Playwright version so a bump
+          # invalidates and forces a fresh install with matching
+          # protocol support.
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+
+      - name: Install Playwright Chromium (+OS deps)
+        # `--with-deps` installs the apt packages Chromium needs on
+        # ubuntu-latest. Cheap to run unconditionally (no-op when the
+        # browser cache hit) and safer than gating on cache-hit, since
+        # the system deps live outside the cached browser dir.
+        if: steps.filter.outputs.dashboard == 'true'
+        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Build dashboard static export
+        # `schemabrain/dashboard/static/` is gitignored — built at
+        # release time from the Next.js app, not committed. Without
+        # this step the sidecar serves only the landing fallback and
+        # every spec fails with "element not found" against the
+        # built-app text. Mirrors how the wheel is assembled for
+        # `pip install schemabrain[ui]`.
+        if: steps.filter.outputs.dashboard == 'true'
+        working-directory: web
+        run: pnpm run export
+
+      - name: Boot dashboard sidecar (headless)
+        if: steps.filter.outputs.dashboard == 'true'
+        # Background the demo script so the subsequent steps can talk
+        # to it. `--no-open` suppresses the browser launch (which would
+        # have nothing to attach to on a CI runner anyway).
+        run: |
+          uv run --python 3.11 python scripts/dashboard_demo.py --no-open &
+          echo "SIDECAR_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for sidecar health
+        if: steps.filter.outputs.dashboard == 'true'
+        # 30s ceiling — sidecar boot is ~1-2 s warm; budget covers
+        # cold uvicorn import + SQLite init. Fail loudly with the
+        # last curl exit code so a stuck boot doesn't masquerade as
+        # a flaky Playwright test downstream.
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:7878/api/health > /dev/null; then
+              echo "sidecar healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "sidecar failed to come up within 30s" >&2
+          exit 1
+
+      - name: Run Playwright smoke
+        if: steps.filter.outputs.dashboard == 'true'
+        working-directory: web
+        run: pnpm test:e2e
+
+      - name: Stop sidecar
+        # Run on failure too so a hung sidecar can't leak into a
+        # subsequent job's resources. `|| true` because the process
+        # may already be gone (e.g., killed by a SIGPIPE upstream).
+        if: always() && steps.filter.outputs.dashboard == 'true' && env.SIDECAR_PID != ''
+        run: kill "$SIDECAR_PID" 2>/dev/null || true
+
+      - name: Upload Playwright artifacts on failure
+        if: failure() && steps.filter.outputs.dashboard == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report/
+            web/test-results/
+          # 7-day retention is plenty for triaging a failed run; longer
+          # would just burn artifact storage.
+          retention-days: 7
