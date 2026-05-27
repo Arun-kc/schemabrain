@@ -144,11 +144,10 @@ _SERVER_NAME = "schemabrain"
 # wired is the right one. `website_url` doubles as the "where do
 # I learn more?" link some hosts surface in the server-detail UI.
 _SERVER_WEBSITE_URL = "https://github.com/Arun-kc/schemabrain"
-# Multiple sizes so a host can pick the closest fit without
-# down-/up-scaling. URLs point at the `main` branch of the public
-# repo so a deployed wheel produces a stable icon URL without
-# bundling the binary in the wheel — keeps the install size
-# unaffected and avoids version-pinning the icon to the wheel.
+# SVG scales to whatever size the host wants without pixelation, so
+# one source of truth replaces the previous 32/64/512 PNG trio. URL
+# points at the `main` branch of the public repo so a deployed wheel
+# produces a stable icon URL without bundling the binary in the wheel.
 _SERVER_ICON_BASE = "https://raw.githubusercontent.com/Arun-kc/schemabrain/main/docs/assets"
 
 
@@ -166,19 +165,9 @@ def _server_icons() -> list[Any]:
         return []
     return [
         Icon(
-            src=f"{_SERVER_ICON_BASE}/schemabrain-mark-32.png",
-            mimeType="image/png",
-            sizes=["32x32"],
-        ),
-        Icon(
-            src=f"{_SERVER_ICON_BASE}/schemabrain-mark-64.png",
-            mimeType="image/png",
-            sizes=["64x64"],
-        ),
-        Icon(
-            src=f"{_SERVER_ICON_BASE}/schemabrain-mark-512.png",
-            mimeType="image/png",
-            sizes=["512x512"],
+            src=f"{_SERVER_ICON_BASE}/mcp-icon.svg",
+            mimeType="image/svg+xml",
+            sizes=["any"],
         ),
     ]
 
