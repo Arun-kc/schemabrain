@@ -25,7 +25,7 @@ If any of those is uncertain, run `schemabrain doctor --verify` first — it smo
 
 > **Ask Claude:** list the entities SchemaBrain knows about
 
-**What happens.** Claude calls [`list_entities`](mcp-tools.md). With the bundled fixture, the response is three rows whose names and descriptions come from `init`'s LLM-driven entity suggestion (`schemabrain/entities/suggest.py`) — typically along the lines of:
+**What happens.** Claude calls [`list_entities`](/reference/mcp-tools/list_entities). With the bundled fixture, the response is three rows whose names and descriptions come from `init`'s LLM-driven entity suggestion (`schemabrain/entities/suggest.py`) — typically along the lines of:
 
 | name (typical) | description (LLM-generated) |
 |---|---|
@@ -43,7 +43,7 @@ Exact wording will vary slightly run-to-run because Stage 3 of `init` is an LLM 
 
 > **Ask Claude:** describe the customer entity
 
-**What happens.** Claude calls [`describe_entity(name="customer")`](mcp-tools.md) (substitute whatever name `list_entities` returned for the user/shopper entity). The response lists every column on the bound physical table with its PII classification:
+**What happens.** Claude calls [`describe_entity(name="customer")`](/reference/mcp-tools/describe_entity) (substitute whatever name `list_entities` returned for the user/shopper entity). The response lists every column on the bound physical table with its PII classification:
 
 ```json
 {
@@ -61,7 +61,7 @@ Exact wording will vary slightly run-to-run because Stage 3 of `init` is an LLM 
 }
 ```
 
-(The full `EntityDetail` shape — including LLM-enriched descriptions, sample values, and `description_source` — is in [`docs/mcp-tools.md`](mcp-tools.md).)
+(The full `EntityDetail` shape — including LLM-enriched descriptions, sample values, and `description_source` — is in [the MCP tool reference](/reference/mcp-tools/overview).)
 
 **What it proves.** Columns are tagged at index time against the [12-category PII taxonomy](mechanism/pii-taxonomy.md). On a zero-config install, `--pii-block` defaults to `credential,government_id,payment_card` — the three catastrophic-leak categories. `contact` is *tagged but not blocked* by default, so `redacted: false` here is correct: the agent sees the tag as advisory metadata and can self-regulate even when policy doesn't refuse. Widen the block list with `--pii-block contact,...` in your host config when you're ready (see Query 4).
 
@@ -71,7 +71,7 @@ Exact wording will vary slightly run-to-run because Stage 3 of `init` is an LLM 
 
 > **Ask Claude:** what's the count of unique customers per month for the last 6 months?
 
-**What happens.** Claude calls [`list_metrics`](mcp-tools.md) to discover the vocabulary, finds `customer_count` (entity `order`, `count_distinct` of `user_id`, time-dimension `order.placed_at`), then calls [`get_metric`](mcp-tools.md):
+**What happens.** Claude calls [`list_metrics`](/reference/mcp-tools/list_metrics) to discover the vocabulary, finds `customer_count` (entity `order`, `count_distinct` of `user_id`, time-dimension `order.placed_at`), then calls [`get_metric`](/reference/mcp-tools/get_metric):
 
 ```json
 {
@@ -155,7 +155,7 @@ schemabrain audit verify
 - **`1`** — mismatch found; the row index that broke the chain is reported.
 - **`2`** — operational error (DB missing, schema mismatch, IO failure).
 
-For deeper inspection, `schemabrain audit tail --limit 10` shows the last ten tool calls with their `tool_name`, `status`, `pii_categories`, and `chain_hash` columns.
+For deeper inspection, `schemabrain audit list --limit 10` shows the last ten tool calls with their `tool_name`, `status`, `pii_categories`, and `chain_hash` columns.
 
 **What it proves.** Every agent tool call is captured in an append-only table guarded by SQL triggers (`mcp_audit_no_update`, `mcp_audit_no_delete`) at the SQLite layer. Tampering with any past row breaks the chain at that row and every later one. The chain head can be persisted externally (post-`verify` cron) to detect even a full-table rewrite. See [`/mechanism/audit-chain`](mechanism/audit-chain.md).
 

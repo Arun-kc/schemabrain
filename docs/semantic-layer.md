@@ -23,7 +23,7 @@ All three are agent-visible through dedicated MCP tools and compile to parameter
 | `resolve_join(entity_a, entity_b)` | "Give me the canonical SQL JOIN between these two entities." |
 | `get_metric(name, by=..., filter=..., via=...)` | "Compute this aggregation. Return rows + the SQL + an audit fingerprint." |
 
-The five physical-schema tools (`find_relevant_tables`, `describe_table`, `describe_column`, `suggest_joins`, `get_example_queries`) sit below them. Full reference: [`docs/mcp-tools.md`](mcp-tools.md).
+The five physical-schema tools (`find_relevant_tables`, `describe_table`, `describe_column`, `suggest_joins`, `get_example_queries`) sit below them. Full reference: [the MCP tool reference](/reference/mcp-tools/overview).
 
 ## Entities
 

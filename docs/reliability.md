@@ -61,9 +61,10 @@ operator's `statement_timeout`.
 
 The 1500 ms target assumes a small-result metric query on a healthy
 source. Long-running aggregations are bounded by the source-side
-`statement_timeout`, which SchemaBrain sets to 30 s by default; a
-query that exceeds it returns `status: error` with `error_kind:
-statement_timeout` and counts against the error budget.
+`statement_timeout`, which the operator sets via `--statement-timeout-ms`
+on `schemabrain serve` (no default — omitted means no cap). When set,
+a query that exceeds it surfaces as `status: error` from the Postgres
+operational error and counts against the error budget.
 
 ## SLOs — pipeline operations
 
