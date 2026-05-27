@@ -1,0 +1,33 @@
+---
+title: "find_relevant_entities"
+description: "Embedding-cosine search restricted to confirmed entities."
+---
+
+<Note>
+**Layer:** Semantic layer
+</Note>
+
+Embedding-cosine retrieval restricted to entities. Reuses the column-level
+embedding index (no second model) but ranks per *entity* by taking the MAX
+cosine across the columns of each entity's bound table. Returns
+domain-named hits so the agent stays in business terms.
+
+```json
+{
+  "name": "customer",
+  "score": 0.84,
+  "qualified_table": "public.users",
+  "best_column": "email",
+  "best_column_description": "Primary contact email used for order confirmations and password reset",
+  "token_estimate": 58
+}
+```
+
+Empty envelope routes the agent differently depending on whether the
+semantic layer is bare or just unmatched:
+
+- **No entities curated yet** → `follow_up_hints: ["find_relevant_tables"]`
+  (skip `list_entities`, it would also be empty).
+- **Entities exist but none match** → `follow_up_hints: ["list_entities", "find_relevant_tables"]`.
+
+Use `find_relevant_tables` instead when no entities are curated.

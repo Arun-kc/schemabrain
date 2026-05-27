@@ -1,0 +1,16 @@
+---
+title: "describe_table"
+description: "Full structural + semantic dump of one table — every column, FK graph, descriptions."
+---
+
+<Note>
+**Layer:** Physical schema
+</Note>
+
+Full structural and semantic dump of one table. Includes every column
+(data type, nullability, default, primary-key flag, LLM description), plus
+all foreign keys with target tables already pre-joined as `schema.table`.
+
+Pass `qualified_name` as `schema.name` — e.g. `"public.orders"`. A bare
+`"orders"` raises a clear error pointing you at `find_relevant_tables` to
+find the schema.

@@ -1,3 +1,8 @@
+---
+title: "ADR 0002 — Store Protocol seam"
+description: "Store Protocol as the universal persistence seam — one interface every consumer (CLI, sidecar, MCP tools, audit writer) agrees on."
+---
+
 # ADR 0002 — Store Protocol as the universal persistence seam
 
 - **Status:** Accepted

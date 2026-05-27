@@ -1,4 +1,20 @@
-# Architecture
+---
+title: "Architecture"
+description: "How SchemaBrain is put together — pipeline, contracts, cache, retrieval, cost model, eval, and the known scalability ceilings."
+---
+
+<Frame>
+  <img
+    className="block dark:hidden"
+    src="/assets/readme-architecture-light.svg"
+    alt="SchemaBrain architecture: agent talks to SchemaBrain over MCP stdio; SchemaBrain emits parameterized SQL to Postgres; the SchemaBrain boundary is the trust boundary."
+  />
+  <img
+    className="hidden dark:block"
+    src="/assets/readme-architecture-dark.svg"
+    alt="SchemaBrain architecture: agent talks to SchemaBrain over MCP stdio; SchemaBrain emits parameterized SQL to Postgres; the SchemaBrain boundary is the trust boundary."
+  />
+</Frame>
 
 How SchemaBrain is put together, the contracts the tool layer keeps, and what
 "validated" actually means today.
@@ -25,9 +41,9 @@ flowchart LR
     Tool1 & Tool2 & Tool3 & Tool4 & Tool5 -->|MCP / stdio| Agent[Agent<br/>Claude Desktop /<br/>Anthropic SDK /<br/>custom]
 ```
 
-The pipeline is single-process and synchronous. No Celery, no Redis, no
-Qdrant. The store is one SQLite file you can `cp` to back up, `sqlite3`
-into to inspect, or `rm` to start over.
+<Note>
+The pipeline is single-process and synchronous. No Celery, no Redis, no Qdrant. The store is one SQLite file you can `cp` to back up, `sqlite3` into to inspect, or `rm` to start over.
+</Note>
 
 ## Cache-aware re-indexing
 
@@ -106,9 +122,11 @@ count: across the two measured anchors, the per-column cost holds at
 extrapolated rows assume that ratio continues; production-scale anchors
 will tighten or revise it.
 
+<Tip>
 Hard cap configurable via `--max-cost` (default $10.00). Per-agent-query
 cost depends on tool calls and turns; in our testing, typical questions
 cost ~$0.005 with Haiku.
+</Tip>
 
 ### Partitioned tables are deduplicated automatically
 
@@ -181,12 +199,12 @@ fixture (7 tables / 30 columns) and the Pagila DVD-rental sample
 - ✅ Continuous integration (lint + unit + integration with 99% coverage
   gate; 4557 tests on `main` at the v0.4.0 cut)
 
-Not yet validated:
-
-- Production-scale schemas (~200+ tables). Extrapolation from the two
-  measured anchors is in the cost-model table above.
+<Warning>
+**Not yet validated:**
+- Production-scale schemas (~200+ tables). Extrapolation from the two measured anchors is in the cost-model table above.
 - Snowflake / BigQuery / MySQL connectors (planned for v1)
 - Long-running serve sessions (no known issues, but no soak test yet)
+</Warning>
 
 ### M:N caveats are surfaced in junction-table descriptions
 
@@ -228,7 +246,7 @@ Self-referential association tables (both PK columns FK to the same
 target) do not currently qualify as junctions under this heuristic;
 revisit if real-world schemas ever rely on the pattern.
 
-Independent SQL validation (per `docs/setup.md`) remains the right
+Independent SQL validation (per [`Setup`](/setup)) remains the right
 backstop for production queries.
 
 ## Scalability frontier
@@ -285,6 +303,23 @@ Concretely, v2 adds:
   `source_tables touched, latency_ms, timestamp}`. Powers the v3
   fleet-signature aggregation layer.
 
-Until v2 ships, treating SchemaBrain as a safety layer would be
-premature. The v0 surface gives agents better schema context, not better
-SQL safety.
+<Note>
+Until v2 ships, treating SchemaBrain as a safety layer would be premature. The v0 surface gives agents better schema context, not better SQL safety. The v0.4 release adds the read-only refusal envelope as a partial down-payment on the v2 vision.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="MCP tool reference" icon="code" href="/reference/mcp-tools/overview">
+    Per-tool signatures, response shapes, and refusal contracts.
+  </Card>
+  <Card title="Read-only by architecture" icon="lock" href="/mechanism/read-only">
+    Why writes are impossible at the type level, not the trust level.
+  </Card>
+  <Card title="Threat model" icon="shield" href="/threat-model">
+    Full attack-surface walk-through with code citations.
+  </Card>
+  <Card title="Charter v1.2" icon="scroll" href="/agent-ux-charter">
+    The contract every MCP tool implements — status taxonomy, envelope shape, recovery hints.
+  </Card>
+</CardGroup>

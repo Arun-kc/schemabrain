@@ -1,0 +1,24 @@
+---
+title: "list_joins"
+description: "Every confirmed canonical relationship with the entity pair it connects."
+---
+
+<Note>
+**Layer:** Semantic layer
+</Note>
+
+Returns every confirmed canonical relationship with the entity pair it connects and its provenance. The agent uses this to discover available bridges across the semantic layer.
+
+```json
+{
+  "name": "customer_orders",
+  "description": "Each order belongs to the customer who placed it.",
+  "source_entity": "customer",
+  "target_entity": "order",
+  "origin": "suggested",
+  "via_junction": null,
+  "via_joins": []
+}
+```
+
+Returns `status="empty"` with `follow_up_hints: ["find_relevant_tables"]` when no canonical joins exist in the store. Actionable next step is physical schema discovery.

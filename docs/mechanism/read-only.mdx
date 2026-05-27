@@ -1,6 +1,13 @@
+---
+title: "Read-only by architecture"
+description: "Agents physically cannot emit a write through SchemaBrain — no tool accepts arbitrary SQL, no session flag flips it."
+---
+
 # Mechanism: read-only by architecture
 
-> **One-line claim:** Agents physically cannot emit a write through SchemaBrain — there is no tool that accepts arbitrary SQL, and no session flag the agent can flip.
+<Note>
+**One-line claim:** Agents physically cannot emit a write through SchemaBrain — there is no tool that accepts arbitrary SQL, and no session flag the agent can flip.
+</Note>
 
 Most "SQL firewalls" inspect the query an agent emits and try to block the unsafe ones at parse time. SchemaBrain ships a different mechanism: **no write surface in the binary at all.** The agent doesn't fail to write because we caught it — it fails because the API it would have used doesn't exist.
 
@@ -117,11 +124,19 @@ grep -n 'default_transaction_read_only' schemabrain/connectors/postgres.py schem
 grep -n 'poolclass=NullPool' schemabrain/connectors/postgres.py schemabrain/cli.py
 ```
 
----
+## Related
 
-## Related mechanisms
-
-- [`/mechanism/pii-taxonomy`](pii-taxonomy.md) — what *content* the agent can pull through the read surface
-- [`/mechanism/structured-recovery`](structured-recovery.md) — what the agent gets back when a read is refused
-- [`/mechanism/audit-chain`](audit-chain.md) — how every call (including refusals) is recorded
-- [`docs/threat-model.md`](../threat-model.md) — the full attack surface, including residual risks
+<CardGroup cols={2}>
+  <Card title="PII taxonomy" icon="shield" href="/mechanism/pii-taxonomy">
+    What content the agent can pull through the read surface.
+  </Card>
+  <Card title="Structured recovery" icon="rotate" href="/mechanism/structured-recovery">
+    What the agent gets back when a read is refused.
+  </Card>
+  <Card title="Audit chain" icon="signature" href="/mechanism/audit-chain">
+    How every call — including refusals — is recorded.
+  </Card>
+  <Card title="Threat model" icon="shield-check" href="/threat-model">
+    Full attack surface, including residual risks.
+  </Card>
+</CardGroup>

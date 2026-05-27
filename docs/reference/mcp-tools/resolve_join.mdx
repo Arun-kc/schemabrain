@@ -1,0 +1,41 @@
+---
+title: "resolve_join"
+description: "Canonical join between two entities — ready-to-paste JOIN clause."
+---
+
+<Note>
+**Layer:** Semantic layer
+</Note>
+
+Returns the canonical SQL join between two entities — a ready-to-paste
+`JOIN <target> AS <alias> ON ...` clause. The lookup is
+direction-insensitive; the response orients per how the operator originally
+confirmed the join so `sql_skeleton` renders predictably.
+
+```json
+{
+  "name": "customer_orders",
+  "description": "Each order belongs to the customer who placed it.",
+  "source_entity": "customer",
+  "target_entity": "order",
+  "on": [{"source_column": "id", "target_column": "customer_id"}],
+  "sql_skeleton": "JOIN public.orders AS order ON customer.id = order.customer_id",
+  "token_estimate": 96
+}
+```
+
+Error envelope (`status="error"`) carries one of four `error.kind` values,
+each with a recovery hint the agent can act on directly:
+
+- `ambiguous_join` — 2+ canonical joins exist (billing vs shipping
+  address, primary vs secondary user). Response lists candidate names;
+  re-call with the right `name`.
+- `no_canonical_join` — no canonical join between the pair exists.
+  Recovery routes to `suggest_joins` for an FK-graph-discovered fallback.
+- `unknown_join_name` — `name` arg was passed but doesn't match any
+  canonical join in the store. Response lists candidate names; pick one.
+- `join_name_mismatch` — `name` arg references a real canonical join,
+  but not the one between this entity pair. Response carries the actual
+  canonical name for the pair; re-call with that.
+
+Use `suggest_joins` instead when you only have physical table names.

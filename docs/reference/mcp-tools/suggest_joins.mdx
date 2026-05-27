@@ -1,0 +1,44 @@
+---
+title: "suggest_joins"
+description: "Shortest FK-graph join paths between table pairs, multi-hop supported."
+---
+
+<Note>
+**Layer:** Physical schema
+</Note>
+
+Shortest FK-graph join paths between every pair of input tables. Each
+`JoinEdge` is path-oriented (`left`/`right` columns positionally aligned
+for direct SQL JOIN), so the agent doesn't have to figure out FK
+direction. Multi-hop paths via intermediate tables work; pairs unreachable
+within `max_hops` land in `unreachable_pairs`.
+
+```json
+{
+  "paths": [
+    {
+      "start_qualified_name": "public.orders",
+      "end_qualified_name": "public.users",
+      "hops": 1,
+      "edges": [
+        {
+          "fk_name": "orders_user_id_fkey",
+          "left_qualified_name": "public.orders",
+          "left_columns": ["user_id"],
+          "right_qualified_name": "public.users",
+          "right_columns": ["id"],
+          "confidence": 1.0,
+          "via": "foreign_key"
+        }
+      ],
+      "confidence": 1.0,
+      "token_estimate": 145
+    }
+  ],
+  "unreachable_pairs": [],
+  "token_estimate": 152
+}
+```
+
+`confidence` is `1.0` for declared FKs at v0; query-log-inferred edges
+(planned for v1) will land below 1.0.

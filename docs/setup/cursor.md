@@ -1,3 +1,8 @@
+---
+title: "Cursor"
+description: "60-second wiring for Cursor's MCP integration. Auto-detected by the activation wizard."
+---
+
 # SchemaBrain + Cursor
 
 > **60 seconds:** install SchemaBrain, run `schemabrain init`, restart Cursor, ask the agent about your database.

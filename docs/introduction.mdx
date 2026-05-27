@@ -28,9 +28,17 @@ SchemaBrain sits between the agent and the database and changes that contract.
 
 <Steps>
   <Step title="Install">
-    ```bash
+    <CodeGroup>
+    ```bash pip
     pip install schemabrain
     ```
+    ```bash uv
+    uv pip install schemabrain
+    ```
+    ```bash docker
+    docker pull ghcr.io/arun-kc/schemabrain:latest
+    ```
+    </CodeGroup>
   </Step>
   <Step title="Initialize against your database">
     ```bash

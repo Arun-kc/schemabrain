@@ -1,3 +1,8 @@
+---
+title: "Semantic layer"
+description: "How entities, canonical joins, and metrics compose into business-named queries that bypass FK guessing."
+---
+
 # Building a semantic layer
 
 Three concepts compose SchemaBrain's semantic layer:

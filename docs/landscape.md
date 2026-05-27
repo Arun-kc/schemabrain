@@ -1,3 +1,8 @@
+---
+title: "Landscape"
+description: "Where SchemaBrain sits in the AI-database tooling ecosystem and how it differs from adjacent approaches."
+---
+
 # The landscape SchemaBrain fits into
 
 ## The problem

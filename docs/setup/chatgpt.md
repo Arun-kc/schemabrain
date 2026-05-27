@@ -1,3 +1,8 @@
+---
+title: "ChatGPT"
+description: "Where SchemaBrain v0.4 fits with ChatGPT — stdio-only today, with Codex CLI as the working path."
+---
+
 # SchemaBrain + ChatGPT
 
 > **Short answer:** SchemaBrain v0.4 is **stdio-only.** ChatGPT's cloud MCP integration (Connectors) expects HTTPS / SSE transports. There is no first-class SchemaBrain → ChatGPT path that ships in this release. (Codex CLI users — see the note below; that path *does* work today.)

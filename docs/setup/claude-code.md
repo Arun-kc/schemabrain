@@ -1,3 +1,8 @@
+---
+title: "Claude Code"
+description: "60-second wiring: install SchemaBrain, run init — the wizard shells out to claude mcp add for you."
+---
+
 # SchemaBrain + Claude Code
 
 > **60 seconds:** install SchemaBrain, run `schemabrain init`, the wizard shells out to `claude mcp add` for you. Restart Claude Code, ask about your database.

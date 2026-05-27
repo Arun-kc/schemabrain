@@ -1,3 +1,8 @@
+---
+title: "Windsurf"
+description: "60-second wiring for Windsurf / Cascade. Auto-detected by the activation wizard."
+---
+
 # SchemaBrain + Windsurf
 
 > **60 seconds:** install SchemaBrain, run `schemabrain init`, restart Windsurf, ask Cascade about your database.

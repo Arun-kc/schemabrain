@@ -1,3 +1,8 @@
+---
+title: "Setup"
+description: "Two paths from 'I have a Postgres database' to 'an AI agent can answer questions about it' — activation wizard or manual flow."
+---
+
 # SchemaBrain — Setup
 
 Two paths from "I have a Postgres database" to "an AI agent can answer questions about it":
@@ -7,33 +12,45 @@ Two paths from "I have a Postgres database" to "an AI agent can answer questions
 
 The recommended path is the activation wizard (`schemabrain init`). It runs the source check, indexer, entity suggestion, and host wiring in one command. The manual `index` flow below still works and is the right choice for power users who want explicit control over each step.
 
-## 0. Activation wizard (recommended)
+## 1. Activation wizard (recommended)
 
-```bash
-# Install (in a venv)
+<CodeGroup>
+```bash pip
+# Install inside a virtual environment
 pip install schemabrain
 
-# Or from source if you want to hack on it:
-#   git clone https://github.com/Arun-kc/schemabrain && cd schemabrain
-#   uv sync --extra dev
-# (source-install users prefix the runtime commands below with `uv run`)
-
-# Put the connection string in an env var so the password never lands
-# in shell history, `ps`, or journald. SchemaBrain reads it via
-# --url-env. URL MUST use the postgresql+psycopg:// scheme (psycopg v3;
-# the bare postgresql:// scheme fails with ModuleNotFoundError).
+# Set database connection and optional Anthropic API key
 export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"
-
-# Optional: an Anthropic key unlocks the LLM-driven stages
-# (entities = stage 3, metrics = stage 4). Without it those stages
-# skip gracefully and you can curate later via
-# `schemabrain entities suggest --apply` and
-# `schemabrain metrics suggest --apply`. Stage 5 (joins) is
-# deterministic and runs regardless.
 export ANTHROPIC_API_KEY=sk-ant-...
 
+# Run the activation wizard
 schemabrain init --url-env DATABASE_URL --store-path ./schemabrain.db
 ```
+```bash uv
+# Or install and run from source using uv:
+git clone https://github.com/Arun-kc/schemabrain && cd schemabrain
+uv sync --extra dev
+
+# Set connection string and optional API key
+export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Run via uv run
+uv run schemabrain init --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+</CodeGroup>
+
+<Warning>
+  **Important connection scheme requirement:** The source database URL **MUST** use the `postgresql+psycopg://` scheme (psycopg v3). A bare `postgresql://` scheme will fail with a `ModuleNotFoundError`.
+</Warning>
+
+<Note>
+  **Environment Variable Best Practice:** Putting the connection string in an environment variable (`export DATABASE_URL`) prevents passwords and sensitive credentials from landing in shell history, `ps` output, or server logs. SchemaBrain reads it securely via `--url-env`.
+</Note>
+
+<Tip>
+  **LLM-driven Curation:** Exporting `ANTHROPIC_API_KEY` unlocks the LLM-driven curation stages (suggesting entities and metrics). Without it, the wizard will skip those stages gracefully, and you can curate them later using `schemabrain entities suggest --apply` and `schemabrain metrics suggest --apply`.
+</Tip>
 
 The wizard runs seven stages:
 
@@ -51,7 +68,7 @@ Before each LLM-driven stage (entities + metrics), the wizard pauses for Enter-t
 
 Re-runs are idempotent: every stage auto-skips when the work is already done. Use `--skip-index` to opt out of stage 2, `--no-entities` / `--no-metrics` / `--no-joins` to opt out of stages 3 / 4 / 5 individually.
 
-## 0a. Manual flow (advanced)
+## 2. Manual flow (advanced)
 
 If you want explicit control over each step — or you're scripting individual phases — the underlying commands still work:
 
@@ -77,7 +94,7 @@ Re-running `index` against an unchanged schema is a **no-op** — 0 LLM calls, 0
 
 For cost-free dry runs (no LLM, no embeddings), pass `--no-enrich`.
 
-## 0b. Docker (alternative install)
+## 3. Docker (alternative install)
 
 The published Docker image bundles the runtime, all dependencies, and the
 local embedding model (`BAAI/bge-small-en-v1.5`, baked at build time so
@@ -164,7 +181,7 @@ Notes:
 For production-style pinning, use a specific patch (`:0.4.0`) rather
 than `:latest`.
 
-## 0.5. (Optional) Mine observed queries
+## 4. (Optional) Mine observed queries
 
 `get_example_queries` returns SQL agents (and humans) have actually
 run against your tables. To populate it, run `mine-queries` once
@@ -192,7 +209,11 @@ with an actionable message — no row is written, the store stays
 intact, and `get_example_queries` keeps returning `status: empty`
 with a recovery hint pointed at this section.
 
-## Path 1 — Claude Desktop (or Cursor)
+## 5. Wiring your MCP host
+
+There are two primary ways to wire up the SchemaBrain MCP server:
+
+### Path A — Claude Desktop (or Cursor)
 
 Add SchemaBrain to Claude Desktop's MCP server config:
 
@@ -233,7 +254,7 @@ Restart Claude Desktop. In a new conversation you should see the `schemabrain` M
 
 **Cursor uses a near-identical `mcpServers` block** — with one Cursor-specific addition: a `"type": "stdio"` field on each server entry (required per Cursor's official docs, even though the IDE has historically been lenient about omitting it). Paste the template from `examples/cursor_mcp_config.example.json` into `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` in your project root (project-scoped, takes precedence). Restart Cursor; the `schemabrain` server appears in the MCP tools list. Same absolute-path rule applies — Cursor doesn't run your config in your shell's working directory.
 
-## Path 2 — Anthropic SDK demo (no Claude Desktop required)
+### Path B — Anthropic SDK demo (no Claude Desktop required)
 
 The demo script at `examples/anthropic_demo.py` spawns `schemabrain serve` over stdio, drives Claude Haiku via the Anthropic SDK's standard tool-use loop, and prints the conversation transcript.
 

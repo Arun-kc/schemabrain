@@ -1,6 +1,13 @@
+---
+title: "2D trust signal"
+description: "Every fact carries two orthogonal labels — how it was derived (inference_method) and how validated it is (validation_state) — so the agent never confuses an FK with a guess."
+---
+
 # Mechanism: 2D trust signal
 
-> **One-line claim:** Every fact SchemaBrain returns carries two orthogonal labels — *how it was derived* (`inference_method`) and *how validated* it is (`validation_state`). The agent can tell an FK-derived join apart from an LLM-guessed metric without parsing English.
+<Note>
+**One-line claim:** Every fact SchemaBrain returns carries two orthogonal labels — *how it was derived* (`inference_method`) and *how validated* it is (`validation_state`). The agent can tell an FK-derived join apart from an LLM-guessed metric without parsing English.
+</Note>
 
 Most semantic layers and catalogs ship a single `confidence` field — a `HIGH` / `MEDIUM` / `LOW` bucket or a raw float. That conflates two different things: *where did this fact come from* (the database's FK constraint, an LLM's guess, a hand-typed YAML file) and *who has signed off on it* (no one yet, applied to the store, explicitly confirmed by an operator).
 
@@ -126,11 +133,19 @@ schemabrain metrics show customer_count
 
 The 2D signal lives on the envelope only — it is not currently persisted to the `mcp_audit` table (the audit row carries `tool_name`, `status`, `pii_categories`, `cost_class`, and the hash chain, but not `inference_method` / `validation_state` / `confidence`). To inspect the trust signal historically, drive the agent and log envelopes from your client.
 
----
+## Related
 
-## Related mechanisms
-
-- [`/mechanism/structured-recovery`](structured-recovery.md) — what comes back when trust is too low to resolve
-- [`/mechanism/audit-chain`](audit-chain.md) — every fact and refusal lands in the audit row with its trust signal preserved
-- [`docs/agent-ux-charter.md`](../agent-ux-charter.md) §4 — the design rationale, including why we picked buckets over floats
-- [`schemabrain/mcp/envelope.py`](../../schemabrain/mcp/envelope.py) — the typed contract (`InferenceMethod`, `ValidationState`, `derive_confidence`)
+<CardGroup cols={2}>
+  <Card title="Charter v1.2" icon="scroll" href="/agent-ux-charter">
+    The contract this 2D label lives inside.
+  </Card>
+  <Card title="Structured recovery" icon="rotate" href="/mechanism/structured-recovery">
+    How the trust label flows into refusals.
+  </Card>
+  <Card title="Audit chain" icon="signature" href="/mechanism/audit-chain">
+    Trust labels persist into the audit row.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Where the inference layer fits in the pipeline.
+  </Card>
+</CardGroup>

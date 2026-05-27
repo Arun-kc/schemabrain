@@ -1,3 +1,8 @@
+---
+title: "ADR 0001 — Audit row + PII taxonomy"
+description: "The audit row schema and the two-layer PII taxonomy (Sensitivity + PII category) shipped at v0.4."
+---
+
 # ADR 0001 — Audit row schema and PII taxonomy
 
 - **Status:** Accepted

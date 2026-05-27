@@ -1,0 +1,39 @@
+---
+title: "get_example_queries"
+description: "Real SQL observed against a table, sourced from pg_stat_statements."
+---
+
+<Note>
+**Layer:** Physical schema
+</Note>
+
+Returns SQL statements that have actually been observed running against a
+table, sourced from `pg_stat_statements`. Each example carries an
+observation count, a sensitivity tag, and a sorted PII category list.
+
+Run `schemabrain mine-queries --source $DATABASE_URL --store-path ./schemabrain.db`
+once (or on a schedule) to populate the example-queries cache from
+`pg_stat_statements`. Until then, this tool returns `status: empty` with a
+recovery hint.
+
+```json
+{
+  "qualified_name": "public.orders",
+  "queries": [
+    {
+      "sql_text": "SELECT id, user_id, total_cents FROM public.orders WHERE created_at >= $1",
+      "observation_count": 1247,
+      "source": "pg_stat_statements",
+      "sensitivity": "public",
+      "pii_categories": []
+    }
+  ],
+  "token_estimate": 132
+}
+```
+
+Pass `qualified_name` as `schema.name` — same shape as `describe_table`.
+Tables with no observed queries (or before `mine-queries` has run) return
+an empty result with a follow-up hint.
+
+---

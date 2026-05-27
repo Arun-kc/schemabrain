@@ -1,3 +1,8 @@
+---
+title: "ADR 0003 — Versioning policy"
+description: "Strict-semver, conservative 1.0 — what counts as a major bump and why we stay pre-1.0 until the wire contract is locked."
+---
+
 # ADR 0003 — Versioning policy: strict-semver, conservative 1.0
 
 - **Status:** Accepted

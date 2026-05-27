@@ -52,6 +52,34 @@
         ]
       },
       {
+        "group": "MCP tools",
+        "pages": [
+          "reference/mcp-tools/overview",
+          {
+            "group": "Physical schema",
+            "pages": [
+              "reference/mcp-tools/find_relevant_tables",
+              "reference/mcp-tools/describe_table",
+              "reference/mcp-tools/describe_column",
+              "reference/mcp-tools/suggest_joins",
+              "reference/mcp-tools/get_example_queries"
+            ]
+          },
+          {
+            "group": "Semantic layer",
+            "pages": [
+              "reference/mcp-tools/find_relevant_entities",
+              "reference/mcp-tools/list_entities",
+              "reference/mcp-tools/describe_entity",
+              "reference/mcp-tools/list_metrics",
+              "reference/mcp-tools/get_metric",
+              "reference/mcp-tools/list_joins",
+              "reference/mcp-tools/resolve_join"
+            ]
+          }
+        ]
+      },
+      {
         "group": "Reference",
         "pages": [
           "security",
@@ -60,10 +88,18 @@
           "operations",
           "observability",
           "reliability",
-          "mcp-tools",
           "semantic-layer",
           "agent-ux-charter",
           "landscape"
+        ]
+      },
+      {
+        "group": "Design Decisions (ADR)",
+        "pages": [
+          "adr/0001-audit-row-and-pii-taxonomy",
+          "adr/0002-store-protocol-seam",
+          "adr/0003-versioning-policy",
+          "adr/0004-observability-event-bus"
         ]
       }
     ]
