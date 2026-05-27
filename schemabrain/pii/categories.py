@@ -44,22 +44,30 @@ PIICategory = Literal[
     "location",
     "demographic_protected",
 ]
-PII_CATEGORIES: frozenset[PIICategory] = frozenset(
-    {
-        "contact",
-        "financial",
-        "payment_card",
-        "health",
-        "genetic",
-        "biometric",
-        "behavioral",
-        "online_identifier",
-        "credential",
-        "government_id",
-        "location",
-        "demographic_protected",
-    }
+# Canonical display order — matches the `PIICategory` Literal above 1:1.
+# `PII_CATEGORIES` (the frozenset) is the set-arithmetic surface used by
+# membership-testing and validation; `PII_CATEGORIES_ORDERED` is the
+# iteration surface used by anything that renders columns or headers
+# where order is observable (dashboard PII matrix, deterministic CLI
+# output). `frozenset` iteration is hash-driven and varies across
+# Python processes with the default PYTHONHASHSEED, which previously
+# leaked into the dashboard as a header-order regression. Anything
+# user-visible MUST iterate the ordered tuple.
+PII_CATEGORIES_ORDERED: tuple[PIICategory, ...] = (
+    "contact",
+    "financial",
+    "payment_card",
+    "health",
+    "genetic",
+    "biometric",
+    "behavioral",
+    "online_identifier",
+    "credential",
+    "government_id",
+    "location",
+    "demographic_protected",
 )
+PII_CATEGORIES: frozenset[PIICategory] = frozenset(PII_CATEGORIES_ORDERED)
 
 # Catastrophic-leak categories — the subset where no plausible
 # aggregate-analytics use case exists and a single leak is reportable

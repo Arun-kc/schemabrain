@@ -13,6 +13,7 @@ from typing import get_args
 
 from schemabrain.pii.categories import (
     PII_CATEGORIES,
+    PII_CATEGORIES_ORDERED,
     SENSITIVITIES,
     PIICategory,
     Sensitivity,
@@ -62,3 +63,24 @@ class TestPIICategoryLiteralType:
     def test_pii_category_literal_args_match_frozenset(self) -> None:
         # Static + runtime symmetry, same as for Sensitivity.
         assert frozenset(get_args(PIICategory)) == PII_CATEGORIES
+
+    def test_pii_categories_ordered_matches_literal(self) -> None:
+        # `PII_CATEGORIES_ORDERED` is the iteration surface for
+        # anything that renders columns in user-visible order
+        # (dashboard PII matrix headers, deterministic CLI output).
+        # The order must match the `PIICategory` Literal 1:1 because
+        # the Literal is the documented canonical order in
+        # `docs/adr/0001-audit-row-and-pii-taxonomy.md`. The frozenset
+        # below (`PII_CATEGORIES`) is the set-arithmetic surface and
+        # has no order — that asymmetry is intentional. A regression
+        # in the tuple's order would silently reshuffle dashboard
+        # headers across Python processes (the bug PR #132 closed).
+        assert get_args(PIICategory) == PII_CATEGORIES_ORDERED
+
+    def test_pii_categories_ordered_membership_matches_frozenset(self) -> None:
+        # The ordered tuple and the frozenset MUST carry identical
+        # membership — they're two views of the same closed set.
+        # Adding a value to one without the other would let the
+        # dashboard headers diverge from set-arithmetic membership
+        # tests elsewhere in the codebase.
+        assert frozenset(PII_CATEGORIES_ORDERED) == PII_CATEGORIES

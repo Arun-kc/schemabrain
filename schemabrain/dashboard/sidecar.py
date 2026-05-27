@@ -261,7 +261,7 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
     from schemabrain.core.store import SQLiteStore
     from schemabrain.pii.categories import (
         CATASTROPHIC_LEAK_CATEGORIES,
-        PII_CATEGORIES,
+        PII_CATEGORIES_ORDERED,
     )
 
     @app.get("/api/entities/pii-matrix")
@@ -304,8 +304,13 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                 # Counts: category → number of columns in this entity
                 # that carry that category. Sensitivity counters
                 # accumulate at the entity level (1 column = 1
-                # increment of its sensitivity bucket).
-                counts: dict[str, int] = dict.fromkeys(PII_CATEGORIES, 0)
+                # increment of its sensitivity bucket). Iterating the
+                # ordered tuple (not the frozenset) keeps JSON key
+                # order deterministic across processes — audit log
+                # snapshots stay stable, and any consumer that
+                # happens to walk Object.entries() gets the same
+                # canonical column order as the matrix headers.
+                counts: dict[str, int] = dict.fromkeys(PII_CATEGORIES_ORDERED, 0)
                 catastrophic_columns_here = 0
                 for col_name in column_names:
                     tag = tags.get(col_name)
@@ -343,7 +348,7 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
         return {
             "source_connection_id": resolved_source,
             "entities": matrix_entries,
-            "categories": list(PII_CATEGORIES),
+            "categories": list(PII_CATEGORIES_ORDERED),
             "catastrophic_categories": sorted(CATASTROPHIC_LEAK_CATEGORIES),
             "totals": {
                 "entities": len(matrix_entries),
