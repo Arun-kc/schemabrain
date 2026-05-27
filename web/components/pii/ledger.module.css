@@ -779,3 +779,47 @@
   border: 1px solid rgba(59, 130, 246, 0.25);
   color: #3b82f6;
 }
+
+/* The right-hand semantic pane stacks Metrics + Joins sections. Gap
+   replaces the prior `mt-4` on the Joins block so the rhythm
+   between sections is one declaration site, not two. */
+.semanticPane {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+/* The item name (metric or join identifier) inside each pane row. */
+.itemName {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+/* The small subtitle next to an item name — the metric measure
+   expression, or the join partner entity. */
+.itemDetail {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  color: var(--text-muted);
+}
+
+/* Empty-state copy when an entity has no metrics or no joins. */
+.paneEmpty {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* The paste-ready ON clause for a canonical join. Inline code box. */
+.joinClause {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  background: var(--surface-raised);
+  color: var(--color-signal-green);
+  padding: 0.25rem;
+  border-radius: 3px;
+  overflow-x: auto;
+}

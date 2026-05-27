@@ -225,7 +225,27 @@ def test_pii_matrix_returns_aggregated_shape(store_path, client: TestClient) -> 
     assert user["catastrophic_column_count"] == 1
     assert user["has_catastrophic"] is True
 
-    assert len(payload["categories"]) == 12
+    # Pin canonical column order at the route boundary. Previously the
+    # sidecar serialized `list(frozenset(...))`, which is hash-driven
+    # and reshuffles across Python processes — the dashboard inherited
+    # that as a header-order regression. The order below mirrors the
+    # `PIICategory` Literal in `schemabrain/pii/categories.py`; the
+    # frontend's `PII_CATEGORIES` array in `web/lib/types/pii.ts`
+    # carries the same order. The two surfaces MUST agree.
+    assert payload["categories"] == [
+        "contact",
+        "financial",
+        "payment_card",
+        "health",
+        "genetic",
+        "biometric",
+        "behavioral",
+        "online_identifier",
+        "credential",
+        "government_id",
+        "location",
+        "demographic_protected",
+    ]
     assert set(payload["catastrophic_categories"]) == {
         "credential",
         "payment_card",

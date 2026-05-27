@@ -18,6 +18,7 @@ from __future__ import annotations
 from schemabrain.pii.categories import (
     CATASTROPHIC_LEAK_CATEGORIES,
     PII_CATEGORIES,
+    PII_CATEGORIES_ORDERED,
     SENSITIVITIES,
     ColumnPiiTag,
     PIICategory,
@@ -29,6 +30,7 @@ from schemabrain.pii.propagation import propagate
 __all__ = [
     "CATASTROPHIC_LEAK_CATEGORIES",
     "PII_CATEGORIES",
+    "PII_CATEGORIES_ORDERED",
     "RULE_COUNT",
     "SENSITIVITIES",
     "ColumnPiiTag",

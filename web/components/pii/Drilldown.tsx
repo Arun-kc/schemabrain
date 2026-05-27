@@ -124,7 +124,7 @@ function DrilldownCard({
         </div>
 
         {/* Right Pane: Semantic Layer */}
-        <div className="flex flex-col gap-6">
+        <div className={styles.semanticPane}>
           {/* Metrics */}
           <div>
             <h4 className={styles.paneTitle}>Semantic Metrics</h4>
@@ -133,8 +133,8 @@ function DrilldownCard({
                 <div key={m.name} className={styles.metricItem}>
                   <div className={styles.itemHeader}>
                     <span className={`${styles.badgePill} ${styles.metricPill}`}>Metric</span>
-                    <span className="font-mono font-bold text-xs">{m.name}</span>
-                    <span className="text-[10px] text-(--text-muted) font-mono">
+                    <span className={styles.itemName}>{m.name}</span>
+                    <span className={styles.itemDetail}>
                       ({m.measure.agg}({m.measure.column || m.measure.expression}))
                     </span>
                   </div>
@@ -142,13 +142,13 @@ function DrilldownCard({
                 </div>
               ))}
               {metrics.length === 0 && (
-                <p className="font-mono text-xs text-(--text-muted) italic">No metrics defined for this entity.</p>
+                <p className={styles.paneEmpty}>No metrics defined for this entity.</p>
               )}
             </div>
           </div>
 
           {/* Joins */}
-          <div className="mt-4">
+          <div>
             <h4 className={styles.paneTitle}>Canonical Joins</h4>
             <div className={styles.paneList}>
               {joins.map((j) => {
@@ -157,20 +157,23 @@ function DrilldownCard({
                   <div key={j.name} className={styles.joinItem}>
                     <div className={styles.itemHeader}>
                       <span className={`${styles.badgePill} ${styles.joinPill}`}>Join</span>
-                      <span className="font-mono font-bold text-xs">{j.name}</span>
-                      <span className="text-[10px] text-(--text-muted) font-mono">
-                        ──▶ {partner}
-                      </span>
+                      <span className={styles.itemName}>{j.name}</span>
+                      <span className={styles.itemDetail}>──▶ {partner}</span>
                     </div>
                     <p className={styles.itemLabel}>{j.description}</p>
-                    <code className="text-[10px] bg-(--surface-raised) p-1 rounded font-mono text-emerald-500 overflow-x-auto block">
-                      {j.on.map((edge: any) => `${j.source_entity}.${edge.source_column} = ${j.target_entity}.${edge.target_column}`).join(" AND ")}
+                    <code className={styles.joinClause}>
+                      {j.on
+                        .map(
+                          (edge) =>
+                            `${j.source_entity}.${edge.source_column} = ${j.target_entity}.${edge.target_column}`,
+                        )
+                        .join(" AND ")}
                     </code>
                   </div>
                 );
               })}
               {joins.length === 0 && (
-                <p className="font-mono text-xs text-(--text-muted) italic">No canonical joins defined for this entity.</p>
+                <p className={styles.paneEmpty}>No canonical joins defined for this entity.</p>
               )}
             </div>
           </div>
