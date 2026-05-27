@@ -1,0 +1,87 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "SchemaBrain",
+  "description": "The semantic firewall between AI agents and your database. Read-only, PII-aware, audit-evident.",
+  "colors": {
+    "primary": "#3ECF8E",
+    "light": "#3ECF8E",
+    "dark": "#0A0A0A"
+  },
+  "logo": {
+    "light": "/assets/schemabrain-logo-horizontal.svg",
+    "dark": "/assets/schemabrain-logo-horizontal.svg",
+    "href": "https://github.com/Arun-kc/schemabrain"
+  },
+  "favicon": "/assets/favicon.svg",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get started",
+        "pages": [
+          "introduction",
+          "setup",
+          "first-5-queries"
+        ]
+      },
+      {
+        "group": "Hosts",
+        "pages": [
+          "setup/claude-desktop",
+          "setup/claude-code",
+          "setup/cursor",
+          "setup/windsurf",
+          "setup/chatgpt"
+        ]
+      },
+      {
+        "group": "Mechanism",
+        "pages": [
+          "mechanism/read-only",
+          "mechanism/audit-chain",
+          "mechanism/pii-taxonomy",
+          "mechanism/trust-signal",
+          "mechanism/structured-recovery"
+        ]
+      },
+      {
+        "group": "Compare",
+        "pages": [
+          "compare/querybear",
+          "compare/anthropic-postgres-mcp"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "security",
+          "threat-model",
+          "architecture",
+          "operations",
+          "observability",
+          "reliability",
+          "mcp-tools",
+          "semantic-layer",
+          "agent-ux-charter",
+          "landscape"
+        ]
+      }
+    ]
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/Arun-kc/schemabrain"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/Arun-kc/schemabrain"
+    }
+  },
+  "seo": {
+    "metatags": {
+      "og:image": "/assets/og-hero-dark.png"
+    }
+  }
+}
