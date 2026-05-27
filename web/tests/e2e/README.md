@@ -23,31 +23,42 @@ each run.
 
 ## Prerequisites
 
-The smoke does not boot its own sidecar (that's a follow-up PR's job).
-You need:
+The smoke needs a running sidecar pointed at a populated store. Two ways
+to get there:
 
-1. **A populated SchemaBrain store.** It must have at least one indexed
-   source AND at least one refused audit row (so the Refusal spec
-   doesn't hit the empty state).
-2. **A dashboard sidecar serving that store on `http://127.0.0.1:7878`.**
-
-The canonical bring-up flow lives in [`scripts/dashboard_demo.py`](../../../scripts/dashboard_demo.py). Run it once to get a fully seeded store + a sidecar on `127.0.0.1:7878`:
+### Option A — one command (recommended)
 
 ```bash
 .venv/bin/python scripts/dashboard_demo.py
 ```
 
-To force a refused audit row (so the Refusal Experience spec asserts
-against populated data rather than the empty state), append a row via
-the canonical seed helper:
+Seeds a throwaway SQLite store under `/tmp/` with the entities, PII
+tags, and 3 audit rows (1 success + 2 refusals) the suite expects, then
+boots the sidecar on `http://127.0.0.1:7878`.
+
+For a headless boot (no browser open — matches how CI runs it):
+
+```bash
+.venv/bin/python scripts/dashboard_demo.py --no-open
+```
+
+### Option B — point at your own store
+
+If you already have a SchemaBrain store with **at least one indexed
+source AND at least one refused audit row** (so the Refusal spec doesn't
+hit the empty state), boot the sidecar against it directly:
+
+```bash
+.venv/bin/schemabrain dashboard --store-path /path/to/store.db --no-open
+```
+
+To seed a refused audit row into an existing store:
 
 ```bash
 .venv/bin/python scripts/seed_refused_audit_row.py \
-  --store-path <store-path-from-demo-script> \
-  --source-id <source-id-from-demo-script>
+  --store-path /path/to/store.db \
+  --source-id <source-id-from-/api/meta>
 ```
-
-The store path + source id are printed by `dashboard_demo.py` on boot.
 
 ## Run
 
@@ -66,6 +77,19 @@ The HTML report opens with `pnpm --filter web exec playwright show-report`.
 | --- | --- | --- |
 | `SCHEMABRAIN_E2E_BASE_URL` | `http://127.0.0.1:7878` | Override when the sidecar binds a non-default port. |
 
+## CI
+
+The `dashboard-e2e` job in [`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml)
+runs this suite on every PR that touches the dashboard surface (`web/**`,
+`schemabrain/dashboard/**`, `scripts/dashboard_demo.py`, or the workflow
+file). The job boots `dashboard_demo.py --no-open` in the background,
+waits for `/api/health`, then runs `pnpm test:e2e`. On failure the HTML
+report + per-test screenshots upload as a `playwright-report` artifact
+(7-day retention).
+
+Paths-filtered so docs-only and core-Python-only PRs don't pay the
+~3-4 min cold-cache cost.
+
 ## What this does NOT cover
 
 - Sidecar boot / API smoke — covered by `tests/dashboard/test_sidecar_routes.py`
@@ -74,5 +98,3 @@ The HTML report opens with `pnpm --filter web exec playwright show-report`.
 - Visual-regression baselines — screenshots are artifacts for review,
   not pixel-diff assertions. Pin pixel baselines once the design is
   fully locked
-- CI execution — the suite runs reliably on a dev machine; a follow-up
-  PR adds a CI job that brings up the stack before invoking `pnpm test:e2e`
