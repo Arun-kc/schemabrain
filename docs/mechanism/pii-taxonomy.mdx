@@ -46,7 +46,7 @@ The closed set means an agent or audit pipeline can switch on the category witho
 
 ## 2. Column-level classification — regex + integer-FK guard
 
-[`schemabrain/pii/classifier.py`](../../schemabrain/pii/classifier.py) takes a column name (plus its declared type and primary-key flag) and returns `(sensitivity, frozenset[PIICategory])`. The classifier is regex-based but with two refinements that pure regex can't express.
+[`schemabrain/pii/classifier.py`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/pii/classifier.py) takes a column name (plus its declared type and primary-key flag) and returns `(sensitivity, frozenset[PIICategory])`. The classifier is regex-based but with two refinements that pure regex can't express.
 
 ### Layer 1 — regex with snake_case-aware boundaries
 
@@ -85,7 +85,7 @@ These are the categories where the FK *itself* remains PII as an integer referen
 
 This is the load-bearing claim. Column tags don't just sit in the catalog; they propagate through the metric compiler so a `get_metric` whose join path *touches* a blocked column refuses, even when the touched column appears nowhere in the projected SQL.
 
-[`schemabrain/mcp/get_metric.py`](../../schemabrain/mcp/get_metric.py) walks **five propagation surfaces** before policy intersection:
+[`schemabrain/mcp/get_metric.py`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/mcp/get_metric.py) walks **five propagation surfaces** before policy intersection:
 
 1. **The measure column(s)** — including composite-expression operands (e.g., `email_hash * weight` walks both operands, not just the projected column).
 2. **The `time_dimension` column** — when the metric declares one.
@@ -159,7 +159,7 @@ The operator's full `--pii-block` set is never leaked. Note: the audit row recor
 
 - **It is not yet content-aware.** The v0.4 classifier is name-based + structural (integer-FK guard). A column literally named `attr_1` holding email addresses gets `public`. Data-profile-aware classification (sample-based content matching) is deferred to a future minor version — the sampling pipeline already exists for the LLM-enrichment path, but plumbing it through the classifier with appropriate sampling caps and safe redaction is non-trivial.
 - **It is not a substitute for column-level access control at the database.** SchemaBrain refuses queries it would have run. A direct database connection bypasses SchemaBrain entirely. Postgres role-level grants are the right complement.
-- **It is not a single classifier the operator can swap.** The rule table is a Python module today. YAML-overlay extensibility was deferred to first real demand — see [`schemabrain/pii/classifier.py`](../../schemabrain/pii/classifier.py) docstring for the rationale.
+- **It is not a single classifier the operator can swap.** The rule table is a Python module today. YAML-overlay extensibility was deferred to first real demand — see [`schemabrain/pii/classifier.py`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/pii/classifier.py) docstring for the rationale.
 - **It is not the same posture across all tools.** `get_metric` *refuses* on blocked-category touch. `describe_entity` and `describe_column` mark blocked columns with `redacted=True` and clear the LLM description, but they don't refuse — the agent still sees the entity name and its non-PII columns. Uniform SQL-layer enforcement against agent-emitted SQL is a v2 surface.
 
 ---
@@ -184,7 +184,7 @@ python -c "from schemabrain.pii.classifier import classify_column; print(classif
 # ('pii', frozenset({'health'}))  — S2 FK guard kept the category
 ```
 
-The rule table itself is in [`schemabrain/pii/classifier.py`](../../schemabrain/pii/classifier.py); the propagation logic is in [`schemabrain/mcp/get_metric.py`](../../schemabrain/mcp/get_metric.py).
+The rule table itself is in [`schemabrain/pii/classifier.py`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/pii/classifier.py); the propagation logic is in [`schemabrain/mcp/get_metric.py`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/mcp/get_metric.py).
 
 ## Related
 

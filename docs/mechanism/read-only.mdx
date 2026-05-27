@@ -53,7 +53,7 @@ The SQL that does flow to Postgres is built by SchemaBrain's compile path from t
 
 When `get_metric(name="customer_revenue", group_by=["category.name"])` runs, the compiler walks the canonical-join graph, applies PII propagation (see [`/mechanism/pii-taxonomy`](pii-taxonomy.md)), and emits a parameterized SQL statement with bound parameters for every literal. The agent sees the resulting rows and a copy of the SQL that ran — but the SQL was never *its* input.
 
-User-supplied identifiers (table names, column names) flow through [`_validate_ident`](../../schemabrain/mcp/_helpers.py) which enforces the regex `^[A-Za-z_][A-Za-z0-9_$]*$` and a 63-character bound (Postgres `NAMEDATALEN-1`). Any control character, quote, or escape sequence is rejected before reaching the query builder.
+User-supplied identifiers (table names, column names) flow through [`_validate_ident`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/mcp/_helpers.py) which enforces the regex `^[A-Za-z_][A-Za-z0-9_$]*$` and a 63-character bound (Postgres `NAMEDATALEN-1`). Any control character, quote, or escape sequence is rejected before reaching the query builder.
 
 ---
 
@@ -65,10 +65,10 @@ Belt-and-suspenders against a misconfigured downstream: every connection SchemaB
 # schemabrain/connectors/postgres.py:57  (introspection / index)
 connect_args={"options": "-c default_transaction_read_only=on"}
 
-# schemabrain/cli.py:3128  (serve-side metric executor)
+# schemabrain/cli.py:3157  (serve-side metric executor)
 options_parts = ["-c default_transaction_read_only=on"]
 
-# schemabrain/cli.py:3284  (query-log miner)
+# schemabrain/cli.py:3321  (query-log miner)
 connect_args={"options": "-c default_transaction_read_only=on"}
 ```
 
@@ -83,8 +83,8 @@ Postgres `session_authorization`, `search_path`, and other session settings can 
 ```
 $ grep -n 'poolclass=NullPool' schemabrain/cli.py schemabrain/connectors/postgres.py
 schemabrain/connectors/postgres.py:56:            poolclass=NullPool,
-schemabrain/cli.py:3126:            poolclass=NullPool,
-schemabrain/cli.py:3283:        poolclass=NullPool,
+schemabrain/cli.py:3163:            poolclass=NullPool,
+schemabrain/cli.py:3320:        poolclass=NullPool,
 ```
 
 There is no pool state to escape from. A misbehaving turn cannot leave a flag set for the next one.

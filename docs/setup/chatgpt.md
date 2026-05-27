@@ -13,7 +13,7 @@ This page is honest about the transport gap and lays out the realistic options.
 
 ## Why there's no `--host chatgpt` flag
 
-SchemaBrain runs as a local single-process MCP server over **stdio** ([`schemabrain/mcp/server.py`](../../schemabrain/mcp/server.py) — `app.run(transport="stdio")`). That's the right shape for desktop-class MCP clients (Claude Desktop, Claude Code, Cursor, Windsurf) where the host launches the server as a subprocess and pipes JSON-RPC frames.
+SchemaBrain runs as a local single-process MCP server over **stdio** ([`schemabrain/mcp/server.py`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/mcp/server.py) — `app.run(transport="stdio")`). That's the right shape for desktop-class MCP clients (Claude Desktop, Claude Code, Cursor, Windsurf) where the host launches the server as a subprocess and pipes JSON-RPC frames.
 
 ChatGPT's MCP integration runs in OpenAI's cloud. The client cannot exec a subprocess on your laptop; it needs an HTTPS endpoint it can reach. SchemaBrain doesn't yet expose one — adding a streaming HTTP transport with the right auth, rate-limiting, and PII-policy plumbing is on the v0.5+ roadmap, not v0.4.
 
@@ -50,7 +50,7 @@ Third-party bridges that wrap a stdio MCP server with an HTTPS endpoint exist in
 
 ### Option 4 — Wait for native HTTPS transport
 
-When SchemaBrain ships an HTTPS transport (planned for a future minor version), this page will document the OpenAI Connector / Custom GPT registration flow. Watch the [roadmap](../internal/v0.5.0_roadmap.md) or star the repo to track.
+When SchemaBrain ships an HTTPS transport (planned for a future minor version), this page will document the OpenAI Connector / Custom GPT registration flow. Watch the [GitHub releases page](https://github.com/Arun-kc/schemabrain/releases) or star the repo to track.
 
 ---
 
