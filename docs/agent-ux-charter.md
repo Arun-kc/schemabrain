@@ -78,9 +78,9 @@ The five principles below are the load-bearing details.
 ### 1. Status enum, not boolean
 
 Every tool response carries a `status` enum with six values. The
-sixth, `refused`, is **reserved in v1.1** — the type contract ships
-now so v2's refuse-before-execute primitives can produce it on day
-one, but no v0.5 / v1 tool emits it. A boolean `ok` / `error` split
+sixth, `refused`, was reserved in v1.1 and is emitted today by
+`get_metric` on the PII-block path; the type contract is stable for
+additional producers as they ship. A boolean `ok` / `error` split
 silently lumps partial responses and empty results into "success,"
 which is the false-positive trap that turns into a backstab in
 production.
@@ -96,7 +96,7 @@ status: "success" | "empty" | "partial" | "degraded" | "error" | "refused"
 | `partial` | Tool ran, returned some data with caveats. e.g. an enrichment job timed out mid-table; here is what completed. |
 | `degraded` | Tool ran via a fallback path. e.g. keyword retriever used because the embedding store was unavailable. |
 | `error` | Tool could not process. Always paired with a populated `error` object. |
-| `refused` (reserved, v1.1) | Tool ran cleanly and chose to refuse — typically because the query would touch PII or violate an allowlist. Always paired with a populated `error` object using one of `pii_blocked` / `policy_blocked` / `allowlist_violation`. No v0.5 / v1 tool emits this; v2's `execute` / `validate_query` are the first producers. |
+| `refused` | Tool ran cleanly and chose to refuse — typically because the query would touch PII or violate an allowlist. Always paired with a populated `error` object using one of `pii_blocked` / `policy_blocked` / `allowlist_violation`. Emitted today by `get_metric` on the PII-block path (`pii_blocked`); `policy_blocked` and `allowlist_violation` are reserved producers. |
 
 **❌ Wrong:**
 ```json
@@ -296,8 +296,8 @@ Composition patterns live in two places:
 | "What's in this database?" | `list_indexed_schemas` → `find_relevant_tables(query="*")` |
 | "Tell me about a domain (e.g. 'revenue')" | `find_relevant_tables` → `describe_table` (top 1–3 hits) → `describe_column` for any low-confidence descriptions |
 | "How do these tables relate?" | `suggest_joins` → `describe_table` on any bridge tables |
-| "I want to write SQL against table X" | `describe_table` → (v2: `get_sample_values`) → (v2: `validate_query`) |
-| "Show me how others have queried this" *(v0.5+)* | `get_example_queries(table_or_column)` |
+| "I want to aggregate something" | `list_metrics` → `describe_entity` (for the bound entity) → `get_metric` |
+| "Show me how others have queried this" | `get_example_queries(table_or_column)` |
 
 **Why declare these explicitly:** without them, every agent re-derives the
 workflow from scratch on every session, and the derivation is fragile across
@@ -390,8 +390,8 @@ Hint semantics:
 - `latency_hint`: `fast` < 100ms, `moderate` 100ms–1s, `slow` ≥ 1s.
 - `idempotent`: safe to retry without observable change in outcome.
 - `side_effects`: `none` = pure compute, `read` = touches the store / source,
-  `write` = mutates the store. Only `read` / `none` in v1.0; `write` reserved
-  for v2 (e.g. `execute_query`).
+  `write` = mutates the store. Only `read` / `none` on the MCP tool surface;
+  `write` reserved for future surfaces (e.g. operator-side `apply` / `import`).
 
 Canonical MCP hint mapping (SchemaBrain emits both layers):
 
@@ -481,12 +481,12 @@ implementation reaches readiness.
   for the refuse-before-execute taxonomy. Real-world agent traffic
   will surface more (especially around partial results, rate-limiting,
   transient failures). Further additions remain minor bumps.
-- **`refused` status producers** — reserved in v1.1 (type-contract
-  level), no current tool emits. v2's `execute` / `validate_query`
-  are the first producers. The `Recovery` shape gained
-  `suggested_rewrite` and `widening_hint` fields in v1.1 to support
-  the refuse-with-rewrite and refuse-with-widening-hint paths v2 will
-  populate.
+- **`refused` status producers** — first producer landed in v0.4
+  (`get_metric` PII-block path emits `refused` + `pii_blocked`).
+  `policy_blocked` and `allowlist_violation` remain reserved; the
+  `Recovery` shape gained `suggested_rewrite` and `widening_hint`
+  fields in v1.1 to support the refuse-with-rewrite and
+  refuse-with-widening-hint paths future producers will populate.
 - **Eval query set** — the fixed query set used for Level 3 enforcement
   is defined and frozen once the query-log mining feature surfaces
   realistic agent intents from real workloads. Until then, Level 3 runs
