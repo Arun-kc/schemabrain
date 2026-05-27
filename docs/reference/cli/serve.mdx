@@ -1,0 +1,157 @@
+---
+title: "schemabrain serve"
+description: "Run the MCP server on stdio against the local store. Exposes the 12 typed MCP tools, writes one audit row per call, optionally enforces the PII policy."
+---
+
+# `schemabrain serve`
+
+Boots the MCP server. Speaks stdio (the protocol Claude Desktop, Cursor, Windsurf, Claude Code, and the Anthropic SDK demo all use). Reads the local SQLite store; never writes back to the source Postgres.
+
+```bash
+schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+Every tool call writes exactly one row to the `mcp_audit` table — see [Audit chain](/mechanism/audit-chain). When `--pii-block` is configured, calls that would touch a blocked category return a `refused` envelope (see [Structured recovery](/mechanism/structured-recovery)).
+
+---
+
+## Source
+
+One of these is required:
+
+| Flag | Purpose |
+|---|---|
+| `--url-env VARNAME` | Env var holding the source URL. **Preferred.** |
+| `--source URL` | Source URL as a named flag. Deprecated when the URL contains a password. |
+
+## Storage
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+
+## Events
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--events-path PATH` | `$SCHEMABRAIN_EVENTS_PATH` or `~/.schemabrain/events.jsonl` | Path to the JSONL events file the bus appends to. Read with `schemabrain tail`. |
+| `--no-events` | (off) | Disable event emission entirely. No JSONL file is written; no `server_start` / `server_stop` events. Useful for CI. |
+
+## Audit
+
+| Flag | Effect |
+|---|---|
+| `--no-audit` | Disable the `mcp_audit` table writer for this process. Tools still respond; the durable per-call record is suppressed. Use for CI runs or tests where audit writes would clutter a shared store. |
+
+## PII policy
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--pii-block CSV` | `credential,payment_card,government_id` | Comma-separated `PIICategory` list. When a compiled `get_metric` plan touches one of these, the call returns `refused` with `refusal_reason='pii_blocked'`. Unknown category names abort startup with an error listing the 12 valid values. Pass `''` (empty) to explicitly disable enforcement (PII tags still flow to the audit row). |
+
+The default — three catastrophic-leak categories — is the floor every production deployment should keep. Broaden it (`contact,health,financial,...`) for stricter postures. See [PII taxonomy](/mechanism/pii-taxonomy) for the full category list.
+
+## Query safety
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--statement-timeout-ms MS` | (no timeout) | Postgres-level `statement_timeout` applied to every `get_metric` query. A runaway query aborts with `OperationalError` rather than blocking the process pool. Injected into `connect_args.options` so it **cannot** be overridden via URL query params. |
+| `--max-rows-per-result N` | (no cap) | Application-level cap on rows returned by each `get_metric` call. Counts **after** the SQL executes (the source DB still does the full scan) — this is a payload-size guard, not a query-cost guard. Use `--statement-timeout-ms` for the latter. |
+
+---
+
+## How hosts invoke this
+
+You almost never run `serve` directly in a terminal. Instead, your MCP host (Claude Desktop, Cursor, Windsurf, Claude Code) spawns it as a subprocess and speaks stdio across the pipe. The host's config file carries the exact argv. The [Setup](/setup) page covers the per-host config blocks.
+
+For verifying the install end-to-end without a host, run `examples/anthropic_demo.py` (see [Setup §2 Anthropic SDK demo](/setup#path-b-anthropic-sdk-demo-no-claude-desktop-required)).
+
+---
+
+## Logging
+
+`serve` cannot accept `-v` flags from a host config — there is no command line you control. Use the env-var form instead:
+
+```json
+{
+  "mcpServers": {
+    "schemabrain": {
+      "command": "/usr/local/bin/schemabrain",
+      "args": ["serve", "--url-env", "DATABASE_URL", "--store-path", "/abs/path/to/store.db"],
+      "env": {
+        "DATABASE_URL": "postgresql+psycopg://...",
+        "SCHEMABRAIN_LOG_LEVEL": "INFO"
+      }
+    }
+  }
+}
+```
+
+Valid `SCHEMABRAIN_LOG_LEVEL` values: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (case-insensitive). Unknown values fall back to `WARNING` and emit a one-line warning to stderr.
+
+Output lands in:
+
+- **macOS:** `~/Library/Logs/Claude/mcp-server-schemabrain.log`
+- **Linux:** the equivalent Claude Desktop log path on your platform.
+
+---
+
+## Examples
+
+### Default policy (recommended)
+
+```bash
+schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+The three catastrophic-leak categories block automatically.
+
+### Strict policy
+
+```bash
+schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db \
+    --pii-block credential,payment_card,government_id,contact,health
+```
+
+### Bound runtime safety
+
+```bash
+schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db \
+    --statement-timeout-ms 5000 \
+    --max-rows-per-result 10000
+```
+
+### Disable enforcement for a debug session
+
+```bash
+schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db \
+    --pii-block ''
+```
+
+Tags still flow into audit rows; the policy just stops acting on them.
+
+### CI smoke
+
+```bash
+schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db \
+    --no-audit --no-events
+```
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="MCP tool reference" icon="square-code" href="/reference/mcp-tools/overview">
+    The 12 typed tools `serve` exposes.
+  </Card>
+  <Card title="PII taxonomy" icon="shield" href="/mechanism/pii-taxonomy">
+    The 12 categories `--pii-block` accepts.
+  </Card>
+  <Card title="schemabrain tail" icon="terminal" href="/reference/cli/tail">
+    Stream events from a running `serve` process.
+  </Card>
+  <Card title="schemabrain audit" icon="signature" href="/reference/cli/audit">
+    Inspect the `mcp_audit` table `serve` writes to.
+  </Card>
+</CardGroup>

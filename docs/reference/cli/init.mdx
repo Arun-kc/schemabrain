@@ -1,0 +1,133 @@
+---
+title: "schemabrain init"
+description: "Activation wizard. Runs source check, indexer, entity + metric + join curation, and host wiring in one command. Idempotent — every stage auto-skips when the work is already done."
+---
+
+# `schemabrain init`
+
+The activation wizard. Pulls the seven stages of getting from "I have a Postgres URL" to "Claude Desktop sees the schemabrain MCP server" into one command. Each stage auto-skips when its work is already done, so re-runs are safe and cheap.
+
+```bash
+schemabrain init --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+The seven stages, in order:
+
+1. **Source check** — validates the URL is reachable and the session is read-only on Postgres.
+2. **Index schema** — DDL introspection into the SQLite store.
+3. **Curate entities** — LLM-suggested domain entities (or dbt manifest if found).
+4. **Curate metrics** — LLM-suggested aggregations (or dbt metrics if found).
+5. **Curate joins** — FK + `pg_stat_statements` mining; deterministic, no LLM.
+6. **Wire host** — writes the `schemabrain` block into the chosen MCP host's config.
+7. **Next step** — prints what to ask the agent first.
+
+Stages 3, 4, 5 are best-effort — a failure records the issue and prints a guided next step, but does not abort the wizard. Stages 1, 2, 6, 7 abort on failure.
+
+See the [Setup](/setup) page for the narrative walkthrough.
+
+---
+
+## Source
+
+| Flag | Purpose |
+|---|---|
+| `--source URL` | Postgres URL. Deprecated when the URL contains a password — prefer `--url-env`. |
+| `--url-env VARNAME` | Env var holding the source URL (e.g. `DATABASE_URL`). Keeps credentials out of argv. |
+| `--from-dbt PATH` | Import entities + metrics from a dbt `manifest.json`. Auto-detected from `$DBT_PROJECT_DIR` or by walking up from cwd for a `dbt_project.yml`. |
+
+## Stages
+
+Turn individual wizard stages on or off:
+
+| Flag | Effect |
+|---|---|
+| `--skip-index` | Skip stage 2. Use when you have already indexed in a different session. |
+| `--enrich` | Generate LLM column descriptions during index (Claude Haiku 4.5; ~$0.10–$2.00 for a 50-table schema). Requires `ANTHROPIC_API_KEY`. |
+| `--no-entities` | Skip stage 3. Curate later via `schemabrain entities suggest --apply`. |
+| `--no-metrics` | Skip stage 4. Curate later via `schemabrain metrics suggest --apply`. |
+| `--no-joins` | Skip stage 5. Curate later via `schemabrain joins suggest --apply`. |
+| `--no-embed` | Skip local sentence-embedding generation. Required on Apple Silicon + Python 3.12+ where `fastembed`'s `onnxruntime` dependency has no wheel. Degrades `find_relevant_entities` to keyword/substring matching. |
+
+## Host
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--host {claude-desktop,claude-code,cursor,windsurf,manual}` | `claude-desktop` | Which host to wire. `manual` prints the snippet without writing anywhere. |
+| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--env-var VARNAME` | `SCHEMABRAIN_DATABASE_URL` | Env var the host sets to the DB URL in its config. |
+
+## Cost
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--entities-max-cost-usd USD` | `$SCHEMABRAIN_MAX_LLM_COST_USD` | Hard cap on stage 3 LLM spend. |
+| `--metrics-max-cost-usd USD` | `$SCHEMABRAIN_MAX_LLM_COST_USD` | Hard cap on stage 4 LLM spend. |
+
+## Behaviour
+
+| Flag | Effect |
+|---|---|
+| `--yes`, `-y` | Accept every prompt. Implies `--skip-llm-confirm` plus the host-overwrite confirmation. Use in CI. |
+| `--skip-llm-confirm` | Skip the Enter-to-continue pause before LLM stages. Auto-on in non-TTY environments. |
+| `--print-only` | Alias for `--host manual`. Prints the snippet, writes nothing. |
+| `--pii-block CSV` | Comma-separated `PIICategory` list written into the host snippet as `serve --pii-block ...`. Omitted defaults to `credential,payment_card,government_id` under `--yes` (with a stderr confirmation) or to an interactive prompt otherwise. Pass `''` to explicitly disable enforcement. |
+| `--emit-yaml-dir PATH` | After the wizard completes, write one YAML per applied entity / metric / canonical join into `PATH/entities/`, `PATH/metrics/`, `PATH/joins/`. Gives the operator on-disk definitions to edit and re-apply alongside the SQLite store. Refuses if any target file already exists. |
+
+---
+
+## Examples
+
+### First-time setup for Claude Desktop
+
+```bash
+export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"
+export ANTHROPIC_API_KEY=sk-ant-...
+
+schemabrain init --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+### CI smoke (non-interactive, deterministic)
+
+```bash
+schemabrain init \
+    --url-env DATABASE_URL \
+    --store-path ./schemabrain.db \
+    --host manual \
+    --yes \
+    --no-entities \
+    --no-metrics
+```
+
+### dbt-driven curation
+
+```bash
+export DBT_PROJECT_DIR=/path/to/your/dbt/project
+schemabrain init --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+The wizard detects the manifest and routes stages 3 + 4 through the dbt importer instead of the LLM.
+
+### Apple Silicon + Python 3.12+
+
+```bash
+schemabrain init --url-env DATABASE_URL --store-path ./schemabrain.db --no-embed
+```
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Setup walkthrough" icon="rocket" href="/setup">
+    Narrative for first-time users.
+  </Card>
+  <Card title="schemabrain index" icon="database" href="/reference/cli/index-command">
+    The underlying indexer the wizard calls.
+  </Card>
+  <Card title="schemabrain doctor" icon="stethoscope" href="/reference/cli/doctor">
+    Health-check what `init` wired up.
+  </Card>
+  <Card title="schemabrain apply" icon="upload" href="/reference/cli/apply">
+    Re-apply the YAMLs `--emit-yaml-dir` produced.
+  </Card>
+</CardGroup>

@@ -1,0 +1,108 @@
+---
+title: "Audit Viewer"
+description: "A visual walk through the hash-chained audit log. Every tool call lands as one row; one button re-walks the chain and proves it has not been tampered with."
+---
+
+# Audit Viewer
+
+<Note>
+**Route:** `/audit` on the dashboard. **Backed by:** `GET /api/audit/rows`, `GET /api/audit/rows/{id}`, `GET /api/audit/verify`. **Live updates via:** `GET /api/audit/stream` (Server-Sent Events).
+</Note>
+
+The Audit Viewer is the visual face of the [tamper-evident audit chain](/mechanism/audit-chain). Every MCP tool call writes exactly one row, regardless of outcome — success, empty, partial, degraded, error, or refused. Each row carries a 32-byte `chain_hash` computed as `sha256(prev_chain_hash || canonical(row))`. The viewer renders that chain as a list, lets you drill into any row, and exposes a **Verify ledger** button that re-walks the chain server-side and confirms the invariant holds.
+
+---
+
+## What the surface shows
+
+The top of the page carries a verification ribbon:
+
+- **Ledger Chain Intact** — the chain has been re-walked and every row's stored `chain_hash` matches its recomputed value.
+- **Ledger Chain Mismatch** — at least one row has been re-walked and its stored hash diverges from the recomputed one. Re-run `schemabrain audit verify` from the CLI to inspect.
+
+Below the ribbon, the row list. Each entry shows:
+
+- `id` — the monotonic rowid.
+- `occurred_at` — ISO 8601 timestamp.
+- `tool_name` — which MCP tool was called.
+- `status` — the Charter envelope status.
+- `cost_class` — `small`, `medium`, `large`, or `refused`.
+- `chain_hash` (truncated) — the row's anchor in the chain.
+
+Selecting a row opens a drawer with the full row body, including:
+
+- The previous row's `chain_hash` (or `genesis_block_anchor` for row 1).
+- The full `pii_categories` list, refusal reason, `ast_shape_hash`, `rule_id`, `fingerprint`, and `fingerprint_version`.
+- The `chain_hash` of the row itself.
+
+This is the same information `schemabrain audit list --json` exposes from the CLI — the dashboard adds a stable visual representation of the prev-hash → row → next-hash linkage.
+
+---
+
+## Verify ledger
+
+The **Verify ledger** button calls `GET /api/audit/verify`, which is a thin wrapper around the same chain re-walk that `schemabrain audit verify --full` runs from the CLI:
+
+```python
+chain_hash[N]  =  sha256(  chain_hash[N-1]  ||  canonical(row[N])  )
+```
+
+For every row, the sidecar recomputes the chain hash from the previous *stored* chain hash plus the canonical bytes of the current row, and compares against the stored value. The endpoint returns one of two states:
+
+- `intact` — every row preserved the invariant.
+- `mismatch` — at least one row failed. The CLI surface (`schemabrain audit verify --full`) gives you the specific row IDs and the diff.
+
+<Warning>
+The verify endpoint walks the entire chain on every call. On stores with hundreds of thousands of rows this can take noticeable time. For ad-hoc forensic walks scoped to a known-good anchor, use `schemabrain audit verify --since <hash-prefix>` from the CLI — see [audit verify](/reference/cli/audit) for the cursor semantics.
+</Warning>
+
+---
+
+## Live updates via SSE
+
+The dashboard subscribes to `GET /api/audit/stream`, a Server-Sent Events stream that pushes new rows as they land. The tick interval is 2 seconds (matching the polling story in the v0.4 design), so new tool calls appear in the list within a couple of seconds of being written.
+
+This is **real-time enough for observation, not real-time enough for security alerting.** If you need sub-second tamper detection, drive it from a cron that runs `schemabrain audit verify --full` and compares the head hash against an externally-archived value — see the [audit chain mechanism](/mechanism/audit-chain) page for the anchoring pattern.
+
+---
+
+## What you cannot do here
+
+The viewer is read-only and intentionally minimal:
+
+- **No filtering by tool or status in the UI yet.** Use `schemabrain audit list --tool ... --status ...` from the CLI for filtered listings.
+- **No export.** Use `schemabrain audit list --json` and pipe through `jq`.
+- **No tampering reproduction.** The "tamper, then re-verify" walkthrough lives in the [audit chain](/mechanism/audit-chain) doc — that page shows the exact SQL you would have to run to break the chain (and why it leaves a forensic signal).
+
+These are deliberate. The dashboard is a viewer that helps an operator answer "is the chain intact and what landed since I last looked?" — not a forensic toolkit. The CLI remains the source of truth for deep investigation.
+
+---
+
+## When the chain shows mismatch
+
+If the verification ribbon flips to **Ledger Chain Mismatch**, the underlying claim is precise: at least one row's recomputed `chain_hash` no longer matches its stored value. Possible causes, in order of likelihood:
+
+1. **Someone or something rewrote a row.** The append-only triggers on `mcp_audit` reject normal `UPDATE` / `DELETE`, so the rewrite required either dropping the triggers first or writing to the file outside SQLite. Either is a forensic signal worth investigating.
+2. **A schema migration changed `canonical(row)` semantics without bumping `fingerprint_version`.** This is a SchemaBrain bug — please file an issue with the row's `id`, `fingerprint_version`, and the output of `schemabrain audit verify --full`.
+3. **The file was restored from an inconsistent backup.** A partial restore that mixed rows from two timelines will fail verification on every divergent row.
+
+The CLI verify command's `--full` flag enumerates every divergent row; that is the right next step from here.
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Tamper-evident audit chain" icon="signature" href="/mechanism/audit-chain">
+    The mechanism the viewer reflects — append-only triggers, chain hash, recovery semantics.
+  </Card>
+  <Card title="schemabrain audit verify" icon="terminal" href="/reference/cli/audit">
+    The CLI surface for the same re-walk, with `--since` cursor support.
+  </Card>
+  <Card title="Refusals" icon="ban" href="/dashboard/refusals">
+    Refused rows live in the chain too; this is the envelope-facing view of the same data.
+  </Card>
+  <Card title="Observability" icon="chart-line" href="/observability">
+    Where the audit row sits in the event-bus substrate.
+  </Card>
+</CardGroup>

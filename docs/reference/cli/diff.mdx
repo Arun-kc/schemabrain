@@ -1,0 +1,107 @@
+---
+title: "schemabrain diff"
+description: "Show drift between a project YAML tree and the store. CI-friendly exit codes — 0 in-sync, 1 drift, 2 error."
+---
+
+# `schemabrain diff`
+
+Compares an on-disk project tree against the local store. Reports three kinds of drift per resource type:
+
+- **only-on-disk** — file exists, no corresponding store row.
+- **only-in-store** — store row exists, no corresponding file.
+- **value-mismatch** — both exist; the YAML body differs.
+
+The comparison round-trips both sides through the YAML serialiser so the semantics match `export-all` ↔ `apply` exactly. Trust-signal fields are deliberately excluded from comparison — they're not part of the YAML grammar.
+
+```bash
+schemabrain diff ./schemabrain --url-env DATABASE_URL
+```
+
+Expected layout: identical to [`schemabrain apply`](/reference/cli/apply).
+
+---
+
+## Flags
+
+| Argument / Flag | Default | Purpose |
+|---|---|---|
+| `project_dir` (positional) | `./schemabrain` | Path to the project tree. |
+| `--source URL` | (none) | Source URL the YAMLs attach to. |
+| `--url-env VARNAME` | (none) | Env var holding the source URL. Preferred. |
+| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+
+---
+
+## Exit codes (CI-friendly)
+
+| Code | Meaning |
+|---|---|
+| `0` | In-sync. Tree matches store. |
+| `1` | Drift detected. The output lists exactly what differs. |
+| `2` | Operational error — missing dir, malformed YAML, unreachable store, etc. |
+
+This shape makes `diff` safe in CI gates:
+
+```bash
+schemabrain diff ./schemabrain --url-env DATABASE_URL
+```
+
+Fails the job on drift; passes when the on-disk definitions agree with the store.
+
+---
+
+## Examples
+
+### Pre-deploy gate
+
+```bash
+schemabrain diff ./schemabrain --url-env DATABASE_URL
+# Exit 0 → safe to deploy
+# Exit 1 → operator forgot to run `schemabrain apply` before pushing
+```
+
+### Apply only if clean
+
+```bash
+schemabrain diff ./schemabrain --url-env DATABASE_URL && \
+  schemabrain apply ./schemabrain --url-env DATABASE_URL
+```
+
+### Investigate drift before resolving
+
+```bash
+schemabrain diff ./schemabrain --url-env DATABASE_URL
+# Reads:
+#   entities/users.yaml      only-on-disk
+#   metrics/daily_revenue    value-mismatch
+# Resolve by:
+#   - applying the new entity:   schemabrain entities apply ./schemabrain/entities/users.yaml
+#   - re-exporting the metric:   schemabrain metrics export daily_revenue > ./schemabrain/metrics/daily_revenue.yaml
+```
+
+---
+
+## What `diff` does not check
+
+- **Source schema drift** (added or removed columns in Postgres) — use `schemabrain check` for that.
+- **Trust-signal drift** (`origin`, `inference_method`, `validation_state`) — those fields are deliberately not part of the YAML grammar, so they would always read as drift if compared. Use `schemabrain inspect` to view trust signals.
+- **dbt-owned resources** — resources with `origin='dbt'` are still compared; if you want to skip them, filter the project tree before diffing.
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="schemabrain apply" icon="upload" href="/reference/cli/apply">
+    Resolve drift by applying the on-disk version to the store.
+  </Card>
+  <Card title="schemabrain check" icon="circle-check" href="/reference/cli/check">
+    Source-schema drift (the orthogonal question).
+  </Card>
+  <Card title="schemabrain inspect" icon="magnifying-glass" href="/reference/cli/inspect">
+    Browse trust signals that `diff` deliberately ignores.
+  </Card>
+  <Card title="schemabrain entities export-all" icon="download" href="/reference/cli/entities">
+    Re-export to disk to resolve `only-in-store` drift.
+  </Card>
+</CardGroup>

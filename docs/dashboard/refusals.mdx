@@ -1,0 +1,111 @@
+---
+title: "Refusals"
+description: "A live feed of refused tool calls — what the agent asked for, what category triggered the refusal, and the exact envelope SchemaBrain returned for self-correction."
+---
+
+# Refusals
+
+<Note>
+**Route:** `/refusals` on the dashboard. **Backed by:** `GET /api/audit/refusals` (list) and `GET /api/audit/refusals/{id}` (detail).
+</Note>
+
+Every tool call that ended with `status='refused'` lands on this surface. The page renders a two-pane layout: a chronological list of incidents on the left, the full envelope detail (what the agent saw, what reason fired, which categories the policy intersected) on the right.
+
+This is the surface for two distinct workflows:
+
+1. **Operator triage.** A user complained the agent kept saying "I don't have access to that." Open Refusals, find the relevant row, see exactly what category list intersected the policy. Decide whether to widen `--pii-block` or fix the question.
+2. **Recovery quality review.** Read the envelopes SchemaBrain returned. Were the `follow_up_hints` actually useful? Did the agent self-correct on the next turn?
+
+---
+
+## What each row carries
+
+Each refusal row in the feed shows the same fields the underlying `mcp_audit` row carries:
+
+| Field | Meaning |
+|---|---|
+| `id` | The audit row's monotonic ID. |
+| `occurred_at` | ISO 8601 timestamp. |
+| `tool_name` | The MCP tool that was called (`get_metric`, `describe_column`, etc.). |
+| `refusal_reason` | One of `pii_blocked`, `allowlist_violation`, `fragment_unsafe`, `cost_cap_exceeded`, `ambiguous_resolution`, `schema_drift`. |
+| `pii_categories` | The category set the envelope returned. **On `pii_blocked` refusals, this is the *blocked* set** — the intersection of policy and request that fired. |
+| `cost_class` | `refused` for this surface. |
+
+The detail panel adds the full envelope body: status, `follow_up_hints`, the structured recovery payload the agent received, and the `chain_hash` that anchors the row in the audit log.
+
+<Note>
+The audit row's `pii_categories` records **only the blocked set** — the categories the policy intersected. The full attempted (propagated) set the agent's plan would have touched lives only on the `PiiBlockedError` exception object and the event bus. See [audit-chain — What this is *not*](/mechanism/audit-chain) for the forensic implication and the roadmap item.
+</Note>
+
+---
+
+## What "refused" means upstream
+
+A refusal is **not** an error. It is a Charter-conformant envelope with `status='refused'` and a structured `follow_up_hint`. The agent receives enough information to either:
+
+- Pick a different tool path that does not touch the blocked categories.
+- Ask the user to confirm the access is intended.
+- Surface a clean "this is policy" message instead of a hallucinated retry.
+
+The six refusal reasons each map to a recovery path documented in [Structured Recovery](/mechanism/structured-recovery).
+
+---
+
+## How to populate this view
+
+In normal operation, refused rows accumulate as agents use the MCP server. To verify the surface works end-to-end on a fresh install (or to seed a demo), use the bundled seeding script:
+
+```bash
+python scripts/seed_refused_audit_row.py
+```
+
+This writes one synthetic `pii_blocked` row to your local store. Refresh the dashboard tab and the row appears at the top of the feed.
+
+Alternatively, configure a strict `--pii-block` policy on `serve` and ask an agent for a metric that touches a blocked category:
+
+```bash
+schemabrain serve \
+    --url-env DATABASE_URL \
+    --store-path ./schemabrain.db \
+    --pii-block credential,payment_card,government_id,contact,health
+```
+
+---
+
+## Empty state
+
+The page distinguishes "no refusals because the agent never tried" from "no refusals because the policy is empty." If the feed is empty, that is **a good signal** — the agent has been able to do its work without crossing a blocked category. The empty-state message in the UI says exactly that.
+
+If you expect refusals and see none, double-check:
+
+- The `--pii-block` flag on the running `serve` process — pass `--pii-block ''` and it explicitly blocks nothing.
+- That `schemabrain index` ran **without** `--no-pii-classify` — without tags, the policy has nothing to act on.
+- That the indexed source actually has columns the classifier would flag — heuristic classification has false negatives for cryptically-named columns.
+
+---
+
+## Cross-reference into the audit chain
+
+Every refusal is also a row in the [Audit Viewer](/dashboard/audit-viewer). The two surfaces share IDs — opening row 42 on the Refusals feed and row 42 on the Audit Viewer drawer renders the same underlying row, different facets:
+
+- **Refusals** highlights the envelope the agent received.
+- **Audit Viewer** highlights the `chain_hash` and tamper-evidence story.
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Structured recovery" icon="rotate" href="/mechanism/structured-recovery">
+    The envelope shape every refused call returns.
+  </Card>
+  <Card title="PII taxonomy" icon="shield" href="/mechanism/pii-taxonomy">
+    The 12 categories and the catastrophic-leak subset.
+  </Card>
+  <Card title="Audit Viewer" icon="signature" href="/dashboard/audit-viewer">
+    Where the refused row lives in the chain.
+  </Card>
+  <Card title="schemabrain serve --pii-block" icon="lock" href="/reference/cli/serve">
+    The flag that produces refusals in the first place.
+  </Card>
+</CardGroup>

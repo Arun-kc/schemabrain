@@ -1,0 +1,196 @@
+---
+title: "schemabrain metrics"
+description: "Manage metric definitions — entity-anchored business measures. Seven subcommands: list, apply, suggest, show, audit, export, export-all."
+---
+
+# `schemabrain metrics`
+
+Metrics are pre-declared aggregations anchored on a confirmed entity. The MCP `get_metric` tool compiles and runs them — the agent never writes SQL. Every metric is a contract: the operator decides what the business measure means; the agent picks which one to call.
+
+```bash
+schemabrain metrics <action> [flags]
+```
+
+Seven actions: [`list`](#list), [`apply`](#apply), [`suggest`](#suggest), [`show`](#show), [`audit`](#audit), [`export`](#export), [`export-all`](#export-all).
+
+---
+
+## list
+
+List metrics in the local store. The verification path after `apply`.
+
+```bash
+schemabrain metrics list --store-path ./schemabrain.db
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--source URL` | (none) | Filter listing to one source. |
+| `--url-env VARNAME` | (none) | Env var holding the source URL. |
+
+---
+
+## apply
+
+Load metric YAML file(s) or directory(ies) into the local store.
+
+```bash
+schemabrain metrics apply <yaml_path>... --url-env DATABASE_URL
+```
+
+| Argument / Flag | Purpose |
+|---|---|
+| `yaml_path` (positional, 1+) | One or more metric YAML files OR directories of YAML files. Shell globs work; multi-file apply lands each independently. |
+| `--source URL` | Source URL. Deprecated when the URL contains a password. |
+| `--url-env VARNAME` | Env var holding the source URL. Preferred. |
+| `--store-path PATH` | Path to the local SQLite store. |
+
+---
+
+## suggest
+
+LLM-suggest metric candidates anchored on existing entities. **Run after entities are confirmed** — the suggester walks the entity surface to propose anchors.
+
+```bash
+schemabrain metrics suggest --url-env DATABASE_URL --out-dir ./review
+```
+
+| Flag | Purpose |
+|---|---|
+| `--source URL` | Source URL. Deprecated when the URL contains a password. |
+| `--url-env VARNAME` | Env var holding the source URL. Preferred. |
+| `--store-path PATH` | Path to the local SQLite store. |
+| `--top-k N` | Maximum number of candidates to keep. |
+| `--provider {anthropic,stub}` | LLM provider. |
+| `--max-cost-usd USD` | Hard cap on USD spend. |
+
+One of these is required:
+
+| Mode | Effect |
+|---|---|
+| `--dry-run` | Print candidates to stdout. |
+| `--out-dir DIR` | Write one YAML per candidate plus `_suggestion_metadata.json`. |
+| `--apply` | Write directly to store with `origin='suggested'`. |
+
+---
+
+## show
+
+Drill into one metric by name. Namespaced shortcut for `schemabrain inspect <name>` that resolves only against the metrics namespace — useful when a name collides with an entity or join.
+
+```bash
+schemabrain metrics show daily_revenue
+```
+
+| Argument / Flag | Purpose |
+|---|---|
+| `name` (positional) | Metric name to drill into. Run `metrics list` to see what's available. |
+| `--store-path PATH` | Path to the local SQLite store. |
+| `--source URL` | Filter to one source. Without this, walks every source and renders each match. |
+| `--url-env VARNAME` | Env var holding the source URL. |
+
+---
+
+## audit
+
+Scan applied metrics for anti-pattern descriptions and optionally remove them. Counterpart to the suggest-time anti-pattern filter for stores written before that filter shipped.
+
+```bash
+schemabrain metrics audit --store-path ./schemabrain.db
+# Read-only by default; exits non-zero if findings exist.
+```
+
+| Flag | Effect |
+|---|---|
+| `--store-path PATH` | Path to the local SQLite store. |
+| `--source URL` | Filter audit to one source. Without this, audits across every source. |
+| `--url-env VARNAME` | Env var holding the source URL. |
+| `--fix` | **Delete** every flagged metric (excluding dbt-owned ones). Without this flag, audit is read-only. |
+
+---
+
+## export
+
+Render one metric from the local store as apply-ready YAML on stdout (or `--out PATH`).
+
+```bash
+schemabrain metrics export daily_revenue > daily_revenue.yaml
+```
+
+| Argument / Flag | Purpose |
+|---|---|
+| `name` (positional) | Metric name to export. Errors on cross-source name collisions without a source filter. |
+| `--out PATH` | Output path. Without this flag, writes to stdout. |
+| `--source URL` | Filter to one source. |
+| `--url-env VARNAME` | Env var holding the source URL. |
+| `--store-path PATH` | Path to the local SQLite store. |
+
+---
+
+## export-all
+
+Write one apply-ready YAML per metric into `--dir`. Pairs with `schemabrain apply <dir>`.
+
+```bash
+schemabrain metrics export-all --dir ./schemabrain/metrics
+```
+
+| Flag | Purpose |
+|---|---|
+| `--dir PATH` | Output directory. **Refuses to overwrite** existing `<metric>.yaml` files. |
+| `--source URL` | Filter to one source. Refuses on cross-source name collisions when absent. |
+| `--url-env VARNAME` | Env var holding the source URL. |
+| `--store-path PATH` | Path to the local SQLite store. |
+
+---
+
+## Examples
+
+### Suggest → review → apply
+
+```bash
+schemabrain metrics suggest --url-env DATABASE_URL --out-dir ./review
+# Edit ./review/*.yaml
+schemabrain metrics apply ./review/*.yaml --url-env DATABASE_URL
+schemabrain metrics list
+```
+
+### Inspect one metric
+
+```bash
+schemabrain metrics show daily_revenue
+```
+
+### Round-trip for version control
+
+```bash
+schemabrain metrics export-all --dir ./schemabrain/metrics
+git add ./schemabrain/metrics
+```
+
+### Clean up old anti-patterns
+
+```bash
+schemabrain metrics audit         # read-only; lists findings
+schemabrain metrics audit --fix   # deletes them (excluding dbt-owned)
+```
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="MCP tool — get_metric" icon="play" href="/reference/mcp-tools/get_metric">
+    The runtime that compiles and runs metric definitions.
+  </Card>
+  <Card title="MCP tool — list_metrics" icon="list" href="/reference/mcp-tools/list_metrics">
+    The discovery path for agents.
+  </Card>
+  <Card title="schemabrain entities" icon="table" href="/reference/cli/entities">
+    Metrics anchor on entities — curate entities first.
+  </Card>
+  <Card title="Semantic layer" icon="book-open" href="/semantic-layer">
+    Architectural framing for entities + metrics + joins.
+  </Card>
+</CardGroup>

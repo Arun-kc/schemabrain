@@ -1,0 +1,81 @@
+---
+title: "schemabrain check"
+description: "Detect drift between persisted definitions in the store and the live source schema. CI-friendly JSON mode for monitoring."
+---
+
+# `schemabrain check`
+
+Probes the live source Postgres and compares its current schema to the snapshot in the local store. Surfaces three kinds of drift:
+
+- Tables that were indexed but no longer exist.
+- Columns that were indexed but no longer exist.
+- Type / nullability changes on existing columns.
+
+This is the **source-side** drift check. For drift between the store and an on-disk YAML project tree, use [`schemabrain diff`](/reference/cli/diff).
+
+```bash
+schemabrain check --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+---
+
+## Flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--source URL` | (none) | Source URL. Deprecated when the URL contains a password. One of `--source` / `--url-env` is required. |
+| `--url-env VARNAME` | (none) | Env var holding the source URL. Preferred. |
+| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--json` | (off) | Emit JSON to stdout instead of the rich-rendered report to stderr. Pipe-friendly for CI / monitoring. |
+
+---
+
+## When to run it
+
+- After any database migration.
+- On a schedule, paired with an alert when the JSON output reports non-empty drift.
+- Before running `schemabrain serve` in a long-lived environment.
+
+After `check` reports drift, re-run `schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db` to refresh the snapshot. Indexing is idempotent and only re-enriches changed columns.
+
+---
+
+## Examples
+
+### Default human report
+
+```bash
+schemabrain check --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+### CI-friendly JSON
+
+```bash
+schemabrain check --url-env DATABASE_URL --store-path ./schemabrain.db --json > drift.json
+```
+
+### Refresh after detecting drift
+
+```bash
+schemabrain check --url-env DATABASE_URL --store-path ./schemabrain.db || \
+  schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="schemabrain index" icon="database" href="/reference/cli/index-command">
+    Refresh the snapshot after `check` reports drift.
+  </Card>
+  <Card title="schemabrain diff" icon="code-compare" href="/reference/cli/diff">
+    The orthogonal drift question — project tree vs store.
+  </Card>
+  <Card title="schemabrain doctor" icon="stethoscope" href="/reference/cli/doctor">
+    Broader health check covering host config + store.
+  </Card>
+  <Card title="schemabrain inspect" icon="magnifying-glass" href="/reference/cli/inspect">
+    Browse the indexed schema without re-probing the source.
+  </Card>
+</CardGroup>

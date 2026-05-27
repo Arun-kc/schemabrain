@@ -52,6 +52,16 @@
             ]
           },
           {
+            "group": "Dashboard",
+            "icon": "chart-line",
+            "pages": [
+              "dashboard/overview",
+              "dashboard/pii-ledger",
+              "dashboard/refusals",
+              "dashboard/audit-viewer"
+            ]
+          },
+          {
             "group": "Compare",
             "icon": "scale-balanced",
             "pages": [
@@ -65,6 +75,52 @@
         "tab": "Reference",
         "icon": "square-code",
         "groups": [
+          {
+            "group": "CLI",
+            "icon": "terminal",
+            "pages": [
+              "reference/cli/overview",
+              {
+                "group": "Setup",
+                "icon": "gear",
+                "pages": [
+                  "reference/cli/init",
+                  "reference/cli/doctor"
+                ]
+              },
+              {
+                "group": "Run",
+                "icon": "play",
+                "pages": [
+                  "reference/cli/serve",
+                  "reference/cli/dashboard",
+                  "reference/cli/index-command"
+                ]
+              },
+              {
+                "group": "Semantic layer",
+                "icon": "diagram-project",
+                "pages": [
+                  "reference/cli/entities",
+                  "reference/cli/metrics",
+                  "reference/cli/joins",
+                  "reference/cli/apply",
+                  "reference/cli/diff",
+                  "reference/cli/check",
+                  "reference/cli/inspect"
+                ]
+              },
+              {
+                "group": "Audit",
+                "icon": "clipboard-check",
+                "pages": [
+                  "reference/cli/audit",
+                  "reference/cli/tail"
+                ]
+              },
+              "reference/cli/developer"
+            ]
+          },
           {
             "group": "MCP tools",
             "icon": "code",
@@ -135,7 +191,7 @@
     "links": [
       {
         "label": "Dashboard",
-        "href": "/architecture"
+        "href": "/dashboard/overview"
       }
     ],
     "primary": {

@@ -1,0 +1,156 @@
+---
+title: "schemabrain entities"
+description: "Manage semantic entity definitions. Five subcommands cover list, apply, suggest, export, and export-all."
+---
+
+# `schemabrain entities`
+
+Semantic entities are the named objects in your domain — `users`, `orders`, `products` — that bind to a physical table and an identity column. They underpin every semantic-layer MCP tool (`list_entities`, `describe_entity`, `find_relevant_entities`, `get_metric`, `resolve_join`, `list_joins`, `list_metrics`).
+
+```bash
+schemabrain entities <action> [flags]
+```
+
+Five actions: [`list`](#list), [`apply`](#apply), [`suggest`](#suggest), [`export`](#export), [`export-all`](#export-all).
+
+---
+
+## list
+
+List entities in the local store. The verification path after `apply`.
+
+```bash
+schemabrain entities list --store-path ./schemabrain.db
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--source URL` | (none) | Filter listing to one source. Without this, lists across every source. |
+| `--url-env VARNAME` | (none) | Env var holding the source URL. |
+
+---
+
+## apply
+
+Load entity YAML file(s) or directory(ies) into the local store.
+
+```bash
+schemabrain entities apply <yaml_path>... --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+| Argument / Flag | Purpose |
+|---|---|
+| `yaml_path` (positional, 1+) | One or more entity YAML files OR directories of YAML files (each `.yaml`/`.yml`). Shell globs work — `entities apply dir/*.yaml` and `entities apply dir/` both apply every YAML in the directory. |
+| `--source URL` | Source URL the YAML attaches to. Deprecated when the URL contains a password. |
+| `--url-env VARNAME` | Env var holding the source URL. Preferred. |
+| `--store-path PATH` | Path to the local SQLite store. |
+
+Multi-file apply lands each file independently. An error in one file skips that file and reports it in the summary — the rest still apply.
+
+---
+
+## suggest
+
+LLM-suggest entities for an indexed schema. Three mutually-exclusive output modes.
+
+```bash
+schemabrain entities suggest --url-env DATABASE_URL --store-path ./schemabrain.db --apply
+```
+
+| Flag | Purpose |
+|---|---|
+| `--source URL` | Source URL. Deprecated when the URL contains a password. |
+| `--url-env VARNAME` | Env var holding the source URL. Preferred. |
+| `--store-path PATH` | Path to the local SQLite store. |
+| `--top-k N` | Maximum number of candidates to keep. The cap is both communicated to the LLM and enforced post-parse. |
+| `--provider {anthropic,stub}` | LLM provider. `anthropic` is the production default; `stub` reads `$SCHEMABRAIN_STUB_RESPONSE` for CI smoke tests. |
+| `--max-cost-usd USD` | Hard cap on USD spend per run. Reads `SCHEMABRAIN_MAX_LLM_COST_USD` if unset; CLI flag wins on conflict. |
+
+One of these is required:
+
+| Mode | Effect |
+|---|---|
+| `--dry-run` | Print candidates (entity body + envelope) to stdout. No files, no store writes. Best mode for cost/quality previews. |
+| `--out-dir DIR` | Write one YAML file per candidate (`<entity_name>.yaml`) plus a sidecar `_suggestion_metadata.json` carrying confidence, rationale, and PII hints. The per-entity YAML is `entities apply`-ready: edit, then apply per file. |
+| `--apply` | Write candidates directly to the local store with `origin='suggested'`. Skips the review step — use `--out-dir` if you want a chance to edit before committing. |
+
+---
+
+## export
+
+Render one entity from the local store as apply-ready YAML on stdout (or `--out PATH`).
+
+```bash
+schemabrain entities export users > users.yaml
+```
+
+| Argument / Flag | Purpose |
+|---|---|
+| `name` (positional) | Entity name to export. Without `--source`/`--url-env`, errors if the same name lives in multiple sources. |
+| `--out PATH` | Output path. Without this flag, writes to stdout. |
+| `--source URL` | Filter to one source. Without this flag, walks every source. |
+| `--url-env VARNAME` | Env var holding the source URL. |
+| `--store-path PATH` | Path to the local SQLite store. |
+
+---
+
+## export-all
+
+Write one apply-ready YAML per entity into `--dir`. Pairs with `schemabrain apply <dir>` for the full store ↔ YAML round-trip.
+
+```bash
+schemabrain entities export-all --dir ./schemabrain/entities
+```
+
+| Flag | Purpose |
+|---|---|
+| `--dir PATH` | Output directory. Created if missing. **Refuses to overwrite existing `<entity>.yaml` files** to preserve hand-edits. |
+| `--source URL` | Filter to one source. Without this flag, exports across every source — the handler refuses on entity-name collisions. |
+| `--url-env VARNAME` | Env var holding the source URL. |
+| `--store-path PATH` | Path to the local SQLite store. |
+
+---
+
+## Examples
+
+### Suggest, then review, then apply
+
+```bash
+schemabrain entities suggest --url-env DATABASE_URL --out-dir ./review
+# Edit ./review/*.yaml
+schemabrain entities apply ./review/*.yaml --url-env DATABASE_URL
+```
+
+### Round-trip the store to disk for version control
+
+```bash
+schemabrain entities export-all --dir ./schemabrain/entities
+git add ./schemabrain/entities && git commit -m "snapshot entities"
+```
+
+### Apply hand-authored entities
+
+```bash
+schemabrain entities apply ./schemabrain/entities/users.yaml --url-env DATABASE_URL
+schemabrain entities list
+```
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="MCP tool — list_entities" icon="list" href="/reference/mcp-tools/list_entities">
+    The MCP surface entities feed into.
+  </Card>
+  <Card title="schemabrain metrics" icon="chart-line" href="/reference/cli/metrics">
+    Metrics anchor on entities — curate entities first.
+  </Card>
+  <Card title="schemabrain joins" icon="diagram-project" href="/reference/cli/joins">
+    Canonical joins reference entity names.
+  </Card>
+  <Card title="Semantic layer" icon="book-open" href="/semantic-layer">
+    What entities mean in the SchemaBrain architecture.
+  </Card>
+</CardGroup>

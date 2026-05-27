@@ -1,0 +1,128 @@
+---
+title: "schemabrain audit"
+description: "Inspect or verify the hash-chained mcp_audit table. Two subcommands: list (read) and verify (re-walk the chain)."
+---
+
+# `schemabrain audit`
+
+The CLI surface for the [tamper-evident audit chain](/mechanism/audit-chain). Two subcommands:
+
+- [`audit list`](#list) — read recent rows, with optional filters.
+- [`audit verify`](#verify) — re-walk the chain and report mismatches.
+
+```bash
+schemabrain audit <action> [flags]
+```
+
+The same data is rendered visually in the [Audit Viewer](/dashboard/audit-viewer) dashboard surface.
+
+---
+
+## list
+
+List recent `mcp_audit` rows with optional filters. Two output modes: rich-formatted table (default) or JSON Lines.
+
+```bash
+schemabrain audit list --status refused --limit 50
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--since DURATION_OR_TIMESTAMP` | (all) | Show rows newer than this point. Accepts compact duration (`30s`, `5m`, `2h`, `1d`) or ISO 8601 timestamp with timezone. |
+| `--status {success,empty,partial,degraded,error,refused}` | (no filter) | Filter by Charter envelope status. |
+| `--tool NAME` | (no filter) | Filter by `tool_name` (exact match, e.g. `describe_table`). |
+| `--limit N` | `100` | Maximum rows to return. Must be non-negative. |
+| `--json` | (off) | Emit JSON Lines instead of the rich table. Pipe-friendly for `jq` / `awk`. |
+
+### Examples
+
+```bash
+# Last hour of refused calls
+schemabrain audit list --since 1h --status refused
+
+# All describe_table calls today, as JSON
+schemabrain audit list --tool describe_table --since 1d --json > today.jsonl
+
+# 10 most recent rows, any status
+schemabrain audit list --limit 10
+```
+
+---
+
+## verify
+
+Re-walks the chain hash for every row and reports mismatches. The fast yes/no integrity check operators run before trusting the audit log.
+
+```bash
+schemabrain audit verify
+# exit 0 → chain intact
+# exit 1 → at least one mismatch (chain has been tampered)
+# exit 2 → operational error
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--full` | (off — stops at first mismatch) | Walk every row and report all mismatches. Use for forensic walks. |
+| `--since CURSOR` | (walk from genesis) | Anchor the walk to a known-good cursor row. Accepts: a leading hex prefix (≥8 chars) of a previously-archived `chain_hash`, a compact duration (`7d`, `2h`), or an ISO 8601 timestamp with timezone. The cursor row's own integrity is NOT re-verified — only rows after it are. |
+
+### How verification works
+
+For every row, `verify` recomputes `chain_hash` from the previous *stored* `chain_hash` plus the canonical bytes of the current row, and compares against the stored value:
+
+```text
+chain_hash[N]  =  sha256(  chain_hash[N-1]  ||  canonical(row[N])  )
+```
+
+A `ChainMismatch` is reported for every row where recomputed ≠ stored. With `--full`, all mismatches are collected; without it, the walk stops at the first.
+
+`--since` is the operator's tool when a known-good chain head has been archived externally (a CI artifact, a nightly backup, a cron-emailed head hash). Walk only rows after that anchor — fast on stores with millions of rows.
+
+<Warning>
+Rows at or before the `--since` cursor are not verified. If an attacker tampered with a row *before* the cursor, a since-cursor walk will not catch it. Run an occasional full walk (or compare your archived head hash against the store's current head hash) to close that window.
+</Warning>
+
+### Examples
+
+```bash
+# Fast yes/no integrity check
+schemabrain audit verify
+
+# Forensic — show every mismatch
+schemabrain audit verify --full
+
+# Walk only the last 7 days
+schemabrain audit verify --since 7d
+
+# Walk from a specific known-good anchor
+schemabrain audit verify --since a3f9b2c1
+
+# Walk from a specific point in time
+schemabrain audit verify --since 2026-05-25T12:00:00Z
+```
+
+---
+
+## Manual tamper demo
+
+For a hands-on walk-through of how a forged row breaks `verify`, see [audit-chain — Verify it yourself](/mechanism/audit-chain#verify-it-yourself).
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Tamper-evident audit chain" icon="signature" href="/mechanism/audit-chain">
+    The mechanism this CLI surface reflects.
+  </Card>
+  <Card title="Audit Viewer dashboard" icon="chart-line" href="/dashboard/audit-viewer">
+    Visual rendering of the same chain.
+  </Card>
+  <Card title="schemabrain tail" icon="terminal" href="/reference/cli/tail">
+    Live event stream from a running `serve` process.
+  </Card>
+  <Card title="Observability" icon="chart-line" href="/observability">
+    Where audit rows fit in the event-bus substrate.
+  </Card>
+</CardGroup>
