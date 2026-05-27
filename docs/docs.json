@@ -18,6 +18,7 @@
     "tabs": [
       {
         "tab": "Documentation",
+        "icon": "book",
         "groups": [
           {
             "group": "Get started",
@@ -62,6 +63,7 @@
       },
       {
         "tab": "Reference",
+        "icon": "square-code",
         "groups": [
           {
             "group": "MCP tools",
