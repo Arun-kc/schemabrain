@@ -596,6 +596,12 @@ def _dispatch(argv: list[str] | None) -> int:
                 url_env=args.url_env,
             )
         parser.error(f"unknown metrics action: {args.metrics_action}")  # pragma: no cover
+    if args.command == "dashboard":
+        return _cmd_dashboard(
+            store_path=args.store_path,
+            port=args.port,
+            open_browser=args.open_browser,
+        )
     # argparse `required=True` on subparsers prevents reaching here, but
     # leaving an explicit branch is cheaper than a guarded assertion.
     parser.error(f"unknown command: {args.command}")  # pragma: no cover
@@ -2290,6 +2296,38 @@ def _build_parser() -> argparse.ArgumentParser:
         "--store-path",
         default=_DEFAULT_STORE_PATH,
         help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+
+    # `dashboard` boots a read-only FastAPI sidecar that serves the
+    # bundled Next.js static export. Importing DEFAULT_PORT from the
+    # sidecar module is safe here — sidecar.py defers its fastapi /
+    # uvicorn imports to call time, so the base wheel can build this
+    # parser without the [ui] extra installed.
+    from schemabrain.dashboard.sidecar import DEFAULT_PORT as _DASHBOARD_DEFAULT_PORT
+
+    p_dashboard = sub.add_parser(
+        "dashboard",
+        help="Serve the local read-only dashboard UI (requires `pip install schemabrain[ui]`)",
+    )
+    p_dashboard.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH}). "
+        "The sidecar auto-resolves the canonical source_id from the store.",
+    )
+    p_dashboard.add_argument(
+        "--port",
+        type=int,
+        default=_DASHBOARD_DEFAULT_PORT,
+        help=f"Port to bind on 127.0.0.1 (default: {_DASHBOARD_DEFAULT_PORT}). "
+        "The bind host is hardcoded — no public-network exposure flag exists.",
+    )
+    p_dashboard.add_argument(
+        "--no-open",
+        dest="open_browser",
+        action="store_false",
+        default=True,
+        help="Skip auto-opening the default browser. CI / headless setups should pass this.",
     )
 
     return parser
@@ -8719,6 +8757,35 @@ def _list_source_ids_with_join(store: SQLiteStore, join_name: str) -> list[str]:
     except sqlite3.OperationalError:  # pragma: no cover — pre-v10 partial-migration defense
         return []
     return [r[0] for r in rows]
+
+
+def _cmd_dashboard(*, store_path: str, port: int, open_browser: bool) -> int:
+    """Boot the read-only dashboard sidecar against a previously-indexed store.
+
+    Thin wrapper over `schemabrain.dashboard.cli.run_dashboard`. Defers the
+    actual import so a base wheel (without the `[ui]` extra) doesn't pay
+    an ImportError just to load the CLI parser.
+
+    Source-id selection is automatic: the sidecar resolves the canonical
+    source_id from the store via `/api/meta`. Multi-source stores surface
+    the first known source_id in the response; an explicit source-selection
+    flag is deliberately not exposed at v1 — operators that need it can
+    re-run with a per-source store.
+
+    Exit codes (delegated to `run_dashboard`):
+      - 0: served until interrupted with Ctrl+C
+      - 1: invalid store (missing path, wrong schema, malformed)
+      - 2: `[ui]` extra not installed (uvicorn / fastapi missing)
+    """
+    from pathlib import Path as _Path
+
+    from schemabrain.dashboard.cli import run_dashboard
+
+    return run_dashboard(
+        store_path=_Path(store_path),
+        port=port,
+        open_browser=open_browser,
+    )
 
 
 def _cmd_fixture_path(name: str) -> int:
