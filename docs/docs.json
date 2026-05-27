@@ -9,11 +9,11 @@
     "dark": "#0A0A0A"
   },
   "logo": {
-    "light": "/assets/schemabrain-logo-horizontal.svg",
-    "dark": "/assets/schemabrain-logo-horizontal.svg",
+    "light": "/assets/mintlify-logo-light.svg",
+    "dark": "/assets/mintlify-logo-dark.svg",
     "href": "https://github.com/Arun-kc/schemabrain"
   },
-  "favicon": "/assets/favicon.svg",
+  "favicon": "/assets/browser-icon.svg",
   "navigation": {
     "tabs": [
       {

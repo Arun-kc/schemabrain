@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <clipPath id="mcp-brain">
+      <path d="M176 128 C 176 96, 240 80, 256 112 C 288 80, 352 96, 352 144 C 400 128, 448 176, 416 224 C 464 256, 448 320, 400 336 C 432 384, 384 448, 320 432 C 304 480, 224 480, 208 448 C 144 464, 96 416, 112 368 C 64 352, 48 288, 96 272 C 64 224, 96 160, 144 176 C 144 144, 160 128, 176 128 Z"></path>
+    </clipPath>
+  </defs>
+
+  
+  <rect width="512" height="512" rx="112" ry="112" fill="#0B0F14"></rect>
+
+  
+  <g clip-path="url(#mcp-brain)">
+    <rect x="256" y="0" width="256" height="512" fill="#3ECF8E"></rect>
+  </g>
+
+  
+  <path d="M176 128 C 176 96, 240 80, 256 112 C 288 80, 352 96, 352 144 C 400 128, 448 176, 416 224 C 464 256, 448 320, 400 336 C 432 384, 384 448, 320 432 C 304 480, 224 480, 208 448 C 144 464, 96 416, 112 368 C 64 352, 48 288, 96 272 C 64 224, 96 160, 144 176 C 144 144, 160 128, 176 128 Z" stroke="#FAFAF7" stroke-width="18" stroke-linejoin="round" fill="none"></path>
+
+  
+  <line x1="256" y1="112" x2="256" y2="432" stroke="#FAFAF7" stroke-width="14" stroke-linecap="round"></line>
+
+  
+  <path d="M112 208 C 160 184, 208 208, 240 200" stroke="#FAFAF7" stroke-width="12" stroke-linecap="round" fill="none"></path>
+  <path d="M96 288 C 144 256, 208 296, 240 280" stroke="#FAFAF7" stroke-width="12" stroke-linecap="round" fill="none"></path>
+  <path d="M112 368 C 160 344, 208 376, 240 360" stroke="#FAFAF7" stroke-width="12" stroke-linecap="round" fill="none"></path>
+
+  
+  <g clip-path="url(#mcp-brain)">
+    <circle cx="288" cy="208" r="12" fill="#0B0F14"></circle>
+    <line x1="310" y1="208" x2="400" y2="208" stroke="#0B0F14" stroke-width="14" stroke-linecap="round"></line>
+    <circle cx="288" cy="288" r="12" fill="#0B0F14"></circle>
+    <line x1="310" y1="288" x2="416" y2="288" stroke="#0B0F14" stroke-width="14" stroke-linecap="round"></line>
+    <circle cx="288" cy="368" r="12" fill="#0B0F14"></circle>
+    <line x1="310" y1="368" x2="400" y2="368" stroke="#0B0F14" stroke-width="14" stroke-linecap="round"></line>
+  </g>
+</svg>
