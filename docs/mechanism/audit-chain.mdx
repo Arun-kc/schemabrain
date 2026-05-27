@@ -47,7 +47,7 @@ Each audit row stores a 32-byte `chain_hash`:
 chain_hash[N] = sha256(chain_hash[N-1] || canonical(row[N]))
 ```
 
-The genesis row uses 32 zero bytes for the previous hash ([`audit/chain.py`](../../schemabrain/audit/chain.py)). The `canonical(row[N])` function ([`audit/canonical.py`](../../schemabrain/audit/canonical.py)) emits a deterministic byte string for the 13 content fields — ordering, encoding, and null-handling are pinned so two writers producing the same logical row produce byte-identical output.
+The genesis row uses 32 zero bytes for the previous hash ([`audit/chain.py`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/audit/chain.py)). The `canonical(row[N])` function ([`audit/canonical.py`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/audit/canonical.py)) emits a deterministic byte string for the 13 content fields — ordering, encoding, and null-handling are pinned so two writers producing the same logical row produce byte-identical output.
 
 To rewrite row N coherently, an attacker must:
 1. Compute a new `canonical(row[N]')` for the falsified row.
@@ -61,7 +61,7 @@ Any external system that captured the old `chain_hash[N]` — a nightly backup, 
 
 ## Mechanism 3 — `schemabrain audit verify` re-walks locally
 
-[`schemabrain/audit/verify.py`](../../schemabrain/audit/verify.py) walks `mcp_audit` rows in id order, recomputing each row's `chain_hash` from the previous STORED chain hash plus the row's canonical bytes. A `ChainMismatch` is yielded for every row where recomputed ≠ stored.
+[`schemabrain/audit/verify.py`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/audit/verify.py) walks `mcp_audit` rows in id order, recomputing each row's `chain_hash` from the previous STORED chain hash plus the row's canonical bytes. A `ChainMismatch` is yielded for every row where recomputed ≠ stored.
 
 ```bash
 schemabrain audit verify
@@ -90,7 +90,7 @@ Rows at or before the cursor are **not** verified — by design — so tampering
 
 ## What gets recorded
 
-Every MCP tool call writes exactly one row, regardless of outcome. The 14 fields ([`audit/ddl.py`](../../schemabrain/audit/ddl.py)):
+Every MCP tool call writes exactly one row, regardless of outcome. The 14 fields ([`audit/ddl.py`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/audit/ddl.py)):
 
 | Field | Meaning |
 |---|---|

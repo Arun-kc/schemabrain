@@ -26,11 +26,13 @@ against the entity.
 }
 ```
 
-`pii_sensitivity` is currently hardcoded to `"public"` on every column —
-the wire shape is locked so the upcoming column-level classification can
-fill it without a breaking change. Block-on-sensitivity routing today
-flows through `get_metric` (which propagates `pii_categories` from the
-classifier), not through this field.
+`pii_sensitivity` reflects the per-column tag set at index time by the
+PII classifier — one of `public`, `internal`, `confidential`, or `pii`.
+The parallel `pii_categories` list (e.g. `["contact"]`) gives the
+underlying category names that drove that sensitivity. Block-on-sensitivity
+routing flows through `get_metric`, which propagates `pii_categories`
+from the classifier; this field exposes the same signal for read-time
+UX choices.
 
 Pass `name` as a bare identifier — `customer`, not `public.customer`. The
 schema qualifier belongs on the bound table, not the entity name. Errors

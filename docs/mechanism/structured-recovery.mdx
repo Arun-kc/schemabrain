@@ -17,7 +17,7 @@ This page documents the four shapes that make recovery actionable.
 
 ## The envelope: every response carries the same shape
 
-All 12 MCP tools return a typed `ToolResponse` envelope ([`schemabrain/mcp/envelope.py`](../../schemabrain/mcp/envelope.py)):
+All 12 MCP tools return a typed `ToolResponse` envelope ([`schemabrain/mcp/envelope.py`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/mcp/envelope.py)):
 
 ```json
 {
@@ -32,7 +32,7 @@ All 12 MCP tools return a typed `ToolResponse` envelope ([`schemabrain/mcp/envel
 }
 ```
 
-The agent never has to wonder *was that a real empty result or a silent miss?* The status enum has six values that disambiguate; the structural invariant ([`ToolResponse._validate_status_data_invariant`](../../schemabrain/mcp/envelope.py)) enforces that `error` is populated iff `status ∈ {error, refused}`. `data` must be populated for `success`; other statuses (`empty`, `partial`, `degraded`) allow either a payload or `None`.
+The agent never has to wonder *was that a real empty result or a silent miss?* The status enum has six values that disambiguate; the structural invariant ([`ToolResponse._validate_status_data_invariant`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/mcp/envelope.py)) enforces that `error` is populated iff `status ∈ {error, refused}`. `data` must be populated for `success`; other statuses (`empty`, `partial`, `degraded`) allow either a payload or `None`.
 
 ---
 
@@ -118,7 +118,7 @@ Not every fallback is an error. `status: "degraded"` means the tool ran and retu
 }
 ```
 
-`degradation_reason` is a closed Literal ([`DegradationReason`](../../schemabrain/mcp/envelope.py)) with exactly 3 values:
+`degradation_reason` is a closed Literal ([`DegradationReason`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/mcp/envelope.py)) with exactly 3 values:
 
 | Reason | When |
 |---|---|
@@ -179,7 +179,7 @@ with SQLiteStore("~/.schemabrain/store.db") as store:
 
 A live MCP client (Claude Desktop, Cursor, Windsurf) wired through `schemabrain init` will also surface the recovery envelope naturally — drive the agent to a known-bad metric name and watch the structured `error` block come back.
 
-The full envelope contract lives in [`schemabrain/mcp/envelope.py`](../../schemabrain/mcp/envelope.py). Charter rationale is in [`docs/agent-ux-charter.md`](../agent-ux-charter.md) §3.
+The full envelope contract lives in [`schemabrain/mcp/envelope.py`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/mcp/envelope.py). Charter rationale is in [`docs/agent-ux-charter.md`](../agent-ux-charter.md) §3.
 
 ## Related
 

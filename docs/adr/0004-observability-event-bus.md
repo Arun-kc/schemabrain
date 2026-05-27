@@ -221,7 +221,5 @@ stderr line and investigates.
 - `docs/observability.md` — operator-facing integration recipes.
 - ADR 0001 — audit row + PII taxonomy (the audit consumer of this
   bus).
-- `project_observability_ui_options.md` — private memory documenting
-  the Shape D decision (research-validated 2026-05-14).
 - OpenTelemetry [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
   (experimental as of 2026).

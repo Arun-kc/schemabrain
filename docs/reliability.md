@@ -37,11 +37,14 @@ embedding matrix. They do not touch Postgres.
 | Tool | p95 latency target | Error budget |
 |---|---|---|
 | `find_relevant_tables` | 250 ms | 0.5 % |
+| `find_relevant_entities` | 250 ms | 0.5 % |
 | `describe_table` | 50 ms | 0.1 % |
 | `describe_column` | 50 ms | 0.1 % |
 | `get_example_queries` | 100 ms | 0.5 % |
 | `suggest_joins` | 200 ms | 0.5 % |
 | `list_entities` | 100 ms | 0.5 % |
+| `list_metrics` | 100 ms | 0.5 % |
+| `list_joins` | 100 ms | 0.5 % |
 | `describe_entity` | 100 ms | 0.5 % |
 | `resolve_join` | 150 ms | 0.5 % |
 
@@ -61,9 +64,10 @@ operator's `statement_timeout`.
 
 The 1500 ms target assumes a small-result metric query on a healthy
 source. Long-running aggregations are bounded by the source-side
-`statement_timeout`, which SchemaBrain sets to 30 s by default; a
-query that exceeds it returns `status: error` with `error_kind:
-statement_timeout` and counts against the error budget.
+`statement_timeout`, which the operator sets via `--statement-timeout-ms`
+on `schemabrain serve` (no default — omitted means no cap). When set,
+a query that exceeds it surfaces as `status: error` from the Postgres
+operational error and counts against the error budget.
 
 ## SLOs — pipeline operations
 

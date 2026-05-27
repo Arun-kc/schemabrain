@@ -11,7 +11,7 @@ Returns SQL statements that have actually been observed running against a
 table, sourced from `pg_stat_statements`. Each example carries an
 observation count, a sensitivity tag, and a sorted PII category list.
 
-Run `schemabrain mine-queries --source $DATABASE_URL --store-path ./schemabrain.db`
+Run `schemabrain mine-queries --url-env DATABASE_URL --store-path ./schemabrain.db`
 once (or on a schedule) to populate the example-queries cache from
 `pg_stat_statements`. Until then, this tool returns `status: empty` with a
 recovery hint.

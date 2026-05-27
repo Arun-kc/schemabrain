@@ -50,30 +50,30 @@ and the audit log that records every call.
 
 - T1.1: Connection URLs are read from environment variables only.
   `schemabrain index --url-env DBURL` accepts the env-var name; the URL itself
-  never appears in argv. See [schemabrain/cli.py](../schemabrain/cli.py)
+  never appears in argv. See [schemabrain/cli.py](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/cli.py)
   `_resolve_url_source`. The positional-URL form prints a deprecation warning
   that does not echo the password.
 - T1.2: All qualified names flow through `_validate_ident` in
-  [schemabrain/mcp/_helpers.py](../schemabrain/mcp/_helpers.py), which enforces
+  [schemabrain/mcp/_helpers.py](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/mcp/_helpers.py), which enforces
   the regex `^[A-Za-z_][A-Za-z0-9_$]*$` and a 63-character bound (Postgres
   `NAMEDATALEN-1`). Tool SQL is parameterised; user input never enters a query
   string by concatenation. Identifier-only SQL fragments (table/column names
   that must be inline because Postgres does not parameterise schema objects)
   pass through `_validate_ident` first.
 - T1.3: The `mcp_audit` table is append-only at the SQLite level. DDL in
-  [schemabrain/audit/ddl.py](../schemabrain/audit/ddl.py) installs
+  [schemabrain/audit/ddl.py](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/audit/ddl.py) installs
   `mcp_audit_no_update` and `mcp_audit_no_delete` triggers that raise on
   any `UPDATE` or `DELETE` against the table. Tampering requires direct
   SQLite-file write access (an OS-level compromise), at which point the
   audit chain's hash field detects mutation via `schemabrain audit verify`.
 - T1.4: Connection URLs are filtered through `safe_engine_url` in
-  [schemabrain/connectors/\_url.py](../schemabrain/connectors/_url.py)
+  [schemabrain/connectors/\_url.py](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/connectors/_url.py)
   before reaching `create_engine`. Only `sslmode`, `sslrootcert`, and
   `application_name` query parameters survive; everything else (notably
   `options=-c statement_timeout=1`) is stripped.
 - T1.5: Both the profiler and the metric executor use SQLAlchemy `NullPool`
-  (see [schemabrain/connectors/postgres.py](../schemabrain/connectors/postgres.py)
-  and [schemabrain/cli.py](../schemabrain/cli.py) — `_make_metric_engine`).
+  (see [schemabrain/connectors/postgres.py](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/connectors/postgres.py)
+  and [schemabrain/cli.py](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/cli.py) — `_make_metric_engine`).
   Every database call opens a fresh connection and disposes of it; there is
   no pool state to escape from.
 
@@ -84,7 +84,7 @@ and the audit log that records every call.
   the deprecation warning, not a mitigation.
 - Direct filesystem access to `~/.schemabrain/` allows reading the store and
   audit log. We set the events file to mode `0600` (see
-  [schemabrain/observability/bus.py](../schemabrain/observability/bus.py));
+  [schemabrain/observability/bus.py](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/observability/bus.py));
   the store relies on OS umask. Operators on shared machines should rely on
   full-disk encryption and per-user home directories.
 
@@ -115,7 +115,7 @@ emitting unexpected content.
   instructs the model to produce schema-description output only. Confusion
   remains possible (LLMs are not parsers) — defence in depth is what follows.
 - T2.2: Sample values flow through `redact_pii` in
-  [schemabrain/profiler/stats.py](../schemabrain/profiler/stats.py) before
+  [schemabrain/profiler/stats.py](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/profiler/stats.py) before
   reaching the prompt. Email-shaped, SSN-shaped, and credit-card-shaped
   strings are replaced with `<redacted>` tokens. Generic injection payloads
   ("ignore previous instructions") survive this filter — it is a PII filter,
@@ -234,7 +234,7 @@ oversized identifiers, Unicode confusables, or embedded ANSI escape sequences.
   local single-process tool. Relevant for a future hosted variant.
 - **Supply-chain attacks on PyPI dependencies.** Closed by a separate
   programme: SECURITY.md, Dependabot, `pip-audit`, Bandit, and Semgrep
-  all run in CI. See [SECURITY.md](../SECURITY.md).
+  all run in CI. See [SECURITY.md](https://github.com/Arun-kc/schemabrain/blob/main/SECURITY.md).
 - **Multi-tenant isolation.** SchemaBrain is single-tenant by design.
   Multi-tenancy is a hosted-variant concern.
 
@@ -244,4 +244,4 @@ This file is reviewed at every release. New mitigations are added with a
 specific code-path citation; deprecated mitigations are removed; the
 residual-risk sections move when the truth moves. Operators who discover
 a new threat or a gap should file an issue or follow the disclosure
-process in [SECURITY.md](../SECURITY.md).
+process in [SECURITY.md](https://github.com/Arun-kc/schemabrain/blob/main/SECURITY.md).

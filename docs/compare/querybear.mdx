@@ -40,7 +40,7 @@ If you searched for "Querybear alternatives" or "Postgres MCP firewall" you dese
 | **Trust signal** | None | 2D: `inference_method × validation_state` ([Charter v1.2](../agent-ux-charter.md)) |
 | **Refusal shape** | Plain error | Structured recovery envelope (`suggested_tool` + `suggested_args`) |
 | **Distribution** | Hosted gateway + macOS desktop app | Local-only; install via `pip` + `schemabrain init` |
-| **Databases** | Postgres, MySQL, SQLite | Postgres, SQLite (MySQL on v0.5 roadmap) |
+| **Databases** | Postgres, MySQL, SQLite | Postgres only (MySQL + SQLite on v0.5+ roadmap) |
 | **License** | Closed source | MIT, open source |
 | **Pricing** | Free tier + paid team plans | Free, forever (managed offering TBD) |
 
@@ -51,7 +51,7 @@ If you searched for "Querybear alternatives" or "Postgres MCP firewall" you dese
 Honest about their strengths:
 
 - **One-line hosted install.** `claude mcp add --transport http querybear https://mcp.querybear.com/mcp` and you're running. SchemaBrain requires `pip install schemabrain && schemabrain init`. Their hosted gateway is genuinely convenient.
-- **More databases today.** Querybear supports Postgres, MySQL, and SQLite today. SchemaBrain ships Postgres + SQLite, with MySQL targeted for v0.5.
+- **More databases today.** Querybear supports Postgres, MySQL, and SQLite today. SchemaBrain ships Postgres only; MySQL and SQLite are on the v0.5+ roadmap.
 - **Polished native macOS desktop app.** SchemaBrain ships only the CLI + MCP server today.
 - **EXPLAIN-based cost cap before query execution.**[^1] SchemaBrain doesn't yet ship a cost-cap on the metric executor (statement timeout + max-rows are configurable; EXPLAIN dry-run is roadmap).
 - **Anti-prompt-injection at the data-retrieval layer.**[^1] Per their published [post on prompt injection at the SQL layer](https://querybear.com/blog/prompt-injection-sql-layer), they delimiter-wrap returned sample values and apply pattern-stripping for "ignore previous instructions"-shaped strings. SchemaBrain's PII classifier is name-based today; content-aware classification is roadmap.
@@ -113,7 +113,7 @@ Querybear's hosted gateway stores your database credentials server-side. That's 
 
 ### 6. Open source
 
-SchemaBrain is MIT-licensed on GitHub. You can read the [PII classifier](../../schemabrain/pii/classifier.py), the [metric compiler](../../schemabrain/mcp/get_metric.py), the [audit verifier](../../schemabrain/audit/verify.py), and the [refusal envelope](../../schemabrain/mcp/server.py) yourself and verify our claims line by line. Querybear is closed source — you're trusting the marketing.
+SchemaBrain is MIT-licensed on GitHub. You can read the [PII classifier](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/pii/classifier.py), the [metric compiler](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/mcp/get_metric.py), the [audit verifier](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/audit/verify.py), and the [refusal envelope](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/mcp/server.py) yourself and verify our claims line by line. Querybear is closed source — you're trusting the marketing.
 
 ---
 
@@ -152,4 +152,4 @@ SchemaBrain is MIT-licensed on GitHub. You can read the [PII classifier](../../s
 - Try SchemaBrain in 60 seconds: [`/setup/claude-desktop`](../setup/claude-desktop.md) · [`/setup/cursor`](../setup/cursor.md) · [`/setup/windsurf`](../setup/windsurf.md) · [`/setup/claude-code`](../setup/claude-code.md)
 - Project memory of competitive intel: [docs/landscape.md](../landscape.md)
 
-[^1]: Querybear capability claims sourced from their homepage (https://querybear.com), their [`postgres-mcp-server-claude-code`](https://querybear.com/blog/postgres-mcp-server-claude-code) blog post (tool surface), and their [`prompt-injection-sql-layer`](https://querybear.com/blog/prompt-injection-sql-layer) post (anti-prompt-injection mechanism + EXPLAIN cost cap), accessed 2026-05-26. Update before publish if the surface has shifted.
+[^1]: Querybear capability claims sourced from their homepage (https://querybear.com), their [`postgres-mcp-server-claude-code`](https://querybear.com/blog/postgres-mcp-server-claude-code) blog post (tool surface), and their [`prompt-injection-sql-layer`](https://querybear.com/blog/prompt-injection-sql-layer) post (anti-prompt-injection mechanism + EXPLAIN cost cap), accessed 2026-05-26.

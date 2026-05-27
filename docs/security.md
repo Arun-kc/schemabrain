@@ -18,7 +18,7 @@ SchemaBrain is the SQL firewall between AI agents and your production Postgres d
 | **Deployment model** | Local single-process MCP server. Runs on the operator's own machine. |
 | **Network egress** | None to SchemaBrain infrastructure (we do not run any). LLM enrichment during `index` calls Anthropic if the operator opts in. |
 | **Source code** | MIT, open source ([github.com/Arun-kc/schemabrain](https://github.com/Arun-kc/schemabrain)). Every claim on this page is verifiable from the code. |
-| **Database credential exposure** | Env-var-only. Never logged, never returned in any envelope, filtered out of SQLAlchemy connection strings via [`safe_engine_url`](../schemabrain/connectors/_url.py). |
+| **Database credential exposure** | Env-var-only. Never logged, never returned in any envelope, filtered out of SQLAlchemy connection strings via [`safe_engine_url`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/connectors/_url.py). |
 | **Wire format** | MCP over stdio (no HTTPS / SSE transport today). |
 | **Multi-tenant** | No. Single-tenant by design. |
 | **Hosted service** | None. Local-first is an architectural commitment, not a feature gap. |
@@ -31,7 +31,7 @@ Detail in [`docs/mechanism/`](mechanism/); summarized for security review:
 
 ### 1. Architectural read-only
 
-The MCP surface exposes [12 tools](mechanism/read-only.md), **none of which accept SQL**. There is no `execute_query`, no `run_sql`, no `validate_query`. Agents emit structured tool calls; SchemaBrain compiles parameterized SQL from operator-validated definitions. Belt-and-suspenders: `default_transaction_read_only=on` is set at the session level on every connection ([`connectors/postgres.py:57`](../schemabrain/connectors/postgres.py), [`cli.py:3128`](../schemabrain/cli.py), [`cli.py:3284`](../schemabrain/cli.py)), and `NullPool` eliminates the connection-reuse pollution surface across all three database engines in the binary.
+The MCP surface exposes [12 tools](mechanism/read-only.md), **none of which accept SQL**. There is no `execute_query`, no `run_sql`, no `validate_query`. Agents emit structured tool calls; SchemaBrain compiles parameterized SQL from operator-validated definitions. Belt-and-suspenders: `default_transaction_read_only=on` is set at the session level on every connection ([`connectors/postgres.py`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/connectors/postgres.py) and `cli.py` at both the serve-side metric executor and the query-log miner — [source](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/cli.py)), and `NullPool` eliminates the connection-reuse pollution surface across all three database engines in the binary.
 
 ### 2. PII propagation at the metric compiler
 
@@ -39,7 +39,7 @@ The MCP surface exposes [12 tools](mechanism/read-only.md), **none of which acce
 
 ### 3. Tamper-evident audit chain
 
-Every tool call writes a row to an append-only [`mcp_audit`](mechanism/audit-chain.md) SQLite table. Each row carries `chain_hash[N] = sha256(chain_hash[N-1] || canonical(row[N]))`. SQL triggers forbid `UPDATE`/`DELETE` at the database layer ([`audit/ddl.py:64`](../schemabrain/audit/ddl.py), [`:71`](../schemabrain/audit/ddl.py)). `schemabrain audit verify` re-walks the chain; exit codes are 0 (intact), 1 (mismatch found), 2 (operational error).
+Every tool call writes a row to an append-only [`mcp_audit`](mechanism/audit-chain.md) SQLite table. Each row carries `chain_hash[N] = sha256(chain_hash[N-1] || canonical(row[N]))`. SQL triggers forbid `UPDATE`/`DELETE` at the database layer ([`audit/ddl.py:64`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/audit/ddl.py), [`:71`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/audit/ddl.py)). `schemabrain audit verify` re-walks the chain; exit codes are 0 (intact), 1 (mismatch found), 2 (operational error).
 
 ### 4. Structured recovery envelopes
 
@@ -58,7 +58,7 @@ The full version with code citations is at [`docs/threat-model.md`](threat-model
 | DB credentials in argv / journald / shell history | Env-var-only via `--url-env VARNAME`; positional URL is deprecated with a warning |
 | SQL injection via tool arguments | All identifiers validated against `^[A-Za-z_][A-Za-z0-9_$]*$` with 63-char bound; all SQL parameterized |
 | Audit log tampering | SQL triggers forbid mutation; SHA256 chain detects post-hoc rewrites via any external snapshot |
-| URL query string smuggling session config | [`safe_engine_url`](../schemabrain/connectors/_url.py) strips everything except `sslmode` / `sslrootcert` / `application_name` |
+| URL query string smuggling session config | [`safe_engine_url`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/connectors/_url.py) strips everything except `sslmode` / `sslrootcert` / `application_name` |
 | Connection pool session-state escape | `NullPool` on all three engines — every call opens a fresh connection |
 
 ### Asset 2 — Prompt injection into the database
@@ -113,7 +113,7 @@ We do not certify against SOC 2 / ISO 27001 / HIPAA / PCI DSS — those are orga
 | **PII handling** | Typed taxonomy across 12 regulatory-grounded categories; column-level redaction in `describe_entity` |
 | **Read-only access** | Architectural (no write tool in the binary) + recommended read-only Postgres role + session-level `default_transaction_read_only=on` |
 | **Credential protection** | Env-var-only; never logged; filtered out of connection strings |
-| **Vulnerability disclosure** | Process documented at [`SECURITY.md`](../SECURITY.md); GitHub Private Vulnerability Reporting is the preferred channel |
+| **Vulnerability disclosure** | Process documented at [`SECURITY.md`](https://github.com/Arun-kc/schemabrain/blob/main/SECURITY.md); GitHub Private Vulnerability Reporting is the preferred channel |
 
 ---
 
@@ -138,15 +138,15 @@ For procurement teams comparing to enterprise products:
 1. **GitHub Private Vulnerability Reporting (preferred):** [github.com/Arun-kc/schemabrain/security/advisories/new](https://github.com/Arun-kc/schemabrain/security/advisories/new)
 2. **Email:** `arunkc91@gmail.com` with subject prefix `[schemabrain-security]`
 
-Full process, expected timelines, and scope at [`SECURITY.md`](../SECURITY.md).
+Full process, expected timelines, and scope at [`SECURITY.md`](https://github.com/Arun-kc/schemabrain/blob/main/SECURITY.md).
 
 ---
 
 ## Further reading
 
 - [`docs/threat-model.md`](threat-model.md) — full attack-surface walk-through with code citations and residual-risk analysis
-- [`docs/mechanism/`](mechanism/) — the five load-bearing security/architecture mechanisms in detail
-- [`docs/agent-ux-charter.md`](agent-ux-charter.md) — the design contract for the MCP envelope (refusal kinds, status enum, recovery contract)
-- [`SECURITY.md`](../SECURITY.md) — disclosure process and supported versions
-- [Comparison vs Querybear](compare/querybear.md) — competitive context on the firewall posture
-- [Comparison vs Anthropic reference Postgres MCP](compare/anthropic-postgres-mcp.md) — comparison against the de-facto-default MCP Postgres server
+- [`docs/mechanism/`](/mechanism/read-only) — load-bearing security/architecture mechanisms in detail
+- [`docs/agent-ux-charter.md`](/agent-ux-charter) — the design contract for the MCP envelope (refusal kinds, status enum, recovery contract)
+- [`SECURITY.md`](https://github.com/Arun-kc/schemabrain/blob/main/SECURITY.md) — disclosure process and supported versions
+- [Comparison vs Querybear](/compare/querybear) — competitive context on the firewall posture
+- [Comparison vs Anthropic reference Postgres MCP](/compare/anthropic-postgres-mcp) — comparison against the de-facto-default MCP Postgres server

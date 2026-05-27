@@ -48,7 +48,7 @@ emits a separate event kind.
 |---|---|
 | `timestamp` | ISO 8601 UTC with microsecond precision and trailing `Z`. |
 | `server_session_id` | UUID generated when the serve process started. Use this to group events across a single `serve` run. |
-| `kind` | `"tool_call"` for one of the 9 MCP tools; `"server_event"` for lifecycle markers. |
+| `kind` | `"tool_call"` for one of the 12 MCP tools; `"server_event"` for lifecycle markers. |
 | `tool_name` | The MCP tool name (e.g. `describe_table`, `get_metric`). |
 | `args_summary` | The keyword arguments the agent passed, after redaction (see below). |
 | `status` | Mirrors the Charter response envelope: `success` / `empty` / `partial` / `degraded` / `error` / `refused`. |
@@ -309,7 +309,7 @@ schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db
 Every MCP tool call becomes one span named `execute_tool` carrying:
 
 - `gen_ai.system = "schemabrain"`
-- `gen_ai.tool.name` = one of the 9 MCP tool names
+- `gen_ai.tool.name` = one of the 12 MCP tool names
 - `gen_ai.tool.call.id` = audit fingerprint hex when present
 - `schemabrain.session.id` = the serve process UUID
 - `schemabrain.status` = Charter envelope status
