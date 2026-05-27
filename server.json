@@ -1,0 +1,66 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Arun-kc/schemabrain",
+  "title": "SchemaBrain",
+  "description": "The SQL firewall between AI agents and your production database.",
+  "version": "0.5.0",
+  "websiteUrl": "https://schemabrain.mintlify.app",
+  "repository": {
+    "url": "https://github.com/Arun-kc/schemabrain",
+    "source": "github",
+    "id": "R_kgDOSZl0Cg"
+  },
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/Arun-kc/schemabrain/main/docs/assets/mcp-icon.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": ["any"]
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "schemabrain",
+      "version": "0.5.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "serve",
+          "valueHint": "subcommand"
+        },
+        {
+          "type": "named",
+          "name": "--url-env",
+          "value": "DATABASE_URL"
+        },
+        {
+          "type": "named",
+          "name": "--store-path",
+          "value": "{store_path}",
+          "variables": {
+            "store_path": {
+              "description": "Absolute path to the schemabrain SQLite store created by `schemabrain index`. Defaults to ./schemabrain.db.",
+              "default": "./schemabrain.db",
+              "format": "filepath",
+              "isRequired": true
+            }
+          }
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "DATABASE_URL",
+          "description": "Postgres connection URL (postgresql+psycopg://USER:PASSWORD@HOST:PORT/DBNAME). The agent never sees this; the URL stays in the env so credentials never appear in argv or logs.",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.Arun-kc/schemabrain -->
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-dark.svg">
