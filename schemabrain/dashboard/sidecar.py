@@ -415,6 +415,11 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                     }
                     for col, tag in raw_tags.items()
                 }
+
+            # Fetch active metrics and joins anchored on this entity inside the with-block
+            all_metrics = store.list_metrics(source_connection_id=resolved_source)
+            all_joins = store.list_canonical_joins(source_connection_id=resolved_source)
+
         columns = [
             {
                 "name": col,
@@ -423,6 +428,37 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
             }
             for col in column_names
         ]
+
+        metrics = [
+            {
+                "name": m.name,
+                "description": m.description,
+                "measure": {
+                    "agg": m.measure.agg,
+                    "column": m.measure.column,
+                    "expression": m.measure.expression,
+                },
+                "time_grains": m.time_grains,
+            }
+            for m in all_metrics
+            if m.entity == name
+        ]
+
+        joins = [
+            {
+                "name": j.name,
+                "description": j.description,
+                "source_entity": j.source_entity,
+                "target_entity": j.target_entity,
+                "on": [
+                    {"source_column": edge.source_column, "target_column": edge.target_column}
+                    for edge in j.on
+                ],
+            }
+            for j in all_joins
+            if j.source_entity == name or j.target_entity == name
+        ]
+
         return {
             "entity": {
                 "name": entity.name,
@@ -433,6 +469,8 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                 "validation_state": entity.validation_state,
             },
             "columns": columns,
+            "metrics": metrics,
+            "joins": joins,
         }
 
 

@@ -192,6 +192,49 @@ def _seed_store(store_path: Path) -> None:
             },
         )
 
+        # Seed canonical joins and metrics for the semantic dashboard preview
+        from schemabrain.core.join import CanonicalJoin, JoinColumnPair
+        from schemabrain.core.metric import Metric, MetricMeasure
+
+        store.write_canonical_join(
+            CanonicalJoin(
+                name="user_orders",
+                description="Links user accounts to their placed orders.",
+                source_entity="user",
+                target_entity="order",
+                on=(JoinColumnPair(source_column="id", target_column="user_id"),),
+                origin="manual",
+                cardinality="one_to_many",
+            ),
+            source_connection_id=SOURCE_CONNECTION_ID,
+        )
+
+        store.write_metric(
+            Metric(
+                name="user_count",
+                description="Total count of registered unique users.",
+                entity="user",
+                measure=MetricMeasure(agg="count", column="id"),
+                time_dimension="user.created_at",
+                time_grains=("day", "month", "year"),
+                origin="manual",
+            ),
+            source_connection_id=SOURCE_CONNECTION_ID,
+        )
+
+        store.write_metric(
+            Metric(
+                name="total_revenue",
+                description="Sum of order purchase values (stored in cents).",
+                entity="order",
+                measure=MetricMeasure(agg="sum", column="amount_cents"),
+                time_dimension=None,
+                time_grains=(),
+                origin="manual",
+            ),
+            source_connection_id=SOURCE_CONNECTION_ID,
+        )
+
 
 def _seed_audit_chain(store_path: Path) -> None:
     """Append 3 representative audit rows so the chain has shape."""

@@ -76,7 +76,7 @@ function DrilldownCard({
     );
   }
 
-  const { entity, columns } = query.data;
+  const { entity, columns, metrics, joins } = query.data;
 
   return (
     <div className={styles.drilldownCard}>
@@ -94,28 +94,88 @@ function DrilldownCard({
           </span>
         </div>
         <span className={styles.drilldownHeaderMeta}>
-          {columns.length} {columns.length === 1 ? "column" : "columns"}
+          {columns.length} {columns.length === 1 ? "column" : "columns"} ·{" "}
+          {metrics.length} {metrics.length === 1 ? "metric" : "metrics"} ·{" "}
+          {joins.length} {joins.length === 1 ? "join" : "joins"}
         </span>
       </header>
 
-      <div className={styles.columnList} role="list" aria-label="column breakdown">
-        {columns.map((col) => (
-          <ColumnRow
-            key={col.name}
-            name={col.name}
-            sensitivity={col.sensitivity as Sensitivity}
-            categories={col.pii_categories as readonly PIICategory[]}
-            catastrophicSet={catastrophicSet}
-          />
-        ))}
-      </div>
+      <div className={styles.splitLayout}>
+        {/* Left Pane: Physical Layer */}
+        <div>
+          <h4 className={styles.paneTitle}>Physical Schema Layer</h4>
+          <div className={styles.columnList} role="list" aria-label="column breakdown">
+            {columns.map((col) => (
+              <ColumnRow
+                key={col.name}
+                name={col.name}
+                sensitivity={col.sensitivity as Sensitivity}
+                categories={col.pii_categories as readonly PIICategory[]}
+                catastrophicSet={catastrophicSet}
+              />
+            ))}
+          </div>
 
-      {columns.length === 0 && (
-        <p className={styles.drilldownHeaderMeta} style={{ marginTop: "1rem" }}>
-          No columns indexed for this entity. The classifier hasn’t finished, or the
-          source has no introspectable schema for it.
-        </p>
-      )}
+          {columns.length === 0 && (
+            <p className={styles.drilldownHeaderMeta} style={{ marginTop: "1rem" }}>
+              No columns indexed for this entity.
+            </p>
+          )}
+        </div>
+
+        {/* Right Pane: Semantic Layer */}
+        <div className="flex flex-col gap-6">
+          {/* Metrics */}
+          <div>
+            <h4 className={styles.paneTitle}>Semantic Metrics</h4>
+            <div className={styles.paneList}>
+              {metrics.map((m) => (
+                <div key={m.name} className={styles.metricItem}>
+                  <div className={styles.itemHeader}>
+                    <span className={`${styles.badgePill} ${styles.metricPill}`}>Metric</span>
+                    <span className="font-mono font-bold text-xs">{m.name}</span>
+                    <span className="text-[10px] text-(--text-muted) font-mono">
+                      ({m.measure.agg}({m.measure.column || m.measure.expression}))
+                    </span>
+                  </div>
+                  <p className={styles.itemLabel}>{m.description}</p>
+                </div>
+              ))}
+              {metrics.length === 0 && (
+                <p className="font-mono text-xs text-(--text-muted) italic">No metrics defined for this entity.</p>
+              )}
+            </div>
+          </div>
+
+          {/* Joins */}
+          <div className="mt-4">
+            <h4 className={styles.paneTitle}>Canonical Joins</h4>
+            <div className={styles.paneList}>
+              {joins.map((j) => {
+                const partner = j.source_entity === entity.name ? j.target_entity : j.source_entity;
+                return (
+                  <div key={j.name} className={styles.joinItem}>
+                    <div className={styles.itemHeader}>
+                      <span className={`${styles.badgePill} ${styles.joinPill}`}>Join</span>
+                      <span className="font-mono font-bold text-xs">{j.name}</span>
+                      <span className="text-[10px] text-(--text-muted) font-mono">
+                        ──▶ {partner}
+                      </span>
+                    </div>
+                    <p className={styles.itemLabel}>{j.description}</p>
+                    <code className="text-[10px] bg-(--surface-raised) p-1 rounded font-mono text-emerald-500 overflow-x-auto block">
+                      {j.on.map((edge: any) => `${j.source_entity}.${edge.source_column} = ${j.target_entity}.${edge.target_column}`).join(" AND ")}
+                    </code>
+                  </div>
+                );
+              })}
+              {joins.length === 0 && (
+                <p className="font-mono text-xs text-(--text-muted) italic">No canonical joins defined for this entity.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
