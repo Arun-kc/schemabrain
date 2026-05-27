@@ -127,7 +127,7 @@ Attributes attached to each span:
 | Attribute | Value |
 |---|---|
 | `gen_ai.system` | `"schemabrain"` |
-| `gen_ai.tool.name` | One of the 12 MCP tool names |
+| `gen_ai.tool.name` | One of the 9 MCP tool names |
 | `gen_ai.tool.call.id` | Audit fingerprint hex (when `get_metric`) |
 | `schemabrain.session.id` | `serve` process UUID |
 | `schemabrain.duration_ms` | Wall-clock duration |

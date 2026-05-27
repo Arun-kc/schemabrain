@@ -67,7 +67,7 @@ pre-stable churn within a minor, not for guarding every release.
 
 | Roadmap milestone | Likely semver when shipped | Rationale |
 |---|---|---|
-| v1 (semantic layer end-state) | `0.4.0` (current release) | New tools, but API not battle-tested yet |
+| v1 (semantic layer end-state) | `0.3.0` (this release) | New tools, but API not battle-tested yet |
 | v1 + 4–8 weeks of real usage with no breaks | `1.0.0rc1 → 1.0.0` | Earned stability |
 | v2 (execute layer + fingerprint moat) | `1.x` or `2.0.0` if v1 API breaks | Depends on whether execute can be added without breaking entity/metric tools |
 | v3 (hosted commercial L6) | Independent versioning | Hosted product, not the OSS package |
