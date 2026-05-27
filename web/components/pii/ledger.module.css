@@ -129,7 +129,11 @@
 
 .slabNumber {
   font-family: var(--font-display);
-  font-size: 5.5rem;
+  /* Display-font glyph rationing — the slab number is the only display-font
+     glyph above the fold in this surface, so it scales harder at wide
+     viewports (clamp: 88px → 4rem + 2vw → 120px). Boardroom Brief spec
+     calls for Bloomberg-terminal-level emphasis at 1440px+. */
+  font-size: clamp(5.5rem, 4rem + 2vw, 7.5rem);
   font-weight: 600;
   line-height: 0.9;
   letter-spacing: -0.04em;
@@ -386,13 +390,17 @@
   background-color: var(--surface-raised);
 }
 
+/* Selection is an interactive-state signal, not a semantic-status
+   signal. Use --text-primary (ink-900 in light, near-white in dark)
+   so the cue stays neutral/dominant in both themes regardless of
+   whether the surface is in red-danger context (catastrophic > 0). */
 .matrix tbody tr.selected td {
   background-color: var(--surface-raised);
-  border-bottom-color: var(--color-signal-green);
+  border-bottom-color: var(--text-primary);
 }
 
 .matrix tbody tr.selected td.entityCell {
-  box-shadow: inset 4px 0 0 var(--color-signal-green);
+  box-shadow: inset 4px 0 0 var(--text-primary);
   padding-left: 1rem;
 }
 
@@ -429,6 +437,10 @@
   transform: scale(1.05);
 }
 
+/* Catastrophic chip count: signal-red bold, matching the pill border
+   + tint. Single-tone treatment keeps the chip visually crisp instead
+   of mixing red icon with ink count. Pairs with the slab going
+   signal-red in the same danger context. */
 .catastrophicGlyph {
   display: inline-flex;
   align-items: baseline;
@@ -436,8 +448,8 @@
   font-family: var(--font-mono);
   font-size: 0.8125rem;
   font-variant-numeric: tabular-nums;
-  color: var(--text-primary);
-  font-weight: 600;
+  color: var(--color-signal-red);
+  font-weight: 700;
 }
 
 /* Standard PII indicator badge */
