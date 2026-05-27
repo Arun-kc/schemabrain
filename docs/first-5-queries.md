@@ -17,7 +17,7 @@ Run these in order against the bundled e-commerce fixture (the default if you pr
 - MCP host restarted cold (Cmd+Q on macOS, full quit on Windows, new terminal session on `claude-code`).
 - A new conversation window open.
 
-If any of those is uncertain, run `schemabrain doctor --verify` first — it smoke-tests the wiring without needing an Anthropic key. Details in [`/setup/claude-desktop`](setup/claude-desktop.md#troubleshooting) and siblings.
+If any of those is uncertain, run `schemabrain doctor --verify` first — it smoke-tests the wiring without needing an Anthropic key. Details in [`/setup/claude-desktop`](/setup/claude-desktop#troubleshooting) and siblings.
 
 ---
 

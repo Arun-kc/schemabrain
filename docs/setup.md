@@ -281,7 +281,7 @@ python anthropic_demo.py \
 You'll see something like:
 
 ```
-[discovered tools] ['find_relevant_tables', 'describe_table']
+[discovered tools] ['find_relevant_tables', 'describe_table', ...]  # 12 total
 
 [user] Where do we store customer order totals?
 

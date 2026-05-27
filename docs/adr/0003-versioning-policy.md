@@ -155,5 +155,3 @@ status note pointing at the next ADR.
 - [PEP 440 — Version Identification and Dependency Specification](https://peps.python.org/pep-0440/).
 - [Cargo's "Why does Cargo use SemVer?"](https://doc.rust-lang.org/cargo/reference/semver.html)
   — the source of the `0.MINOR` "new feature" convention.
-- `project_versioning_policy.md` — the private memory file with
-  decision provenance (this ADR is the public-facing distillation).

@@ -145,8 +145,8 @@ Full process, expected timelines, and scope at [`SECURITY.md`](https://github.co
 ## Further reading
 
 - [`docs/threat-model.md`](threat-model.md) — full attack-surface walk-through with code citations and residual-risk analysis
-- [`docs/mechanism/`](mechanism/) — the five load-bearing security/architecture mechanisms in detail
-- [`docs/agent-ux-charter.md`](agent-ux-charter.md) — the design contract for the MCP envelope (refusal kinds, status enum, recovery contract)
+- [`docs/mechanism/`](/mechanism/read-only) — load-bearing security/architecture mechanisms in detail
+- [`docs/agent-ux-charter.md`](/agent-ux-charter) — the design contract for the MCP envelope (refusal kinds, status enum, recovery contract)
 - [`SECURITY.md`](https://github.com/Arun-kc/schemabrain/blob/main/SECURITY.md) — disclosure process and supported versions
-- [Comparison vs Querybear](compare/querybear.md) — competitive context on the firewall posture
-- [Comparison vs Anthropic reference Postgres MCP](compare/anthropic-postgres-mcp.md) — comparison against the de-facto-default MCP Postgres server
+- [Comparison vs Querybear](/compare/querybear) — competitive context on the firewall posture
+- [Comparison vs Anthropic reference Postgres MCP](/compare/anthropic-postgres-mcp) — comparison against the de-facto-default MCP Postgres server
