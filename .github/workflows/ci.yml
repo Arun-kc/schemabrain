@@ -405,6 +405,17 @@ jobs:
         working-directory: web
         run: pnpm exec playwright install --with-deps chromium
 
+      - name: Build dashboard static export
+        # `schemabrain/dashboard/static/` is gitignored — built at
+        # release time from the Next.js app, not committed. Without
+        # this step the sidecar serves only the landing fallback and
+        # every spec fails with "element not found" against the
+        # built-app text. Mirrors how the wheel is assembled for
+        # `pip install schemabrain[ui]`.
+        if: steps.filter.outputs.dashboard == 'true'
+        working-directory: web
+        run: pnpm run export
+
       - name: Boot dashboard sidecar (headless)
         if: steps.filter.outputs.dashboard == 'true'
         # Background the demo script so the subsequent steps can talk
