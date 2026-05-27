@@ -122,9 +122,10 @@ test.describe("dashboard E2E smoke", () => {
     // The /api/meta fix from PR #126 means the dashboard pages never
     // hardcode a source_connection_id; they call /api/meta and read
     // `default_source_connection_id`. The header strip surfaces the
-    // resolved id with a 16-char hex suffix.
+    // resolved id.
     await page.goto("/pii");
-    // The header strip's source-id pill is hex-only.
-    await expect(page.locator("text=/[0-9a-f]{16}/i").first()).toBeVisible();
+    // The header strip's source-id pill displays either the seeded 'demo-source' or the hashed production ID.
+    await expect(page.getByText(/demo-source|[0-9a-f]{16}/i).first()).toBeVisible();
   });
 });
+

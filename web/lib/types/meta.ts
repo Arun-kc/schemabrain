@@ -45,10 +45,33 @@ export interface EntityColumn {
   pii_categories: readonly ColumnPiiTag["pii_categories"][number][];
 }
 
+/** One metric linked to an entity. */
+export interface EntityMetric {
+  name: string;
+  description: string;
+  measure: {
+    agg: string;
+    column: string | null;
+    expression: string | null;
+  };
+  time_grains: readonly string[];
+}
+
+/** One canonical join linked to an entity. */
+export interface EntityJoin {
+  name: string;
+  description: string;
+  source_entity: string;
+  target_entity: string;
+  on: readonly { source_column: string; target_column: string }[];
+}
+
 /** /api/entities/{name}/columns response. */
 export interface EntityDrilldownResponse {
   entity: EntitySummary;
   columns: readonly EntityColumn[];
+  metrics: readonly EntityMetric[];
+  joins: readonly EntityJoin[];
 }
 
 /** One row in the PII Viz matrix — entity × category counts. */
