@@ -16,7 +16,7 @@ AI agents fail when querying real production databases:
 
 SchemaBrain fixes all four and serves the result through a stable MCP tool surface that any agent can call.
 
-The bigger problem behind these — database MCPs running as the credentialed role, prompt injection escalating to SQLi, no PII-aware refusal at the SQL boundary — is what SchemaBrain is being built to address at the safety layer. The schema intelligence shipping today is the substrate that layer needs.
+The bigger problem behind these — database MCPs running as the credentialed role, prompt injection escalating to SQLi, no PII-aware refusal at the SQL boundary — is what SchemaBrain addresses architecturally in v0.4. There is no SQL surface for the agent to attack: the 12 typed tools accept structured arguments, the compiler emits parameterized SQL against operator-validated definitions, and the four load-bearing mechanisms (read-only by architecture, 12-category PII taxonomy, hash-chained audit, structured recovery envelope) form the firewall.
 
 ## How it compares
 
@@ -35,8 +35,8 @@ SchemaBrain sits where none of these cover cleanly: **OSS + MIT + first-party MC
 
 ## Is this a semantic layer like Cube or dbt Semantic Layer?
 
-Partially. SchemaBrain ships entities, metrics, and canonical joins as first-class persisted definitions today — agents call them via `list_entities`, `describe_entity`, `resolve_join`, `get_metric`. But the semantic layer isn't the headline; it's the **substrate** that makes the upcoming SQL-boundary safety primitives possible.
+Partially. SchemaBrain ships entities, metrics, and canonical joins as first-class persisted definitions today — agents call them via `list_entities`, `describe_entity`, `resolve_join`, `get_metric`. But the semantic layer isn't the headline; it's the substrate the firewall sits on. Operator-validated metric definitions are what make architectural read-only possible: the agent picks a metric by name, the compiler emits the SQL.
 
-If you already run dbt or Cube, SchemaBrain complements them (point at `target/manifest.json` and dbt becomes the source of truth). If you don't, the substrate is generated for you — LLM-suggested, user-confirmed.
+If you already run dbt or Cube, SchemaBrain complements them (point at `target/manifest.json` and dbt becomes the source of truth). If you don't, the definitions are generated for you — LLM-suggested, user-confirmed.
 
 See [`docs/semantic-layer.md`](semantic-layer.md) for the builder's guide.
