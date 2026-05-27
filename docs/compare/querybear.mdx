@@ -5,13 +5,31 @@ description: "Both projects sit between AI agents and your database; SchemaBrain
 
 # SchemaBrain vs Querybear
 
-> Both projects claim to sit between AI agents and your database. They use the same metaphor and overlap on roughly 70% of the buyer. They are not the same thing.
+<Note>
+**One-line:** both projects claim to sit between AI agents and your database. They use the same metaphor and overlap on roughly 70% of the buyer. They are not the same thing.
+</Note>
 
 If you searched for "Querybear alternatives" or "Postgres MCP firewall" you deserve a real comparison, not a sales pitch. Here's an honest one — where Querybear is better, where SchemaBrain is better, and which fits which job.
 
+## Quick verdict
+
+<Tabs>
+  <Tab title="Evaluating both today">
+    **Architectural read-only is the harder guarantee.** Querybear ships parser-level read-only (a `run_query` tool whose input is the agent's SQL); SchemaBrain ships [no write tool at all](/mechanism/read-only) — a different *shape* of guarantee. If parser-vs-architecture matters to you (compliance, adversarial review), pick SchemaBrain. If you need MySQL today, pick Querybear.
+  </Tab>
+  <Tab title="Currently on Querybear">
+    **The clean migration paths are PII safety + audit integrity.** If Querybear's column-name blocklist is missing PII you care about (joins, composite measures, filters), SchemaBrain's [typed taxonomy](/mechanism/pii-taxonomy) propagates through 5 surfaces at compile time. If you need cryptographic audit (not just queryable logs), SchemaBrain's [hash-chained audit](/mechanism/audit-chain) is the upgrade.
+  </Tab>
+  <Tab title="Want the technical depth">
+    **Read the [mechanism docs](/mechanism/read-only) for the load-bearing claim**, then the [threat model](/threat-model) for the residual-risk surface. The comparison table below is the rest of this page; sections after it walk each delta in detail.
+  </Tab>
+</Tabs>
+
 ---
 
-## The 30-second version
+## The full comparison
+
+### 30-second version
 
 | | **Querybear** | **SchemaBrain** |
 |---|---|---|

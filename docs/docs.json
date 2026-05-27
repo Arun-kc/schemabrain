@@ -15,96 +15,127 @@
   },
   "favicon": "/assets/favicon.svg",
   "navigation": {
-    "groups": [
+    "tabs": [
       {
-        "group": "Get started",
-        "pages": [
-          "introduction",
-          "setup",
-          "first-5-queries"
-        ]
-      },
-      {
-        "group": "Hosts",
-        "pages": [
-          "setup/claude-desktop",
-          "setup/claude-code",
-          "setup/cursor",
-          "setup/windsurf",
-          "setup/chatgpt"
-        ]
-      },
-      {
-        "group": "Mechanism",
-        "pages": [
-          "mechanism/read-only",
-          "mechanism/audit-chain",
-          "mechanism/pii-taxonomy",
-          "mechanism/trust-signal",
-          "mechanism/structured-recovery"
-        ]
-      },
-      {
-        "group": "Compare",
-        "pages": [
-          "compare/querybear",
-          "compare/anthropic-postgres-mcp"
-        ]
-      },
-      {
-        "group": "MCP tools",
-        "pages": [
-          "reference/mcp-tools/overview",
+        "tab": "Documentation",
+        "groups": [
           {
-            "group": "Physical schema",
+            "group": "Get started",
+            "icon": "rocket",
             "pages": [
-              "reference/mcp-tools/find_relevant_tables",
-              "reference/mcp-tools/describe_table",
-              "reference/mcp-tools/describe_column",
-              "reference/mcp-tools/suggest_joins",
-              "reference/mcp-tools/get_example_queries"
+              "introduction",
+              "setup",
+              "first-5-queries"
             ]
           },
           {
-            "group": "Semantic layer",
+            "group": "Hosts",
+            "icon": "plug",
             "pages": [
-              "reference/mcp-tools/find_relevant_entities",
-              "reference/mcp-tools/list_entities",
-              "reference/mcp-tools/describe_entity",
-              "reference/mcp-tools/list_metrics",
-              "reference/mcp-tools/get_metric",
-              "reference/mcp-tools/list_joins",
-              "reference/mcp-tools/resolve_join"
+              "setup/claude-desktop",
+              "setup/claude-code",
+              "setup/cursor",
+              "setup/windsurf",
+              "setup/chatgpt"
+            ]
+          },
+          {
+            "group": "Mechanism",
+            "icon": "shield",
+            "pages": [
+              "mechanism/read-only",
+              "mechanism/audit-chain",
+              "mechanism/pii-taxonomy",
+              "mechanism/trust-signal",
+              "mechanism/structured-recovery"
+            ]
+          },
+          {
+            "group": "Compare",
+            "icon": "scale-balanced",
+            "pages": [
+              "compare/querybear",
+              "compare/anthropic-postgres-mcp"
             ]
           }
         ]
       },
       {
-        "group": "Reference",
-        "pages": [
-          "security",
-          "threat-model",
-          "architecture",
-          "operations",
-          "observability",
-          "reliability",
-          "semantic-layer",
-          "agent-ux-charter",
-          "landscape"
-        ]
-      },
-      {
-        "group": "Design Decisions (ADR)",
-        "pages": [
-          "adr/0001-audit-row-and-pii-taxonomy",
-          "adr/0002-store-protocol-seam",
-          "adr/0003-versioning-policy",
-          "adr/0004-observability-event-bus"
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "MCP tools",
+            "icon": "code",
+            "pages": [
+              "reference/mcp-tools/overview",
+              {
+                "group": "Physical schema",
+                "icon": "table",
+                "pages": [
+                  "reference/mcp-tools/find_relevant_tables",
+                  "reference/mcp-tools/describe_table",
+                  "reference/mcp-tools/describe_column",
+                  "reference/mcp-tools/suggest_joins",
+                  "reference/mcp-tools/get_example_queries"
+                ]
+              },
+              {
+                "group": "Semantic layer",
+                "icon": "diagram-project",
+                "pages": [
+                  "reference/mcp-tools/find_relevant_entities",
+                  "reference/mcp-tools/list_entities",
+                  "reference/mcp-tools/describe_entity",
+                  "reference/mcp-tools/list_metrics",
+                  "reference/mcp-tools/get_metric",
+                  "reference/mcp-tools/list_joins",
+                  "reference/mcp-tools/resolve_join"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "Concepts",
+            "icon": "book-open",
+            "pages": [
+              "architecture",
+              "semantic-layer",
+              "agent-ux-charter",
+              "landscape"
+            ]
+          },
+          {
+            "group": "Security & operations",
+            "icon": "lock",
+            "pages": [
+              "security",
+              "threat-model",
+              "operations",
+              "observability",
+              "reliability"
+            ]
+          },
+          {
+            "group": "Design decisions (ADR)",
+            "icon": "scroll",
+            "pages": [
+              "adr/0001-audit-row-and-pii-taxonomy",
+              "adr/0002-store-protocol-seam",
+              "adr/0003-versioning-policy",
+              "adr/0004-observability-event-bus"
+            ]
+          }
         ]
       }
     ]
   },
   "navbar": {
+    "links": [
+      {
+        "label": "Dashboard",
+        "href": "/architecture"
+      }
+    ],
     "primary": {
       "type": "github",
       "href": "https://github.com/Arun-kc/schemabrain"

@@ -1,0 +1,78 @@
+# SchemaBrain
+
+> The semantic firewall between AI agents and your database. Read-only, PII-aware, audit-evident — by architecture, not by trust.
+
+SchemaBrain sits between LLM-powered agents and production Postgres, exposing 12 Pydantic-typed MCP tools (no `execute_query`, no `run_sql`, no path from an agent prompt to a write). Every column carries a typed PII tag that propagates through joins at compile time so `get_metric` refuses unsafe queries before the database is queried. Every tool call lands in a hash-chained audit log that `schemabrain audit verify` re-walks to detect tampering.
+
+## Get started
+
+- [Introduction](https://github.com/Arun-kc/schemabrain/blob/main/docs/introduction.mdx): One-page elevator — what SchemaBrain is, the 4 firewall properties, 5-minute install ladder, host picker.
+- [Setup](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup.md): Two paths from "I have a Postgres database" to "an AI agent can answer questions about it" — activation wizard (recommended) or manual flow. Source-install + Docker variants included.
+- [First 5 Queries](https://github.com/Arun-kc/schemabrain/blob/main/docs/first-5-queries.md): Five queries against your fresh install that exercise each load-bearing mechanism — read-only tools, PII refusal, audit chain, structured recovery — plus a closing CLI step that proves what happened.
+
+## MCP hosts
+
+Five MCP-compatible hosts with first-class wiring (auto-detected by the activation wizard):
+
+- [Claude Desktop](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup/claude-desktop.md): 60-second wiring. Install SchemaBrain, run `init`, restart with Cmd+Q.
+- [Claude Code](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup/claude-code.md): 60-second wiring. Wizard shells out to `claude mcp add`.
+- [Cursor](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup/cursor.md): 60-second wiring for Cursor's MCP integration.
+- [Windsurf](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup/windsurf.md): 60-second wiring for Windsurf / Cascade.
+- [ChatGPT](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup/chatgpt.md): Stdio-only today; Codex CLI is the working path.
+
+## Mechanism (the moat)
+
+- [Read-only by architecture](https://github.com/Arun-kc/schemabrain/blob/main/docs/mechanism/read-only.mdx): Agents physically cannot emit a write — no tool accepts arbitrary SQL, no session flag flips it. Four layers: 12 typed tools / parameterized SQL / `default_transaction_read_only=on` / NullPool no session reuse.
+- [Tamper-evident audit chain](https://github.com/Arun-kc/schemabrain/blob/main/docs/mechanism/audit-chain.mdx): Every tool call lands in an append-only hash-chained table. `schemabrain audit verify` re-walks the chain and exits non-zero on any tampering.
+- [PII taxonomy](https://github.com/Arun-kc/schemabrain/blob/main/docs/mechanism/pii-taxonomy.mdx): Two-layer taxonomy (sensitivity + 12 PII categories). Three catastrophic-leak categories (`credential`, `payment_card`, `government_id`) blocked by default. Propagation via MAX-sensitivity + UNION-categories at compile time.
+- [2D trust signal](https://github.com/Arun-kc/schemabrain/blob/main/docs/mechanism/trust-signal.mdx): Every fact carries two orthogonal labels — `inference_method` (how derived) + `validation_state` (how validated). Agent never confuses an FK with a guess.
+- [Structured recovery](https://github.com/Arun-kc/schemabrain/blob/main/docs/mechanism/structured-recovery.mdx): Every failure response is a contract, not a string. Errors ship a typed `Recovery` block (`suggested_tool`, `suggested_args`, `fuzzy_matches`) so the agent self-heals programmatically.
+
+## Compare
+
+- [vs. Querybear](https://github.com/Arun-kc/schemabrain/blob/main/docs/compare/querybear.md): Both projects sit between AI agents and your database. SchemaBrain is the firewall layer; Querybear is the analytics agent on top.
+- [vs. Anthropic Postgres MCP](https://github.com/Arun-kc/schemabrain/blob/main/docs/compare/anthropic-postgres-mcp.md): The Anthropic reference MCP server ships one tool that accepts arbitrary SQL. SchemaBrain refuses SQL at the type level.
+
+## MCP tool reference
+
+12 Pydantic-typed tools split across two layers — physical schema (5) and semantic layer (7). Every response carries a `token_estimate` and a Charter-conformant envelope (`success` / `empty` / `partial` / `degraded` / `error` / `refused`) with `follow_up_hints` to chain the next call.
+
+### Physical-schema tools
+
+- [find_relevant_tables](https://github.com/Arun-kc/schemabrain/blob/main/docs/reference/mcp-tools/find_relevant_tables.mdx): Embedding-cosine semantic search over indexed column descriptions.
+- [describe_table](https://github.com/Arun-kc/schemabrain/blob/main/docs/reference/mcp-tools/describe_table.mdx): Full structural + semantic dump of one table — every column, FK graph, LLM descriptions.
+- [describe_column](https://github.com/Arun-kc/schemabrain/blob/main/docs/reference/mcp-tools/describe_column.mdx): Drill into one column with its bidirectional FK graph.
+- [suggest_joins](https://github.com/Arun-kc/schemabrain/blob/main/docs/reference/mcp-tools/suggest_joins.mdx): Shortest FK-graph join paths between table pairs, multi-hop supported.
+- [get_example_queries](https://github.com/Arun-kc/schemabrain/blob/main/docs/reference/mcp-tools/get_example_queries.mdx): Real SQL observed against a table, sourced from `pg_stat_statements`.
+
+### Semantic-layer tools
+
+- [find_relevant_entities](https://github.com/Arun-kc/schemabrain/blob/main/docs/reference/mcp-tools/find_relevant_entities.mdx): Embedding-cosine search restricted to confirmed entities.
+- [list_entities](https://github.com/Arun-kc/schemabrain/blob/main/docs/reference/mcp-tools/list_entities.mdx): Every confirmed entity with bound table, identity column, and provenance.
+- [describe_entity](https://github.com/Arun-kc/schemabrain/blob/main/docs/reference/mcp-tools/describe_entity.mdx): Bound table, identity column, and full column list — one round-trip.
+- [list_metrics](https://github.com/Arun-kc/schemabrain/blob/main/docs/reference/mcp-tools/list_metrics.mdx): Every declared metric with anchor entity, aggregation, and time bucketing.
+- [get_metric](https://github.com/Arun-kc/schemabrain/blob/main/docs/reference/mcp-tools/get_metric.mdx): Compiles + runs a pre-declared metric — the only execution path SchemaBrain ships.
+- [list_joins](https://github.com/Arun-kc/schemabrain/blob/main/docs/reference/mcp-tools/list_joins.mdx): Every confirmed canonical relationship with the entity pair it connects.
+- [resolve_join](https://github.com/Arun-kc/schemabrain/blob/main/docs/reference/mcp-tools/resolve_join.mdx): Canonical join between two entities — ready-to-paste JOIN clause.
+
+## Concepts
+
+- [Architecture](https://github.com/Arun-kc/schemabrain/blob/main/docs/architecture.mdx): Pipeline (Postgres → Connector → Profiler → Enricher → Embedder → Store → MCP tools → Agent). Cache-aware re-indexing, retrieval model, cost model, eval. What's validated + scalability ceilings.
+- [Semantic layer](https://github.com/Arun-kc/schemabrain/blob/main/docs/semantic-layer.md): Entities + canonical joins + metrics. How business-named queries bypass FK guessing.
+- [MCP Charter v1.2](https://github.com/Arun-kc/schemabrain/blob/main/docs/agent-ux-charter.md): Locked public design contract every MCP tool implements — status taxonomy, envelope shape, recovery hints.
+- [Landscape](https://github.com/Arun-kc/schemabrain/blob/main/docs/landscape.md): Where SchemaBrain sits in the AI-database tooling ecosystem.
+
+## Security & operations
+
+- [Security](https://github.com/Arun-kc/schemabrain/blob/main/docs/security.md): Procurement-friendly summary — security architecture, threat model, disclosure process.
+- [Threat model](https://github.com/Arun-kc/schemabrain/blob/main/docs/threat-model.md): Full attack surface with code citations.
+- [Operations](https://github.com/Arun-kc/schemabrain/blob/main/docs/operations.md): What you do after `init` — inspect, catch drift, preview re-index costs, Docker path.
+- [Observability](https://github.com/Arun-kc/schemabrain/blob/main/docs/observability.md): Event-bus substrate — logs, audit, OTel.
+- [Reliability](https://github.com/Arun-kc/schemabrain/blob/main/docs/reliability.md): Reliability targets — error budgets, retry posture, SLO mapping.
+
+## Design decisions (ADR)
+
+- [ADR 0001 — Audit row + PII taxonomy](https://github.com/Arun-kc/schemabrain/blob/main/docs/adr/0001-audit-row-and-pii-taxonomy.md)
+- [ADR 0002 — Store Protocol seam](https://github.com/Arun-kc/schemabrain/blob/main/docs/adr/0002-store-protocol-seam.md)
+- [ADR 0003 — Versioning policy](https://github.com/Arun-kc/schemabrain/blob/main/docs/adr/0003-versioning-policy.md)
+- [ADR 0004 — Observability event bus](https://github.com/Arun-kc/schemabrain/blob/main/docs/adr/0004-observability-event-bus.md)
