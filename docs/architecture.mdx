@@ -14,7 +14,10 @@ description: "How SchemaBrain is put together — pipeline, contracts, cache, re
   <button
     onClick={() => {
       const m = document.getElementById("arch-modal");
-      if (m) m.style.display = "flex";
+      if (!m) return;
+      if (m.parentElement !== document.body) document.body.appendChild(m);
+      m.style.display = "flex";
+      document.body.style.overflow = "hidden";
     }}
     style={{
       display: "inline-flex",
@@ -42,24 +45,30 @@ description: "How SchemaBrain is put together — pipeline, contracts, cache, re
   role="dialog"
   aria-modal="true"
   aria-label="Interactive architecture diagram"
-  onClick={(e) => { if (e.target.id === "arch-modal") e.target.style.display = "none"; }}
+  onClick={(e) => {
+    if (e.target.id === "arch-modal") {
+      e.target.style.display = "none";
+      document.body.style.overflow = "";
+    }
+  }}
   style={{
     display: "none",
     position: "fixed",
     inset: 0,
     zIndex: 9999,
-    background: "rgba(0, 0, 0, 0.7)",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: "32px"
+    background: "rgba(0, 0, 0, 0.96)",
+    flexDirection: "column",
+    padding: "16px"
   }}
 >
   <div
     style={{
-      position: "relative",
-      width: "92vw",
-      height: "88vh",
-      maxWidth: "1600px",
+      width: "100%",
+      maxWidth: "1800px",
+      height: "100%",
+      margin: "0 auto",
+      display: "flex",
+      flexDirection: "column",
       border: "1px solid #1E2230",
       borderRadius: "14px",
       background: "#07080B",
@@ -67,36 +76,79 @@ description: "How SchemaBrain is put together — pipeline, contracts, cache, re
       overflow: "hidden"
     }}
   >
-    <button
-      onClick={() => {
-        const m = document.getElementById("arch-modal");
-        if (m) m.style.display = "none";
-      }}
-      aria-label="Close interactive architecture diagram"
+    <div
       style={{
-        position: "absolute",
-        top: "12px",
-        right: "12px",
-        width: "32px",
-        height: "32px",
-        display: "inline-flex",
+        display: "flex",
+        justifyContent: "space-between",
         alignItems: "center",
-        justifyContent: "center",
-        background: "rgba(15, 17, 23, 0.85)",
+        padding: "10px 16px",
+        background: "#0F1117",
+        borderBottom: "1px solid #1E2230",
         color: "#F5F5F1",
-        border: "1px solid #2A2F40",
-        borderRadius: "8px",
         fontFamily: "var(--font-mono, ui-monospace, monospace)",
-        fontSize: "16px",
-        lineHeight: 1,
-        cursor: "pointer",
-        zIndex: 10
+        fontSize: "12px",
+        letterSpacing: "0.04em"
       }}
     >
-      ✕
-    </button>
-    <iframe
-      srcDoc={`<!doctype html>
+      <span style={{ color: "#3ECF8E", fontWeight: 600 }}>
+        SchemaBrain · architecture · interactive
+      </span>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <button
+          onClick={() => {
+            if (!window.__archZoom) window.__archZoom = 1;
+            window.__archZoom = Math.max(0.5, Math.round((window.__archZoom - 0.25) * 100) / 100);
+            const iframe = document.getElementById("arch-iframe");
+            if (iframe) iframe.style.transform = "scale(" + window.__archZoom + ")";
+            const lbl = document.getElementById("arch-zoom-label");
+            if (lbl) lbl.textContent = Math.round(window.__archZoom * 100) + "%";
+          }}
+          aria-label="Zoom out"
+          style={{ width: "28px", height: "28px", background: "rgba(15,17,23,0.85)", color: "#F5F5F1", border: "1px solid #2A2F40", borderRadius: "6px", cursor: "pointer", fontSize: "16px", lineHeight: 1 }}
+        >−</button>
+        <span id="arch-zoom-label" style={{ display: "inline-block", minWidth: "44px", textAlign: "center", color: "rgba(245,245,241,0.72)" }}>100%</span>
+        <button
+          onClick={() => {
+            if (!window.__archZoom) window.__archZoom = 1;
+            window.__archZoom = Math.min(3, Math.round((window.__archZoom + 0.25) * 100) / 100);
+            const iframe = document.getElementById("arch-iframe");
+            if (iframe) iframe.style.transform = "scale(" + window.__archZoom + ")";
+            const lbl = document.getElementById("arch-zoom-label");
+            if (lbl) lbl.textContent = Math.round(window.__archZoom * 100) + "%";
+          }}
+          aria-label="Zoom in"
+          style={{ width: "28px", height: "28px", background: "rgba(15,17,23,0.85)", color: "#F5F5F1", border: "1px solid #2A2F40", borderRadius: "6px", cursor: "pointer", fontSize: "16px", lineHeight: 1 }}
+        >+</button>
+        <button
+          onClick={() => {
+            window.__archZoom = 1;
+            const iframe = document.getElementById("arch-iframe");
+            if (iframe) iframe.style.transform = "scale(1)";
+            const lbl = document.getElementById("arch-zoom-label");
+            if (lbl) lbl.textContent = "100%";
+          }}
+          aria-label="Reset zoom"
+          style={{ padding: "0 10px", height: "28px", background: "rgba(15,17,23,0.85)", color: "rgba(245,245,241,0.72)", border: "1px solid #2A2F40", borderRadius: "6px", cursor: "pointer", fontSize: "11px", fontFamily: "inherit", letterSpacing: "0.04em" }}
+        >Fit</button>
+        <button
+          onClick={() => {
+            const m = document.getElementById("arch-modal");
+            if (m) { m.style.display = "none"; document.body.style.overflow = ""; }
+            window.__archZoom = 1;
+            const iframe = document.getElementById("arch-iframe");
+            if (iframe) iframe.style.transform = "scale(1)";
+            const lbl = document.getElementById("arch-zoom-label");
+            if (lbl) lbl.textContent = "100%";
+          }}
+          aria-label="Close"
+          style={{ width: "28px", height: "28px", background: "transparent", color: "#F5F5F1", border: "1px solid #2A2F40", borderRadius: "6px", cursor: "pointer", fontSize: "14px", marginLeft: "8px" }}
+        >✕</button>
+      </div>
+    </div>
+    <div style={{ flex: 1, overflow: "hidden", background: "#07080B", position: "relative" }}>
+      <iframe
+        id="arch-iframe"
+        srcDoc={`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
@@ -1905,16 +1957,12 @@ ReactDOM.createRoot(document.getElementById("react-mount")).render(<App />);
 </body>
 </html>
 `}
-      style={{
-        display: "block",
-        width: "100%",
-        height: "100%",
-        border: "none",
-        background: "#07080B"
-      }}
-      title="SchemaBrain Architecture — interactive diagram"
-      loading="lazy"
-    />
+        scrolling="no"
+        style={{ display: "block", width: "100%", height: "100%", border: "none", background: "#07080B", transformOrigin: "top center", transition: "transform 200ms ease" }}
+        title="SchemaBrain Architecture — interactive diagram"
+        loading="lazy"
+      />
+    </div>
   </div>
 </div>
 
