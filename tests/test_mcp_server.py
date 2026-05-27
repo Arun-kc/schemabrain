@@ -1244,14 +1244,14 @@ class TestServerBranding:
     Desktop avatar in the wild.
     """
 
-    def test_server_icons_three_sizes(self) -> None:
+    def test_server_icons_single_svg(self) -> None:
         from schemabrain.mcp.server import _server_icons
 
         icons = _server_icons()
-        # 32 / 64 / 512 — sizes the rendering hosts ask for.
-        assert len(icons) == 3
-        sizes = [icon.sizes[0] for icon in icons]
-        assert sizes == ["32x32", "64x64", "512x512"]
+        # SVG scales to any host-requested size so one source of
+        # truth replaces the previous PNG trio.
+        assert len(icons) == 1
+        assert icons[0].sizes == ["any"]
 
     def test_server_icons_point_at_repo_raw_urls(self) -> None:
         from schemabrain.mcp.server import _server_icons
@@ -1259,7 +1259,8 @@ class TestServerBranding:
         icons = _server_icons()
         for icon in icons:
             assert icon.src.startswith("https://raw.githubusercontent.com/Arun-kc/schemabrain/")
-            assert icon.mimeType == "image/png"
+            assert icon.mimeType == "image/svg+xml"
+            assert icon.src.endswith("/mcp-icon.svg")
 
     def test_website_url_is_repo(self) -> None:
         from schemabrain.mcp.server import _SERVER_WEBSITE_URL
