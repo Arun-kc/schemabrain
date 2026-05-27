@@ -1,0 +1,155 @@
+---
+title: "schemabrain joins"
+description: "Manage canonical-join definitions — the named, blessed paths between entities. Five subcommands: list, apply, suggest, export, export-all."
+---
+
+# `schemabrain joins`
+
+Canonical joins are named, operator-blessed join paths between two entities. They give the agent a paste-ready `ON` clause via `resolve_join` instead of asking it to guess from foreign keys. The suggester is **deterministic** — FK constraints + `pg_stat_statements` evidence, no LLM, no cost cap.
+
+```bash
+schemabrain joins <action> [flags]
+```
+
+Five actions: [`list`](#list), [`apply`](#apply), [`suggest`](#suggest), [`export`](#export), [`export-all`](#export-all).
+
+---
+
+## list
+
+List canonical joins in the local store. The verification path after `apply`.
+
+```bash
+schemabrain joins list --store-path ./schemabrain.db
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--source URL` | (none) | Filter listing to one source. |
+| `--url-env VARNAME` | (none) | Env var holding the source URL. |
+
+---
+
+## apply
+
+Load canonical-join YAML file(s) or directory(ies) into the local store.
+
+```bash
+schemabrain joins apply <yaml_path>... --url-env DATABASE_URL
+```
+
+| Argument / Flag | Purpose |
+|---|---|
+| `yaml_path` (positional, 1+) | One or more YAML files OR directories. Shell globs work; multi-file apply lands each independently. |
+| `--source URL` | Source URL. Deprecated when the URL contains a password. |
+| `--url-env VARNAME` | Env var holding the source URL. |
+| `--store-path PATH` | Path to the local SQLite store. |
+
+---
+
+## suggest
+
+Mine FK constraints + `pg_stat_statements` query log to surface canonical join candidates. **Deterministic — no LLM call, no API key, no cost cap.**
+
+```bash
+schemabrain joins suggest --url-env DATABASE_URL --dry-run
+```
+
+| Flag | Purpose |
+|---|---|
+| `--source URL` | Source URL. Deprecated when the URL contains a password. |
+| `--url-env VARNAME` | Env var holding the source URL. Preferred. |
+| `--store-path PATH` | Path to the local SQLite store. |
+| `--top-k N` | Maximum candidates to keep. Default: unlimited. Ranked by (confidence DESC, query-log frequency DESC, name ASC). |
+| `--report PATH` | Optional path. Writes a JSON report covering bucket counts + structural cycle analysis. Works with every mode. |
+
+One of these is required:
+
+| Mode | Effect |
+|---|---|
+| `--dry-run` | Print ranked candidates (provenance + on-columns) to stdout. |
+| `--out-dir DIR` | Write one YAML per candidate (`<candidate_name>.yaml`). Each file is `joins apply`-ready. |
+| `--apply` | Write candidates directly to the local store with `origin='suggested'`. |
+
+For the suggester to pick up query-log evidence, the source database must have the `pg_stat_statements` extension installed and the role must have `pg_read_all_stats` (or be superuser). See [Setup §4 Mine observed queries](/setup#4-optional-mine-observed-queries). Without it, the suggester falls back to FK-only ranking.
+
+---
+
+## export
+
+Render one canonical join from the local store as apply-ready YAML on stdout (or `--out PATH`).
+
+```bash
+schemabrain joins export user_orders > user_orders.yaml
+```
+
+| Argument / Flag | Purpose |
+|---|---|
+| `name` (positional) | Join name to export. Errors on cross-source name collisions without a source filter. |
+| `--out PATH` | Output path. Without this flag, writes to stdout. |
+| `--source URL` | Filter to one source. |
+| `--url-env VARNAME` | Env var holding the source URL. |
+| `--store-path PATH` | Path to the local SQLite store. |
+
+---
+
+## export-all
+
+Write one apply-ready YAML per canonical join into `--dir`.
+
+```bash
+schemabrain joins export-all --dir ./schemabrain/joins
+```
+
+| Flag | Purpose |
+|---|---|
+| `--dir PATH` | Output directory. **Refuses to overwrite** existing `<join>.yaml` files. |
+| `--source URL` | Filter to one source. Refuses on cross-source name collisions when absent. |
+| `--url-env VARNAME` | Env var holding the source URL. |
+| `--store-path PATH` | Path to the local SQLite store. |
+
+---
+
+## Examples
+
+### Suggest → review → apply
+
+```bash
+schemabrain joins suggest --url-env DATABASE_URL --out-dir ./review
+# Edit ./review/*.yaml  (rename + add descriptions)
+schemabrain joins apply ./review/*.yaml --url-env DATABASE_URL
+schemabrain joins list
+```
+
+### One-shot suggest + apply for CI
+
+```bash
+schemabrain joins suggest --url-env DATABASE_URL --apply --report joins-report.json
+```
+
+### Round-trip for version control
+
+```bash
+schemabrain joins export-all --dir ./schemabrain/joins
+git add ./schemabrain/joins
+```
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="MCP tool — resolve_join" icon="arrows-left-right" href="/reference/mcp-tools/resolve_join">
+    The agent-facing surface canonical joins feed into.
+  </Card>
+  <Card title="MCP tool — list_joins" icon="link" href="/reference/mcp-tools/list_joins">
+    The discovery path for confirmed joins.
+  </Card>
+  <Card title="schemabrain entities" icon="table" href="/reference/cli/entities">
+    Joins reference entity names — confirm entities first.
+  </Card>
+  <Card title="schemabrain mine-queries" icon="terminal" href="/reference/cli/developer">
+    Populates the query-log evidence the suggester reads from.
+  </Card>
+</CardGroup>

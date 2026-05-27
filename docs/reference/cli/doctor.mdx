@@ -1,0 +1,119 @@
+---
+title: "schemabrain doctor"
+description: "Health-check the host config, the local store, and (optionally) the source database. Also runs a mock-agent end-to-end smoke via --verify."
+---
+
+# `schemabrain doctor`
+
+Two modes:
+
+1. **Config health report** (default) — checks the host's MCP config block, the local store, and optionally probes the source database.
+2. **Mock-agent smoke** (`--verify`) — runs one end-to-end MCP turn against the substrate, without needing an LLM key or a running MCP host.
+
+```bash
+schemabrain doctor --host claude-desktop --store-path ./schemabrain.db
+```
+
+---
+
+## Flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--source URL` | (none — source checks skipped) | Source URL to probe (SELECT 1 + read-only session check). Deprecated when the URL contains a password. |
+| `--url-env VARNAME` | (none) | Env var holding the source URL. Preferred over `--source`. |
+| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--host {claude-desktop,claude-code,cursor,windsurf,manual}` | `claude-desktop` | Which host config to check. `manual` skips host-config checks. |
+| `--json` | (off) | Emit machine-readable JSON to stdout instead of the human-readable report to stderr. Useful for CI / monitoring. |
+| `--verify` | (off) | Run the mock-agent smoke instead of the config-health report. |
+
+---
+
+## What the config report checks
+
+For `--host claude-desktop` (and the other supported hosts), `doctor` walks the host's config file looking for the `schemabrain` MCP server entry. It validates:
+
+- The config file exists at the expected platform path.
+- A `schemabrain` server block is present.
+- The `command` resolves to an executable on disk.
+- The `args` include `serve` and at least one of `--source` / `--url-env`.
+- The `--store-path` argument points to a readable file (when `--store-path` is also passed to `doctor`).
+- The store contains at least one indexed source.
+- When `--source` / `--url-env` is also passed, a `SELECT 1` probe succeeds and the session is read-only on Postgres.
+
+Each check renders as a Rich-formatted line with a pass / fail / skip status. Failures include a guided next step.
+
+---
+
+## `--verify` (mock-agent smoke)
+
+The `--verify` mode simulates **one MCP tool turn** end-to-end without an LLM and without a host:
+
+1. `list_entities` — confirms the store carries at least one confirmed entity.
+2. `describe_entity` on the first entity — confirms drill-down works.
+3. `find_relevant_entities` with a synthetic query — confirms the retriever returns results.
+4. `get_metric` on the first metric (if any are declared) — confirms the SQL compiler and (when configured) the PII policy machinery wires up.
+
+Exits `0` if all required stages pass, `2` if any fail. This is the right command to run in CI as a substrate smoke before promoting a build.
+
+```bash
+schemabrain doctor --verify --store-path ./schemabrain.db
+```
+
+---
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | All checks passed. |
+| `2` | At least one check failed. |
+
+---
+
+## Examples
+
+### Default — check Claude Desktop wiring
+
+```bash
+schemabrain doctor --host claude-desktop --store-path ./schemabrain.db
+```
+
+### Check including source probe
+
+```bash
+schemabrain doctor --host claude-desktop \
+    --store-path ./schemabrain.db \
+    --url-env DATABASE_URL
+```
+
+### CI JSON mode
+
+```bash
+schemabrain doctor --host manual --store-path ./schemabrain.db --json > doctor.json
+```
+
+### Substrate smoke (no host, no LLM key)
+
+```bash
+schemabrain doctor --verify --store-path ./schemabrain.db
+```
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="schemabrain init" icon="rocket" href="/reference/cli/init">
+    The wizard that wires the config `doctor` then validates.
+  </Card>
+  <Card title="schemabrain check" icon="circle-check" href="/reference/cli/check">
+    Drift check between persisted definitions and the live source.
+  </Card>
+  <Card title="schemabrain serve" icon="play" href="/reference/cli/serve">
+    The server `doctor --verify` smoke-tests the substrate of.
+  </Card>
+  <Card title="Setup troubleshooting" icon="wrench" href="/setup#troubleshooting">
+    Common config failures and their fixes.
+  </Card>
+</CardGroup>

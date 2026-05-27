@@ -1,0 +1,106 @@
+---
+title: "schemabrain apply"
+description: "Walk a project tree (entities/, metrics/, joins/) and apply every YAML to the store. Pairs with init --emit-yaml-dir and the per-resource export-all commands."
+---
+
+# `schemabrain apply`
+
+Walks an on-disk project tree and applies each subdirectory's YAML files to the store. The tree shape mirrors what `schemabrain init --emit-yaml-dir` and `schemabrain {entities,metrics,joins} export-all` produce, so the full store ↔ YAML round-trip closes here.
+
+```bash
+schemabrain apply ./schemabrain --url-env DATABASE_URL
+```
+
+Expected layout:
+
+```text
+<project_dir>/
+├── entities/
+│   ├── users.yaml
+│   └── orders.yaml
+├── metrics/
+│   └── daily_revenue.yaml
+└── joins/
+    └── user_orders.yaml
+```
+
+Missing subdirectories are skipped cleanly. The walker applies in a deliberate order — **entities first**, then **metrics** and **joins** which reference entities. The per-resource apply commands enforce FK invariants internally, so a broken reference fails the inner command and surfaces in the outer summary; the outer walker does not abort on a single bad file.
+
+---
+
+## Flags
+
+| Argument / Flag | Default | Purpose |
+|---|---|---|
+| `project_dir` (positional) | `./schemabrain` | Path to the project tree. |
+| `--source URL` | (none) | Source URL the YAMLs attach to. Deprecated when the URL contains a password. |
+| `--url-env VARNAME` | (none) | Env var holding the source URL. Preferred. |
+| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+
+---
+
+## How it relates to per-resource `apply`
+
+| You want to … | Use |
+|---|---|
+| Apply a whole project tree | `schemabrain apply <dir>` |
+| Apply one entity file | `schemabrain entities apply <file>` |
+| Apply one metric file | `schemabrain metrics apply <file>` |
+| Apply one join file | `schemabrain joins apply <file>` |
+
+The top-level `apply` is a convenience over the three per-resource `apply` commands; it never does anything the per-resource commands can't.
+
+---
+
+## Examples
+
+### Round-trip: snapshot the store to disk, then re-apply
+
+```bash
+# Snapshot
+schemabrain entities export-all --dir ./schemabrain/entities
+schemabrain metrics export-all  --dir ./schemabrain/metrics
+schemabrain joins export-all    --dir ./schemabrain/joins
+
+# Commit
+git add ./schemabrain && git commit -m "snapshot semantic layer"
+
+# Re-apply on another machine
+schemabrain apply ./schemabrain --url-env DATABASE_URL
+```
+
+### Bootstrap from `init --emit-yaml-dir`
+
+```bash
+schemabrain init --url-env DATABASE_URL --emit-yaml-dir ./schemabrain
+# Edit the YAMLs to your heart's content
+schemabrain apply ./schemabrain --url-env DATABASE_URL
+```
+
+### Drift-check before applying (recommended)
+
+```bash
+schemabrain diff ./schemabrain --url-env DATABASE_URL && \
+  schemabrain apply ./schemabrain --url-env DATABASE_URL
+```
+
+`diff` exits `0` only when there's no drift; chain with `&&` to apply only on clean state.
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="schemabrain diff" icon="code-compare" href="/reference/cli/diff">
+    Drift check between project tree and store before applying.
+  </Card>
+  <Card title="schemabrain init --emit-yaml-dir" icon="rocket" href="/reference/cli/init">
+    Produces the project tree this command consumes.
+  </Card>
+  <Card title="schemabrain entities" icon="table" href="/reference/cli/entities">
+    Per-resource apply / export commands.
+  </Card>
+  <Card title="schemabrain metrics" icon="chart-line" href="/reference/cli/metrics">
+    Per-resource apply / export for metrics.
+  </Card>
+</CardGroup>

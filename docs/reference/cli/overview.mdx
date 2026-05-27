@@ -1,0 +1,185 @@
+---
+title: "CLI reference"
+description: "Eighteen top-level subcommands span indexing, serving, semantic-layer curation, audit, and the local dashboard. This page is the catalog; per-command pages cover flags and behaviour."
+---
+
+# CLI reference
+
+<Note>
+**Binary:** `schemabrain`. **Global flags:** `--version` / `-V`, `--verbose` / `-v` (counted: `-v` → INFO, `-vv` → DEBUG). **Default log level:** WARNING (stderr only).
+</Note>
+
+The SchemaBrain CLI is a single binary with subcommands grouped by purpose. Every state-bearing command takes `--store-path` (the SQLite store) and one of `--source` / `--url-env` (the Postgres source); `--url-env VARNAME` is preferred over `--source URL` because the URL never enters argv that way.
+
+```text
+$ schemabrain --help
+usage: schemabrain [-h] [--version] [--verbose]
+                   {index,eval,serve,mine-queries,fixture-path,entities,
+                    import,joins,metrics,doctor,apply,diff,init,tail,
+                    audit,check,inspect,dashboard} ...
+```
+
+---
+
+## Global flags
+
+| Flag | Purpose |
+|---|---|
+| `--version`, `-V` | Print the installed `schemabrain` version and exit. |
+| `--verbose`, `-v` | Increase logging verbosity (stderr only). `-v` shows INFO; `-vv` shows DEBUG. Default WARNING. |
+
+For `serve` under Claude Desktop or another host that swallows CLI flags, set `SCHEMABRAIN_LOG_LEVEL=DEBUG` in the host's `env` block instead.
+
+---
+
+## Subcommand catalog
+
+### Setup and serve
+
+<CardGroup cols={2}>
+  <Card title="schemabrain init" icon="rocket" href="/reference/cli/init">
+    Activation wizard. Index, curate, wire your MCP host in one command.
+  </Card>
+  <Card title="schemabrain index" icon="database" href="/reference/cli/index-command">
+    Reflect a Postgres schema into the local SQLite store.
+  </Card>
+  <Card title="schemabrain serve" icon="play" href="/reference/cli/serve">
+    Run the MCP server on stdio against the indexed store.
+  </Card>
+  <Card title="schemabrain dashboard" icon="chart-line" href="/reference/cli/dashboard">
+    Boot the local read-only dashboard UI on 127.0.0.1.
+  </Card>
+</CardGroup>
+
+### Semantic-layer curation
+
+<CardGroup cols={3}>
+  <Card title="schemabrain entities" icon="table" href="/reference/cli/entities">
+    `list`, `apply`, `suggest`, `export`, `export-all`.
+  </Card>
+  <Card title="schemabrain metrics" icon="chart-line" href="/reference/cli/metrics">
+    `list`, `apply`, `suggest`, `show`, `audit`, `export`, `export-all`.
+  </Card>
+  <Card title="schemabrain joins" icon="diagram-project" href="/reference/cli/joins">
+    `list`, `apply`, `suggest`, `export`, `export-all`.
+  </Card>
+</CardGroup>
+
+### Project-level operations
+
+<CardGroup cols={2}>
+  <Card title="schemabrain apply" icon="upload" href="/reference/cli/apply">
+    Walk a project tree (`entities/`, `metrics/`, `joins/`) and load every YAML.
+  </Card>
+  <Card title="schemabrain diff" icon="code-compare" href="/reference/cli/diff">
+    Drift check between an on-disk project tree and the store.
+  </Card>
+</CardGroup>
+
+### Observability and verification
+
+<CardGroup cols={3}>
+  <Card title="schemabrain audit" icon="signature" href="/reference/cli/audit">
+    `list`, `verify` — inspect and verify the hash-chained audit log.
+  </Card>
+  <Card title="schemabrain tail" icon="terminal" href="/reference/cli/tail">
+    Stream MCP tool-call events from a running `serve` process.
+  </Card>
+  <Card title="schemabrain doctor" icon="stethoscope" href="/reference/cli/doctor">
+    Health-check host config, store, and (optionally) source.
+  </Card>
+</CardGroup>
+
+<CardGroup cols={2}>
+  <Card title="schemabrain check" icon="circle-check" href="/reference/cli/check">
+    Detect drift between persisted definitions and the live source schema.
+  </Card>
+  <Card title="schemabrain inspect" icon="magnifying-glass" href="/reference/cli/inspect">
+    Browse the indexed schema + semantic-layer surface (no source needed).
+  </Card>
+</CardGroup>
+
+### Developer and niche commands
+
+<CardGroup cols={2}>
+  <Card title="schemabrain eval, mine-queries, fixture-path, import" icon="wrench" href="/reference/cli/developer">
+    Retrieval scoring, query log mining, fixture paths, dbt manifest import.
+  </Card>
+</CardGroup>
+
+---
+
+## Conventions you can rely on
+
+### Source URLs and credentials
+
+Every command that touches Postgres accepts both `--source URL` and `--url-env VARNAME`. The two are mutually exclusive. The env-var form is preferred because the URL — and any embedded password — never appears in argv (visible to `ps`, shell history, journald). The positional and `--source` forms emit a deprecation warning when the URL contains a password.
+
+```bash
+# Preferred
+export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"
+schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db
+
+# Still works, but deprecated when URL has a password
+schemabrain index --source "postgresql+psycopg://user:pass@host:5432/dbname" --store-path ./schemabrain.db
+```
+
+The connection scheme **must** be `postgresql+psycopg://` (psycopg v3). A bare `postgresql://` will fail with `ModuleNotFoundError: No module named 'psycopg2'`.
+
+### Store path
+
+The local SQLite store defaults to `~/.schemabrain/store.db`. Pass `--store-path PATH` to override. The directory is created on first write; subsequent runs are idempotent.
+
+### Cost caps
+
+Every command that calls an LLM (`index`, `entities suggest`, `metrics suggest`, the LLM stages of `init`) enforces a hard USD cap. The default is conservative; override with `--max-cost-usd` or the per-command equivalent. Caps abort cleanly with a guided error — no partial writes.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success. |
+| `1` | Drift / mismatch / non-fatal disagreement (e.g. `diff` found differences). |
+| `2` | Operational error — bad input, missing flag, malformed config, unreachable source. |
+| `3` | Cost cap exceeded. |
+
+`audit verify` follows the same `0` / `1` / `2` convention specifically — `0` intact, `1` mismatch, `2` operational error.
+
+### Output streams
+
+Human-readable output goes to **stderr** (so it can be redirected separately from machine-readable payloads). Commands that emit JSON do so on **stdout**, gated by a `--json` flag where applicable. Progress bars auto-disable when stderr is not a TTY (CI-friendly).
+
+---
+
+## Auto-detected configuration
+
+Several commands auto-resolve their inputs when the standard env vars are set:
+
+- `DATABASE_URL` — picked up by `--url-env DATABASE_URL` in every example.
+- `ANTHROPIC_API_KEY` — required for any LLM-touching command; cost-free `--no-enrich` / `--dry-run` modes skip the check.
+- `DBT_PROJECT_DIR` — `init` walks this (or the cwd, looking for `dbt_project.yml`) and auto-routes the curation stages through the dbt importer when found.
+- `SCHEMABRAIN_LOG_LEVEL` — read when `-v`/`-vv` flags are not available (e.g. `serve` under Claude Desktop).
+- `SCHEMABRAIN_EVENTS_PATH` — overrides the default events JSONL path for `serve` + `tail`.
+- `SCHEMABRAIN_MAX_LLM_COST_USD` — fallback cost cap when `--max-cost-usd` is not passed on `suggest` commands.
+- `SCHEMABRAIN_STUB_RESPONSE` — used by `--provider stub` for CI smoke tests.
+
+A `.env` file in the current working directory is also loaded automatically before any subcommand runs. Shell exports always win — `.env` only fills gaps.
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Setup" icon="rocket" href="/setup">
+    The end-to-end install walkthrough that uses these commands.
+  </Card>
+  <Card title="MCP tool reference" icon="square-code" href="/reference/mcp-tools/overview">
+    The twelve typed MCP tools `schemabrain serve` exposes.
+  </Card>
+  <Card title="Dashboard" icon="chart-line" href="/dashboard/overview">
+    The local UI launched by `schemabrain dashboard`.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Where each command sits in the pipeline.
+  </Card>
+</CardGroup>

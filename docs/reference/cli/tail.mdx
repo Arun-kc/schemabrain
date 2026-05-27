@@ -1,0 +1,100 @@
+---
+title: "schemabrain tail"
+description: "Stream MCP tool-call events from a running schemabrain serve process. The live counterpart to schemabrain audit list."
+---
+
+# `schemabrain tail`
+
+Streams the JSONL events file `schemabrain serve` writes to. Each tool call produces a structured event the moment it lands — `tail` is the live window into what an agent is doing.
+
+```bash
+schemabrain tail --since 5m
+```
+
+By default, the command **follows** (attaches and prints new events as they arrive) and replays history matching `--since`.
+
+---
+
+## Flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--since DURATION_OR_TIMESTAMP` | `5m` | Replay events newer than this point. Accepts compact duration (`30s`, `5m`, `2h`, `1d`) or ISO 8601 timestamp with timezone. |
+| `--follow` | (on by default) | Keep the process attached and print new events as they arrive. |
+| `--no-follow` | (off) | Print history matching `--since` and exit. Mutually exclusive with `--follow`. |
+| `--json` | (off) | Emit raw JSON lines instead of the colored two-line record. Pipe-friendly for `jq` / `awk`. |
+| `--events-path PATH` | `$SCHEMABRAIN_EVENTS_PATH` or `~/.schemabrain/events.jsonl` | Path to the JSONL events file. |
+| `--store-path PATH` | (none) | Accepted for surface parity with every other subcommand. `tail` reads from the events JSONL, not the store, so this is only a convenience: when `--events-path` is omitted AND a file named `events.jsonl` exists next to the store, that file is preferred. |
+
+---
+
+## How the events file gets written
+
+`schemabrain serve` appends one JSON line per event to the events file. Events include:
+
+- `server_start` / `server_stop`
+- `tool_call_started` / `tool_call_completed`
+- `tool_call_refused`
+- Other observability hooks the event bus emits (see [Observability](/observability))
+
+Pass `--no-events` on `serve` to disable event emission entirely.
+
+---
+
+## Examples
+
+### Watch live activity
+
+```bash
+schemabrain tail
+# Prints the last 5 minutes and follows. Ctrl+C to exit.
+```
+
+### Inspect the last day, then exit
+
+```bash
+schemabrain tail --since 1d --no-follow
+```
+
+### Pipe into jq
+
+```bash
+schemabrain tail --since 1h --no-follow --json | jq '.tool_name'
+```
+
+### Tail a specific events file
+
+```bash
+schemabrain tail --events-path /var/log/schemabrain/events.jsonl
+```
+
+---
+
+## Relationship to `audit list`
+
+| You want … | Use |
+|---|---|
+| Live, streaming view of every event | `schemabrain tail` |
+| Durable, hash-chained record of tool calls | `schemabrain audit list` (or [`audit verify`](/reference/cli/audit)) |
+| The same data rendered in the dashboard | [`/dashboard/audit-viewer`](/dashboard/audit-viewer) |
+
+The events JSONL is a fast, append-only operational stream — tear it down and recreate it freely. The `mcp_audit` table is the durable, tamper-evident record.
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="schemabrain serve" icon="play" href="/reference/cli/serve">
+    The producer of the events stream.
+  </Card>
+  <Card title="schemabrain audit" icon="signature" href="/reference/cli/audit">
+    The durable hash-chained record.
+  </Card>
+  <Card title="Observability" icon="chart-line" href="/observability">
+    The event-bus substrate that emits these events.
+  </Card>
+  <Card title="Audit Viewer dashboard" icon="chart-line" href="/dashboard/audit-viewer">
+    Visual rendering of the durable record.
+  </Card>
+</CardGroup>

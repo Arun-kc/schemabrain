@@ -1,0 +1,109 @@
+---
+title: "schemabrain inspect"
+description: "Browse the indexed schema + semantic-layer surface from the local store. No LLM, no source connection — reads SQLite only."
+---
+
+# `schemabrain inspect`
+
+Renders the contents of the local store without touching the source database or making any LLM calls. Two modes:
+
+1. **Summary** (no argument) — entity / metric / join counts, sources, store size.
+2. **Drill-down** (`name` positional) — full body of one named resource, regardless of whether it's an entity, metric, or canonical join.
+
+```bash
+# Summary
+schemabrain inspect --store-path ./schemabrain.db
+
+# Drill-down (resolves across all three namespaces)
+schemabrain inspect users
+```
+
+For namespaced drill-down (when a name collides across namespaces), use [`schemabrain metrics show`](/reference/cli/metrics#show) — it resolves only against the metrics namespace.
+
+---
+
+## Flags
+
+| Argument / Flag | Default | Purpose |
+|---|---|---|
+| `name` (positional, optional) | (summary mode) | Resource name to drill into. Omit for a summary of the whole store. |
+| `--source URL` | (none) | Source URL. Optional — omit to operate across every source in the store. Required only when the store carries resources from multiple sources AND you're drilling by name. |
+| `--url-env VARNAME` | (none) | Env var holding the source URL. Mutually exclusive with `--source`. |
+| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+
+---
+
+## What you can see
+
+In summary mode:
+
+- Source connections indexed.
+- Counts of tables, columns, entities, metrics, canonical joins.
+- Trust signals (`origin`, `inference_method`, `validation_state`) aggregated across resources.
+- Store path and rough size.
+
+In drill-down mode:
+
+- The full resource body (the same content `export` would emit as YAML).
+- Trust signals — including ones `diff` deliberately excludes from comparison.
+- Cross-references (an entity shows which metrics anchor on it; a metric shows the entity it anchors on).
+
+---
+
+## Examples
+
+### Quick store summary
+
+```bash
+schemabrain inspect
+```
+
+### Drill into one entity
+
+```bash
+schemabrain inspect users
+```
+
+### Disambiguate a name collision across sources
+
+```bash
+schemabrain inspect users --url-env DATABASE_URL
+```
+
+### Inspect with multiple sources in one store
+
+```bash
+schemabrain inspect --source "postgresql+psycopg://prod-cluster/db1"
+# Lists summary across only the prod-cluster source
+```
+
+---
+
+## When to use which
+
+| Question | Command |
+|---|---|
+| What's in my store? (no source side effects) | `schemabrain inspect` |
+| What does this specific metric compile to? | `schemabrain metrics show <name>` |
+| Is the store in sync with the live source schema? | [`schemabrain check`](/reference/cli/check) |
+| Is the store in sync with an on-disk YAML tree? | [`schemabrain diff`](/reference/cli/diff) |
+| Is my host wiring healthy? | [`schemabrain doctor`](/reference/cli/doctor) |
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="schemabrain entities list" icon="list" href="/reference/cli/entities">
+    Plain list of confirmed entities.
+  </Card>
+  <Card title="schemabrain metrics show" icon="chart-line" href="/reference/cli/metrics">
+    Drill into one metric specifically.
+  </Card>
+  <Card title="schemabrain doctor" icon="stethoscope" href="/reference/cli/doctor">
+    Health-check wiring as well as store state.
+  </Card>
+  <Card title="schemabrain check" icon="circle-check" href="/reference/cli/check">
+    Detect source-schema drift.
+  </Card>
+</CardGroup>

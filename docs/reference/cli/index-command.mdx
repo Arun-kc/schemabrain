@@ -1,0 +1,151 @@
+---
+title: "schemabrain index"
+description: "Reflect a Postgres schema into the local SQLite store. Idempotent — re-runs against an unchanged schema are a no-op (zero LLM calls, zero embeddings)."
+---
+
+# `schemabrain index`
+
+Reflects every user-visible table from the source database into the local SQLite store. Optionally enriches column descriptions via Claude Haiku 4.5 and computes local sentence embeddings so the MCP retriever can do semantic search.
+
+```bash
+schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+**Idempotent.** Running against an unchanged schema is a no-op (~0.1s, zero LLM calls, zero embedder calls). Schema-changed tables are re-enriched and re-embedded selectively.
+
+---
+
+## Source
+
+One of these is required:
+
+| Flag | Purpose |
+|---|---|
+| `--url-env VARNAME` | Name of the env var holding the source URL. **Preferred** — credentials never enter argv. |
+| `--source URL` | Source URL as a named flag. Deprecated when the URL contains a password. |
+| Positional `URL` | Legacy form. Deprecated when the URL contains a password. Emits a warning. |
+
+The URL **must** use the `postgresql+psycopg://` scheme.
+
+## Storage and embedding
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--no-embed` | (off — embeddings enabled) | Skip generating local sentence embeddings. Saves ~10ms per column at index time, but `find_relevant_entities` falls back to keyword/substring matching. Implied when `--no-enrich` is set. |
+
+## Enrichment
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--no-enrich` | (off — enrichment enabled) | Skip the LLM column-description step. Useful for cost-free dry runs and CI. |
+| `--enable-sonnet` | (off — Haiku only) | Route cryptic column names (e.g. `acct_dim_v3`) to Claude Sonnet 4.6 instead of Haiku 4.5. ~5x more expensive per affected column; better descriptions. |
+| `--no-pii-classify` | (off — classifier enabled) | Skip the heuristic PII classifier and wipe existing PII tags for tables touched this run. With classification off, audit rows record `pii_categories=''` and `--pii-block` enforcement has nothing to act on. |
+
+<Warning>
+`--no-pii-classify` emits a stderr warning on every run. It is a privacy-paranoid setting, not a performance setting — the classifier is heuristic, local, and fast.
+</Warning>
+
+## Cost guards
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--max-cost USD` | `$2.00` | Hard cap on USD spend per run. Aborts cleanly when reached; no effect with `--no-enrich`. |
+| `--no-cost-cap` | (off) | Disable the cost cap entirely. Use only after `--dry-run` previews the spend. Overrides `--max-cost`. |
+
+## Dry-run preview
+
+| Flag | Purpose |
+|---|---|
+| `--dry-run` | Count tables and columns, compute the diff against the cached store, and estimate LLM cost from a measured per-column average (~$0.0003/col on Haiku 4.5). No DB writes, no LLM calls, no embeddings. `ANTHROPIC_API_KEY` is NOT required. |
+| `--since DURATION_OR_TIMESTAMP` | Only meaningful with `--dry-run`. Adds a freshness audit line: count of cached columns whose owning table was last indexed before this point, plus the estimated cost to refresh them. Accepts `30s` / `5m` / `2h` / `14d` or an ISO 8601 timestamp with timezone. |
+
+<Note>
+The `--dry-run` estimate ignores `--enable-sonnet` tier routing and reports Haiku pricing only.
+</Note>
+
+## Output
+
+| Flag | Effect |
+|---|---|
+| `--quiet`, `-q` | Suppress the live progress UI. The final one-line summary still prints to stderr. Auto-on when stderr is not a TTY. |
+
+---
+
+## What gets stored
+
+For each table:
+
+- Full structural reflection (columns, types, nullability, defaults, primary keys, foreign keys).
+- One LLM-written column description per column, when enrichment is enabled (~$0.0003/col on Haiku 4.5).
+- One local sentence embedding per description (`BAAI/bge-small-en-v1.5`, ~67MB ONNX, ~10ms/col warm), when embedding is enabled.
+- Heuristic PII tags per column, when classification is enabled.
+
+The store is the input every other command reads from. `serve`, `entities`, `metrics`, `joins`, `inspect`, `check`, `audit`, and `dashboard` all operate against the SQLite file `index` writes.
+
+---
+
+## Examples
+
+### Standard run
+
+```bash
+export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"
+export ANTHROPIC_API_KEY=sk-ant-...
+
+schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+### Cost-free dry run
+
+```bash
+schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db --dry-run
+```
+
+### Preview the cost of catching up after a long pause
+
+```bash
+schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db --dry-run --since 14d
+```
+
+### CI smoke without LLM
+
+```bash
+schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db --no-enrich --quiet
+```
+
+### Cryptic schema, accept higher cost
+
+```bash
+schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db \
+    --enable-sonnet --max-cost 10
+```
+
+---
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Index complete (or no-op if unchanged). |
+| `2` | Operational error — bad URL, missing API key, unreachable source. |
+| `3` | Cost cap exceeded. |
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="schemabrain init" icon="rocket" href="/reference/cli/init">
+    Wizard that runs `index` plus everything else.
+  </Card>
+  <Card title="schemabrain check" icon="circle-check" href="/reference/cli/check">
+    Detect drift after a schema migration.
+  </Card>
+  <Card title="schemabrain eval" icon="chart-line" href="/reference/cli/developer">
+    Score retrieval quality against a golden set.
+  </Card>
+  <Card title="schemabrain inspect" icon="magnifying-glass" href="/reference/cli/inspect">
+    Browse the store without re-indexing.
+  </Card>
+</CardGroup>

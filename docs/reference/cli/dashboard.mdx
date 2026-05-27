@@ -1,0 +1,130 @@
+---
+title: "schemabrain dashboard"
+description: "Boot the read-only dashboard sidecar. Binds to 127.0.0.1 only — no public-network exposure flag exists by design."
+---
+
+# `schemabrain dashboard`
+
+Boots a FastAPI sidecar that serves the bundled Next.js static export. Read-only. Bound to `127.0.0.1`. Requires the `[ui]` extra.
+
+```bash
+pip install 'schemabrain[ui]'
+schemabrain dashboard --store-path ./schemabrain.db
+```
+
+Output:
+
+```
+schemabrain dashboard: serving at http://127.0.0.1:7878/
+  press Ctrl+C to stop
+```
+
+The default browser auto-opens. Pass `--no-open` to skip.
+
+See [Dashboard overview](/dashboard/overview) for what the surfaces look like and how source IDs auto-resolve.
+
+---
+
+## Flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. The sidecar auto-resolves the canonical `source_id` from the store. |
+| `--port N` | `7878` | Port to bind on `127.0.0.1`. Must be in the user-port range (1024-65535). |
+| `--no-open` | (off — auto-opens) | Skip auto-opening the default browser. CI / headless setups should pass this. |
+
+<Note>
+**There is no `--host` flag.** The bind host is hardcoded to `127.0.0.1` in `schemabrain/dashboard/sidecar.py`. A CI invariant test asserts the dashboard CLI never accepts a host argument. Use SSH port-forwarding to view a remote instance.
+</Note>
+
+---
+
+## What it serves
+
+The sidecar exposes **only `GET` routes** — no `POST`, `PUT`, `PATCH`, or `DELETE` handler exists anywhere in the surface. The route table:
+
+| Path | Purpose |
+|---|---|
+| `/` | The bundled Next.js static export. |
+| `/api/health` | Liveness + a `SELECT 1` against the SQLite store. |
+| `/api/meta` | Charter version, dashboard schema version, list of indexed sources. Credential-safe. |
+| `/api/entities/pii-matrix` | Per-entity PII counts for the PII Ledger surface. |
+| `/api/entities` | Flat entity list. |
+| `/api/entities/{name}/columns` | Per-entity column drill-down. |
+| `/api/audit/rows` | Paginated `mcp_audit` rows. |
+| `/api/audit/rows/{id}` | One audit row with full body. |
+| `/api/audit/verify` | Re-walks the chain; returns `intact` / `mismatch`. |
+| `/api/audit/refusals` | Filtered list of refused rows. |
+| `/api/audit/refusals/{id}` | One refusal row with envelope detail. |
+| `/api/audit/stream` | SSE stream of new audit rows (2s tick). |
+
+Every JSON response carries:
+
+- `X-Schemabrain-Charter-Version: 1.2`
+- `X-Schemabrain-Dashboard-Schema: 1.0`
+
+---
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Sidecar exited cleanly (operator pressed Ctrl+C). |
+| `1` | User-facing error (bad port, missing store). |
+| `2` | Install error — the `[ui]` extra is not present. |
+
+---
+
+## Examples
+
+### Standard launch
+
+```bash
+schemabrain dashboard --store-path ./schemabrain.db
+```
+
+### Custom port (avoid local conflict)
+
+```bash
+schemabrain dashboard --store-path ./schemabrain.db --port 9090
+```
+
+### CI / headless smoke
+
+```bash
+schemabrain dashboard --store-path ./schemabrain.db --no-open &
+DASHBOARD_PID=$!
+# Wait for boot, hit /api/health, then teardown.
+sleep 2 && curl -sf http://127.0.0.1:7878/api/health
+kill $DASHBOARD_PID
+```
+
+---
+
+## Errors you may see
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `schemabrain dashboard requires the [ui] extra` | Base install only | `pip install 'schemabrain[ui]'` |
+| `store_path does not exist: ...` | No store yet | Run `schemabrain index` first |
+| `port must be in the user-port range 1024-65535` | Bad `--port` | Use 1024-65535 |
+| Port already in use | Another dashboard or service on `:7878` | `--port 9090` or terminate the conflicting process |
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Dashboard overview" icon="chart-line" href="/dashboard/overview">
+    What each surface shows and how source IDs resolve.
+  </Card>
+  <Card title="PII Ledger" icon="shield" href="/dashboard/pii-ledger">
+    The `/pii` surface.
+  </Card>
+  <Card title="Refusals" icon="ban" href="/dashboard/refusals">
+    The `/refusals` surface.
+  </Card>
+  <Card title="Audit Viewer" icon="signature" href="/dashboard/audit-viewer">
+    The `/audit` surface.
+  </Card>
+</CardGroup>
