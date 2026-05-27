@@ -1,6 +1,13 @@
+---
+title: "PII taxonomy"
+description: "Every column carries a typed PII category tag at index time; tags propagate through joins at compile time, so get_metric refuses queries before the database is queried."
+---
+
 # Mechanism: PII taxonomy
 
-> **One-line claim:** Every column carries a typed PII category tag at index time; the tags propagate through joins and aggregations at *compile* time, so `get_metric` refuses queries that *would* touch blocked PII before the database is ever queried.
+<Note>
+**One-line claim:** Every column carries a typed PII category tag at index time; the tags propagate through joins and aggregations at *compile* time, so `get_metric` refuses queries that *would* touch blocked PII before the database is ever queried.
+</Note>
 
 Most "PII protection" in catalogs is a documentation feature — a column gets a `pii: true` annotation that a human reviewer looks at. SchemaBrain's PII tags are **structural inputs to the SQL compiler.** A metric whose join path crosses a blocked-category column refuses with a typed `pii_blocked` envelope, and the compiled SQL never reaches the database.
 
@@ -92,11 +99,14 @@ All five contribute to the *attempted* (propagated) set. The set is intersected 
 
 The compiler-layer propagation closes the Simon-Willison "lethal trifecta" attack (private data exposure × untrusted content × external communication). Concretely:
 
-- An innocent metric `staff_count` defined as `COUNT(*)` over the `staff` table is **not** PII-tagged in isolation.
-- A prompt-injected agent calls `get_metric(name="staff_count", group_by=["staff.password"])`.
-- `group_by` walking adds `credential` to the attempted set.
-- Policy intersection finds `credential ∈ pii_block`.
-- The compiler raises `PiiBlockedError`. The SQL never runs. The agent gets a refusal envelope.
+<Warning>
+  **Adversarial Willison Mirror Attack Closed:**
+  - An innocent metric `staff_count` defined as `COUNT(*)` over the `staff` table is **not** PII-tagged in isolation.
+  - A prompt-injected agent calls `get_metric(name="staff_count", group_by=["staff.password"])`.
+  - `group_by` walking adds `credential` to the attempted set.
+  - Policy intersection finds `credential ∈ pii_block`.
+  - The compiler raises `PiiBlockedError` and rejects execution. **The SQL never runs, and no database query occurs.**
+</Warning>
 
 The same defense applies if the password column appears only in a JOIN ON pair or only as a composite-measure operand — every surface walks every column. A row-level filter would have been too late.
 
@@ -113,11 +123,11 @@ CATASTROPHIC_LEAK_CATEGORIES: frozenset[PIICategory] = frozenset(
 )
 ```
 
-Two layers consume this set:
-
-1. **`schemabrain serve` defaults `--pii-block` to this set** when the flag is absent. A zero-config operator running `schemabrain serve` on a fresh install gets safe-by-default enforcement: `password`, `credit_card`, and `ssn` are all refused without explicit configuration.
-
-2. **`describe_entity` always redacts the column description** when any of these categories appears, even with an empty `--pii-block`. The agent never reads "password hash" or "social security number" semantics regardless of operator policy. Override is possible per-column but requires deliberate configuration.
+<Note>
+  **Safe-by-default Enforcement Layers:**
+  1. **`schemabrain serve` defaults `--pii-block` to this set** when the flag is absent. A zero-config operator running `schemabrain serve` on a fresh install gets safe-by-default enforcement: `password`, `credit_card`, and `ssn` are all refused without explicit configuration.
+  2. **`describe_entity` always redacts the column description** when any of these categories appears, even with an empty `--pii-block`. The agent never reads "password hash" or "social security number" semantics regardless of operator policy. Override is possible per-column but requires deliberate configuration.
+</Note>
 
 The closed set is auditable; additions are a minor charter bump. `contact` is *not* in the set — there are legitimate aggregate analytics over contact data (newsletter open rates by region, etc.), so blocking it by default would break common workflows.
 
@@ -176,13 +186,19 @@ python -c "from schemabrain.pii.classifier import classify_column; print(classif
 
 The rule table itself is in [`schemabrain/pii/classifier.py`](../../schemabrain/pii/classifier.py); the propagation logic is in [`schemabrain/mcp/get_metric.py`](../../schemabrain/mcp/get_metric.py).
 
----
+## Related
 
-## Related mechanisms
-
-- [`/mechanism/read-only`](read-only.md) — the *absence* of write tools that makes the read-side firewall the load-bearing surface
-- [`/mechanism/structured-recovery`](structured-recovery.md) — the `pii_blocked` refusal envelope shape, including the probe-oracle closure
-- [`/mechanism/audit-chain`](audit-chain.md) — every refusal lands in the audit row with the *attempted* category set preserved for forensic queries
-- [`/mechanism/trust-signal`](trust-signal.md) — the orthogonal trust signal that the operator-confirmed-vs-LLM-suggested tagging system rides on
-- [`docs/threat-model.md`](../threat-model.md) — full attack-surface analysis, including residual risks
-- ADR 0001 in [`docs/adr/`](../adr/) — the two-layer taxonomy decision (sensitivity × category)
+<CardGroup cols={2}>
+  <Card title="Read-only" icon="lock" href="/mechanism/read-only">
+    Why writes are impossible at the type level.
+  </Card>
+  <Card title="Structured recovery" icon="rotate" href="/mechanism/structured-recovery">
+    Recovery envelope on a PII refusal.
+  </Card>
+  <Card title="Audit chain" icon="signature" href="/mechanism/audit-chain">
+    Every refusal is recorded in the chain.
+  </Card>
+  <Card title="Threat model" icon="shield-check" href="/threat-model">
+    Full PII surface analysis.
+  </Card>
+</CardGroup>

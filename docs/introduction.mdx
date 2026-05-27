@@ -1,0 +1,79 @@
+---
+title: "SchemaBrain"
+description: "The semantic firewall between AI agents and your database. Read-only, PII-aware, audit-evident — by architecture, not by trust."
+---
+
+## Why SchemaBrain exists
+
+You connected an AI agent to your production database. It can now read every column, including the ones it should never see. It can fabricate a `payment_card` join because nothing in the API surface says no. And when something goes wrong, the audit trail is whatever the agent decided to tell you.
+
+SchemaBrain sits between the agent and the database and changes that contract.
+
+<CardGroup cols={2}>
+  <Card title="Read-only by architecture" icon="lock" href="/mechanism/read-only">
+    No `execute()`. No `query()`. No session flag the agent can flip. Writes are impossible because no tool accepts arbitrary SQL.
+  </Card>
+  <Card title="PII-aware by default" icon="shield" href="/mechanism/pii-taxonomy">
+    Twelve PII categories with three catastrophic-leak categories (credential, payment card, government ID) blocked out of the box.
+  </Card>
+  <Card title="Audit-evident" icon="signature" href="/mechanism/audit-chain">
+    Hash-chained audit log. Every tool call writes a row. `audit verify` proves the chain hasn't been tampered with.
+  </Card>
+  <Card title="Structured recovery" icon="rotate" href="/mechanism/structured-recovery">
+    When SchemaBrain refuses, it returns a typed envelope with a recovery hint — not a string error the agent has to guess at.
+  </Card>
+</CardGroup>
+
+## Five minutes to first query
+
+<Steps>
+  <Step title="Install">
+    <CodeGroup>
+    ```bash pip
+    pip install schemabrain
+    ```
+    ```bash uv
+    uv pip install schemabrain
+    ```
+    ```bash docker
+    docker pull ghcr.io/arun-kc/schemabrain:latest
+    ```
+    </CodeGroup>
+  </Step>
+  <Step title="Initialize against your database">
+    ```bash
+    schemabrain init --host claude-desktop
+    ```
+    The wizard auto-detects your MCP host, walks you through PII policy, and writes a ready-to-use config.
+  </Step>
+  <Step title="Restart the host and ask">
+    Ask your agent: *"list the entities you know about, then describe the user entity."* The Refusal Experience surface in the dashboard will show every blocked call in real time.
+  </Step>
+</Steps>
+
+Full walkthrough in [Setup](/setup). Want the 10-minute tour? Start with [First 5 Queries](/first-5-queries).
+
+## Pick your host
+
+Five MCP-compatible hosts ship with first-class wiring:
+
+<CardGroup cols={3}>
+  <Card title="Claude Desktop" href="/setup/claude-desktop" />
+  <Card title="Claude Code" href="/setup/claude-code" />
+  <Card title="Cursor" href="/setup/cursor" />
+  <Card title="Windsurf" href="/setup/windsurf" />
+  <Card title="ChatGPT" href="/setup/chatgpt" />
+</CardGroup>
+
+## Compare
+
+How SchemaBrain differs from the obvious neighbours in the AI-database tooling space:
+
+<CardGroup cols={2}>
+  <Card title="vs. Querybear" href="/compare/querybear">
+    Read-only SQL agent for analytics. SchemaBrain is the firewall layer between any agent and your database.
+  </Card>
+  <Card title="vs. Anthropic Postgres MCP" href="/compare/anthropic-postgres-mcp">
+    Reference MCP server with direct SQL execution. SchemaBrain refuses SQL at the type level.
+  </Card>
+</CardGroup>

@@ -1,3 +1,8 @@
+---
+title: "Operations"
+description: "What you do after init — inspecting the local store, catching drift, previewing re-index costs, and the Docker-only path."
+---
+
 # Operating SchemaBrain over time
 
 `init` got you a working agent. This page covers what you do after — inspecting the local store, catching drift before it shows up as bad agent answers, previewing re-index costs, and the Docker-only path.
@@ -136,4 +141,4 @@ Point an MCP host at the indexed store via `docker run`:
 
 The `docker compose up` recipe builds SchemaBrain from the repo's `Dockerfile`, so a checkout is all you need. A pre-built multi-platform image (`linux/amd64` + `linux/arm64`) on a public registry is on the v0.3.x roadmap so you can skip the build step.
 
-Full Docker setup (env-var hygiene, host-uid mapping, containerised serve config) is in [`docs/setup.md`](setup.md#0b-docker-alternative-install).
+Full Docker setup (env-var hygiene, host-uid mapping, containerised serve config) is in [`docs/setup.md`](setup.md#3-docker-alternative-install).

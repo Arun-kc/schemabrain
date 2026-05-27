@@ -1,0 +1,28 @@
+---
+title: "find_relevant_tables"
+description: "Embedding-cosine semantic search over indexed column descriptions."
+---
+
+<Note>
+**Layer:** Physical schema
+</Note>
+
+Embedding-cosine retrieval over indexed column descriptions. Returns the
+most relevant tables for a natural-language question, ranked by score.
+Each hit names the matched column and surfaces its description.
+
+```json
+{
+  "qualified_name": "public.orders",
+  "score": 0.79,
+  "best_column": "user_id",
+  "best_column_description": "Unique identifier linking each order to the customer who placed it",
+  "token_estimate": 49
+}
+```
+
+**Note on weak matches:** A low `score` (say, < 0.85) is a *signal*, not an
+error. The tool returned what semantic search found; the agent should judge
+whether the score is strong enough to trust. See
+[architecture.md → How retrieval works](architecture.md#how-retrieval-works)
+for why this design.

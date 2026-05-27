@@ -1,3 +1,8 @@
+---
+title: "Threat model"
+description: "SchemaBrain's attack surface, the threats we model against, what we mitigate by architecture, and what we explicitly do not defend against."
+---
+
 # Threat model
 
 SchemaBrain's attack surface, the threats we model against, what we mitigate

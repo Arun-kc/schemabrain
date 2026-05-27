@@ -1,3 +1,8 @@
+---
+title: "First 5 Queries"
+description: "Five queries against your fresh SchemaBrain install that exercise each of the four load-bearing mechanisms — read-only tools, PII refusal, audit chain, structured recovery."
+---
+
 # First 5 Queries
 
 > You've run `schemabrain init` and restarted your MCP host. This is what to actually *do* with it for the next 10 minutes. Five queries that exercise each of the four load-bearing mechanisms — read-only tools, PII-aware refusal, audit chain, structured recovery — plus a closing CLI step that proves what happened.
@@ -92,16 +97,22 @@ GROUP BY time_bucket
 
 ## Query 4 — see the firewall refuse (opt-in)
 
-This one requires a small policy tweak. The bundled e-commerce fixture has no `credential` / `payment_card` / `government_id` columns, so the default catastrophic-only block list has nothing to refuse against. Widen the policy to also block `contact` (email, phone, full_name, address):
+This query requires a small policy tweak. The bundled e-commerce fixture has no `credential`, `payment_card`, or `government_id` columns, so the default catastrophic-only block list has nothing to refuse against. Widen the policy to also block `contact` (email, phone, full_name, address):
 
-**Edit your host config:**
+<Note>
+  **Modifying the host policy:** Edit the arguments in your host configuration file (e.g. `claude_desktop_config.json`, `mcp.json`, or `mcp_config.json`) to include the `contact` category in the `--pii-block` flag:
+  
+  ```diff
+  - "args": ["serve", "--store-path", "...", "--pii-block", "credential,government_id,payment_card"]
+  + "args": ["serve", "--store-path", "...", "--pii-block", "contact,credential,government_id,payment_card"]
+  ```
+</Note>
 
-```diff
-- "args": ["serve", "--store-path", "...", "--pii-block", "credential,government_id,payment_card"]
-+ "args": ["serve", "--store-path", "...", "--pii-block", "contact,credential,government_id,payment_card"]
-```
+<Warning>
+  **Relaunch Required:** Quit and relaunch your MCP host fully (**Cmd+Q** on macOS) so it reads the new `--pii-block` configurations on startup.
+</Warning>
 
-Quit and relaunch the host (Cmd+Q on macOS). Then ask:
+Then ask:
 
 > **Ask Claude:** show me unique customers per month, grouped by their email
 

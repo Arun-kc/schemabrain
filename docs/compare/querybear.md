@@ -1,3 +1,8 @@
+---
+title: "vs. Querybear"
+description: "Both projects sit between AI agents and your database; SchemaBrain is the firewall layer, Querybear is the analytics agent on top."
+---
+
 # SchemaBrain vs Querybear
 
 > Both projects claim to sit between AI agents and your database. They use the same metaphor and overlap on roughly 70% of the buyer. They are not the same thing.

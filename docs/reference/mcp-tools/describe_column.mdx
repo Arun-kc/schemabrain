@@ -1,0 +1,20 @@
+---
+title: "describe_column"
+description: "Drill into one column with its bidirectional FK graph."
+---
+
+<Note>
+**Layer:** Physical schema
+</Note>
+
+Drill into one column. Returns its structural metadata + LLM description +
+the join graph it participates in:
+
+- `outgoing_foreign_keys`: this column joins out to where
+- `incoming_foreign_keys`: which other tables reference this column
+
+The bidirectional FK graph is the killer feature here — primary keys'
+incoming FKs describe the entire join surface in one tool call.
+
+Pass `qualified_name` as `schema.table.column` — e.g.
+`"public.orders.user_id"`.

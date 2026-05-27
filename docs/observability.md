@@ -1,3 +1,8 @@
+---
+title: "Observability"
+description: "The observability substrate — structured logs, audit chain, OTel integration, and the events the dashboard sidecar consumes."
+---
+
 # Observability
 
 The observability layer is a thin substrate that exposes everything

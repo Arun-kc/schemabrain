@@ -1,6 +1,13 @@
+---
+title: "Tamper-evident audit chain"
+description: "Every tool call lands in an append-only hash-chained table. schemabrain audit verify re-walks the chain and exits non-zero on any tampering."
+---
+
 # Mechanism: tamper-evident audit chain
 
-> **One-line claim:** Every tool call lands in an append-only SQLite table; each row's `chain_hash = sha256(prev_chain_hash || canonical_row)`. `schemabrain audit verify` re-walks the chain and exits non-zero if any past row was rewritten.
+<Note>
+**One-line claim:** Every tool call lands in an append-only SQLite table; each row's `chain_hash = sha256(prev_chain_hash || canonical_row)`. `schemabrain audit verify` re-walks the chain and exits non-zero if any past row was rewritten.
+</Note>
 
 The audit log is **detection, not prevention.** An attacker with filesystem write access to the SQLite file can rewrite a row — but rewriting the chain coherently requires recomputing every subsequent `chain_hash`, *and* any external snapshot of a prior `chain_hash` (a backup, a CI artifact, an off-host copy) will diverge from the new local value. The chain turns silent tampering into noisy tampering.
 
@@ -136,12 +143,19 @@ schemabrain audit verify
 
 `schemabrain audit list` is the cursor-aware reader; pair it with `--since` for windowed forensics.
 
----
+## Related
 
-## Related mechanisms
-
-- [`/mechanism/read-only`](read-only.md) — why there are no write tools in the first place
-- [`/mechanism/pii-taxonomy`](pii-taxonomy.md) — the probe-oracle reasoning behind the envelope surfacing only the blocked category set
-- [`/mechanism/structured-recovery`](structured-recovery.md) — what a refused call returns to the agent
-- [`docs/threat-model.md`](../threat-model.md) §T1.3 — full threat statement and residual risk
-- ADR 0001 in [`docs/adr/`](../adr/) — the original design decision
+<CardGroup cols={2}>
+  <Card title="Read-only" icon="lock" href="/mechanism/read-only">
+    Why writes are impossible at the type level.
+  </Card>
+  <Card title="Structured recovery" icon="rotate" href="/mechanism/structured-recovery">
+    What the agent gets back when a read is refused.
+  </Card>
+  <Card title="PII taxonomy" icon="shield" href="/mechanism/pii-taxonomy">
+    What content the agent can pull through the read surface.
+  </Card>
+  <Card title="Observability" icon="chart-line" href="/observability">
+    Event-bus substrate that emits audit rows.
+  </Card>
+</CardGroup>

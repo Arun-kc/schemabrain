@@ -1,3 +1,8 @@
+---
+title: "vs. Anthropic Postgres MCP"
+description: "The Anthropic reference MCP server ships one tool that accepts arbitrary SQL. SchemaBrain refuses SQL at the type level."
+---
+
 # SchemaBrain vs Anthropic Reference Postgres MCP Server
 
 > The Anthropic-published reference Postgres MCP server is where most developers start. It's a 143-line `index.ts` that ships one tool that accepts arbitrary SQL. Anthropic archived it on May 29, 2025 — but it remains the default mental model. SchemaBrain is what you graduate to.

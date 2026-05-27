@@ -64,7 +64,7 @@ schemabrain init
 | Try it on the bundled fixture | [Quickstart](#quickstart) |
 | Understand the firewall properties | [The firewall](#the-firewall) |
 | Wire up your MCP client | [Claude Desktop](docs/setup/claude-desktop.md) · [Claude Code](docs/setup/claude-code.md) · [Cursor](docs/setup/cursor.md) · [Windsurf](docs/setup/windsurf.md) · [ChatGPT](docs/setup/chatgpt.md) |
-| Plug into your own agent loop | [`docs/setup.md`](docs/setup.md#path-2--anthropic-sdk-demo-no-claude-desktop-required) |
+| Plug into your own agent loop | [`docs/setup.md`](docs/setup.md#path-b-anthropic-sdk-demo-no-claude-desktop-required) |
 | Build a semantic layer | [`docs/semantic-layer.md`](docs/semantic-layer.md) |
 | Run in production (audit, drift, Docker) | [`docs/operations.md`](docs/operations.md) |
 | Observe the agent (tail, audit log, OTel) | [`docs/observability.md`](docs/observability.md) |
@@ -84,7 +84,7 @@ pip install schemabrain
 schemabrain --version
 ```
 
-Source install (`git clone` + [`uv`](https://docs.astral.sh/uv/) `sync --extra dev`) is documented in [`docs/setup.md`](docs/setup.md#0-activation-wizard-recommended).
+Source install (`git clone` + [`uv`](https://docs.astral.sh/uv/) `sync --extra dev`) is documented in [`docs/setup.md`](docs/setup.md#1-activation-wizard-recommended).
 
 ### 2. Run the activation wizard
 
@@ -109,7 +109,7 @@ SchemaBrain init — activation wizard
   [7/7] Next               ✓ restart your MCP host, then ask: "list the entities SchemaBrain knows about"
 ```
 
-Full wizard reference (stages explained, flags, dbt auto-detection, `--print-only` for non-Claude-Desktop hosts, `--no-entities` / `--no-metrics` / `--no-joins` opt-outs, cost-cap pauses): [`docs/setup.md`](docs/setup.md#0-activation-wizard-recommended).
+Full wizard reference (stages explained, flags, dbt auto-detection, `--print-only` for non-Claude-Desktop hosts, `--no-entities` / `--no-metrics` / `--no-joins` opt-outs, cost-cap pauses): [`docs/setup.md`](docs/setup.md#1-activation-wizard-recommended).
 
 ### 3. Restart Claude Desktop and ask
 
@@ -224,7 +224,7 @@ python examples/anthropic_demo.py \
 
 ~$0.005–0.02 per run on Haiku 4.5, bounded by `--max-turns`.
 
-[Anthropic SDK walkthrough →](docs/setup.md#path-2--anthropic-sdk-demo-no-claude-desktop-required)
+[Anthropic SDK walkthrough →](docs/setup.md#path-b-anthropic-sdk-demo-no-claude-desktop-required)
 
 </td>
 </tr>
@@ -263,7 +263,7 @@ The 12-tool surface, PII firewall, audit chain, and recovery contracts are trans
 
 The same stdio MCP surface is reachable from any framework that can spawn an MCP server. The Anthropic SDK path is first-party-tested; the others work in principle if the framework's MCP integration speaks stdio.
 
-- **Anthropic SDK** — first-party walkthrough at [`docs/setup.md`](docs/setup.md#path-2--anthropic-sdk-demo-no-claude-desktop-required); reference loop at [`examples/anthropic_demo.py`](examples/anthropic_demo.py)
+- **Anthropic SDK** — first-party walkthrough at [`docs/setup.md`](docs/setup.md#path-b-anthropic-sdk-demo-no-claude-desktop-required); reference loop at [`examples/anthropic_demo.py`](examples/anthropic_demo.py)
 - **LangChain / LangGraph** — via [`langchain-mcp-adapters`](https://github.com/langchain-ai/langchain-mcp-adapters)
 - **Pydantic AI** — via its [built-in MCP support](https://ai.pydantic.dev/mcp/)
 - **CrewAI / AutoGen / Agno / custom loops** — any framework with a stdio MCP client works in principle; we have not tested each

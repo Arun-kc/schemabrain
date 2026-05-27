@@ -1,0 +1,37 @@
+---
+title: "describe_entity"
+description: "The entity's bound table, identity column, and full column list — one round-trip."
+---
+
+<Note>
+**Layer:** Semantic layer
+</Note>
+
+The entity's bound table, identity column, description, and full column
+list. One round-trip gives the agent everything it needs to compose SQL
+against the entity.
+
+```json
+{
+  "name": "customer",
+  "description": "A registered user who can place orders.",
+  "qualified_table": "public.users",
+  "identity": "id",
+  "origin": "manual",
+  "columns": [
+    {"name": "id", "data_type": "bigint", "nullable": false, "description": "...", "pii_sensitivity": "public"},
+    {"name": "email", "data_type": "text", "nullable": false, "description": "...", "pii_sensitivity": "public"}
+  ],
+  "token_estimate": 184
+}
+```
+
+`pii_sensitivity` is currently hardcoded to `"public"` on every column —
+the wire shape is locked so the upcoming column-level classification can
+fill it without a breaking change. Block-on-sensitivity routing today
+flows through `get_metric` (which propagates `pii_categories` from the
+classifier), not through this field.
+
+Pass `name` as a bare identifier — `customer`, not `public.customer`. The
+schema qualifier belongs on the bound table, not the entity name. Errors
+surface as `unknown_name` with a `list_entities` recovery hint.

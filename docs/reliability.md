@@ -1,3 +1,8 @@
+---
+title: "Reliability contract"
+description: "SchemaBrain's reliability targets — error budgets, retry posture, what the SLO numbers actually mean."
+---
+
 # Reliability contract
 
 SchemaBrain's reliability targets, what they cover, and how each one maps

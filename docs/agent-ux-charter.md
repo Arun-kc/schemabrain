@@ -1,3 +1,8 @@
+---
+title: "MCP Charter v1.2"
+description: "The locked public design contract every SchemaBrain MCP tool implements — status taxonomy, envelope shape, recovery hints."
+---
+
 # SchemaBrain MCP Charter v1.2.0
 
 > **Status:** locked 2026-05-12 as the public design contract for SchemaBrain's

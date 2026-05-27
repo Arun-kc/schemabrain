@@ -1,3 +1,8 @@
+---
+title: "Claude Desktop"
+description: "60-second wiring: install SchemaBrain, run init, restart Claude Desktop with Cmd+Q, ask about your database."
+---
+
 # SchemaBrain + Claude Desktop
 
 > **60 seconds:** install SchemaBrain, run `schemabrain init`, restart Claude Desktop with **Cmd+Q**, ask Claude about your database.

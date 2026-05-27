@@ -1,3 +1,8 @@
+---
+title: "ADR 0004 — Observability event bus"
+description: "Three-consumer event bus (logs / audit / dashboard SSE) behind one publish call so the producer never knows who listens."
+---
+
 # ADR 0004 — Observability event bus as three-consumer substrate
 
 - **Status:** Accepted

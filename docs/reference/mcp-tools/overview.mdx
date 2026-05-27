@@ -1,0 +1,74 @@
+---
+title: "MCP tool reference"
+description: "Twelve Pydantic-typed MCP tools split across two layers — physical schema and semantic layer. Every response carries a token_estimate and a Charter-conformant envelope."
+---
+
+SchemaBrain exposes **twelve Pydantic-typed MCP tools** split across two layers:
+
+- **Physical-schema tools (5)** — read directly from the indexed schema. Always available after `schemabrain index`.
+- **Semantic-layer tools (7)** — read curated entities, canonical joins, and metrics. Available once the operator has confirmed at least one entity (`schemabrain entities suggest --apply` or `schemabrain init`).
+
+Every response includes a `token_estimate` so agents can budget context. Every envelope follows the [Charter status taxonomy](/agent-ux-charter) (`success`, `empty`, `partial`, `degraded`, `error`, `refused`) with `follow_up_hints` to chain the next call.
+
+## Physical-schema tools
+
+<CardGroup cols={2}>
+  <Card title="find_relevant_tables" icon="magnifying-glass" href="/reference/mcp-tools/find_relevant_tables">
+    Embedding-cosine retrieval over indexed columns.
+  </Card>
+  <Card title="describe_table" icon="table" href="/reference/mcp-tools/describe_table">
+    Full structural + semantic dump of one table.
+  </Card>
+  <Card title="describe_column" icon="columns" href="/reference/mcp-tools/describe_column">
+    Drill into one column with bidirectional FK graph.
+  </Card>
+  <Card title="suggest_joins" icon="diagram-project" href="/reference/mcp-tools/suggest_joins">
+    Shortest FK-graph join paths between table pairs.
+  </Card>
+  <Card title="get_example_queries" icon="terminal" href="/reference/mcp-tools/get_example_queries">
+    Real SQL observed against a table from pg_stat_statements.
+  </Card>
+</CardGroup>
+
+## Semantic-layer tools
+
+<CardGroup cols={2}>
+  <Card title="find_relevant_entities" icon="magnifying-glass" href="/reference/mcp-tools/find_relevant_entities">
+    Embedding-cosine search restricted to entities.
+  </Card>
+  <Card title="list_entities" icon="list" href="/reference/mcp-tools/list_entities">
+    Every confirmed entity with bound table + identity.
+  </Card>
+  <Card title="describe_entity" icon="circle-info" href="/reference/mcp-tools/describe_entity">
+    Bound table, identity column, and full column list.
+  </Card>
+  <Card title="list_metrics" icon="chart-line" href="/reference/mcp-tools/list_metrics">
+    Every declared metric with anchor entity + measure.
+  </Card>
+  <Card title="get_metric" icon="play" href="/reference/mcp-tools/get_metric">
+    Compiles + runs a pre-declared metric.
+  </Card>
+  <Card title="list_joins" icon="link" href="/reference/mcp-tools/list_joins">
+    Every confirmed canonical relationship.
+  </Card>
+  <Card title="resolve_join" icon="arrows-left-right" href="/reference/mcp-tools/resolve_join">
+    Canonical join between two entities — paste-ready.
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="MCP Charter v1.2" icon="scroll" href="/agent-ux-charter">
+    The contract every tool implements — status taxonomy, envelope shape, recovery hints.
+  </Card>
+  <Card title="Read-only by architecture" icon="lock" href="/mechanism/read-only">
+    Why no tool accepts arbitrary SQL.
+  </Card>
+  <Card title="Structured recovery" icon="rotate" href="/mechanism/structured-recovery">
+    What an agent gets back when a tool refuses.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Where these tools fit in the pipeline.
+  </Card>
+</CardGroup>

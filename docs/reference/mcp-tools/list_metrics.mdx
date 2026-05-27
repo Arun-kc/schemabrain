@@ -1,0 +1,26 @@
+---
+title: "list_metrics"
+description: "Every declared metric with its anchor entity, aggregation, and time bucketing."
+---
+
+<Note>
+**Layer:** Semantic layer
+</Note>
+
+Returns every declared metric with its anchor entity, aggregation function, measure shape, and time bucketing capabilities. Lean by design — no query results, no token-heavy rows. The agent calls `get_metric(name, ...)` to compute a metric.
+
+```json
+{
+  "name": "customer_count",
+  "description": "Total unique customers who placed at least one order.",
+  "entity": "order",
+  "aggregation": "count_distinct",
+  "measure_column": "user_id",
+  "measure_expression": null,
+  "time_dimension": "placed_at",
+  "time_grains": ["day", "week", "month", "quarter", "year"],
+  "origin": "suggested"
+}
+```
+
+Returns `status="empty"` with `follow_up_hints: ["list_entities"]` when no metrics are defined yet — directing the agent to first discover the entity layer so the operator can anchor a metric on one.

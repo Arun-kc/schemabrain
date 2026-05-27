@@ -1,3 +1,8 @@
+---
+title: "Security"
+description: "Procurement-friendly summary of SchemaBrain's security architecture, threat model, and disclosure process."
+---
+
 # SchemaBrain — Security Posture
 
 > Procurement-friendly summary of SchemaBrain's security architecture, threat model, and disclosure process. For the full attack-surface walk-through with code citations, see [`docs/threat-model.md`](threat-model.md).

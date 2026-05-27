@@ -1,0 +1,47 @@
+---
+title: "get_metric"
+description: "Compiles and runs a pre-declared metric — the only execution path SchemaBrain ships."
+---
+
+<Note>
+**Layer:** Semantic layer
+</Note>
+
+Computes a pre-declared metric against the live database. Returns the
+materialised rows, the parameterised SQL the compiler emitted, and a
+`fingerprint` linking back to the immutable audit row. The agent never
+writes SQL itself for declared metrics — SchemaBrain compiles and
+parameter-binds.
+
+```json
+{
+  "rows": [
+    {"period": "2026-01", "category_name": "Electronics", "total_revenue": 1832145.50}
+  ],
+  "row_count": 12,
+  "sql_skeleton": "SELECT date_trunc('month', o.created_at) AS period, c.name AS category_name, SUM(oi.quantity * oi.unit_price_cents) / 100.0 AS total_revenue FROM ... WHERE ... GROUP BY 1, 2 LIMIT :p_limit",
+  "sql_params": {"p_limit": 1000},
+  "fingerprint": "f3a1c89e...",
+  "required_joins": ["customer_orders", "order_items_to_orders"],
+  "fan_out_join_names": [],
+  "pii_categories": [],
+  "token_estimate": 312
+}
+```
+
+- `group_by` and `filters` use `entity.column` form (e.g. `customer.id`,
+  `order.created_at`) — never physical `schema.table.column`.
+- `filters` is `(column, op, value)` with closed-set ops: `eq`, `ne`, `lt`,
+  `lte`, `gt`, `gte`, `in`, `not_in`, `is_null`, `not_null`.
+- Values bind as parameters — never inlined into SQL.
+- `fan_out_join_names` flags joins where the cardinality could inflate
+  rows. When the list is non-empty the envelope downgrades to
+  `status="degraded"` with `confidence="MEDIUM"` — this is the
+  machine-readable signal the agent should surface to the user, not the
+  list itself.
+- `pii_categories` propagates the MAX-sensitivity + UNION-categories of
+  every column touched, and is what `--pii-block` filters against.
+
+Use `list_entities` instead when you don't yet know what's defined.
+`get_metric` only computes pre-declared metrics — it will never run
+arbitrary SQL.

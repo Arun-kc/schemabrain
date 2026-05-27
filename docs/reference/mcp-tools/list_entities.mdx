@@ -1,0 +1,26 @@
+---
+title: "list_entities"
+description: "Every confirmed entity with bound table, identity column, and provenance."
+---
+
+<Note>
+**Layer:** Semantic layer
+</Note>
+
+Returns every confirmed entity with its bound table, identity column, and
+provenance (`manual`, `dbt`, `wizard`, etc.). Lean by design — no columns,
+no token-heavy detail. The agent calls `describe_entity(name)` to drill in.
+
+```json
+{
+  "name": "customer",
+  "description": "A registered user who can place orders.",
+  "qualified_table": "public.users",
+  "identity": "id",
+  "origin": "manual"
+}
+```
+
+Returns `status="empty"` with `follow_up_hints: ["find_relevant_tables"]`
+when no entities are defined yet — actionable next step is physical
+discovery.
