@@ -70,7 +70,7 @@ CREATE EXTENSION pg_stat_statements;
 
 The mining role needs read access to the `pg_stat_statements` view (superusers always have it; non-super roles need `pg_read_all_stats`).
 
-If the extension or grant is missing, `mine-queries` exits cleanly with an actionable message — no row is written, the store stays intact, and `get_example_queries` keeps returning `status: empty` with a recovery hint pointing to [Setup §4](/setup#4-optional-mine-observed-queries).
+If the extension or grant is missing, `mine-queries` exits cleanly with an actionable message — no row is written, the store stays intact, and `get_example_queries` keeps returning `status: empty` with a recovery hint pointing to [Manual flow — Mine observed queries](/setup/manual#2-optional-mine-observed-queries).
 
 The `joins suggest` command also reads `pg_stat_statements` evidence — running `mine-queries` first improves canonical-join ranking.
 

@@ -72,4 +72,4 @@ Claude reads `recovery.suggested_tool`, pivots to `describe_entity` to enumerate
 - **`postgresql://` URL fails with `ModuleNotFoundError`** — use `postgresql+psycopg://` (psycopg v3 scheme). `schemabrain init` auto-rewrites the bare scheme with a one-line confirmation.
 - **`onnxruntime` install fails on Apple Silicon + Python 3.12** — downgrade to Python 3.11 (`pyenv install 3.11.10 && pyenv local 3.11.10`) or pass `--no-embed` to degrade semantic search to keyword-only.
 
-Full setup reference (all flags, wizard stages, manual mode): [`docs/setup.md`](../setup.md).
+Full setup reference: [`docs/setup.md`](../setup.md) (wizard) · [`docs/setup/manual.md`](manual.md) (manual flow, logs, troubleshooting).

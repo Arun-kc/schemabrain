@@ -79,4 +79,4 @@ The trust signal comes from the v1.2 envelope — see [`/mechanism/trust-signal`
 - **`postgresql://` fails with `ModuleNotFoundError`** — use `postgresql+psycopg://`. `init` auto-rewrites the scheme with a one-line confirmation.
 - **`onnxruntime` install fails on Apple Silicon + Python 3.12** — downgrade to Python 3.11 or pass `--no-embed`.
 
-Full setup reference: [`docs/setup.md`](../setup.md).
+Full setup reference: [`docs/setup.md`](../setup.md) (wizard) · [`docs/setup/manual.md`](manual.md) (manual flow, logs, troubleshooting).

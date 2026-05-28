@@ -41,6 +41,14 @@
             ]
           },
           {
+            "group": "Install variants",
+            "icon": "wrench",
+            "pages": [
+              "setup/docker",
+              "setup/manual"
+            ]
+          },
+          {
             "group": "Mechanism",
             "icon": "shield",
             "pages": [

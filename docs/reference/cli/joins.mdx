@@ -72,7 +72,7 @@ One of these is required:
 | `--out-dir DIR` | Write one YAML per candidate (`<candidate_name>.yaml`). Each file is `joins apply`-ready. |
 | `--apply` | Write candidates directly to the local store with `origin='suggested'`. |
 
-For the suggester to pick up query-log evidence, the source database must have the `pg_stat_statements` extension installed and the role must have `pg_read_all_stats` (or be superuser). See [Setup §4 Mine observed queries](/setup#4-optional-mine-observed-queries). Without it, the suggester falls back to FK-only ranking.
+For the suggester to pick up query-log evidence, the source database must have the `pg_stat_statements` extension installed and the role must have `pg_read_all_stats` (or be superuser). See [Manual flow — Mine observed queries](/setup/manual#2-optional-mine-observed-queries). Without it, the suggester falls back to FK-only ranking.
 
 ---
 

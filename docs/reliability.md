@@ -80,7 +80,7 @@ operational error and counts against the error budget.
 Throughput scales near-linearly with column count, not table count
 (see [architecture.md](architecture.md) for the measured anchors).
 Cold-start is dominated by the fastembed ONNX load; baking the model
-into the Docker image (see [setup.md](setup.md)) reduces first-run
+into the Docker image (see [setup/docker.md](setup/docker.md)) reduces first-run
 cost on container deployments.
 
 ## What is measured today vs. what is aspirational

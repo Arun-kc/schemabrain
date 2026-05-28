@@ -65,7 +65,7 @@ schemabrain init
 | Try it on the bundled fixture | [Quickstart](#quickstart) |
 | Understand the firewall properties | [The firewall](#the-firewall) |
 | Wire up your MCP client | [Claude Desktop](docs/setup/claude-desktop.md) · [Claude Code](docs/setup/claude-code.md) · [Cursor](docs/setup/cursor.md) · [Windsurf](docs/setup/windsurf.md) · [ChatGPT (roadmap)](docs/setup/chatgpt.md) |
-| Plug into your own agent loop | [`docs/setup.md`](docs/setup.md#path-b-anthropic-sdk-demo-no-claude-desktop-required) |
+| Plug into your own agent loop | [`docs/setup/manual.md`](docs/setup/manual.md#3-wire-your-own-agent-anthropic-sdk) |
 | Build a semantic layer | [`docs/semantic-layer.md`](docs/semantic-layer.md) |
 | Run in production (audit, drift, Docker) | [`docs/operations.md`](docs/operations.md) |
 | Observe the agent (tail, audit log, OTel) | [`docs/observability.md`](docs/observability.md) |
@@ -85,7 +85,7 @@ pip install schemabrain
 schemabrain --version
 ```
 
-Source install (`git clone` + [`uv`](https://docs.astral.sh/uv/) `sync --extra dev`) is documented in [`docs/setup.md`](docs/setup.md#1-activation-wizard-recommended).
+Source install (`git clone` + [`uv`](https://docs.astral.sh/uv/) `sync --extra dev`) is documented in [`docs/setup.md`](docs/setup.md#1-install--run-the-wizard).
 
 ### 2. Run the activation wizard
 
@@ -111,7 +111,7 @@ SchemaBrain init — activation wizard
   [7/7] Next               ✓ restart your MCP host, then ask: "list the entities SchemaBrain knows about"
 ```
 
-Full wizard reference (stages explained, flags, dbt auto-detection, `--print-only` for non-Claude-Desktop hosts, `--no-entities` / `--no-metrics` / `--no-joins` opt-outs, cost-cap pauses): [`docs/setup.md`](docs/setup.md#1-activation-wizard-recommended).
+Full wizard reference (stages explained, flags, dbt auto-detection, `--print-only` for non-Claude-Desktop hosts, `--no-entities` / `--no-metrics` / `--no-joins` opt-outs, cost-cap pauses): [`docs/setup.md`](docs/setup.md#2-what-the-wizard-does).
 
 ### 3. Restart Claude Desktop and ask
 
@@ -226,7 +226,7 @@ python examples/anthropic_demo.py \
 
 ~$0.005–0.02 per run on Haiku 4.5, bounded by `--max-turns`.
 
-[Anthropic SDK walkthrough →](docs/setup.md#path-b-anthropic-sdk-demo-no-claude-desktop-required)
+[Anthropic SDK walkthrough →](docs/setup/manual.md#3-wire-your-own-agent-anthropic-sdk)
 
 </td>
 </tr>
@@ -287,7 +287,7 @@ The 12-tool surface, PII firewall, audit chain, and recovery contracts are trans
 
 The same stdio MCP surface is reachable from any framework that can spawn an MCP server. The Anthropic SDK path is first-party-tested; the others work in principle if the framework's MCP integration speaks stdio.
 
-- **Anthropic SDK** — first-party walkthrough at [`docs/setup.md`](docs/setup.md#path-b-anthropic-sdk-demo-no-claude-desktop-required); reference loop at [`examples/anthropic_demo.py`](examples/anthropic_demo.py)
+- **Anthropic SDK** — first-party walkthrough at [`docs/setup/manual.md`](docs/setup/manual.md#3-wire-your-own-agent-anthropic-sdk); reference loop at [`examples/anthropic_demo.py`](examples/anthropic_demo.py)
 - **LangChain / LangGraph** — via [`langchain-mcp-adapters`](https://github.com/langchain-ai/langchain-mcp-adapters)
 - **Pydantic AI** — via its [built-in MCP support](https://ai.pydantic.dev/mcp/)
 - **CrewAI / AutoGen / Agno / custom loops** — any framework with a stdio MCP client works in principle; we have not tested each
@@ -348,7 +348,7 @@ The differentiator is what *didn't* happen: most LLM-over-database tools, asked 
 
 **Cost.** ~$0.001/column with Claude Haiku 4.5 + Sonnet 4.6 (Sonnet for the structured curation prompt). The bundled 7-table fixture (30 columns, 6 entities + 10 metrics + 5 joins) indexes + curates for **~$0.03 in ~85s**. The Pagila DVD-rental sample (87 columns after partition deduplication) runs for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
 
-To verify Claude's SQL is mechanically correct (and that flagged caveats are the actual data behavior), see [Validating SQL Claude generates](docs/setup.md#validating-sql-claude-generates).
+To verify Claude's SQL is mechanically correct (and that flagged caveats are the actual data behavior), see [Validating SQL Claude generates](docs/setup/manual.md#6-validating-sql-claude-generates).
 
 **Run this exact session yourself:** `schemabrain init` walks you to a wired Claude Desktop in one command; then ask Claude *"Using SchemaBrain, write me a SQL query to compute each customer's total spend by product category."* and watch the refuse-then-pivot live.
 
@@ -403,7 +403,7 @@ So the engineering order is **schema intelligence → semantic substrate → saf
 
 ## Troubleshooting
 
-The five most common first-run failures. Full troubleshooter in [`docs/setup.md`](docs/setup.md#troubleshooting).
+The five most common first-run failures. Full troubleshooter in [`docs/setup/manual.md`](docs/setup/manual.md#5-troubleshooting).
 
 - **`pip install schemabrain` gave me an older version.** Check `schemabrain --version`. If it doesn't match the [latest release](https://pypi.org/project/schemabrain/) your pip cache is stale — run `pip install --upgrade schemabrain`. `schemabrain init` writes the same version into the Claude Desktop snippet (`uvx schemabrain==<pin>`) so it stays reproducible across restarts; bump the pin in the snippet manually after upgrading via pip.
 - **`init` reports `source unreachable`.** Postgres may not be ready on first run — wait a few seconds and re-run. For your own database, verify host, port, and credentials. Connection URLs in any form are accepted (`postgresql://`, `postgres://`, `postgresql+psycopg://`).
@@ -417,7 +417,9 @@ The five most common first-run failures. Full troubleshooter in [`docs/setup.md`
 
 | Doc | What's inside |
 |---|---|
-| [`docs/setup.md`](docs/setup.md) | Activation wizard, Claude Desktop / Code / Cursor wiring, Anthropic SDK demo, troubleshooting, validating Claude's SQL |
+| [`docs/setup.md`](docs/setup.md) | Activation wizard (recommended) — pick a host, run the wizard, ask the agent (~60s) |
+| [`docs/setup/docker.md`](docs/setup/docker.md) | Docker install (image with embedding model baked in, no first-run download) |
+| [`docs/setup/manual.md`](docs/setup/manual.md) | Manual `index`, mine-queries, logs config, troubleshooting, MCP Inspector, SQL-validation ladder |
 | [`docs/first-5-queries.md`](docs/first-5-queries.md) | What to actually *do* after `init` — five queries that exercise read-only, PII refusal, audit chain, and structured recovery |
 | [`docs/semantic-layer.md`](docs/semantic-layer.md) | Building entities, metrics (incl. composite expressions), canonical joins (incl. multi-hop), dbt import |
 | [`docs/operations.md`](docs/operations.md) | `inspect`, `check` (drift), `index --dry-run`, Docker compose |
@@ -446,7 +448,7 @@ The consumer is an agent, not a service. MCP standardizes tool registration, sch
 **Is this a semantic layer like Cube or dbt Semantic Layer?**
 No — SchemaBrain is a SQL firewall built on a semantic-layer substrate. Entities, metrics, and canonical joins are first-class persisted definitions (`list_entities`, `describe_entity`, `resolve_join`, `get_metric`), but they exist to make the safety primitives possible — read-only-by-architecture, PII refusal, audit chain. The substrate is the means; the firewall is the headline. Full comparison vs Cube / dbt-mcp / Vanna / WrenAI in [`docs/landscape.md`](docs/landscape.md).
 
-More questions answered in [`docs/setup.md`](docs/setup.md#troubleshooting) (why local embeddings, more troubleshooting).
+More questions answered in [`docs/setup/manual.md`](docs/setup/manual.md#5-troubleshooting) (why local embeddings, more troubleshooting).
 
 ---
 
