@@ -699,10 +699,39 @@ class _GroupedInitHelpAction(argparse.Action):
         parser.exit(0)
 
 
+_CLI_EPILOG = """\
+First hour:
+  init                  Wire SchemaBrain into a Claude Desktop / Cursor / Windsurf host
+  doctor                Verify the wiring (--verify for a no-API-key mock-agent smoke)
+  dashboard             Serve the local read-only UI (requires `pip install schemabrain[ui]`)
+  inspect               Show what was curated (entities, metrics, joins)
+  tail                  Stream MCP tool calls live
+
+Operate:
+  serve                 Run the MCP server (Claude Desktop spawns this for you)
+  audit                 List + verify the tamper-evident audit chain
+  check                 Detect schema drift since the last `index`
+  index                 (Re-)introspect a database into the local store
+
+Author the semantic layer:
+  entities · metrics · joins · apply · diff · import
+                        See `schemabrain <cmd> --help`. Full reference at
+                        https://schemabrain.mintlify.app/reference/cli/overview.
+
+Developer:
+  eval · mine-queries · fixture-path
+                        Bench harness + query-log mining.
+
+Get started: `schemabrain init`.
+"""
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="schemabrain",
         description="The SQL firewall between AI agents and your production database.",
+        epilog=_CLI_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--version",

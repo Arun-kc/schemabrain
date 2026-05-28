@@ -26,6 +26,27 @@ It then introspects the schema, classifies columns for PII, optionally calls Ant
 
 **Quit fully with Cmd+Q (macOS) or via the system tray (Windows).** Closing the window is not enough — Claude Desktop only reads the MCP config on cold start. Relaunch.
 
+## Paste the system-prompt snippet (recommended)
+
+At the end of `schemabrain init`, the wizard prints a short "Steer the agent" snippet:
+
+```text
+When the user asks about their data:
+- Call find_relevant_entities(query) to find what's available.
+- Call describe_entity(name) for fields, joins, and PII tags.
+- Call get_metric(name, ...) to compute the answer.
+- Don't guess table or column names. Don't fall back to list_tables.
+```
+
+**Claude Desktop has no app-wide system-prompt field**, so this snippet goes into a **Project's Custom Instructions**:
+
+1. Open Claude Desktop → click **Projects** in the sidebar → **Create Project**.
+2. Name it something like *"My database"*.
+3. In the project's **Custom Instructions** box, paste the snippet above.
+4. Start every database-related conversation from inside that project (not the root sidebar chat).
+
+Without this nudge, Claude will sometimes default to a generic `list_tables` call — which doesn't exist in SchemaBrain — instead of using the semantic-firewall flow (`find_relevant_entities` → `describe_entity` → `get_metric`). Pasting the snippet is the difference between "Claude is confused" and "Claude refuses correctly on PII."
+
 ## Ask Claude
 
 > list the entities SchemaBrain knows about
