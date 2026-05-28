@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-dark.svg">
-    <img src="docs/assets/readme-hero-light.svg" alt="schemabrain — the safety and schema intelligence layer for AI systems that interact with databases" width="100%">
+    <img src="docs/assets/readme-hero-light.svg" alt="SchemaBrain — the SQL firewall between AI agents and your database" width="100%">
   </picture>
 </p>
 
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <em>Works with Claude Desktop · Claude Code · Cursor · Zed · any MCP host</em>
+  <em>Works with Claude Desktop · Claude Code · Cursor · Windsurf · any MCP host</em>
 </p>
 
 <p align="center">
@@ -51,6 +51,7 @@ schemabrain init
 
 - [Quickstart](#quickstart) — 3 steps from `pip install` to a working agent
 - [The firewall](#the-firewall) — what SchemaBrain enforces at the SQL boundary
+- [Observability dashboard](#observability-dashboard) — read-only UI for PII, refusals, audit
 - [Sample session](#sample-session) — real Claude Desktop interaction against the bundled fixture
 - [Where it's going](#where-its-going) — honest disclaimer about what's not built yet
 - [Roadmap](#roadmap) — shipped + in progress + planned
@@ -63,12 +64,12 @@ schemabrain init
 |---|---|
 | Try it on the bundled fixture | [Quickstart](#quickstart) |
 | Understand the firewall properties | [The firewall](#the-firewall) |
-| Wire up your MCP client | [Claude Desktop](docs/setup/claude-desktop.md) · [Claude Code](docs/setup/claude-code.md) · [Cursor](docs/setup/cursor.md) · [Windsurf](docs/setup/windsurf.md) · [ChatGPT](docs/setup/chatgpt.md) |
+| Wire up your MCP client | [Claude Desktop](docs/setup/claude-desktop.md) · [Claude Code](docs/setup/claude-code.md) · [Cursor](docs/setup/cursor.md) · [Windsurf](docs/setup/windsurf.md) · [ChatGPT (roadmap)](docs/setup/chatgpt.md) |
 | Plug into your own agent loop | [`docs/setup.md`](docs/setup.md#path-b-anthropic-sdk-demo-no-claude-desktop-required) |
 | Build a semantic layer | [`docs/semantic-layer.md`](docs/semantic-layer.md) |
 | Run in production (audit, drift, Docker) | [`docs/operations.md`](docs/operations.md) |
 | Observe the agent (tail, audit log, OTel) | [`docs/observability.md`](docs/observability.md) |
-| Compare with Querybear / Anthropic reference Postgres MCP | [vs Querybear](docs/compare/querybear.md) · [vs Anthropic reference](docs/compare/anthropic-postgres-mcp.md) |
+| Compare with Querybear / Anthropic reference Postgres MCP | [vs Querybear](docs/compare/querybear.mdx) · [vs Anthropic reference](docs/compare/anthropic-postgres-mcp.mdx) |
 | Compare with Vanna / Atlan / dbt-mcp / WrenAI | [`docs/landscape.md`](docs/landscape.md) |
 
 ---
@@ -106,6 +107,7 @@ SchemaBrain init — activation wizard
   [4/7] Curate metrics     ✓ 10 metrics suggested + applied (cost: $0.03)
   [5/7] Curate joins       ✓ 5 canonical joins created (FK-mined, no LLM)
   [6/7] Wire host          ✓ wrote schemabrain entry to claude_desktop_config.json
+                           (default; switch with --host claude-code|cursor|windsurf|manual)
   [7/7] Next               ✓ restart your MCP host, then ask: "list the entities SchemaBrain knows about"
 ```
 
@@ -130,7 +132,7 @@ After the wizard, `schemabrain inspect` shows what the agent has and `schemabrai
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-architecture-dark.svg">
-    <img src="docs/assets/readme-architecture-light.svg" alt="schemabrain architecture: agent talks to schemabrain over MCP stdio (12 read-only tools); schemabrain emits parameterized SQL to Postgres; the schemabrain boundary is the trust boundary; audit log is tamper-evident." width="900">
+    <img src="docs/assets/readme-architecture-light.svg" alt="SchemaBrain architecture: agent talks to SchemaBrain over MCP stdio (12 read-only tools); SchemaBrain emits parameterized SQL to Postgres; the SchemaBrain boundary is the trust boundary; audit log is tamper-evident." width="900">
   </picture>
 </p>
 
@@ -142,16 +144,16 @@ Six properties SchemaBrain enforces at the SQL boundary today:
 
 ### 1. Read-only by architecture, not configuration
 
-The MCP surface exposes twelve tools — **none of which can write**. There is no `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database, regardless of session state. The read-only guarantee is structural, not a session flag the agent can flip. Stage 1 of `init` additionally pins `default_transaction_read_only=on` on the connection as belt-and-suspenders against a misconfigured downstream.
+The MCP surface exposes twelve tools — **none of which can write**. There is no `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database, regardless of session state. The read-only guarantee is structural, not a session flag the agent can flip. `schemabrain serve` additionally pins `default_transaction_read_only=on` on the connection as belt-and-suspenders against a misconfigured downstream.
 
-[Read-only by architecture →](docs/mechanism/read-only.md)
+[Read-only by architecture →](docs/mechanism/read-only.mdx)
 
 </td>
 <td width="50%" valign="top">
 
 ### 2. PII-aware refusal at the `get_metric` tool boundary
 
-Any `get_metric` touching a blocked PII category returns a `refused` envelope; the compiled SQL never runs and the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`. `describe_entity` enforces the same policy at the column level — the agent still sees the entity and its non-PII columns, but blocked columns ship with `redacted=True` and the LLM-enriched description cleared. `schemabrain init` writes `--pii-block contact` into the Claude Desktop snippet by default so email / phone / address columns are blocked on a fresh install; widen with `--pii-block contact,health` and other categories as needed.
+Any `get_metric` touching a blocked PII category returns a `refused` envelope; the compiled SQL never runs and the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`. `describe_entity` enforces the same policy at the column level — the agent still sees the entity and its non-PII columns, but blocked columns ship with `redacted=True` and the LLM-enriched description cleared. `schemabrain init` writes `--pii-block credential,payment_card,government_id` into the Claude Desktop snippet by default — the catastrophic-leak categories where no plausible aggregate-analytics use case exists. Widen with `--pii-block contact,health` and other categories as needed.
 
 ```bash
 schemabrain serve --pii-block contact,health
@@ -161,7 +163,7 @@ Twelve categories from GDPR, CCPA/CPRA, HIPAA, PCI DSS, ISO 27018 — tagged per
 
 **Enforcement scope:** binding is at the `get_metric` compile path today. Lower-level tools (`describe_entity`, `resolve_join`, `describe_table`) surface the `redacted=True` flag + `pii_categories` as advisory metadata so the agent can self-regulate, but they don't refuse. Uniform SQL-layer enforcement against agent-emitted SQL ships in v2 — see [Where it's going](#where-its-going).
 
-[PII taxonomy & propagation →](docs/mechanism/pii-taxonomy.md) · [Operations view →](docs/observability.md#pii-classification-alpha)
+[PII taxonomy & propagation →](docs/mechanism/pii-taxonomy.mdx) · [Operations view →](docs/observability.md#pii-classification-alpha)
 
 </td>
 </tr>
@@ -176,7 +178,7 @@ Every tool call under `schemabrain serve` writes one row to an append-only `mcp_
 schemabrain audit verify   # exit 0 = chain clean
 ```
 
-[Tamper-evident audit chain →](docs/mechanism/audit-chain.md) · [Operations view →](docs/observability.md#audit-log-alpha)
+[Tamper-evident audit chain →](docs/mechanism/audit-chain.mdx) · [Operations view →](docs/observability.md#audit-log-alpha)
 
 </td>
 <td width="50%" valign="top">
@@ -196,7 +198,7 @@ Refused and degraded calls return a structured `recovery.suggested_args` block �
 }
 ```
 
-[Structured recovery →](docs/mechanism/structured-recovery.md) · [Trust signal →](docs/mechanism/trust-signal.md) · [Charter v1.2 reference →](docs/agent-ux-charter.md#3-errors-are-prompts-for-the-next-tool-call)
+[Structured recovery →](docs/mechanism/structured-recovery.mdx) · [Trust signal →](docs/mechanism/trust-signal.mdx) · [Charter v1.2 reference →](docs/agent-ux-charter.md#3-errors-are-prompts-for-the-next-tool-call)
 
 </td>
 </tr>
@@ -214,7 +216,7 @@ Entities, metrics, and canonical joins compile to parameterized SQL SchemaBrain 
 
 ### 6. Pluggable into any agent loop
 
-The same MCP stdio surface Claude Desktop sees is exposed to any host that speaks MCP — your own Anthropic, OpenAI, or LangGraph loop included. [`examples/anthropic_demo.py`](examples/anthropic_demo.py) is a 230-LOC drop-in that wires Claude Haiku 4.5 to `schemabrain serve` and prints exactly which tools the agent chose to call.
+The same MCP stdio surface Claude Desktop sees is exposed to any host that speaks MCP — your own Anthropic, OpenAI, or LangGraph loop included. [`examples/anthropic_demo.py`](examples/anthropic_demo.py) is a ~250-LOC drop-in that wires Claude Haiku 4.5 to `schemabrain serve` and prints exactly which tools the agent chose to call.
 
 ```bash
 python examples/anthropic_demo.py \
@@ -229,6 +231,28 @@ python examples/anthropic_demo.py \
 </td>
 </tr>
 </table>
+
+---
+
+## Observability dashboard
+
+SchemaBrain ships an opt-in read-only dashboard for the same audit + PII + refusal data the firewall is already writing.
+
+```bash
+pip install "schemabrain[ui]"
+schemabrain dashboard
+# → http://127.0.0.1:7878
+```
+
+Three surfaces:
+
+- **PII Ledger** — entity-by-category matrix; catastrophic-leak markers identify which entities will trip the default `--pii-block` policy.
+- **Refusals** — every `refused` envelope with its recovery hint, so you can see exactly what the agent was blocked from doing.
+- **Audit Viewer** — append-only `mcp_audit` chain with hash-verify cursor; click any row to see the compiled SQL, parameters, and PII categories.
+
+The dashboard binds **`127.0.0.1` only** — there is no `--host` flag, by design. It's read-only and reads the same SQLite store `serve` writes to. No agent talks to it.
+
+[Dashboard guide →](docs/dashboard/overview.mdx) · [PII Ledger →](docs/dashboard/pii-ledger.mdx) · [Refusals →](docs/dashboard/refusals.mdx) · [Audit Viewer →](docs/dashboard/audit-viewer.mdx)
 
 ---
 
@@ -255,7 +279,7 @@ SchemaBrain speaks the [Model Context Protocol](https://modelcontextprotocol.io)
 - **Cline** (VS Code extension) — paste into the MCP server settings
 - **Continue** — paste into `~/.continue/config.json`
 - **Codex CLI** — paste into Codex's MCP config
-- **Your own agent loop** — see [`examples/anthropic_demo.py`](examples/anthropic_demo.py) for a 230-LOC Anthropic-SDK reference
+- **Your own agent loop** — see [`examples/anthropic_demo.py`](examples/anthropic_demo.py) for a ~250-LOC Anthropic-SDK reference
 
 The 12-tool surface, PII firewall, audit chain, and recovery contracts are transport-agnostic — any compliant stdio MCP client gets the same guarantees.
 
@@ -275,7 +299,7 @@ We don't ship per-framework adapters; the framework's standard MCP client is suf
 SchemaBrain v0.4 ships stdio only — no HTTPS / SSE transport. Clients that require a cloud HTTPS endpoint do **not** work today:
 
 - **ChatGPT Connectors** — see the [honest gap page](docs/setup/chatgpt.md) for workarounds and the v0.5+ roadmap
-- **Hosted MCP gateways** — by design (local-first wedge; see [vs Querybear](docs/compare/querybear.md))
+- **Hosted MCP gateways** — by design (local-first wedge; see [vs Querybear](docs/compare/querybear.mdx))
 
 If you need ChatGPT support today, a community stdio→HTTPS bridge (`mcp-remote`, `mcp-proxy`, etc.) may work; we have not validated any specific bridge against the PII / audit / recovery semantics.
 
@@ -398,8 +422,9 @@ The five most common first-run failures. Full troubleshooter in [`docs/setup.md`
 | [`docs/semantic-layer.md`](docs/semantic-layer.md) | Building entities, metrics (incl. composite expressions), canonical joins (incl. multi-hop), dbt import |
 | [`docs/operations.md`](docs/operations.md) | `inspect`, `check` (drift), `index --dry-run`, Docker compose |
 | [`docs/observability.md`](docs/observability.md) | `tail`, audit log, OTel export, PII classification |
-| [`docs/mcp-tools.md`](docs/mcp-tools.md) | Full reference for all 12 MCP tools |
-| [`docs/architecture.md`](docs/architecture.md) | Pipeline, retrieval contract, cache logic, cost model, eval |
+| [`docs/reference/mcp-tools/`](docs/reference/mcp-tools/) | Full reference for all 12 MCP tools (overview + 12 per-tool pages) |
+| [`docs/architecture.mdx`](docs/architecture.mdx) | Pipeline, retrieval contract, cache logic, cost model, eval |
+| [`docs/dashboard/overview.mdx`](docs/dashboard/overview.mdx) | Read-only observability dashboard — PII ledger, refusals, audit viewer |
 | [`docs/landscape.md`](docs/landscape.md) | Comparison vs Vanna / Atlan / dbt-mcp / WrenAI; "is this a semantic layer?" |
 | [`docs/threat-model.md`](docs/threat-model.md) | Security model + boundaries |
 | [`docs/adr/`](docs/adr/) | Architecture decision records (audit/PII taxonomy, store protocol, versioning policy, observability bus) |
@@ -419,7 +444,7 @@ Postgres 16+ (primary target) and SQLite (for development and demos). Adding Sno
 The consumer is an agent, not a service. MCP standardizes tool registration, schema description, and request/response transport. Agents discover SchemaBrain natively and get its tool surface — no API wrapper, no SDK to maintain per language.
 
 **Is this a semantic layer like Cube or dbt Semantic Layer?**
-Partially. SchemaBrain ships entities, metrics, and canonical joins as first-class persisted definitions today — agents call them via `list_entities`, `describe_entity`, `resolve_join`, `get_metric`. But the semantic layer isn't the headline; it's the **substrate** that makes the SQL-boundary safety primitives possible. Full comparison vs Cube / dbt-mcp / Vanna / WrenAI in [`docs/landscape.md`](docs/landscape.md).
+No — SchemaBrain is a SQL firewall built on a semantic-layer substrate. Entities, metrics, and canonical joins are first-class persisted definitions (`list_entities`, `describe_entity`, `resolve_join`, `get_metric`), but they exist to make the safety primitives possible — read-only-by-architecture, PII refusal, audit chain. The substrate is the means; the firewall is the headline. Full comparison vs Cube / dbt-mcp / Vanna / WrenAI in [`docs/landscape.md`](docs/landscape.md).
 
 More questions answered in [`docs/setup.md`](docs/setup.md#troubleshooting) (why local embeddings, more troubleshooting).
 
