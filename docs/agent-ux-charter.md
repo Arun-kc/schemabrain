@@ -66,7 +66,7 @@ Six design choices follow from "the primary consumer is an LLM":
 | Response shape | Optimized for human parsing | Optimized for LLM composition |
 | Tool descriptions | What the tool does | When to use it, when not to, what to combine it with |
 | Errors | Stack traces / exception types | Recovery contracts (kind + message + next-call hint) |
-| Confidence | Implicit / trust the operator | Explicit `HIGH | MEDIUM | LOW` with provenance |
+| Confidence | Implicit / trust the operator | Explicit `HIGH` / `MEDIUM` / `LOW` with provenance |
 | Update model | Tied to model deploy | Continuous re-index from observed warehouse traffic |
 
 The five principles below are the load-bearing details.
