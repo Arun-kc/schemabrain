@@ -37,6 +37,8 @@
               "setup/claude-code",
               "setup/cursor",
               "setup/windsurf",
+              "setup/zed",
+              "setup/codex",
               "setup/chatgpt"
             ]
           },

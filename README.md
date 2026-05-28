@@ -275,10 +275,10 @@ SchemaBrain speaks the [Model Context Protocol](https://modelcontextprotocol.io)
 
 `schemabrain init --host manual` prints the JSON entry to stdout — paste it into whatever host config you're using. Any client that launches a subprocess and speaks MCP stdio should work in principle; we have not exhaustively tested each. Common targets:
 
-- **Zed** — paste into the assistant MCP settings
+- **Zed** — full walkthrough at [`docs/setup/zed.md`](docs/setup/zed.md)
+- **Codex CLI** (working path for ChatGPT users) — full walkthrough at [`docs/setup/codex.md`](docs/setup/codex.md)
 - **Cline** (VS Code extension) — paste into the MCP server settings
 - **Continue** — paste into `~/.continue/config.json`
-- **Codex CLI** — paste into Codex's MCP config
 - **Your own agent loop** — see [`examples/anthropic_demo.py`](examples/anthropic_demo.py) for a ~250-LOC Anthropic-SDK reference
 
 The 12-tool surface, PII firewall, audit chain, and recovery contracts are transport-agnostic — any compliant stdio MCP client gets the same guarantees.
