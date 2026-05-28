@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 620" width="800" height="620"
+     role="img" aria-label="schemabrain architecture: mcp client → mcp server → schemabrain core (pii · embedder · audit · registry) → postgres">
+<defs>
+<pattern id="g-dark" width="32" height="32" patternUnits="userSpaceOnUse">
+  <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#1E293B" stroke-width="0.5" opacity="0.32"/>
+</pattern>
+<marker id="ar-dark" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+  <path d="M 0 0 L 10 5 L 0 10 Z" fill="#3DCD8B"/>
+</marker>
+</defs>
+<rect width="800" height="620" fill="#0A0B10"/>
+<rect width="800" height="620" fill="url(#g-dark)"/>
+<g>
+<text x="40" y="34" fill="#3DCD8B" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" letter-spacing="2" font-weight="600">SCHEMABRAIN · ARCHITECTURE</text>
+<text x="40" y="56" fill="#F5F5F1" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="700" letter-spacing="-0.2">The trust boundary between AI agents and production data.</text>
+<text x="760" y="34" text-anchor="end" fill="rgba(245,245,241,0.62)" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" letter-spacing="1.4">STDIO · READ-ONLY · MIT</text>
+</g>
+
+<rect x="120" y="194" width="560" height="252" rx="14"
+      fill="rgba(61,205,139,0.035)" stroke="#3DCD8B" stroke-width="1" stroke-opacity="0.45" stroke-dasharray="6 4"/>
+<g stroke="#3DCD8B" stroke-width="2" fill="none" stroke-linecap="round" stroke-opacity="0.9">
+  <path d="M 120 208 L 120 194 L 134 194"/>
+  <path d="M 666 194 L 680 194 L 680 208"/>
+  <path d="M 680 432 L 680 446 L 666 446"/>
+  <path d="M 134 446 L 120 446 L 120 432"/>
+</g>
+<rect x="142" y="185" width="146" height="18" rx="4" fill="#0A0B10" stroke="#3DCD8B" stroke-opacity="0.65"/>
+<circle cx="154" cy="194" r="2.5" fill="#3DCD8B"/>
+<text x="162" y="198" fill="#3DCD8B" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" font-weight="700" letter-spacing="1.4">TRUST BOUNDARY</text>
+
+<rect x="140" y="84" width="520" height="76" rx="10" fill="#13151D" stroke="#1E2230"/>
+<line x1="141" y1="116" x2="659" y2="116" stroke="#1E2230"/>
+<circle cx="158" cy="102" r="3" fill="#3DCD8B"/>
+<text x="168" y="105" fill="#F5F5F1" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" font-weight="600" letter-spacing="1.4">MCP CLIENT HOST</text>
+<rect x="615" y="94" width="33" height="16" rx="3" fill="rgba(61,205,139,0.10)" stroke="#3DCD8B" stroke-opacity="0.45"/>
+<text x="631.5" y="105" text-anchor="middle" fill="#3DCD8B" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" font-weight="600" letter-spacing="0.6">LLM</text>
+<g transform="translate(168 134)" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9.5" fill="rgba(245,245,241,0.62)">
+  <text x="0" y="0">Claude Desktop</text>
+  <text x="110" y="0">·  Claude Code</text>
+  <text x="220" y="0">·  Cursor</text>
+  <text x="298" y="0">·  Zed</text>
+  <text x="350" y="0">·  LangGraph</text>
+</g>
+<text x="168" y="151" fill="rgba(245,245,241,0.40)" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" letter-spacing="0.4">5 supported hosts · stdio over jsonrpc 2.0</text>
+
+<line x1="400" y1="160" x2="400" y2="203" stroke="#3DCD8B" stroke-width="1.4" stroke-dasharray="4 4" stroke-opacity="0.75" marker-end="url(#ar-dark)"/>
+<g>
+<circle cx="400" cy="184" r="12" fill="#3DCD8B"/>
+<text x="400" y="188" text-anchor="middle" fill="#0A0B10" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" font-weight="700">1</text>
+<text x="422" y="188" fill="rgba(245,245,241,0.62)" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" letter-spacing="0.4">discover · stdio jsonrpc 2.0</text>
+</g>
+
+<rect x="140" y="208" width="520" height="76" rx="10" fill="#13151D" stroke="#1E2230"/>
+<line x1="141" y1="240" x2="659" y2="240" stroke="#1E2230"/>
+<circle cx="158" cy="226" r="3" fill="#3DCD8B"/>
+<text x="168" y="229" fill="#F5F5F1" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" font-weight="600" letter-spacing="1.4">MCP SERVER · 12 READ-ONLY TOOLS</text>
+
+<g transform="translate(168 258)" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace">
+  <circle cx="0" cy="-3" r="2.5" fill="#3DCD8B"/>
+  <text x="8" y="0" fill="#F5F5F1" font-size="9.5" font-weight="600">5 physical</text>
+  <text x="68" y="0" fill="rgba(245,245,241,0.62)" font-size="9">tables · columns · joins · examples</text>
+</g>
+<g transform="translate(168 273)" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace">
+  <circle cx="0" cy="-3" r="2.5" fill="#22D3EE"/>
+  <text x="8" y="0" fill="#F5F5F1" font-size="9.5" font-weight="600">7 semantic</text>
+  <text x="68" y="0" fill="rgba(245,245,241,0.62)" font-size="9">entities · metrics · joins · resolve · describe</text>
+</g>
+
+<line x1="400" y1="284" x2="400" y2="327" stroke="#3DCD8B" stroke-width="1.4" stroke-dasharray="4 4" stroke-opacity="0.75" marker-end="url(#ar-dark)"/>
+<g>
+<circle cx="400" cy="308" r="12" fill="#3DCD8B"/>
+<text x="400" y="312" text-anchor="middle" fill="#0A0B10" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" font-weight="700">2</text>
+<text x="422" y="312" fill="rgba(245,245,241,0.62)" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" letter-spacing="0.4">validate · pii firewall · audit</text>
+</g>
+
+<rect x="140" y="332" width="520" height="100" rx="10" fill="#13151D" stroke="#1E2230"/>
+<line x1="141" y1="364" x2="659" y2="364" stroke="#1E2230"/>
+<circle cx="158" cy="350" r="3" fill="#3DCD8B"/>
+<text x="168" y="353" fill="#F5F5F1" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" font-weight="600" letter-spacing="1.4">SCHEMABRAIN CORE</text>
+
+<rect x="150" y="382" width="116" height="32" rx="4" fill="rgba(255,255,255,0.025)" stroke="#1E2230"/>
+<circle cx="159" cy="398" r="2.3" fill="#EF4444"/>
+<text x="168" y="401.5" fill="rgba(245,245,241,0.62)" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9">PII firewall</text>
+<rect x="278" y="382" width="116" height="32" rx="4" fill="rgba(255,255,255,0.025)" stroke="#1E2230"/>
+<circle cx="287" cy="398" r="2.3" fill="#22D3EE"/>
+<text x="296" y="401.5" fill="rgba(245,245,241,0.62)" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9">Embedder</text>
+<rect x="406" y="382" width="116" height="32" rx="4" fill="rgba(255,255,255,0.025)" stroke="#1E2230"/>
+<circle cx="415" cy="398" r="2.3" fill="#3DCD8B"/>
+<text x="424" y="401.5" fill="rgba(245,245,241,0.62)" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9">SHA-256 audit</text>
+<rect x="534" y="382" width="116" height="32" rx="4" fill="rgba(255,255,255,0.025)" stroke="#1E2230"/>
+<circle cx="543" cy="398" r="2.3" fill="#3DCD8B"/>
+<text x="552" y="401.5" fill="rgba(245,245,241,0.62)" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9">Registry</text>
+
+<line x1="400" y1="432" x2="400" y2="475" stroke="#3DCD8B" stroke-width="1.4" stroke-dasharray="4 4" stroke-opacity="0.75" marker-end="url(#ar-dark)"/>
+<g>
+<circle cx="400" cy="456" r="12" fill="#3DCD8B"/>
+<text x="400" y="460" text-anchor="middle" fill="#0A0B10" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" font-weight="700">3</text>
+<text x="422" y="460" fill="rgba(245,245,241,0.62)" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" letter-spacing="0.4">execute · read-only sql</text>
+</g>
+
+<rect x="140" y="480" width="520" height="76" rx="10" fill="#13151D" stroke="#1E2230"/>
+<line x1="141" y1="512" x2="659" y2="512" stroke="#1E2230"/>
+<circle cx="158" cy="498" r="3" fill="#3DCD8B"/>
+<text x="168" y="501" fill="#F5F5F1" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" font-weight="600" letter-spacing="1.4">PRODUCTION POSTGRES</text>
+<rect x="552" y="490" width="96" height="16" rx="3" fill="rgba(61,205,139,0.10)" stroke="#3DCD8B" stroke-opacity="0.45"/>
+<text x="600" y="501" text-anchor="middle" fill="#3DCD8B" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" font-weight="600" letter-spacing="0.6">read_only = ON</text>
+<text x="168" y="530" fill="rgba(245,245,241,0.62)" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9.5">parameterized sql only  ·  server-side statement_timeout  ·  row-count cap</text>
+<text x="168" y="546" fill="rgba(245,245,241,0.40)" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" letter-spacing="0.4">connection enforces transaction_read_only = ON before any tool runs</text>
+
+<!-- footer caption -->
+<g transform="translate(40 598)">
+  <text fill="rgba(245,245,241,0.40)" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" letter-spacing="0.4">— schemabrain v1 · sql firewall for AI agents · MIT</text>
+</g>
+
+</svg>
