@@ -1,0 +1,6 @@
+version: 1
+name: payment_method
+description: A card on file for a customer (last-4, brand, expiry)
+binding:
+  single_table: public.payment_methods
+identity: id

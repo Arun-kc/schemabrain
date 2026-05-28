@@ -96,7 +96,7 @@ schemabrain init
 `init` is a seven-stage wizard that takes you from "I have a Postgres database" to "Claude Desktop can answer questions about it" in one command. On first run it prompts for what it needs:
 
 - **A Postgres URL** — paste your own connection string, or press **Enter** to spin up a local demo Postgres container with the bundled e-commerce fixture (Docker is invoked automatically; idempotent on re-runs).
-- **An `ANTHROPIC_API_KEY`** — optional. Skip and the wizard still wires Claude Desktop; entity curation can run later.
+- **An `ANTHROPIC_API_KEY`** — optional. Skip and the wizard still wires Claude Desktop. On the **demo path**, entities + metrics + joins are pre-curated from a bundled YAML pack — the semantic layer works zero-config. On **your own database**, entity curation can run later via `schemabrain entities suggest --apply` once you have a key.
 
 ```
 SchemaBrain init — activation wizard
@@ -153,10 +153,10 @@ The MCP surface exposes twelve tools — **none of which can write**. There is n
 
 ### 2. PII-aware refusal at the `get_metric` tool boundary
 
-Any `get_metric` touching a blocked PII category returns a `refused` envelope; the compiled SQL never runs and the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`. `describe_entity` enforces the same policy at the column level — the agent still sees the entity and its non-PII columns, but blocked columns ship with `redacted=True` and the LLM-enriched description cleared. `schemabrain init` writes `--pii-block credential,payment_card,government_id` into the Claude Desktop snippet by default — the catastrophic-leak categories where no plausible aggregate-analytics use case exists. Widen with `--pii-block contact,health` and other categories as needed.
+Any `get_metric` touching a blocked PII category returns a `refused` envelope; the compiled SQL never runs and the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`. `describe_entity` enforces the same policy at the column level — the agent still sees the entity and its non-PII columns, but blocked columns ship with `redacted=True` and the LLM-enriched description cleared. `schemabrain init` writes `--pii-block credential,payment_card,government_id` into the Claude Desktop snippet by default — the catastrophic-leak categories where no plausible aggregate-analytics use case exists. `--pii-block` **replaces** the set rather than extending it, so widen by listing the full target set (don't drop the catastrophic-leak defaults by accident):
 
 ```bash
-schemabrain serve --pii-block contact,health
+schemabrain serve --pii-block credential,payment_card,government_id,contact,health
 ```
 
 Twelve categories from GDPR, CCPA/CPRA, HIPAA, PCI DSS, ISO 27018 — tagged per-column at index time. Detection is column-name patterns + redacted-sample inspection — see [`schemabrain/pii/classifier.py`](schemabrain/pii/classifier.py) for the full rule set.

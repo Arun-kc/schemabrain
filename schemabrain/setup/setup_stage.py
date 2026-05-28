@@ -577,6 +577,55 @@ def _print_docker_failure(
     console.print(f"  [yellow]{GLYPH_ERR} {summary}: {detail}[/]")
 
 
+def _detect_stale_demo_fixture(*, url: str) -> bool:
+    """Return True iff the running demo container has a pre-v2 fixture.
+
+    v2 added `users.password_hash` and the `payment_methods` table —
+    the catastrophic-leak columns that make the firewall demo fire.
+    A container seeded against the v1 fixture has `public.users` but
+    no `password_hash` column; this check reads `information_schema`
+    and returns True for that shape (so the caller can prompt to
+    recreate).
+
+    Returns False on any of: fresh container (no `users` table yet —
+    fixture will load cleanly), already on v2 (column present), or
+    connection / query failure (degrade silently rather than blocking
+    the demo path on a diagnostic that's only a polish concern).
+    """
+    from urllib.parse import urlparse
+
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from schemabrain.errors import silent_rewrite_to_psycopg
+
+    rewritten_url = silent_rewrite_to_psycopg(urlparse(url).scheme, url) or url
+    try:
+        engine = create_engine(rewritten_url, connect_args={"connect_timeout": 2})
+        try:
+            with engine.connect() as conn:
+                users_exists = conn.execute(
+                    text(
+                        "SELECT 1 FROM information_schema.tables "
+                        "WHERE table_schema='public' AND table_name='users'"
+                    )
+                ).first()
+                if users_exists is None:
+                    return False
+                pwd_col = conn.execute(
+                    text(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_schema='public' AND table_name='users' "
+                        "AND column_name='password_hash'"
+                    )
+                ).first()
+                return pwd_col is None
+        finally:
+            engine.dispose()
+    except SQLAlchemyError:
+        return False
+
+
 def _try_auto_docker_demo(*, console: Console) -> bool:
     """Orchestrate the 3 auto-docker steps; True iff demo is ready end-to-end.
 
@@ -590,6 +639,45 @@ def _try_auto_docker_demo(*, console: Console) -> bool:
         return False
     if not _wait_for_postgres_ready(url=DEMO_DATABASE_URL, console=console):
         return False
+    if _detect_stale_demo_fixture(url=DEMO_DATABASE_URL):
+        # Older container missing password_hash + payment_methods.
+        # The new fixture's ALTER TABLE IF NOT EXISTS would patch the
+        # users column on top, but ON CONFLICT DO NOTHING leaves
+        # existing rows with a placeholder hash — the demo would look
+        # half-cooked. Surface this loudly + offer the clean fix.
+        from rich.prompt import Prompt
+
+        console.print()
+        console.print(
+            f"  [yellow]{GLYPH_WARN} Existing [cyan]{DEMO_CONTAINER_NAME}[/] "
+            "predates the v2 demo fixture (missing PII columns the firewall "
+            "demo needs).[/]"
+        )
+        console.print(
+            "  [bright_black]Recreating the container gives the cleanest "
+            "demo (the firewall fires on the very first query).[/]"
+        )
+        with pause_active_spinner():
+            choice = Prompt.ask(
+                f"  [cyan]Recreate [bold]{DEMO_CONTAINER_NAME}[/bold] now?[/]",
+                console=console,
+                choices=["y", "n"],
+                default="y",
+            )
+        if choice.lower() == "y":
+            _safe_subprocess(
+                ["docker", "rm", "-f", DEMO_CONTAINER_NAME],
+                timeout_s=_DOCKER_START_TIMEOUT_S,
+            )
+            if not _docker_run_demo_postgres(console=console):
+                return False
+            if not _wait_for_postgres_ready(url=DEMO_DATABASE_URL, console=console):
+                return False
+        else:
+            console.print(
+                f"  [bright_black]{GLYPH_OK} Continuing with the older "
+                "container — the firewall + PII demo will be limited.[/]"
+            )
     return _docker_load_fixture(console=console)
 
 

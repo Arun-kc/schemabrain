@@ -1,0 +1,6 @@
+version: 1
+name: address
+description: A street address used by orders for billing or shipping
+binding:
+  single_table: public.addresses
+identity: id

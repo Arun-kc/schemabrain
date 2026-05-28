@@ -1,0 +1,6 @@
+version: 1
+name: product_category
+description: Junction table linking each product to its categories
+binding:
+  single_table: public.product_categories
+identity: product_id

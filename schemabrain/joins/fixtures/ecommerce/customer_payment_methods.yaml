@@ -1,0 +1,24 @@
+# ONE example canonical-join definition for the bundled SchemaBrain
+# ecommerce demo. SchemaBrain is a generic semantic layer; this is
+# a starter pack, NOT a template every user should adopt verbatim.
+#
+# To apply:
+#   schemabrain joins apply schemabrain/joins/fixtures/ecommerce/ \
+#     --source $DATABASE_URL --store-path ./schemabrain.db
+#
+# Requires the matching entity definitions to be applied first.
+
+version: 1
+name: customer_payment_methods
+description: Links each payment method on file to the customer who owns it.
+source_entity: payment_method
+target_entity: customer
+"on":
+  - source: user_id
+    target: id
+# Many payment methods for one customer — same fan-out shape as
+# customer_orders. The join exists so the canonical-PII-propagation
+# demo ("show me users with their cards") trips the firewall: the
+# JOIN result inherits `payment_card` tags from payment_methods even
+# though the user-level query starts from a non-PII column.
+cardinality: many_to_one

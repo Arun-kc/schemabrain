@@ -1009,6 +1009,34 @@ def _stage_entities(ctx: WizardContext) -> StageOutcome:
                 "to re-curate from a fresh prompt",
             )
 
+    # Demo-path branch: bundled YAMLs ship for the ecommerce demo so
+    # the semantic layer works zero-config, no `ANTHROPIC_API_KEY`
+    # required. Sits before the dbt branch because the demo URL is a
+    # local container — a user wouldn't have a real dbt project
+    # pointing at it. Sits before the API-key check for the same
+    # reason the dbt branch does.
+    if _is_demo_source(cfg.source_url):
+        applied, failures = _apply_bundled_demo_yamls(kind="entities", cfg=cfg, source_id=source_id)
+        if applied == 0:
+            return StageOutcome(
+                stage=3,
+                name="entities",
+                status="failed",
+                message=f"failed to apply bundled demo entities: {failures}",
+                next_step="report this as a bug — the bundled YAMLs are wheel-shipped",
+            )
+        suffix = (
+            "" if not failures else f" ({len(failures)} skipped: {failures[0].split(':', 1)[0]})"
+        )
+        return StageOutcome(
+            stage=3,
+            name="entities",
+            status="done",
+            message=f"applied {applied} bundled entit{'y' if applied == 1 else 'ies'}"
+            f" from the ecommerce demo pack{suffix}",
+            next_step="ask the agent: `find_relevant_entities(query='users')`",
+        )
+
     # PR C: dbt-import branch. Sits before the API-key check because
     # the dbt path doesn't call the LLM. Stage 1 (source_check)
     # populated `ctx.dbt_manifest_path` if a manifest was detected
@@ -1610,6 +1638,90 @@ def _run_entities_from_dbt(
     )
 
 
+# ----- demo-path pre-curation ----------------------------------------------
+# When the wizard runs against the bundled demo (DEMO_DATABASE_URL),
+# stages 3/4/5 apply the matching bundled YAMLs instead of calling the
+# LLM. This makes the semantic layer (entities + metrics + joins)
+# work zero-config — without it, a demo user with no ANTHROPIC_API_KEY
+# sees `find_relevant_entities` / `get_metric` return empty results,
+# and the demo never demonstrates the layer that differentiates
+# SchemaBrain from a plain MCP Postgres connector.
+
+
+def _is_demo_source(source_url: str) -> bool:
+    """Return True iff `source_url` matches the wizard's pinned demo URL.
+
+    Uses a string-suffix match against the host/port/db tail of
+    `DEMO_DATABASE_URL` so the silent `+psycopg` rewrite (applied to
+    bare `postgresql://` URLs in cli.py before they reach the wizard)
+    doesn't break the comparison. Both `postgresql://` and
+    `postgresql+psycopg://` variants of the demo URL share the
+    `@localhost:5433/postgres` tail.
+    """
+    from schemabrain.setup.setup_stage import DEMO_DATABASE_URL
+
+    demo_tail = DEMO_DATABASE_URL.split("://", 1)[1]
+    return source_url.endswith(demo_tail)
+
+
+def _apply_bundled_demo_yamls(
+    *,
+    kind: Literal["entities", "metrics", "joins"],
+    cfg: WizardConfig,
+    source_id: str,
+) -> tuple[int, list[str]]:
+    """Apply every bundled YAML for `kind` to the local store.
+
+    Returns `(applied_count, failure_messages)`. Per-file failures
+    accumulate but don't abort the loop — the stage handler renders a
+    partial-success outcome if the count is < total. Used only on the
+    demo path; production sources go through the LLM / dbt-import
+    branches.
+    """
+    from schemabrain.core.store import SQLiteStore
+    from schemabrain.eval.bundled import (
+        bundled_entities_fixture_dir,
+        bundled_joins_fixture_dir,
+        bundled_metrics_fixture_dir,
+    )
+
+    if kind == "entities":
+        from schemabrain.entities.yaml_grammar import parse_entity_yaml_file as _parse
+
+        directory = bundled_entities_fixture_dir()
+
+        def _write(store: SQLiteStore, obj: object) -> None:
+            store.write_entity(obj, source_connection_id=source_id)  # type: ignore[arg-type]
+    elif kind == "metrics":
+        from schemabrain.metrics.yaml_grammar import parse_metric_yaml_file as _parse
+
+        directory = bundled_metrics_fixture_dir()
+
+        def _write(store: SQLiteStore, obj: object) -> None:
+            store.write_metric(obj, source_connection_id=source_id)  # type: ignore[arg-type]
+    else:
+        from schemabrain.joins.yaml_grammar import parse_canonical_join_yaml_file as _parse
+
+        directory = bundled_joins_fixture_dir()
+
+        def _write(store: SQLiteStore, obj: object) -> None:
+            store.write_canonical_join(obj, source_connection_id=source_id)  # type: ignore[arg-type]
+
+    applied = 0
+    failures: list[str] = []
+    with SQLiteStore(cfg.store_path) as store:
+        for yaml_path in sorted(directory.glob("*.yaml")):
+            try:
+                parsed = _parse(yaml_path)
+                _write(store, parsed)
+                applied += 1
+            except Exception as exc:
+                # Capture every parse/write fault as a per-file failure;
+                # the stage renders partial-success rather than aborting.
+                failures.append(f"{yaml_path.name}: {exc}")
+    return applied, failures
+
+
 # ----- stage 4: metrics ----------------------------------------------------
 
 
@@ -1731,6 +1843,32 @@ def _stage_metrics(ctx: WizardContext) -> StageOutcome:
             message="entity store is empty; metrics need entities to anchor on",
             next_step="run `schemabrain entities suggest --apply` first, "
             "then re-run `schemabrain init` (or `schemabrain metrics suggest --apply`)",
+        )
+
+    # Demo-path branch: bundled metric YAMLs (total_revenue,
+    # order_count, etc.) ship for the ecommerce demo so the semantic
+    # layer demonstrates measurable metrics on Query 3 without
+    # ANTHROPIC_API_KEY.
+    if _is_demo_source(cfg.source_url):
+        applied, failures = _apply_bundled_demo_yamls(kind="metrics", cfg=cfg, source_id=source_id)
+        if applied == 0:
+            return StageOutcome(
+                stage=4,
+                name="metrics",
+                status="failed",
+                message=f"failed to apply bundled demo metrics: {failures}",
+                next_step="report this as a bug — the bundled YAMLs are wheel-shipped",
+            )
+        suffix = (
+            "" if not failures else f" ({len(failures)} skipped: {failures[0].split(':', 1)[0]})"
+        )
+        return StageOutcome(
+            stage=4,
+            name="metrics",
+            status="done",
+            message=f"applied {applied} bundled metric{'' if applied == 1 else 's'}"
+            f" from the ecommerce demo pack{suffix}",
+            next_step="ask the agent: `get_metric(name='total_revenue', time_grain='month')`",
         )
 
     # PR C: dbt-import branch. Mirror of the entities-stage dbt
@@ -2303,6 +2441,33 @@ def _stage_joins(ctx: WizardContext) -> StageOutcome:
             message="entity store is empty; joins need entities to anchor on",
             next_step="run `schemabrain entities suggest --apply` first, "
             "then re-run `schemabrain init` (or `schemabrain joins suggest --apply`)",
+        )
+
+    # Demo-path branch: bundled canonical-join YAMLs ship for the
+    # ecommerce demo. Pre-applying them turns the canonical-PII-
+    # propagation demo on without an FK-driven suggester round-trip
+    # (the suggester would land the same shapes anyway; the bundled
+    # pack pins exact descriptions + cardinalities for the docs).
+    if _is_demo_source(cfg.source_url):
+        applied, failures = _apply_bundled_demo_yamls(kind="joins", cfg=cfg, source_id=source_id)
+        if applied == 0:
+            return StageOutcome(
+                stage=5,
+                name="joins",
+                status="failed",
+                message=f"failed to apply bundled demo joins: {failures}",
+                next_step="report this as a bug — the bundled YAMLs are wheel-shipped",
+            )
+        suffix = (
+            "" if not failures else f" ({len(failures)} skipped: {failures[0].split(':', 1)[0]})"
+        )
+        return StageOutcome(
+            stage=5,
+            name="joins",
+            status="done",
+            message=f"applied {applied} bundled canonical join{'' if applied == 1 else 's'}"
+            f" from the ecommerce demo pack{suffix}",
+            next_step="ask the agent: `find_relevant_entities(query='customer payment methods')`",
         )
 
     try:

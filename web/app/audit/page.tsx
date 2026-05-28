@@ -5,6 +5,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { HeaderStrip } from "@/components/dashboard/HeaderStrip";
+import { HalfCircleIcon } from "@/components/icons/HalfCircleIcon";
 import type { AuditRow } from "@/lib/types";
 import styles from "@/components/audit/ledger.module.css";
 
@@ -61,14 +62,22 @@ export default function AuditPage() {
         {/* Verification Ribbon */}
         <div className={styles.ribbon}>
           <div className={styles.ribbonText}>
-            <h2>
+            <h2 className="inline-flex items-center gap-2">
               {isIntact ? (
                 <>
-                  <span className="text-emerald-500" role="img" aria-label="shield check">🛡️</span> Ledger Chain Intact
+                  <HalfCircleIcon
+                    className="text-(--color-signal-green) w-5 h-5"
+                    aria-label="Ledger chain intact"
+                  />
+                  Ledger Chain Intact
                 </>
               ) : (
                 <>
-                  <span className="text-red-500" role="img" aria-label="warning triangle">⚠️</span> Ledger Chain Mismatch
+                  <HalfCircleIcon
+                    className="text-(--color-signal-red) w-5 h-5"
+                    aria-label="Ledger chain mismatch"
+                  />
+                  Ledger Chain Mismatch
                 </>
               )}
             </h2>

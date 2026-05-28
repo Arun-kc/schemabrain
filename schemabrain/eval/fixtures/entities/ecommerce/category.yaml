@@ -1,0 +1,6 @@
+version: 1
+name: category
+description: A product category (may nest under a parent category)
+binding:
+  single_table: public.categories
+identity: id

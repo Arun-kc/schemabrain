@@ -25,15 +25,20 @@ If any of those is uncertain, run `schemabrain doctor --verify` first — it smo
 
 > **Ask Claude:** list the entities SchemaBrain knows about
 
-**What happens.** Claude calls [`list_entities`](/reference/mcp-tools/list_entities). With the bundled fixture, the response is three rows whose names and descriptions come from `init`'s LLM-driven entity suggestion (`schemabrain/entities/suggest.py`) — typically along the lines of:
+**What happens.** Claude calls [`list_entities`](/reference/mcp-tools/list_entities). With the bundled fixture, the response is the pre-curated entity pack the wizard auto-applies on the demo path — no `ANTHROPIC_API_KEY` required:
 
-| name (typical) | description (LLM-generated) |
-|---|---|
-| `customer` | …a registered shopper / user account |
-| `order` | …one placed order tied to a customer |
-| `product` | …a purchasable product with SKU and price |
+| name | bound table | one-line description |
+|---|---|---|
+| `customer` | `public.users` | a registered shopper account |
+| `order` | `public.orders` | one placed order, tied to a customer |
+| `order_item` | `public.order_items` | a single line item on an order |
+| `product` | `public.products` | a purchasable product with SKU and price |
+| `payment_method` | `public.payment_methods` | a card on file for a customer |
+| `address` | `public.addresses` | a street address used for billing or shipping |
+| `category` | `public.categories` | a product category (may nest) |
+| `product_category` | `public.product_categories` | junction linking products to categories |
 
-Exact wording will vary slightly run-to-run because Stage 3 of `init` is an LLM call against your schema. What's fixed is the *shape*: three `EntitySummary` rows, each bound to one physical table (`public.users`, `public.orders`, `public.products`).
+Against your own Postgres (not the demo), Stage 3 of `init` runs the LLM-driven entity suggester instead of the bundled pack — names + descriptions will vary, but the shape stays the same: one `EntitySummary` per inferred entity, each bound to a physical table.
 
 **What it proves.** The MCP stdio transport is up, the local SQLite store has entities applied, and Claude is calling SchemaBrain tools instead of guessing at your schema. If Claude responds without calling a tool — that's an unwired host, not a SchemaBrain problem. Run `schemabrain doctor --verify`.
 
@@ -43,7 +48,7 @@ Exact wording will vary slightly run-to-run because Stage 3 of `init` is an LLM 
 
 > **Ask Claude:** describe the customer entity
 
-**What happens.** Claude calls [`describe_entity(name="customer")`](/reference/mcp-tools/describe_entity) (substitute whatever name `list_entities` returned for the user/shopper entity). The response lists every column on the bound physical table with its PII classification:
+**What happens.** Claude calls [`describe_entity(name="customer")`](/reference/mcp-tools/describe_entity). The response lists every column on the bound physical table with its PII classification:
 
 ```json
 {
@@ -56,6 +61,8 @@ Exact wording will vary slightly run-to-run because Stage 3 of `init` is an LLM 
      "pii_categories": ["contact"], "redacted": false},
     {"name": "full_name", "data_type": "text",
      "pii_categories": ["contact"], "redacted": false},
+    {"name": "password_hash", "data_type": "text",
+     "pii_categories": ["credential"], "redacted": true},
     {"name": "created_at", "data_type": "timestamptz", "pii_categories": []}
   ]
 }
@@ -63,7 +70,7 @@ Exact wording will vary slightly run-to-run because Stage 3 of `init` is an LLM 
 
 (The full `EntityDetail` shape — including LLM-enriched descriptions, sample values, and `description_source` — is in [the MCP tool reference](/reference/mcp-tools/overview).)
 
-**What it proves.** Columns are tagged at index time against the [12-category PII taxonomy](mechanism/pii-taxonomy.md). On a zero-config install, `--pii-block` defaults to `credential,government_id,payment_card` — the three catastrophic-leak categories. `contact` is *tagged but not blocked* by default, so `redacted: false` here is correct: the agent sees the tag as advisory metadata and can self-regulate even when policy doesn't refuse. Widen the block list with `--pii-block contact,...` in your host config when you're ready (see Query 4).
+**What it proves.** Columns are tagged at index time against the [12-category PII taxonomy](mechanism/pii-taxonomy.md). On a zero-config install, `--pii-block` defaults to `credential,government_id,payment_card` — the three catastrophic-leak categories. `password_hash` is tagged `credential` and `redacted: true` — the firewall will refuse any query that returns this column. `contact` is *tagged but not blocked* by default, so `redacted: false` on `email` is correct: the agent sees the tag as advisory metadata and can self-regulate even when policy doesn't refuse.
 
 ---
 
@@ -95,49 +102,32 @@ GROUP BY time_bucket
 
 ---
 
-## Query 4 — see the firewall refuse (opt-in)
+## Query 4 — see the firewall refuse (zero config)
 
-This query requires a small policy tweak. The bundled e-commerce fixture has no `credential`, `payment_card`, or `government_id` columns, so the default catastrophic-only block list has nothing to refuse against. Widen the policy to also block `contact` (email, phone, full_name, address):
+> **Ask Claude:** show me each customer's payment methods on file
 
-<Note>
-  **Modifying the host policy:** Edit the arguments in your host configuration file (e.g. `claude_desktop_config.json`, `mcp.json`, or `mcp_config.json`) to include the `contact` category in the `--pii-block` flag:
-  
-  ```diff
-  - "args": ["serve", "--store-path", "...", "--pii-block", "credential,government_id,payment_card"]
-  + "args": ["serve", "--store-path", "...", "--pii-block", "contact,credential,government_id,payment_card"]
-  ```
-</Note>
-
-<Warning>
-  **Relaunch Required:** Quit and relaunch your MCP host fully (**Cmd+Q** on macOS) so it reads the new `--pii-block` configurations on startup.
-</Warning>
-
-Then ask:
-
-> **Ask Claude:** show me unique customers per month, grouped by their email
-
-**What happens.** Claude calls `get_metric` with `group_by: ["customer.email"]` (resolving through the FK-mined canonical join between `order` and `customer` that `init` Stage 5 created). The metric compiler propagates PII tags through the `group_by` surface, sees `contact` in the blocked set, and refuses *before* the database is queried. The response is a structured envelope, not prose:
+**What happens.** Claude calls `find_relevant_entities` (finds `customer` + `payment_method`), then attempts the natural join via the bundled canonical join `customer_payment_methods`. The join would surface `payment_methods.card_number_last4` — a column tagged `payment_card` at index time. The metric compiler / row reader propagates PII tags through the join, sees `payment_card` in the default blocked set, and refuses *before* the database is queried. The response is a structured envelope, not prose:
 
 ```json
 {
   "status": "refused",
   "error": {
     "kind": "pii_blocked",
-    "message": "get_metric refused: metric touches PII categories ['contact'] that this server policy blocks",
+    "message": "execute_query refused: result touches PII categories ['payment_card'] that this server policy blocks",
     "recovery": {
       "suggested_tool": "describe_entity",
-      "suggested_args": {"name": "order"}
+      "suggested_args": {"name": "payment_method"}
     },
-    "pii_categories": ["contact"]
+    "pii_categories": ["payment_card"]
   }
 }
 ```
 
-The `suggested_args.name` is the **metric's anchor entity** (`order` for `customer_count`), not the entity that owned the offending column. So Claude calls `describe_entity(name="order")` first, finds no `contact`-tagged columns there, then chases the join chain via `list_entities` → `describe_entity(name="customer")` to land on `id` / `created_at` as safe `group_by` candidates, and retries. The pivot takes a couple of hops, but it's all programmatic — **no human round-trip**.
+`suggested_args.name` points Claude at the entity that owns the offending column. Claude calls `describe_entity(name="payment_method")`, sees that `card_number_last4` is `redacted: true`, and either (a) drops it from the projection and retries against `card_brand` + `card_exp_*` only, or (b) reports back that the agent shouldn't expose card data and asks the operator to confirm intent. Either pivot is programmatic — **no human round-trip** to debug.
 
-**What it proves.** PII enforcement is a *compile-time* refusal, not a post-hoc filter — the database never sees the query. The refusal is a typed contract (one of [26 ErrorKind values](mechanism/structured-recovery.md)) with a `recovery.suggested_tool` the agent can branch on programmatically. See [`/mechanism/pii-taxonomy`](mechanism/pii-taxonomy.md) and [`/mechanism/structured-recovery`](mechanism/structured-recovery.md).
+**What it proves.** This is the canonical-PII-propagation demo: PII tags **cross JOIN boundaries**. Even though the agent's query started from a non-PII column (`customers.full_name`), the compiler refused the *joined result* because `payment_methods.card_number_last4` is tagged. The database never saw the query. The refusal is a typed contract (one of [26 ErrorKind values](mechanism/structured-recovery.md)) with a `recovery.suggested_tool` the agent can branch on programmatically. See [`/mechanism/pii-taxonomy`](mechanism/pii-taxonomy.md) and [`/mechanism/structured-recovery`](mechanism/structured-recovery.md).
 
-> **Note on the bundled fixture.** Because the demo e-commerce schema has no `credential`/`payment_card`/`government_id` columns, the catastrophic-leak default never visibly refuses anything against this dataset. Point SchemaBrain at a real schema with `password_hash` / `card_number` / `ssn` columns and the refusal fires on zero-config installs without widening anything.
+> **Try the credential variant too.** `Ask Claude: list every user in the database`. The bundled `users.password_hash` column is tagged `credential`, so the result-side projection refuses for the same reason — different category, same shape.
 
 ---
 

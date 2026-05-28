@@ -26,7 +26,7 @@ The wizard then introspects the schema, classifies columns for PII, optionally c
 
 ```bash
 claude mcp list
-# schemabrain  uvx schemabrain==X.Y.Z serve --url-env SCHEMABRAIN_DATABASE_URL --store-path ...
+# schemabrain  uvx schemabrain==0.4.0 serve --url-env SCHEMABRAIN_DATABASE_URL --store-path ...
 ```
 
 Then in a new Claude Code session:
@@ -47,7 +47,7 @@ If Claude calls `list_entities` and reports the entities curated during init, yo
 claude mcp add \
   -e SCHEMABRAIN_DATABASE_URL=postgresql+psycopg://user:pass@host:5432/db \
   schemabrain -- \
-  uvx schemabrain==X.Y.Z serve --url-env SCHEMABRAIN_DATABASE_URL --store-path ~/.schemabrain/store.db
+  uvx schemabrain==0.4.0 serve --url-env SCHEMABRAIN_DATABASE_URL --store-path ~/.schemabrain/store.db
 ```
 
 The `--` separator is load-bearing — without it, Claude Code's parser would try to interpret `--url-env` as one of its own flags. The `SCHEMABRAIN_DATABASE_URL` env-var name is the wizard's default — it's prefixed to avoid colliding with any app-level `DATABASE_URL` you already have in the host's environment.
@@ -57,7 +57,7 @@ The `--` separator is load-bearing — without it, Claude Code's parser would tr
 ## What you get
 
 - **12 MCP tools, none of which can write.** Full list in [`/mechanism/read-only`](../mechanism/read-only.md).
-- **PII-aware refusal at the `get_metric` boundary.** Defaults block `credential`, `payment_card`, `government_id`; widen with `--pii-block contact,health,...`. Details in [`/mechanism/pii-taxonomy`](../mechanism/pii-taxonomy.md).
+- **PII-aware refusal at the `get_metric` boundary.** Defaults block `credential`, `payment_card`, `government_id`. `--pii-block` **replaces** the set rather than extending it, so widen by listing the full target set, e.g. `--pii-block credential,payment_card,government_id,contact,health`. Details in [`/mechanism/pii-taxonomy`](../mechanism/pii-taxonomy.md).
 - **Tamper-evident audit chain.** Verify with `schemabrain audit verify`. Details in [`/mechanism/audit-chain`](../mechanism/audit-chain.md).
 - **Structured recovery envelopes.** Refusals and errors ship typed contracts Claude can act on programmatically. Details in [`/mechanism/structured-recovery`](../mechanism/structured-recovery.md).
 

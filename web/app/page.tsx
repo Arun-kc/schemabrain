@@ -38,8 +38,11 @@ export default function HomePage() {
     queryFn: () => api.auditVerify(),
   });
 
-  const catastrophicCount = matrixQuery.data?.totals.catastrophic_columns ?? 2;
-  const refusalsCount = refusalsQuery.data?.total ?? 2;
+  // While loading, render `—` (set by the renderers below) instead of
+  // hardcoded placeholder numbers. The prior fallbacks (2, 2) made a
+  // fresh install look like fake demo data was already in the store.
+  const catastrophicCount = matrixQuery.data?.totals.catastrophic_columns ?? null;
+  const refusalsCount = refusalsQuery.data?.total ?? null;
   const isChainIntact = auditQuery.data?.status === "intact";
 
   return (
@@ -107,7 +110,7 @@ export default function HomePage() {
             eyebrow="SURFACE 01"
             title="PII Visualization"
             description="Which columns carry catastrophic-leak categories — and which database entities will trigger automatic tool refusals."
-            metric={`${catastrophicCount} Catastrophic Cols`}
+            metric={`${catastrophicCount ?? "—"} Catastrophic Cols`}
             status="ACTIVE"
             icon={<TableIcon />}
           />
@@ -116,7 +119,7 @@ export default function HomePage() {
             eyebrow="SURFACE 02"
             title="Refusal Experience"
             description="Live feed of refused database queries, showcasing the detailed recovery envelopes LLMs use to self-correct."
-            metric={`${refusalsCount} Refused Queries`}
+            metric={`${refusalsCount ?? "—"} Refused Queries`}
             status="ACTIVE"
             disabled={false}
             icon={<WarningIcon />}
@@ -134,7 +137,7 @@ export default function HomePage() {
         </section>
 
         <footer className="mt-20 border-t border-(--border-subtle) pt-6 flex items-center justify-between text-xs font-mono text-(--text-muted)">
-          <span>© 2026 SchemaBrain Inc.</span>
+          <span>schemabrain · localhost only</span>
           <span>localhost connection only</span>
         </footer>
       </div>
@@ -205,7 +208,7 @@ function Logo({ theme }: { theme: "light" | "dark" }) {
 
 /* ─────────── DYNAMIC ANIMATED PIPELINE DIAGRAM ─────────── */
 
-function PipelineDiagram({ refusalsCount }: { refusalsCount: number }) {
+function PipelineDiagram({ refusalsCount }: { refusalsCount: number | null }) {
   return (
     <div className="w-full overflow-x-auto select-none py-4">
       <div className="min-w-[640px] flex items-center justify-between px-4 relative">
@@ -246,7 +249,9 @@ function PipelineDiagram({ refusalsCount }: { refusalsCount: number }) {
           </div>
           <span className="font-mono text-xs text-(--text-primary) font-semibold">SCHEMABRAIN</span>
           <span className="font-mono text-[10px] text-[#3ECF8E] font-semibold animate-pulse">
-            {refusalsCount > 0 ? `// ${refusalsCount} REFUSALS BLOCKED` : "// ACTIVE GUARD"}
+            {refusalsCount !== null && refusalsCount > 0
+              ? `// ${refusalsCount} REFUSALS BLOCKED`
+              : "// ACTIVE GUARD"}
           </span>
         </div>
 
