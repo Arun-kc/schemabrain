@@ -151,6 +151,26 @@ class TestServerInfoVersion:
             assert opts.server_version != mcp_sdk_version
 
 
+class TestServerInstructionsSteering:
+    """`instructions` in the MCP `initialize` response is the
+    server-side surface that steers agents through the semantic-firewall
+    flow without any user action. Claude Desktop, Claude Code, Cursor,
+    and Windsurf all honor this field. Pin the load-bearing nudges so
+    accidental rewrites do not silently regress the zero-config DX.
+    """
+
+    def test_instructions_steer_to_semantic_firewall_flow(self, server_with_one_table) -> None:
+        opts = server_with_one_table._mcp_server.create_initialization_options()
+        instructions = opts.instructions or ""
+        # Three load-bearing tool names in the recommended call order.
+        # Positive framing only — the MCP `initialize` response already
+        # carries the full tool list, so the agent can see what exists
+        # without us calling out tools that don't.
+        assert "find_relevant_entities" in instructions
+        assert "describe_entity" in instructions
+        assert "get_metric" in instructions
+
+
 class TestToolRegistry:
     def test_all_tools_are_registered(self, server_with_one_table) -> None:
         names = {t.name for t in asyncio.run(server_with_one_table.list_tools())}

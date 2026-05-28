@@ -632,10 +632,12 @@ class TestInitStageZeroAbortPaths:
         monkeypatch.setattr("schemabrain.setup.setup_stage.prompt_for_init_setup", fake_prompt)
         monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
         # Stub the post-stage-0 PII-block prompt so it doesn't block
-        # on stdin when forced-TTY mode is active.
+        # on stdin when forced-TTY mode is active. Value is
+        # functionally irrelevant for this test; we just need the
+        # prompt not to hang.
         monkeypatch.setattr(
             "schemabrain.setup.setup_stage.prompt_for_pii_block",
-            lambda *, console: ("contact",),
+            lambda *, console: ("credential", "government_id", "payment_card"),
         )
         monkeypatch.setattr("schemabrain.setup.wizard.run_default_wizard", fake_run_wizard)
         # KeyboardInterrupt from the wizard itself bubbles up to main()
@@ -857,11 +859,12 @@ class TestInitCliInteractiveOverlay:
         # The init wizard now surfaces an interactive PII-block choice
         # before constructing the WizardConfig. Tests that force TTY
         # mode would otherwise hang on stdin at the PII prompt; stub
-        # it to the wizard's `("contact",)` default so test behavior
-        # matches the pre-prompt era exactly.
+        # it to the catastrophic-leak default (matching the --yes
+        # path) so overwrite-prompt tests don't depend on prompt
+        # internals.
         monkeypatch.setattr(
             "schemabrain.setup.setup_stage.prompt_for_pii_block",
-            lambda *, console: ("contact",),
+            lambda *, console: ("credential", "government_id", "payment_card"),
         )
         yield
 
@@ -2033,13 +2036,16 @@ class TestWizardRenderer:
         captured = capsys.readouterr()
         assert "MCP configs on cold start" not in captured.err
 
-    def test_closing_block_renders_system_prompt_snippet_on_written_host(
+    def test_closing_block_does_not_print_system_prompt_snippet(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """The system-prompt snippet renders on every state except
-        manual/printed_only. Pin the load-bearing lines verbatim so
-        regressions (typos, accidental rewrites) surface in CI rather
-        than at first contact with a real agent.
+        """The wizard does not print an agent-steering snippet — that
+        steering ships server-side in `_SERVER_INSTRUCTIONS` (mcp/server.py),
+        which Claude Desktop / Cursor / Windsurf / Claude Code all honor
+        via the MCP `initialize` response. Printing the same snippet in
+        the wizard would be duplicative and force the user to find a
+        place to paste it. Pin the omission so a future renderer
+        refactor doesn't reintroduce it.
         """
         from schemabrain.cli import _render_wizard_result
         from schemabrain.setup.wizard import WizardResult
@@ -2051,34 +2057,8 @@ class TestWizardRenderer:
         )
         _render_wizard_result(result, host_display="Claude Desktop")
         captured = capsys.readouterr()
-        assert "Steer the agent" in captured.err
-        # The three load-bearing semantic-firewall calls in order.
-        assert "find_relevant_entities(query)" in captured.err
-        assert "describe_entity(name)" in captured.err
-        assert "get_metric(name" in captured.err
-        # The anti-pattern guard — without this line agents default to
-        # `list_tables` and skip the metric layer.
-        assert "Don't fall back to list_tables" in captured.err
-
-    def test_closing_block_omits_system_prompt_on_manual_mode(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """Manual-mode operators are already wiring system prompts by
-        hand; the snippet adds noise without value. Pin the omission so
-        a future renderer refactor doesn't accidentally surface it.
-        """
-        from schemabrain.cli import _render_wizard_result
-        from schemabrain.setup.wizard import WizardResult
-
-        result = WizardResult(
-            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
-            aborted=False,
-            host_install_result=self._printed_only_host_result(),  # type: ignore[arg-type]
-        )
-        _render_wizard_result(result, host_display="manual mode")
-        captured = capsys.readouterr()
         assert "Steer the agent" not in captured.err
-        assert "find_relevant_entities(query)" not in captured.err
+        assert "paste into the system prompt" not in captured.err
 
     def test_wizard_status_to_tier_routes_known_statuses(
         self, capsys: pytest.CaptureFixture[str]

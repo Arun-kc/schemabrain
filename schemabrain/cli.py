@@ -699,10 +699,39 @@ class _GroupedInitHelpAction(argparse.Action):
         parser.exit(0)
 
 
+_CLI_EPILOG = """\
+First hour:
+  init                  Wire SchemaBrain into a Claude Desktop / Cursor / Windsurf host
+  doctor                Verify the wiring (--verify for a no-API-key mock-agent smoke)
+  dashboard             Serve the local read-only UI (requires `pip install schemabrain[ui]`)
+  inspect               Show what was curated (entities, metrics, joins)
+  tail                  Stream MCP tool calls live
+
+Operate:
+  serve                 Run the MCP server (Claude Desktop spawns this for you)
+  audit                 List + verify the tamper-evident audit chain
+  check                 Detect schema drift since the last `index`
+  index                 (Re-)introspect a database into the local store
+
+Author the semantic layer:
+  entities · metrics · joins · apply · diff · import
+                        See `schemabrain <cmd> --help`. Full reference at
+                        https://schemabrain.mintlify.app/reference/cli/overview.
+
+Developer:
+  eval · mine-queries · fixture-path
+                        Bench harness + query-log mining.
+
+Get started: `schemabrain init`.
+"""
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="schemabrain",
         description="The SQL firewall between AI agents and your production database.",
+        epilog=_CLI_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--version",
@@ -8066,7 +8095,12 @@ def _render_closing_block(
     _render_pending_entity_block(wizard_result, console=console)
     _render_pending_metrics_block(wizard_result, console=console)
     _render_pending_joins_block(wizard_result, console=console)
-    _render_system_prompt_block(host_result, console=console)
+    # Note: agent steering ("call find_relevant_entities first, don't
+    # fall back to list_tables") ships in the MCP server's initialize
+    # response (`_SERVER_INSTRUCTIONS` in mcp/server.py) — Claude
+    # Desktop / Cursor / Windsurf / Claude Code all honor it.
+    # Wizard print of the same snippet would be duplicative and leave
+    # the user wondering where to paste it.
     console.print("Inspect activity:  [bold]schemabrain tail --follow[/]")  # type: ignore[attr-defined]
     console.print("Review the audit:  [bold]schemabrain audit list[/]")  # type: ignore[attr-defined]
     # Day-one UX overhaul: discovery links for the other commands a
@@ -8079,27 +8113,17 @@ def _render_closing_block(
     console.print("See what was curated:  [bold]schemabrain inspect[/]")  # type: ignore[attr-defined]
     console.print("Verify the wiring:     [bold]schemabrain doctor[/]")  # type: ignore[attr-defined]
     console.print("Detect schema drift:   [bold]schemabrain check[/]")  # type: ignore[attr-defined]
+    # Dashboard is opt-in via the `[ui]` extra. An indie dev who ran
+    # `pip install schemabrain` (no extras) would otherwise never
+    # discover this surface exists, since it doesn't show up in the
+    # init flow or any `--help`-level catalog. Single dim line —
+    # tells you both the command and how to install it.
+    console.print(  # type: ignore[attr-defined]
+        "Open the local UI:     [bold]schemabrain dashboard[/]  "
+        "[dim](pip install 'schemabrain[ui]')[/]"
+    )
     console.print()  # type: ignore[attr-defined]
     console.print("[dim]The agent reads. It doesn't write. That's the whole point.[/]")  # type: ignore[attr-defined]
-
-
-_SYSTEM_PROMPT_SNIPPET = (
-    "When the user asks about their data:\n"
-    "- Call find_relevant_entities(query) to find what's available.\n"
-    "- Call describe_entity(name) for fields, joins, and PII tags.\n"
-    "- Call get_metric(name, ...) to compute the answer.\n"
-    "- Don't guess table or column names. Don't fall back to list_tables."
-)
-"""Recommended system-prompt copy printed by `_render_system_prompt_block`.
-
-5 lines + a header line in the renderer (6 lines total — under the
-8-line spec ceiling). Steers the agent through the semantic-firewall
-flow (`find_relevant_entities` → `describe_entity` → `get_metric`) so
-the substrate's safety value lands on the first real query rather than
-the third. Without this nudge, agents default to `list_tables` /
-`describe_table` (physical-schema tools that exist in many Postgres
-MCPs) and bypass the PII-aware metric layer entirely.
-"""
 
 
 _CLAUDE_DESKTOP_COLD_START_BODY = (
@@ -8153,28 +8177,6 @@ def _render_cold_start_flare(host_result: object, *, console: object) -> None:
             width=_wizard_panel_width(console),
         )
     )
-
-
-def _render_system_prompt_block(host_result: object, *, console: object) -> None:
-    """Render the recommended system-prompt snippet for agent steering.
-
-    Skipped on `printed_only` (manual mode) because manual-mode users
-    are already advanced operators who know how to wire system prompts;
-    the snippet adds noise without value for them. Renders on every
-    other state — written/unchanged for claude-desktop, shell_out_*
-    for claude-code — because both flows benefit from the same
-    semantic-firewall steering copy.
-    """
-    from schemabrain.setup.init_flow import InitResult
-
-    if not isinstance(host_result, InitResult):
-        return  # pragma: no cover — defensive; caller already narrowed
-    if host_result.state == "printed_only":
-        return
-    console.print("Steer the agent — paste into the system prompt:")  # type: ignore[attr-defined]
-    for line in _SYSTEM_PROMPT_SNIPPET.splitlines():
-        console.print(f"  [dim]{line}[/]")  # type: ignore[attr-defined]
-    console.print()  # type: ignore[attr-defined]
 
 
 def _render_pending_entity_block(wizard_result: object, *, console: object) -> None:
