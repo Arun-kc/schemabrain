@@ -505,6 +505,88 @@ class TestDetectHost:
         )
         assert detect_host() == "claude-desktop"
 
+    def test_returns_all_detected_hosts_in_priority_order(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``detect_available_hosts`` returns every detected host in the same
+        priority order as ``detect_host`` (which only returns the first).
+
+        Used by the interactive host-selection prompt to render ✓ chips
+        next to detected rows. The non-empty case must preserve order
+        so the prompt's default cursor (the first element) matches the
+        ``detect_host`` single-winner contract.
+        """
+        from schemabrain.setup.hosts import detect_available_hosts
+
+        claude_dir = tmp_path / "Claude"
+        claude_dir.mkdir()
+        cursor_dir = tmp_path / ".cursor"
+        cursor_dir.mkdir()
+        monkeypatch.setattr(
+            "schemabrain.setup.hosts.claude_desktop_config_path",
+            lambda: claude_dir / "claude_desktop_config.json",
+        )
+        monkeypatch.setattr("schemabrain.setup.hosts.claude_code_available", lambda: True)
+        monkeypatch.setattr(
+            "schemabrain.setup.hosts.cursor_config_path", lambda: cursor_dir / "mcp.json"
+        )
+        monkeypatch.setattr(
+            "schemabrain.setup.hosts.windsurf_config_path",
+            lambda: tmp_path / "no-windsurf" / "mcp_config.json",
+        )
+        assert detect_available_hosts() == ("claude-desktop", "claude-code", "cursor")
+
+    def test_returns_empty_tuple_when_nothing_detected(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Empty tuple is a valid return — operator has no MCP host
+        installed. The prompt's default cursor falls back to manual
+        in this case (caller's responsibility, not ours).
+        """
+        from schemabrain.setup.hosts import detect_available_hosts
+
+        monkeypatch.setattr("schemabrain.setup.hosts.claude_desktop_config_path", lambda: None)
+        monkeypatch.setattr("schemabrain.setup.hosts.claude_code_available", lambda: False)
+        monkeypatch.setattr(
+            "schemabrain.setup.hosts.cursor_config_path",
+            lambda: tmp_path / "no-cursor" / "mcp.json",
+        )
+        monkeypatch.setattr(
+            "schemabrain.setup.hosts.windsurf_config_path",
+            lambda: tmp_path / "no-windsurf" / "mcp_config.json",
+        )
+        assert detect_available_hosts() == ()
+
+    def test_manual_is_never_included(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``"manual"`` is always available as a fallback and is rendered
+        by the prompt as a separate row, not a detection signal. The
+        function never includes it in the returned tuple.
+        """
+        from schemabrain.setup.hosts import detect_available_hosts
+
+        # All four real hosts detected — manual still not in the result.
+        claude_dir = tmp_path / "Claude"
+        claude_dir.mkdir()
+        cursor_dir = tmp_path / ".cursor"
+        cursor_dir.mkdir()
+        windsurf_dir = tmp_path / ".codeium" / "windsurf"
+        windsurf_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            "schemabrain.setup.hosts.claude_desktop_config_path",
+            lambda: claude_dir / "claude_desktop_config.json",
+        )
+        monkeypatch.setattr("schemabrain.setup.hosts.claude_code_available", lambda: True)
+        monkeypatch.setattr(
+            "schemabrain.setup.hosts.cursor_config_path", lambda: cursor_dir / "mcp.json"
+        )
+        monkeypatch.setattr(
+            "schemabrain.setup.hosts.windsurf_config_path", lambda: windsurf_dir / "mcp_config.json"
+        )
+        result = detect_available_hosts()
+        assert "manual" not in result
+
     def test_host_name_literal_has_five_values(self) -> None:
         """Cursor + Windsurf host support: HostName carries claude-desktop, claude-code, cursor,
         windsurf, manual. Pinned so that adding/removing a host

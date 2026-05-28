@@ -14,7 +14,7 @@ SchemaBrain sits between LLM-powered agents and production Postgres, exposing 12
 
 ## MCP hosts
 
-Five MCP-compatible hosts with first-class wiring. The activation wizard targets Claude Desktop by default; pass `--host claude-code` / `cursor` / `windsurf` to wire a different one. ChatGPT support is via Codex CLI today (no first-party `--host chatgpt` flag yet).
+Five MCP-compatible hosts with first-class wiring. The activation wizard detects installed hosts and shows a menu (Claude Desktop, Claude Code, Cursor, Windsurf, plus Manual paste); press Enter for the detected default, or pass `--host X` to skip the prompt. ChatGPT support is via Codex CLI today (no first-party `--host chatgpt` flag yet).
 
 - [Claude Desktop](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup/claude-desktop.md): 60-second wiring. Install SchemaBrain, run `init`, restart with Cmd+Q.
 - [Claude Code](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup/claude-code.md): 60-second wiring. Wizard shells out to `claude mcp add`.
