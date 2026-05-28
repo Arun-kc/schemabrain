@@ -3,14 +3,14 @@ title: "Architecture"
 description: "How SchemaBrain is put together — pipeline, contracts, cache, retrieval, cost model, eval, and the known scalability ceilings."
 ---
 
-<Frame caption="Static high-res render. For the live 4-tab interactive scene with animated pulses, use the launch button below.">
+<Frame caption="Three boxes, one trust boundary. The agent on the left, your Postgres on the right, SchemaBrain in the middle — every tool call lands in the audit chain before the parameterized SQL leaves the firewall.">
   <img
     src="/assets/architecture-premium-hero.png"
     alt="SchemaBrain architecture — the trust boundary between AI agents and production data. Agent connects to SchemaBrain over MCP/stdio; SchemaBrain ships PII-aware, audit-logged, parameterized SQL to Postgres."
   />
 </Frame>
 
-<div style={{ display: "flex", justifyContent: "center", margin: "1.5rem 0" }}>
+<div style={{ display: "flex", justifyContent: "center", margin: "-0.5rem 0 1.5rem" }}>
   <button
     onClick={() => {
       const m = document.getElementById("arch-modal");
@@ -22,23 +22,28 @@ description: "How SchemaBrain is put together — pipeline, contracts, cache, re
     style={{
       display: "inline-flex",
       alignItems: "center",
-      gap: "0.5rem",
-      padding: "0.75rem 1.25rem",
-      background: "#3ECF8E",
-      color: "#0A0A0A",
-      border: "none",
-      borderRadius: "8px",
+      gap: "0.4rem",
+      padding: "0.45rem 0.85rem",
+      background: "transparent",
+      color: "#3ECF8E",
+      border: "1px solid rgba(62, 207, 142, 0.4)",
+      borderRadius: "6px",
       fontFamily: "var(--font-mono, ui-monospace, monospace)",
-      fontSize: "0.875rem",
-      fontWeight: 600,
+      fontSize: "0.75rem",
+      fontWeight: 500,
       cursor: "pointer",
-      letterSpacing: "0.01em",
-      boxShadow: "0 1px 0 rgba(255,255,255,0.15) inset, 0 4px 14px rgba(62, 207, 142, 0.35)"
+      letterSpacing: "0.02em"
     }}
   >
-    ▶ Launch interactive diagram
+    ▶ Interactive scene (animated 4-mode flow)
   </button>
 </div>
+
+The diagram has three load-bearing pieces. **On the left**, the MCP client host (Claude Desktop, Cursor, Windsurf, Claude Code, or any other stdio MCP client) speaks JSON-RPC over stdin/stdout to the SchemaBrain process. The agent sees twelve typed tools — `find_relevant_tables`, `describe_entity`, `get_metric`, and so on — none of which accept arbitrary SQL.
+
+**In the middle**, SchemaBrain resolves each tool call against the local SQLite store (cached schema + entities + metrics + joins), compiles strictly-parameterized read-only SQL, and writes a hash-chained audit row before the query leaves the boundary. The four mechanisms that make this a firewall — [read-only by architecture](mechanism/read-only), [PII taxonomy with compile-time propagation](mechanism/pii-taxonomy), [tamper-evident audit chain](mechanism/audit-chain), and [structured recovery envelopes](mechanism/structured-recovery) — all live inside this box. None of them can be flipped by a prompt.
+
+**On the right**, the agent's effective surface on your Postgres is the parameterized SQL SchemaBrain emits. The session is opened with `default_transaction_read_only=on` and a `NullPool` connection pool, so no session-level flag survives long enough to be exploited and no two tool calls share a connection. The same architecture works against any SQLAlchemy-compatible source; the v0.4 release targets Postgres because that's where the operator demand is.
 
 <div
   id="arch-modal"
@@ -2073,9 +2078,9 @@ extrapolated rows assume that ratio continues; production-scale anchors
 will tighten or revise it.
 
 <Tip>
-Hard cap configurable via `--max-cost` (default $10.00). Per-agent-query
+Hard cap configurable via `--max-cost` (default \$10.00). Per-agent-query
 cost depends on tool calls and turns; in our testing, typical questions
-cost ~$0.005 with Haiku.
+cost ~\$0.005 with Haiku.
 </Tip>
 
 ### Partitioned tables are deduplicated automatically

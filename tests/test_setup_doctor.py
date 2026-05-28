@@ -35,6 +35,7 @@ from schemabrain.setup.doctor_flow import (
     check_host_config_uses_url_env,
     check_host_config_version_pin_matches,
     check_installed_version,
+    check_source_pg_stat_statements,
     check_source_reachable,
     check_source_read_only,
     check_store_entity_count,
@@ -725,6 +726,70 @@ class TestCheckSourceReadOnly:
         assert c.outcome == "fail"
 
 
+# ----- check_source_pg_stat_statements --------------------------------------
+
+
+class TestCheckSourcePgStatStatements:
+    def _stub_engine_returning(
+        self, monkeypatch: pytest.MonkeyPatch, *, scalar_value: object
+    ) -> None:
+        from schemabrain.setup import doctor_flow
+
+        class _Conn:
+            def execute(self, _query: object) -> object:
+                class _Res:
+                    def scalar(self) -> object:
+                        return scalar_value
+
+                return _Res()
+
+            def __enter__(self) -> _Conn:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                pass
+
+        class _Engine:
+            def connect(self) -> _Conn:
+                return _Conn()
+
+            def dispose(self) -> None:
+                pass
+
+        monkeypatch.setattr(doctor_flow, "create_engine", lambda *_a, **_kw: _Engine())
+
+    def test_pass_when_extension_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # `SELECT 1 FROM pg_extension WHERE extname=...` returns 1 when
+        # the extension is registered.
+        self._stub_engine_returning(monkeypatch, scalar_value=1)
+        c = check_source_pg_stat_statements("postgresql+psycopg://u:p@h/db")
+        assert c.outcome == "pass"
+        assert "installed" in c.message
+
+    def test_warn_when_extension_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Missing extension → scalar returns None. Advisory warn, not
+        # a fail — SchemaBrain works without it.
+        self._stub_engine_returning(monkeypatch, scalar_value=None)
+        c = check_source_pg_stat_statements("postgresql+psycopg://u:p@h/db")
+        assert c.outcome == "warn"
+        assert "not installed" in c.message
+        assert "CREATE EXTENSION" in (c.suggested_next or "")
+
+    def test_warn_on_engine_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Connection / query failure must NOT fail the doctor — the
+        # check is advisory, so a probe error degrades to warn with a
+        # clear "advisory" suggested_next.
+        from schemabrain.setup import doctor_flow
+
+        def boom(*_a: object, **_kw: object) -> object:
+            raise RuntimeError("could not connect")
+
+        monkeypatch.setattr(doctor_flow, "create_engine", boom)
+        c = check_source_pg_stat_statements("postgresql+psycopg://u:p@h/db")
+        assert c.outcome == "warn"
+        assert "advisory" in (c.suggested_next or "")
+
+
 # ----- doctor orchestrator --------------------------------------------------
 
 
@@ -748,6 +813,18 @@ class TestDoctorOrchestrator:
         )
         names = [c.name for c in result.checks]
         assert "source_reachable" in names
+
+    def test_skips_pg_stat_statements_check_for_sqlite_source(self, fresh_store: Path) -> None:
+        # The orchestrator gates check_source_pg_stat_statements ON for
+        # Postgres URLs only — SQLite has no extension system, so the
+        # check is irrelevant.
+        result = doctor(
+            source_url="sqlite:///:memory:",
+            store_path=fresh_store,
+            host="manual",
+        )
+        names = [c.name for c in result.checks]
+        assert "source_pg_stat_statements" not in names
 
     def test_skips_read_only_check_for_sqlite_source(self, fresh_store: Path) -> None:
         # SQLite has no session-level read-only setting; skip the
@@ -911,6 +988,47 @@ class TestDoctorOrchestrator:
         )
         names = [c.name for c in result.checks]
         assert "source_session_read_only" in names
+
+    def test_adds_pg_stat_statements_check_for_postgres_source(
+        self,
+        fresh_store: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The orchestrator gates check_source_pg_stat_statements ON for
+        # Postgres URLs (alongside source_reachable + read_only). Mock
+        # create_engine so we don't actually try to reach the host —
+        # the existence of the check in the result is what we assert.
+        from schemabrain.setup import doctor_flow
+
+        class _Conn:
+            def execute(self, _query: object) -> object:
+                class _Res:
+                    def scalar(self) -> object:
+                        return "on"  # read-only check sees this; pg_stat probe also runs
+
+                return _Res()
+
+            def __enter__(self) -> _Conn:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                pass
+
+        class _Engine:
+            def connect(self) -> _Conn:
+                return _Conn()
+
+            def dispose(self) -> None:
+                pass
+
+        monkeypatch.setattr(doctor_flow, "create_engine", lambda *_a, **_kw: _Engine())
+        result = doctor(
+            source_url="postgresql+psycopg://u:p@h/db",
+            store_path=fresh_store,
+            host="manual",
+        )
+        names = [c.name for c in result.checks]
+        assert "source_pg_stat_statements" in names
 
     def test_aggregates_to_zero_exit_code_when_all_pass_or_warn(self, seeded_store: Path) -> None:
         result = doctor(

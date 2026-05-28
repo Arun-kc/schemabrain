@@ -34,15 +34,9 @@ If you have any of these installed, you get the full SchemaBrain experience in m
 
 All four wrap the same 12-tool MCP surface, the same PII firewall, the same audit chain. The only difference is the config file the wizard writes into.
 
-### Option 2 — Codex CLI works today via `--host manual`
+### Option 2 — Codex CLI works today (recommended for ChatGPT users)
 
-OpenAI's Codex CLI is a local stdio MCP client, much like Claude Code. You can register SchemaBrain in Codex's MCP config by hand:
-
-```bash
-schemabrain init --host manual
-```
-
-The wizard prompts for your Postgres URL (or offers the bundled demo container), then `--host manual` prints the resulting JSON entry to stdout instead of writing into a host config. Paste the entry into Codex's MCP config (consult Codex's docs for the exact path) and Codex's agent will speak stdio to SchemaBrain the same way Claude Code does.
+OpenAI's Codex CLI is a local stdio MCP client, much like Claude Code, and it speaks to SchemaBrain over stdin/stdout the same way. The full walkthrough — install, `--host manual` paste step, restart, ask — lives on the dedicated [Codex CLI setup page](codex.md).
 
 ### Option 3 — Run a stdio→HTTPS bridge yourself
 
