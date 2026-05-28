@@ -159,9 +159,7 @@ class TestServerInstructionsSteering:
     accidental rewrites do not silently regress the zero-config DX.
     """
 
-    def test_instructions_steer_to_semantic_firewall_flow(
-        self, server_with_one_table
-    ) -> None:
+    def test_instructions_steer_to_semantic_firewall_flow(self, server_with_one_table) -> None:
         opts = server_with_one_table._mcp_server.create_initialization_options()
         instructions = opts.instructions or ""
         # Three load-bearing tool names in the recommended call order.
