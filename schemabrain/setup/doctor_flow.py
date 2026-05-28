@@ -490,6 +490,53 @@ def check_source_read_only(source_url: str) -> Check:
     )
 
 
+def check_source_pg_stat_statements(source_url: str) -> Check:
+    """`pg_stat_statements` extension presence — advisory only.
+
+    `mine-queries` (the query-log harvester) and `joins suggest` (the
+    canonical-join miner) both consult `pg_stat_statements` when it
+    exists, but degrade gracefully when it doesn't: `mine-queries`
+    exits empty with a recovery hint, `joins suggest` falls back to
+    FK-only ranking. Neither path breaks. Surfacing presence as a
+    `warn` lets operators who want richer mining know the extension
+    is missing without flipping the doctor exit code.
+
+    Called only for Postgres URLs (the orchestrator gates this off
+    for SQLite, which has no extension system).
+    """
+    try:
+        engine = create_engine(source_url)
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(
+                    text("SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'")
+                )
+                present = result.scalar() is not None
+        finally:
+            engine.dispose()
+    except Exception as exc:
+        return Check(
+            name="source_pg_stat_statements",
+            outcome="warn",
+            message=f"could not probe pg_stat_statements: {type(exc).__name__}: {exc}".splitlines()[
+                0
+            ],
+            suggested_next="advisory — schemabrain works without it; mine-queries and joins suggest will skip query-log evidence",
+        )
+    if present:
+        return Check(
+            name="source_pg_stat_statements",
+            outcome="pass",
+            message="pg_stat_statements extension installed",
+        )
+    return Check(
+        name="source_pg_stat_statements",
+        outcome="warn",
+        message="pg_stat_statements extension not installed",
+        suggested_next="optional — run `CREATE EXTENSION pg_stat_statements;` (superuser) for richer mine-queries + joins suggest evidence",
+    )
+
+
 # ----- orchestrator ----------------------------------------------------------
 
 
@@ -571,6 +618,7 @@ def _build_check_list(
         checks.append(lambda: check_source_reachable(source_url))
         if is_postgres_url(source_url):
             checks.append(lambda: check_source_read_only(source_url))
+            checks.append(lambda: check_source_pg_stat_statements(source_url))
     return checks
 
 
