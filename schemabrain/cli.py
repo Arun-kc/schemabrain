@@ -8079,6 +8079,15 @@ def _render_closing_block(
     console.print("See what was curated:  [bold]schemabrain inspect[/]")  # type: ignore[attr-defined]
     console.print("Verify the wiring:     [bold]schemabrain doctor[/]")  # type: ignore[attr-defined]
     console.print("Detect schema drift:   [bold]schemabrain check[/]")  # type: ignore[attr-defined]
+    # Dashboard is opt-in via the `[ui]` extra. An indie dev who ran
+    # `pip install schemabrain` (no extras) would otherwise never
+    # discover this surface exists, since it doesn't show up in the
+    # init flow or any `--help`-level catalog. Single dim line —
+    # tells you both the command and how to install it.
+    console.print(  # type: ignore[attr-defined]
+        "Open the local UI:     [bold]schemabrain dashboard[/]  "
+        "[dim](pip install 'schemabrain[ui]')[/]"
+    )
     console.print()  # type: ignore[attr-defined]
     console.print("[dim]The agent reads. It doesn't write. That's the whole point.[/]")  # type: ignore[attr-defined]
 

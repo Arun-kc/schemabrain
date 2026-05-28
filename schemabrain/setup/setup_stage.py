@@ -229,17 +229,18 @@ def prompt_for_pii_block(*, console: Console) -> tuple[str, ...]:
     Returns the categories that will be written as ``--pii-block`` into
     the host snippet, or ``()`` for "no PII enforcement".
 
-    Default is ``contact`` because it covers the most universally
-    sensitive PII (email, phone, address) without surprising the
-    operator with refusals on benign business-domain columns. The
-    "all" option enumerates the v1 closed set so the operator sees
-    exactly what's in scope; "none" is the development-database
-    escape hatch.
+    Default (option 1) is the catastrophic-leak set
+    (``credential, payment_card, government_id``) — the categories
+    where no plausible aggregate-analytics use case exists, matching
+    both the non-interactive ``--yes`` path (cli.py around line 6379)
+    and every public doc page. The "all" option enumerates the v1
+    closed set so the operator sees exactly what's in scope; "none"
+    is the development-database escape hatch.
 
     ``KeyboardInterrupt`` propagates verbatim so Ctrl-C aborts the
     setup; non-interactive callers (or ``--yes`` paths) should not
-    reach this helper and instead apply the ``("contact",)`` default
-    directly.
+    reach this helper and instead apply the catastrophic-leak default
+    directly via ``CATASTROPHIC_LEAK_CATEGORIES``.
     """
     from rich.prompt import Prompt
 
@@ -252,11 +253,12 @@ def prompt_for_pii_block(*, console: Console) -> tuple[str, ...]:
         )
         console.print()
         console.print(
-            f"    [bright_black]{GLYPH_ACTIVE} 1. Recommended: contact (email, phone, address)[/]"
+            f"    [bright_black]{GLYPH_ACTIVE} 1. Recommended: credential, payment_card, government_id "
+            "(catastrophic-leak set)[/]"
         )
         console.print(
             f"    [bright_black]{GLYPH_ACTIVE} 2. All categories "
-            "(contact, financial, payment_card, health, government_id, ...)[/]"
+            "(adds contact, financial, health, ...)[/]"
         )
         console.print(
             f"    [bright_black]{GLYPH_ACTIVE} 3. None "
@@ -272,7 +274,12 @@ def prompt_for_pii_block(*, console: Console) -> tuple[str, ...]:
             show_choices=False,
         )
     if choice == "1":
-        return ("contact",)
+        # Catastrophic-leak set — matches the --yes path (cli.py:6379)
+        # and the docs (README, claude-desktop guide, first-5-queries).
+        # Sorted for stable host-snippet output.
+        from schemabrain.pii.categories import CATASTROPHIC_LEAK_CATEGORIES
+
+        return tuple(sorted(CATASTROPHIC_LEAK_CATEGORIES))
     if choice == "2":
         # The closed v1 set imported locally — keeps the prompt
         # default-driven and avoids forcing the operator to type the

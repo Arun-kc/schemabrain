@@ -61,21 +61,35 @@ class TestDetectDocker:
 class TestPromptForPiiBlock:
     """The interactive PII-block prompt added by the init wizard.
 
-    Prior behavior was to silently bake ("contact",) into the host
-    snippet without asking. The prompt surfaces the choice so an
-    operator can opt into the full v1 category set OR opt out
-    entirely for dev/synthetic databases — without scripted flows
-    (-y / piped stderr) ever blocking on stdin.
+    The prompt surfaces the choice so an operator can opt into the
+    full v1 category set OR opt out entirely for dev/synthetic
+    databases — without scripted flows (-y / piped stderr) ever
+    blocking on stdin. Default (option 1) is the catastrophic-leak
+    set, matching the --yes path (cli.py:6379) and the docs.
     """
 
-    def test_default_recommended_returns_contact(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_default_recommended_returns_catastrophic_leak_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # Pressing Enter at the prompt selects the recommended default —
-        # `contact` only, matching the pre-prompt silent default so the
-        # zero-effort path is unchanged for operators who don't read
-        # prompt copy carefully.
+        # the catastrophic-leak set, matching the non-interactive
+        # --yes path and every doc page. The interactive and
+        # non-interactive paths must agree on the default so a user
+        # who reads the docs and runs `schemabrain init` gets the
+        # policy the docs promise.
+        from schemabrain.pii.categories import CATASTROPHIC_LEAK_CATEGORIES
+
         monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: "1")
         result = prompt_for_pii_block(console=make_console(file=io.StringIO()))
-        assert result == ("contact",)
+        assert result == tuple(sorted(CATASTROPHIC_LEAK_CATEGORIES))
+        # Must include the three catastrophic-leak categories the
+        # docs promise. A future enum addition that misses
+        # CATASTROPHIC_LEAK_CATEGORIES surfaces here.
+        assert "credential" in result
+        assert "payment_card" in result
+        assert "government_id" in result
+        # Must NOT include `contact` — that's option 2 territory.
+        assert "contact" not in result
 
     def test_all_categories_returns_full_v1_enum(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Option 2 fans out to every v1 PIICategory the classifier can

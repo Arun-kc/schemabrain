@@ -632,10 +632,12 @@ class TestInitStageZeroAbortPaths:
         monkeypatch.setattr("schemabrain.setup.setup_stage.prompt_for_init_setup", fake_prompt)
         monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
         # Stub the post-stage-0 PII-block prompt so it doesn't block
-        # on stdin when forced-TTY mode is active.
+        # on stdin when forced-TTY mode is active. Value is
+        # functionally irrelevant for this test; we just need the
+        # prompt not to hang.
         monkeypatch.setattr(
             "schemabrain.setup.setup_stage.prompt_for_pii_block",
-            lambda *, console: ("contact",),
+            lambda *, console: ("credential", "government_id", "payment_card"),
         )
         monkeypatch.setattr("schemabrain.setup.wizard.run_default_wizard", fake_run_wizard)
         # KeyboardInterrupt from the wizard itself bubbles up to main()
@@ -857,11 +859,12 @@ class TestInitCliInteractiveOverlay:
         # The init wizard now surfaces an interactive PII-block choice
         # before constructing the WizardConfig. Tests that force TTY
         # mode would otherwise hang on stdin at the PII prompt; stub
-        # it to the wizard's `("contact",)` default so test behavior
-        # matches the pre-prompt era exactly.
+        # it to the catastrophic-leak default (matching the --yes
+        # path) so overwrite-prompt tests don't depend on prompt
+        # internals.
         monkeypatch.setattr(
             "schemabrain.setup.setup_stage.prompt_for_pii_block",
-            lambda *, console: ("contact",),
+            lambda *, console: ("credential", "government_id", "payment_card"),
         )
         yield
 
