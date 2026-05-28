@@ -8095,7 +8095,12 @@ def _render_closing_block(
     _render_pending_entity_block(wizard_result, console=console)
     _render_pending_metrics_block(wizard_result, console=console)
     _render_pending_joins_block(wizard_result, console=console)
-    _render_system_prompt_block(host_result, console=console)
+    # Note: agent steering ("call find_relevant_entities first, don't
+    # fall back to list_tables") ships in the MCP server's initialize
+    # response (`_SERVER_INSTRUCTIONS` in mcp/server.py) — Claude
+    # Desktop / Cursor / Windsurf / Claude Code all honor it.
+    # Wizard print of the same snippet would be duplicative and leave
+    # the user wondering where to paste it.
     console.print("Inspect activity:  [bold]schemabrain tail --follow[/]")  # type: ignore[attr-defined]
     console.print("Review the audit:  [bold]schemabrain audit list[/]")  # type: ignore[attr-defined]
     # Day-one UX overhaul: discovery links for the other commands a
@@ -8119,25 +8124,6 @@ def _render_closing_block(
     )
     console.print()  # type: ignore[attr-defined]
     console.print("[dim]The agent reads. It doesn't write. That's the whole point.[/]")  # type: ignore[attr-defined]
-
-
-_SYSTEM_PROMPT_SNIPPET = (
-    "When the user asks about their data:\n"
-    "- Call find_relevant_entities(query) to find what's available.\n"
-    "- Call describe_entity(name) for fields, joins, and PII tags.\n"
-    "- Call get_metric(name, ...) to compute the answer.\n"
-    "- Don't guess table or column names. Don't fall back to list_tables."
-)
-"""Recommended system-prompt copy printed by `_render_system_prompt_block`.
-
-5 lines + a header line in the renderer (6 lines total — under the
-8-line spec ceiling). Steers the agent through the semantic-firewall
-flow (`find_relevant_entities` → `describe_entity` → `get_metric`) so
-the substrate's safety value lands on the first real query rather than
-the third. Without this nudge, agents default to `list_tables` /
-`describe_table` (physical-schema tools that exist in many Postgres
-MCPs) and bypass the PII-aware metric layer entirely.
-"""
 
 
 _CLAUDE_DESKTOP_COLD_START_BODY = (
@@ -8191,28 +8177,6 @@ def _render_cold_start_flare(host_result: object, *, console: object) -> None:
             width=_wizard_panel_width(console),
         )
     )
-
-
-def _render_system_prompt_block(host_result: object, *, console: object) -> None:
-    """Render the recommended system-prompt snippet for agent steering.
-
-    Skipped on `printed_only` (manual mode) because manual-mode users
-    are already advanced operators who know how to wire system prompts;
-    the snippet adds noise without value for them. Renders on every
-    other state — written/unchanged for claude-desktop, shell_out_*
-    for claude-code — because both flows benefit from the same
-    semantic-firewall steering copy.
-    """
-    from schemabrain.setup.init_flow import InitResult
-
-    if not isinstance(host_result, InitResult):
-        return  # pragma: no cover — defensive; caller already narrowed
-    if host_result.state == "printed_only":
-        return
-    console.print("Steer the agent — paste into the system prompt:")  # type: ignore[attr-defined]
-    for line in _SYSTEM_PROMPT_SNIPPET.splitlines():
-        console.print(f"  [dim]{line}[/]")  # type: ignore[attr-defined]
-    console.print()  # type: ignore[attr-defined]
 
 
 def _render_pending_entity_block(wizard_result: object, *, console: object) -> None:

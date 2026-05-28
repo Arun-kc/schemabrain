@@ -151,6 +151,38 @@ class TestServerInfoVersion:
             assert opts.server_version != mcp_sdk_version
 
 
+class TestServerInstructionsSteering:
+    """`instructions` in the MCP `initialize` response is the
+    server-side surface that steers agents through the semantic-firewall
+    flow without any user action. Claude Desktop, Claude Code, Cursor,
+    and Windsurf all honor this field. Pin the load-bearing nudges so
+    accidental rewrites do not silently regress the zero-config DX.
+    """
+
+    def test_instructions_steer_to_semantic_firewall_flow(
+        self, server_with_one_table
+    ) -> None:
+        opts = server_with_one_table._mcp_server.create_initialization_options()
+        instructions = opts.instructions or ""
+        # Three load-bearing tool names in the recommended call order.
+        assert "find_relevant_entities" in instructions
+        assert "describe_entity" in instructions
+        assert "get_metric" in instructions
+
+    def test_instructions_disclaim_nonexistent_list_tables(
+        self, server_with_one_table
+    ) -> None:
+        """The most common failure mode an agent exhibits against a
+        Postgres MCP is calling `list_tables` (which exists on many
+        other Postgres MCPs but NOT on SchemaBrain). The instructions
+        must call this out by name so the agent does not waste a turn.
+        """
+        opts = server_with_one_table._mcp_server.create_initialization_options()
+        instructions = opts.instructions or ""
+        assert "list_tables" in instructions
+        assert "does not exist" in instructions or "do not" in instructions.lower()
+
+
 class TestToolRegistry:
     def test_all_tools_are_registered(self, server_with_one_table) -> None:
         names = {t.name for t in asyncio.run(server_with_one_table.list_tools())}

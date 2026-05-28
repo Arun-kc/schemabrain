@@ -35,32 +35,6 @@ Then in a new Claude Code session:
 
 If Claude calls `list_entities` and reports the entities curated during init, you're done. Otherwise run `schemabrain doctor --verify` for an end-to-end smoke test that doesn't require an Anthropic key.
 
-## Paste the system-prompt snippet (recommended)
-
-At the end of `schemabrain init`, the wizard prints a short "Steer the agent" snippet:
-
-```text
-When the user asks about their data:
-- Call find_relevant_entities(query) to find what's available.
-- Call describe_entity(name) for fields, joins, and PII tags.
-- Call get_metric(name, ...) to compute the answer.
-- Don't guess table or column names. Don't fall back to list_tables.
-```
-
-In Claude Code, the steering surface is the project-local **`CLAUDE.md`** file (or `~/.claude/CLAUDE.md` for global rules). Add a section:
-
-```markdown
-## SchemaBrain
-
-When asked about the database, use the SchemaBrain MCP tools:
-- Call find_relevant_entities(query) to find what's available.
-- Call describe_entity(name) for fields, joins, and PII tags.
-- Call get_metric(name, ...) to compute the answer.
-- Don't guess table or column names. Don't fall back to list_tables.
-```
-
-Without this nudge, Claude will sometimes default to a generic `list_tables` call — which doesn't exist in SchemaBrain. The snippet is the difference between "Claude is confused" and "Claude refuses correctly on PII."
-
 **Next:** [First 5 Queries](../first-5-queries.md) walks you through exercising each load-bearing mechanism (read-only, PII refusal, audit chain, structured recovery) in ~10 minutes.
 
 ---

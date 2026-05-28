@@ -56,20 +56,6 @@ Quit Windsurf fully and relaunch. The MCP config is only read on cold start.
 
 If Cascade calls `list_entities` and reports the entities curated during init, you're done. Otherwise run `schemabrain doctor --verify` for an end-to-end smoke test that doesn't require an Anthropic key.
 
-## Paste the system-prompt snippet (recommended)
-
-At the end of `schemabrain init`, the wizard prints a short "Steer the agent" snippet. In Windsurf, the steering surface is **Cascade Rules** — accessible via the Cascade panel's settings, or as `.windsurfrules` at the repo root for project-scoped rules. Paste:
-
-```text
-When the user asks about the database, use the SchemaBrain MCP tools:
-- Call find_relevant_entities(query) to find what's available.
-- Call describe_entity(name) for fields, joins, and PII tags.
-- Call get_metric(name, ...) to compute the answer.
-- Don't guess table or column names. Don't fall back to list_tables.
-```
-
-Without this nudge, Cascade sometimes defaults to a generic `list_tables` call — which doesn't exist in SchemaBrain. The snippet steers the agent through the semantic-firewall flow on the first real query rather than the third.
-
 **Next:** [First 5 Queries](../first-5-queries.md) walks you through exercising each load-bearing mechanism (read-only, PII refusal, audit chain, structured recovery) in ~10 minutes.
 
 ---

@@ -403,14 +403,13 @@ So the engineering order is **schema intelligence → semantic substrate → saf
 
 ## Troubleshooting
 
-The six most common first-run failures. Full troubleshooter in [`docs/setup.md`](docs/setup.md#troubleshooting).
+The five most common first-run failures. Full troubleshooter in [`docs/setup.md`](docs/setup.md#troubleshooting).
 
 - **`pip install schemabrain` gave me an older version.** Check `schemabrain --version`. If it doesn't match the [latest release](https://pypi.org/project/schemabrain/) your pip cache is stale — run `pip install --upgrade schemabrain`. `schemabrain init` writes the same version into the Claude Desktop snippet (`uvx schemabrain==<pin>`) so it stays reproducible across restarts; bump the pin in the snippet manually after upgrading via pip.
 - **`init` reports `source unreachable`.** Postgres may not be ready on first run — wait a few seconds and re-run. For your own database, verify host, port, and credentials. Connection URLs in any form are accepted (`postgresql://`, `postgres://`, `postgresql+psycopg://`).
 - **The first `init` or `schemabrain index` hangs for ~60 seconds.** Normal. The first index downloads the ONNX embedding model (~67 MB) and makes one LLM call per column. Subsequent runs are fast.
 - **`init` fails at stage 6 "wire host".** Claude Desktop must be installed first — SchemaBrain writes into its config file, which doesn't exist until Claude Desktop has launched at least once.
 - **Claude Desktop doesn't show SchemaBrain after restart.** Cmd+Q is required (close-window doesn't trigger a re-read of MCP config). Run `schemabrain doctor` to verify the config landed. If `doctor` says everything's good but Claude Desktop still doesn't see the tool, check `~/Library/Logs/Claude/mcp*.log`.
-- **Claude sees the tools but answers without calling them.** Claude Desktop has no app-wide system-prompt field, so the steering snippet `schemabrain init` prints at the end has nowhere global to land. Create a **Project** in Claude Desktop, paste the snippet into its **Custom Instructions**, and start database-related chats from inside that project. Without it, Claude sometimes defaults to `list_tables` (which doesn't exist) instead of the semantic-firewall flow. See [Claude Desktop setup](docs/setup/claude-desktop.md#paste-the-system-prompt-snippet-recommended) — same fix applies to Cursor (User Rules), Windsurf (Cascade Rules), and Claude Code (`CLAUDE.md`).
 
 ---
 
