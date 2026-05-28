@@ -279,7 +279,7 @@ GROUP BY u.id, u.full_name ORDER BY u.id;
 SQL
 ```
 
-You'll see Alice $239.98, Bob $299.98, Cara $89.99. Now run Claude's per-category query (the one from the README) and naively sum its rows per customer — Alice will inflate to $329.97 and Cara to $179.98 because their shoes are tagged in two categories. **The caveat Claude flagged is the mechanical truth of the data.** This is why agents that flag M:N caveats are worth more than agents that don't.
+You'll see Alice \$239.98, Bob \$299.98, Cara \$89.99. Now run Claude's per-category query (the one from the README) and naively sum its rows per customer — Alice will inflate to \$329.97 and Cara to \$179.98 because their shoes are tagged in two categories. **The caveat Claude flagged is the mechanical truth of the data.** This is why agents that flag M:N caveats are worth more than agents that don't.
 
 ### Step 4 — sanity-check against production sample
 
