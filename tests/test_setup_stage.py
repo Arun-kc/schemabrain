@@ -280,6 +280,7 @@ class TestAutoDockerDemoPath:
 
         monkeypatch.setattr(setup_stage, "_docker_run_demo_postgres", lambda *, console: True)
         monkeypatch.setattr(setup_stage, "_wait_for_postgres_ready", lambda **_kw: True)
+        monkeypatch.setattr(setup_stage, "_detect_stale_demo_fixture", lambda **_kw: False)
         monkeypatch.setattr(setup_stage, "_docker_load_fixture", lambda *, console: True)
 
         assert setup_stage._try_auto_docker_demo(console=make_console(file=io.StringIO())) is True
@@ -343,6 +344,7 @@ class TestAutoDockerDemoPath:
 
         monkeypatch.setattr(setup_stage, "_docker_run_demo_postgres", lambda *, console: True)
         monkeypatch.setattr(setup_stage, "_wait_for_postgres_ready", lambda **_kw: True)
+        monkeypatch.setattr(setup_stage, "_detect_stale_demo_fixture", lambda **_kw: False)
         monkeypatch.setattr(setup_stage, "_docker_load_fixture", lambda *, console: False)
 
         assert setup_stage._try_auto_docker_demo(console=make_console(file=io.StringIO())) is False

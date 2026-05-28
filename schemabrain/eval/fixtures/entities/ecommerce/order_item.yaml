@@ -1,0 +1,6 @@
+version: 1
+name: order_item
+description: A single line item on an order (one product, one quantity, one unit price)
+binding:
+  single_table: public.order_items
+identity: id

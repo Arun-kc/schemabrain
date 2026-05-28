@@ -10,6 +10,10 @@ SchemaBrain exposes **twelve Pydantic-typed MCP tools** split across two layers:
 
 Every response includes a `token_estimate` so agents can budget context. Every envelope follows the [Charter status taxonomy](/agent-ux-charter) (`success`, `empty`, `partial`, `degraded`, `error`, `refused`) with `follow_up_hints` to chain the next call.
 
+<Note>
+  **Typical call order** for an agent answering a business question against a curated schema: `find_relevant_entities` → `describe_entity` → `list_metrics` → `get_metric`. Fall back to the physical-schema tools (`find_relevant_tables` → `describe_table`) when the semantic layer is empty or the question is purely structural. The MCP server's `initialize.instructions` field steers compliant hosts (Claude Desktop, Claude Code, Cursor, Windsurf) toward this order automatically — see the [`_SERVER_INSTRUCTIONS` block](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/mcp/server.py) for the canonical text.
+</Note>
+
 ## Physical-schema tools
 
 <CardGroup cols={2}>
@@ -53,6 +57,19 @@ Every response includes a `token_estimate` so agents can budget context. Every e
   </Card>
   <Card title="resolve_join" icon="arrows-left-right" href="/reference/mcp-tools/resolve_join">
     Canonical join between two entities — paste-ready.
+  </Card>
+</CardGroup>
+
+## Building your own agent against this surface
+
+If you're wiring SchemaBrain into a custom MCP host (not Claude Desktop / Cursor / Windsurf / Claude Code), the fastest path is the bundled Anthropic SDK demo:
+
+<CardGroup cols={2}>
+  <Card title="examples/anthropic_demo.py" icon="code" href="/setup#path-b-anthropic-sdk-demo">
+    ~250 LOC that spawns `schemabrain serve` over stdio, drives Claude Haiku through the standard tool-use loop, and prints the transcript. Drop-in template for any MCP-stdio client.
+  </Card>
+  <Card title="MCP Inspector workflow" icon="bug" href="/setup#3-mcp-inspector-workflow">
+    Hit every tool against your indexed schema before wiring an LLM — fastest way to audit shapes during integration.
   </Card>
 </CardGroup>
 

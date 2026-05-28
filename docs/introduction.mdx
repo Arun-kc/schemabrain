@@ -9,21 +9,6 @@ You connected an AI agent to your production database. It can now read every col
 
 SchemaBrain sits between the agent and the database and changes that contract.
 
-<CardGroup cols={2}>
-  <Card title="Read-only by architecture" icon="lock" href="/mechanism/read-only">
-    No `execute()`. No `query()`. No session flag the agent can flip. Writes are impossible because no tool accepts arbitrary SQL.
-  </Card>
-  <Card title="PII-aware by default" icon="shield" href="/mechanism/pii-taxonomy">
-    Twelve PII categories with three catastrophic-leak categories (credential, payment card, government ID) blocked out of the box.
-  </Card>
-  <Card title="Audit-evident" icon="signature" href="/mechanism/audit-chain">
-    Hash-chained audit log. Every tool call writes a row. `audit verify` proves the chain hasn't been tampered with.
-  </Card>
-  <Card title="Structured recovery" icon="rotate" href="/mechanism/structured-recovery">
-    When SchemaBrain refuses, it returns a typed envelope with a recovery hint — not a string error the agent has to guess at.
-  </Card>
-</CardGroup>
-
 ## Five minutes to first query
 
 <Steps>
@@ -40,18 +25,44 @@ SchemaBrain sits between the agent and the database and changes that contract.
     ```
     </CodeGroup>
   </Step>
-  <Step title="Initialize against your database">
+  <Step title="Initialize">
     ```bash
-    schemabrain init --host claude-desktop
+    schemabrain init
     ```
-    The wizard auto-detects your MCP host, walks you through PII policy, and writes a ready-to-use config.
+    The wizard auto-detects your MCP host (Claude Desktop, Cursor, Windsurf, Claude Code), spins up a local Postgres demo with a 7-table e-commerce schema, and writes a ready-to-use config. Press Enter at every prompt for the demo defaults.
   </Step>
   <Step title="Restart the host and ask">
-    Ask your agent: *"list the entities you know about, then describe the user entity."* The Refusal Experience surface in the dashboard will show every blocked call in real time.
+    Ask your agent: *"list the entities you know about, then describe the user entity."*
+
+    The demo ships a pre-curated entity pack, so this works **without an `ANTHROPIC_API_KEY`**. If you connected your own Postgres and skipped entity curation (no Anthropic key on hand), ask *"list the tables in my database"* instead — that uses the physical-schema tools, which need no entities.
+  </Step>
+  <Step title="Open the dashboard">
+    ```bash
+    pip install 'schemabrain[ui]'
+    schemabrain dashboard
+    ```
+    Four surfaces: a PII Ledger of every tagged column, a Refusal Explorer of every blocked query, a hash-chained Audit Viewer, and an Entity drilldown that shows the semantic + physical layers side by side.
   </Step>
 </Steps>
 
-Full walkthrough in [Setup](/setup). Want the 10-minute tour? Start with [First 5 Queries](/first-5-queries).
+Full walkthrough in [Setup](/setup). Want the 10-minute tour that fires the firewall? Start with [First 5 Queries](/first-5-queries).
+
+## Why it's safe by architecture, not by trust
+
+<CardGroup cols={2}>
+  <Card title="Read-only by architecture" icon="lock" href="/mechanism/read-only">
+    No `execute()`. No `query()`. No session flag the agent can flip. Writes are impossible because no tool accepts arbitrary SQL.
+  </Card>
+  <Card title="PII-aware by default" icon="shield" href="/mechanism/pii-taxonomy">
+    Twelve PII categories with three catastrophic-leak categories (credential, payment card, government ID) blocked out of the box.
+  </Card>
+  <Card title="Audit-evident" icon="signature" href="/mechanism/audit-chain">
+    Hash-chained audit log. Every tool call writes a row. `audit verify` proves the chain hasn't been tampered with.
+  </Card>
+  <Card title="Structured recovery" icon="rotate" href="/mechanism/structured-recovery">
+    When SchemaBrain refuses, it returns a typed envelope with a recovery hint — not a string error the agent has to guess at.
+  </Card>
+</CardGroup>
 
 ## Pick your host
 

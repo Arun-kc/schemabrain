@@ -30,9 +30,23 @@ from dataclasses import dataclass
 
 _SEED = 42
 
+# Fixture version sentinel. Bump when the schema changes so the wizard
+# can detect a stale demo container and prompt the user to recreate it.
+# Embedded into the SQL as a marker comment so `psql -c "..."` style
+# version checks against a running container are possible.
+_FIXTURE_VERSION = 2
+
 # Date range for `placed_at` — 12 months ending 2026-05-15.
 _DATE_RANGE_DAYS = 365
 _DATE_END_ISO = "2026-05-15T23:59:59+00:00"
+
+# Distribution for payment methods:
+#   - 50 of 80 users carry at least one card on file (62.5%)
+#   - of those, 15 have a second card (30%)
+# Tuned to produce ~65 payment_methods rows — enough to demo
+# multi-card-per-user joins without bloating the fixture.
+_PAYMENT_METHOD_PRIMARY_FRACTION = 0.625
+_PAYMENT_METHOD_SECONDARY_FRACTION = 0.3
 
 # User-count tiers. Sum is the total user-count target (~80 users).
 _TIER_POWER_USERS = 5  # 8-15 orders each
@@ -65,9 +79,56 @@ class _Category:
     parent_id: int | None
 
 
+@dataclass(frozen=True)
+class _User:
+    id: int
+    email: str
+    full_name: str
+    password_hash: str
+
+
+@dataclass(frozen=True)
+class _PaymentMethod:
+    id: int
+    user_id: int
+    card_number_last4: str
+    card_brand: str
+    card_exp_month: int
+    card_exp_year: int
+    is_default: bool
+
+
+# bcrypt's custom base64 alphabet. Salt + hash bodies use these
+# characters; emitting realistic-shaped hashes makes the PII
+# auto-classifier's `credential` tag look natural in the demo without
+# storing actual derived credentials (the values are RNG noise).
+_BCRYPT_ALPHABET = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+# Recognizable-fake card last-4 pool (Stripe test card values + zeros).
+# Operators reading the demo data instantly recognize these as
+# non-production. Mixed brands span the four major networks so the
+# `card_brand` column has visible variety in dashboard tables.
+_DEMO_CARD_LAST4 = ("4242", "4444", "0000", "0341", "1881", "0259", "6011", "0005")
+_DEMO_CARD_BRANDS = ("visa", "mastercard", "amex", "discover")
+
+
+def _fake_bcrypt_hash(rng: random.Random) -> str:
+    """Return a bcrypt-shaped string from the seeded RNG.
+
+    Format: `$2b$12$` + 22-char salt + 31-char hash body. The string
+    matches the regex pattern real bcrypt hashes use, so the column
+    survives column-shape-based PII detection too. Not a real hash —
+    the body is RNG-derived alphabet noise.
+    """
+    body = "".join(rng.choices(_BCRYPT_ALPHABET, k=53))
+    return f"$2b$12${body}"
+
+
 # Preserved from the original fixture so docstring + redactor + smoke
-# tests that reference these names by string still pass.
-_PRESERVED_USERS: list[tuple[int, str, str]] = [
+# tests that reference these names by string still pass. Password
+# hashes are RNG-derived in `_generate_users` so the seeded values
+# track _SEED determinism.
+_PRESERVED_USER_IDENTITY: list[tuple[int, str, str]] = [
     (1, "alice@example.com", "Alice Patel"),
     (2, "bob@example.com", "Bob Mendez"),
     (3, "cara@example.com", "Cara Liu"),
@@ -210,20 +271,66 @@ _CITIES_COUNTRIES = [
 ]
 
 
-def _generate_users(rng: random.Random) -> list[tuple[int, str, str]]:
-    rows: list[tuple[int, str, str]] = list(_PRESERVED_USERS)
+def _generate_users(rng: random.Random) -> list[_User]:
+    rows: list[_User] = [
+        _User(uid, email, name, _fake_bcrypt_hash(rng))
+        for uid, email, name in _PRESERVED_USER_IDENTITY
+    ]
     total = _TIER_POWER_USERS + _TIER_REGULAR_USERS + _TIER_OCCASIONAL_USERS + _TIER_DORMANT_USERS
-    next_id = len(_PRESERVED_USERS) + 1
-    used_emails: set[str] = {row[1] for row in rows}
-    while next_id <= total + len(_PRESERVED_USERS) - len(_PRESERVED_USERS):
+    next_id = len(_PRESERVED_USER_IDENTITY) + 1
+    used_emails: set[str] = {row.email for row in rows}
+    target_count = total
+    while next_id <= target_count:
         first = rng.choice(_FIRST_NAMES)
         last = rng.choice(_LAST_NAMES)
         email = f"{first.lower()}.{last.lower()}{next_id}@example.com"
         if email in used_emails:
             continue
         used_emails.add(email)
-        rows.append((next_id, email, f"{first} {last}"))
+        rows.append(_User(next_id, email, f"{first} {last}", _fake_bcrypt_hash(rng)))
         next_id += 1
+    return rows
+
+
+def _generate_payment_methods(rng: random.Random, users: list[_User]) -> list[_PaymentMethod]:
+    """Produce a realistic-but-fake payment_methods table.
+
+    Distribution drives the demo story: ~62.5% of users carry a card
+    on file; of those, ~30% carry a second card. The first card per
+    user is marked `is_default`. Expiry months/years live inside a
+    near-future window so the demo data still looks current a year
+    from now.
+    """
+    rows: list[_PaymentMethod] = []
+    next_id = 1
+    for user in users:
+        if rng.random() >= _PAYMENT_METHOD_PRIMARY_FRACTION:
+            continue
+        rows.append(
+            _PaymentMethod(
+                id=next_id,
+                user_id=user.id,
+                card_number_last4=rng.choice(_DEMO_CARD_LAST4),
+                card_brand=rng.choice(_DEMO_CARD_BRANDS),
+                card_exp_month=rng.randint(1, 12),
+                card_exp_year=rng.randint(2026, 2030),
+                is_default=True,
+            )
+        )
+        next_id += 1
+        if rng.random() < _PAYMENT_METHOD_SECONDARY_FRACTION:
+            rows.append(
+                _PaymentMethod(
+                    id=next_id,
+                    user_id=user.id,
+                    card_number_last4=rng.choice(_DEMO_CARD_LAST4),
+                    card_brand=rng.choice(_DEMO_CARD_BRANDS),
+                    card_exp_month=rng.randint(1, 12),
+                    card_exp_year=rng.randint(2026, 2030),
+                    is_default=False,
+                )
+            )
+            next_id += 1
     return rows
 
 
@@ -287,7 +394,7 @@ def _format_timestamp(rng: random.Random) -> str:
 
 def _generate_orders_and_items(
     rng: random.Random,
-    users: list[tuple[int, str, str]],
+    users: list[_User],
     products: list[_Product],
     address_count: int,
 ) -> tuple[list[tuple], list[tuple]]:
@@ -302,11 +409,11 @@ def _generate_orders_and_items(
     Alice (id=1) is the top power user by construction so the README's
     deterministic-walkthrough example has a stable winner.
     """
-    user_ids = [u[0] for u in users]
+    user_ids = [u.id for u in users]
     # First 3 preserved users land in the power tier so Alice/Bob/Cara
     # are still the visible winners; remaining tier seats filled by
     # round-robin from the generated pool.
-    preserved_ids = [u[0] for u in users if u[0] <= len(_PRESERVED_USERS)]
+    preserved_ids = [u.id for u in users if u.id <= len(_PRESERVED_USER_IDENTITY)]
     generated_ids = [u_id for u_id in user_ids if u_id not in preserved_ids]
     rng.shuffle(generated_ids)
 
@@ -376,12 +483,35 @@ def _sql_escape(value: str) -> str:
     return value.replace("'", "''")
 
 
-def _emit_users(rows: list[tuple[int, str, str]]) -> str:
-    lines = ["INSERT INTO public.users (id, email, full_name) VALUES"]
-    formatted = [f"    ({r[0]}, '{_sql_escape(r[1])}', '{_sql_escape(r[2])}')" for r in rows]
+def _emit_users(rows: list[_User]) -> str:
+    lines = ["INSERT INTO public.users (id, email, full_name, password_hash) VALUES"]
+    formatted = [
+        f"    ({r.id}, '{_sql_escape(r.email)}', '{_sql_escape(r.full_name)}',"
+        f" '{_sql_escape(r.password_hash)}')"
+        for r in rows
+    ]
     lines.append(",\n".join(formatted))
     lines.append("ON CONFLICT DO NOTHING;")
-    lines.append(f"SELECT setval('public.users_id_seq', {max(r[0] for r in rows)}, true);")
+    lines.append(f"SELECT setval('public.users_id_seq', {max(r.id for r in rows)}, true);")
+    return "\n".join(lines)
+
+
+def _emit_payment_methods(rows: list[_PaymentMethod]) -> str:
+    lines = [
+        "INSERT INTO public.payment_methods (id, user_id, card_number_last4,"
+        " card_brand, card_exp_month, card_exp_year, is_default) VALUES"
+    ]
+    formatted = [
+        f"    ({r.id}, {r.user_id}, '{_sql_escape(r.card_number_last4)}',"
+        f" '{_sql_escape(r.card_brand)}', {r.card_exp_month}, {r.card_exp_year},"
+        f" {'TRUE' if r.is_default else 'FALSE'})"
+        for r in rows
+    ]
+    lines.append(",\n".join(formatted))
+    lines.append("ON CONFLICT DO NOTHING;")
+    lines.append(
+        f"SELECT setval('public.payment_methods_id_seq', {max(r.id for r in rows)}, true);"
+    )
     return "\n".join(lines)
 
 
@@ -459,7 +589,7 @@ def _emit_order_items(rows: list[tuple]) -> str:
     return "\n".join(lines)
 
 
-_HEADER = """\
+_HEADER = f"""\
 -- ONE example fixture for the bundled SchemaBrain eval set.
 --
 -- E-commerce was chosen as the bundled example domain only because its
@@ -469,6 +599,11 @@ _HEADER = """\
 -- fixtures (HR, analytics, healthcare-light) drop into this same
 -- `fixtures/` directory; users author their own `.sql` + matching
 -- `golden_sets/*.json` for real schemas.
+--
+-- SCHEMABRAIN_FIXTURE_VERSION: {_FIXTURE_VERSION}
+-- ^^ Wizard reads this from a running container to detect drift. Bump
+-- when the schema changes so existing `sb-demo-pg` containers prompt
+-- the user to recreate. See `schemabrain/setup/setup_stage.py`.
 --
 -- To reproduce the bundled `golden_sets/ecommerce.json` scores:
 --   psql "$DATABASE_URL" -f schemabrain/eval/fixtures/ecommerce.sql
@@ -483,13 +618,31 @@ _HEADER = """\
 -- Pareto-shaped order distribution let queries like
 -- `get_metric(name="total_items_sold", group_by=["user.email"], limit=5)`
 -- return a clear leaderboard instead of a 3-row trivia answer.
+--
+-- `users.password_hash` and the `payment_methods` table carry
+-- catastrophic-leak PII (`credential`, `payment_card`). They exist
+-- in the demo precisely so the default `--pii-block` policy fires
+-- on a natural agent query like "list all users" — the firewall has
+-- to do something visible on the first interaction or the value prop
+-- is invisible. Values are RNG noise (bcrypt-shaped, recognizably
+-- fake card last-4s).
 
 CREATE TABLE IF NOT EXISTS public.users (
     id BIGSERIAL PRIMARY KEY,
     email TEXT NOT NULL UNIQUE,
     full_name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Idempotency: if a pre-version-2 container already has `users` but
+-- without `password_hash`, the wizard's version check should have
+-- prompted a container recreate; the ADD COLUMN IF NOT EXISTS here is
+-- a belt-and-suspenders guard for direct `psql -f` reruns.
+ALTER TABLE public.users
+    ADD COLUMN IF NOT EXISTS password_hash TEXT NOT NULL DEFAULT '$2b$12$placeholder';
+ALTER TABLE public.users
+    ALTER COLUMN password_hash DROP DEFAULT;
 
 CREATE TABLE IF NOT EXISTS public.categories (
     id BIGSERIAL PRIMARY KEY,
@@ -539,6 +692,24 @@ CREATE TABLE IF NOT EXISTS public.order_items (
     quantity INTEGER NOT NULL CHECK (quantity > 0),
     unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0)
 );
+
+-- `payment_methods` carries the second catastrophic-leak signal in
+-- the demo (alongside `users.password_hash`). The column name
+-- `card_number_last4` matches the PII heuristic for `card_number` and
+-- gets auto-tagged `payment_card`, so the default `--pii-block`
+-- policy refuses any query that includes it — including JOINs from
+-- `users` through here, which is the canonical-join PII-propagation
+-- demo. Stored values are 4-digit recognizably-fake test card tails.
+CREATE TABLE IF NOT EXISTS public.payment_methods (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES public.users(id),
+    card_number_last4 TEXT NOT NULL CHECK (length(card_number_last4) = 4),
+    card_brand TEXT NOT NULL,
+    card_exp_month INTEGER NOT NULL CHECK (card_exp_month BETWEEN 1 AND 12),
+    card_exp_year INTEGER NOT NULL CHECK (card_exp_year BETWEEN 2025 AND 2099),
+    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 
@@ -548,6 +719,7 @@ def main() -> int:
     addresses = _generate_addresses(rng)
     products = _all_products()
     orders, items = _generate_orders_and_items(rng, users, products, len(addresses))
+    payment_methods = _generate_payment_methods(rng, users)
 
     sections = [
         _HEADER,
@@ -567,6 +739,8 @@ def main() -> int:
         _emit_orders(orders),
         "",
         _emit_order_items(items),
+        "",
+        _emit_payment_methods(payment_methods),
         "",
     ]
     sys.stdout.write("\n".join(sections))

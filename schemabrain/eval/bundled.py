@@ -35,6 +35,12 @@ _JOINS_FIXTURES_DIR: Path = _PACKAGE_ROOT.parent / "joins" / "fixtures" / "ecomm
 # directory deeper than the other bundled fixtures so the per-vertical
 # grouping is explicit.
 _METRICS_FIXTURES_DIR: Path = _PACKAGE_ROOT.parent / "metrics" / "fixtures" / "ecommerce"
+# Bundled entity example pack. Sibling of the SQL fixture dir; nested
+# one directory deeper (per-vertical grouping) so the demo path can
+# auto-apply these when the user picks the bundled ecommerce demo.
+# The wizard's stage 3 reads this to pre-curate the demo store
+# without requiring `ANTHROPIC_API_KEY`.
+_ENTITIES_FIXTURES_DIR: Path = _PACKAGE_ROOT / "fixtures" / "entities" / "ecommerce"
 
 # Module-private — internal layout of the wheel is not a public API
 # contract. Callers outside the package go through `resolve_bundled_path`
@@ -77,6 +83,17 @@ def bundled_metrics_fixture_dir() -> Path:
     `bundled_joins_fixture_dir`.
     """
     return _METRICS_FIXTURES_DIR
+
+
+def bundled_entities_fixture_dir() -> Path:
+    """Return the absolute path to the bundled entity example pack.
+
+    The pack is a directory of YAML files (one entity per file)
+    consumable by `schemabrain entities apply <dir>`. Used by the
+    wizard's demo path to pre-curate the bundled ecommerce store
+    without an LLM round-trip.
+    """
+    return _ENTITIES_FIXTURES_DIR
 
 
 def resolve_bundled_path(name: str) -> Path:
@@ -146,6 +163,7 @@ def list_bundled_files() -> list[str]:
 
 
 __all__ = [
+    "bundled_entities_fixture_dir",
     "bundled_joins_fixture_dir",
     "bundled_metrics_fixture_dir",
     "list_bundled_files",

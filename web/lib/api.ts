@@ -76,6 +76,9 @@ export const api = {
     return getJson<PaginatedAuditResponse<RefusalEntry>>(`/api/audit/refusals${tail}`);
   },
 
+  auditRefusalDetail: (id: number) =>
+    getJson<RefusalEntry>(`/api/audit/refusals/${id}`),
+
   auditVerify: (since?: string) => {
     const qs = since ? `?since=${encodeURIComponent(since)}` : "";
     return getJson<AuditChainStatus>(`/api/audit/verify${qs}`);

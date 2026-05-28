@@ -42,6 +42,7 @@ _URL = "postgresql+psycopg://u:p@h/db"
 _EXPECTED_FIXTURE_NAMES = frozenset(
     {
         "customer_orders",
+        "customer_payment_methods",
         "order_items_order",
         "order_items_product",
         "product_category",
@@ -56,7 +57,7 @@ class TestBundledFixtureShape:
         path = bundled_joins_fixture_dir()
         assert path.is_dir()
 
-    def test_all_six_yaml_files_present_and_parse(self) -> None:
+    def test_all_seven_yaml_files_present_and_parse(self) -> None:
         path = bundled_joins_fixture_dir()
         yaml_files = sorted(p for p in path.iterdir() if p.suffix == ".yaml")
         # Drop any non-YAML files that might land here by mistake.
@@ -110,6 +111,7 @@ def _seed_ecommerce_entities(store_path: Path) -> None:
         ("categories", (_column("id", "categories"),)),
         ("addresses", (_column("id", "addresses"),)),
         ("product_categories", (_column("id", "product_categories"),)),
+        ("payment_methods", (_column("id", "payment_methods"),)),
     ]
     entity_specs: list[tuple[str, str]] = [
         ("customer", "public.users"),
@@ -119,6 +121,7 @@ def _seed_ecommerce_entities(store_path: Path) -> None:
         ("category", "public.categories"),
         ("address", "public.addresses"),
         ("product_category", "public.product_categories"),
+        ("payment_method", "public.payment_methods"),
     ]
     with SQLiteStore(store_path) as store:
         for name, columns in table_specs:
@@ -139,7 +142,7 @@ def _seed_ecommerce_entities(store_path: Path) -> None:
 
 
 class TestEndToEnd:
-    def test_apply_bundled_directory_lands_six_joins(
+    def test_apply_bundled_directory_lands_seven_joins(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         store_path = tmp_path / "store.db"
@@ -158,7 +161,7 @@ class TestEndToEnd:
         )
         assert exit_code == 0
 
-        # Verify all 6 landed.
+        # Verify all 7 landed.
         source_id = _make_source_id(_URL)
         with SQLiteStore(store_path) as store:
             joins = store.list_canonical_joins(source_connection_id=source_id)

@@ -6,8 +6,46 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { HeaderStrip } from "@/components/dashboard/HeaderStrip";
 import { HalfCircleIcon } from "@/components/icons/HalfCircleIcon";
-import type { RefusalEntry } from "@/lib/types";
+import type { PIICategory } from "@/lib/types";
 import styles from "@/components/refusals/ledger.module.css";
+
+// Category-aware recovery hints — derived from the actual PII
+// categories that triggered the refusal rather than the prior
+// hardcoded "remove password_hash or payment details" string (which
+// was wrong for contact-only or government_id refusals).
+const RECOVERY_HINTS: Readonly<Record<PIICategory, string>> = {
+  credential:
+    "Drop credential columns (password_hash, api_key, secret, token) from the projection and retry.",
+  payment_card:
+    "Drop card_number / cvv columns from the projection. card_brand and card_exp_* are safe.",
+  government_id:
+    "Drop ssn / passport / tax_id columns from the projection. Use the entity's surrogate id instead.",
+  contact:
+    "Drop email / phone / address columns, or aggregate (e.g. count distinct) so individuals are not identifiable.",
+  health:
+    "Drop diagnosis / procedure / medical-record columns. Health data needs explicit operator authorisation.",
+  genetic:
+    "Drop genetic_marker / dna_sequence columns. Genetic data is non-aggregable and usually requires explicit consent.",
+  biometric:
+    "Drop biometric_template / face_embedding / voice_print columns. Biometric data is not aggregable.",
+  behavioral:
+    "Drop click_path / session_replay / behavioral_event columns. Aggregate at the cohort level instead.",
+  online_identifier:
+    "Drop cookie_id / device_id / advertising_id columns. Server-side surrogate ids are safer.",
+  financial:
+    "Drop balance / transaction_amount / income columns at row level. Use aggregated metrics instead.",
+  location:
+    "Drop precise lat/lng / address columns. Coarse-grained location (city, country) may be acceptable.",
+  demographic_protected:
+    "Drop race / religion / sexual_orientation columns. Protected-class attributes need explicit operator policy.",
+};
+
+function buildRecoveryHint(categories: readonly PIICategory[]): string {
+  if (categories.length === 0) {
+    return "Drop the blocked columns from the projection or widen the policy in your host config.";
+  }
+  return categories.map((c) => RECOVERY_HINTS[c]).join(" ");
+}
 
 export default function RefusalsPage() {
   const refusalsQuery = useQuery({
@@ -16,6 +54,18 @@ export default function RefusalsPage() {
   });
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
+
+  // Second query: fetch the full envelope (reconstructed by the
+  // sidecar from the row's structured columns) when a row is
+  // selected. The LIST endpoint omits the envelope; only the DETAIL
+  // endpoint reconstructs it. Falls through cleanly when no row is
+  // selected (enabled: false).
+  const refusalDetailQuery = useQuery({
+    queryKey: ["audit-refusal-detail", selectedId],
+    queryFn: () =>
+      selectedId !== null ? api.auditRefusalDetail(selectedId) : null,
+    enabled: selectedId !== null,
+  });
 
   const renderContent = () => {
     if (refusalsQuery.isPending) {
@@ -62,7 +112,10 @@ export default function RefusalsPage() {
 
         {incidents.length === 0 ? (
           <div className={styles.noIncident}>
-            <span className="text-3xl mb-4" role="img" aria-label="Shield emoji">🛡️</span>
+            <HalfCircleIcon
+              className="text-(--color-signal-green) w-10 h-10 mb-4"
+              aria-label="Ledger secure"
+            />
             <h3 className={styles.noIncidentTitle}>Ledger is Secure</h3>
             <p className={styles.noIncidentText}>
               SchemaBrain hasn’t blocked any LLM tool requests yet. This means all executed SQL statement structures successfully passed security audits.
@@ -145,16 +198,24 @@ export default function RefusalsPage() {
                     </p>
                   </div>
 
-                  <h4 className={styles.sectionTitle}>Cryptographic Envelope Properties</h4>
+                  <h4 className={styles.sectionTitle}>Why this was blocked</h4>
                   <div className={styles.specList}>
                     <span className={styles.specLabel}>Refusal Reason:</span>
                     <span className={styles.specValue}>{activeIncident.refusal_reason ?? "pii_blocked"}</span>
+
+                    <span className={styles.specLabel}>Recovery Hint:</span>
+                    <span className={styles.specValue}>
+                      {buildRecoveryHint(activeIncident.pii_categories)}
+                    </span>
 
                     <span className={styles.specLabel}>Cost Class:</span>
                     <span className={styles.specValue} style={{ color: "var(--color-signal-red)", fontWeight: "bold" }}>
                       {activeIncident.cost_class}
                     </span>
+                  </div>
 
+                  <h4 className={styles.sectionTitle}>Audit row hashes</h4>
+                  <div className={styles.specList}>
                     <span className={styles.specLabel}>Fingerprint Hash:</span>
                     <span className={styles.specValue}>{activeIncident.fingerprint_hex}</span>
 
@@ -166,29 +227,26 @@ export default function RefusalsPage() {
                   <div className={styles.codePanel}>
                     <div className={styles.codeHeader}>
                       <span className={styles.codeTitle}>Raw Tool Response JSON</span>
-                      <span className="font-mono text-[10px] text-emerald-500 uppercase tracking-widest animate-pulse">
-                        // Security envelope hydrated
+                      <span className="font-mono text-[10px] text-emerald-500 uppercase tracking-widest">
+                        {refusalDetailQuery.isPending
+                          ? "// loading from sidecar..."
+                          : "// sidecar-reconstructed (charter v1.2)"}
                       </span>
                     </div>
                     <pre className={styles.codeArea}>
-                      {JSON.stringify(
-                        {
-                          status: "refused",
-                          charter_version: "1.2",
-                          envelope_reconstructed: true,
-                          error: {
-                            kind: activeIncident.refusal_reason ?? "pii_blocked",
-                            pii_categories: activeIncident.pii_categories,
-                            message: `catastrophic column leak category blocked in ${activeIncident.tool_name}`,
-                            recovery: {
-                              actions: ["widen_filter", "remove_pii_columns"],
-                              hint: "remove password_hash or payment details and retry execution with less sensitive columns.",
+                      {refusalDetailQuery.data
+                        ? JSON.stringify(
+                            refusalDetailQuery.data.envelope ?? {
+                              status: "refused",
+                              error: {
+                                kind: activeIncident.refusal_reason ?? "pii_blocked",
+                                pii_categories: activeIncident.pii_categories,
+                              },
                             },
-                          },
-                        },
-                        null,
-                        2
-                      )}
+                            null,
+                            2,
+                          )
+                        : "Loading reconstructed envelope from sidecar…"}
                     </pre>
                   </div>
                 </div>
