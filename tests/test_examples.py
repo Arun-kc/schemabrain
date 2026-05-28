@@ -154,14 +154,28 @@ class TestAnthropicDemoScript:
 
 
 class TestSetupDocs:
-    def _path(self) -> Path:
-        return _REPO_ROOT / "docs" / "setup.md"
+    # PR #144 split the 541-line `docs/setup.md` into three focused
+    # pages — wizard happy path (`setup.md`), Docker install
+    # (`setup/docker.md`), and manual flow (`setup/manual.md`). The
+    # contract these tests enforce is "the setup docs collectively
+    # mention X", so we aggregate text across all three pages rather
+    # than pinning content to a single file that has since moved.
+    def _paths(self) -> tuple[Path, ...]:
+        return (
+            _REPO_ROOT / "docs" / "setup.md",
+            _REPO_ROOT / "docs" / "setup" / "docker.md",
+            _REPO_ROOT / "docs" / "setup" / "manual.md",
+        )
 
-    def test_file_exists(self) -> None:
-        assert self._path().exists()
+    def _combined_text(self) -> str:
+        return "\n".join(p.read_text() for p in self._paths())
+
+    def test_files_exist(self) -> None:
+        for p in self._paths():
+            assert p.exists(), f"missing setup doc: {p}"
 
     def test_mentions_all_integration_paths(self) -> None:
-        text = self._path().read_text()
+        text = self._combined_text()
         assert "Claude Desktop" in text
         assert "Cursor" in text
         assert "anthropic_demo" in text or "Anthropic SDK" in text
@@ -179,4 +193,5 @@ class TestSetupDocs:
         # The Troubleshooting table earned its existence — every entry
         # there came from a real footgun. If the doc is rewritten and
         # drops a warning, this test catches it.
-        assert warning in self._path().read_text(), f"setup docs lost warning about {warning!r}"
+        text = self._combined_text()
+        assert warning in text, f"setup docs lost warning about {warning!r}"
