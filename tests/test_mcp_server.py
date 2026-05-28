@@ -165,22 +165,12 @@ class TestServerInstructionsSteering:
         opts = server_with_one_table._mcp_server.create_initialization_options()
         instructions = opts.instructions or ""
         # Three load-bearing tool names in the recommended call order.
+        # Positive framing only — the MCP `initialize` response already
+        # carries the full tool list, so the agent can see what exists
+        # without us calling out tools that don't.
         assert "find_relevant_entities" in instructions
         assert "describe_entity" in instructions
         assert "get_metric" in instructions
-
-    def test_instructions_disclaim_nonexistent_list_tables(
-        self, server_with_one_table
-    ) -> None:
-        """The most common failure mode an agent exhibits against a
-        Postgres MCP is calling `list_tables` (which exists on many
-        other Postgres MCPs but NOT on SchemaBrain). The instructions
-        must call this out by name so the agent does not waste a turn.
-        """
-        opts = server_with_one_table._mcp_server.create_initialization_options()
-        instructions = opts.instructions or ""
-        assert "list_tables" in instructions
-        assert "does not exist" in instructions or "do not" in instructions.lower()
 
 
 class TestToolRegistry:
