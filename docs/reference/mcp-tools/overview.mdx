@@ -65,10 +65,10 @@ Every response includes a `token_estimate` so agents can budget context. Every e
 If you're wiring SchemaBrain into a custom MCP host (not Claude Desktop / Cursor / Windsurf / Claude Code), the fastest path is the bundled Anthropic SDK demo:
 
 <CardGroup cols={2}>
-  <Card title="examples/anthropic_demo.py" icon="code" href="/setup#path-b-anthropic-sdk-demo">
+  <Card title="examples/anthropic_demo.py" icon="code" href="/setup/manual#3-wire-your-own-agent-anthropic-sdk">
     ~250 LOC that spawns `schemabrain serve` over stdio, drives Claude Haiku through the standard tool-use loop, and prints the transcript. Drop-in template for any MCP-stdio client.
   </Card>
-  <Card title="MCP Inspector workflow" icon="bug" href="/setup#3-mcp-inspector-workflow">
+  <Card title="MCP Inspector workflow" icon="bug" href="/setup/manual#inspecting-tool-shapes-with-the-official-mcp-inspector">
     Hit every tool against your indexed schema before wiring an LLM — fastest way to audit shapes during integration.
   </Card>
 </CardGroup>

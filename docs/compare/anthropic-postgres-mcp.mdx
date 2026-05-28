@@ -18,7 +18,7 @@ If you found the Anthropic reference MCP in the [`modelcontextprotocol/servers-a
     **Skip the reference.** The Anthropic Postgres MCP was a demo, not a posture — it ships one tool that accepts arbitrary SQL, has no PII awareness, and no audit log. It was archived May 29, 2025. SchemaBrain is the production replacement: [12 typed tools](/reference/mcp-tools/overview), [PII refusal by default](/mechanism/pii-taxonomy), [hash-chained audit](/mechanism/audit-chain).
   </Tab>
   <Tab title="Already wired the reference">
-    **Migrate to `schemabrain init --host claude-desktop`.** The wizard auto-detects your existing Claude Desktop config, indexes your schema, and writes the SchemaBrain entry next to (not over) your existing entry. Test both side-by-side for a session, then remove the reference entry once you're comfortable.
+    **Migrate to `schemabrain init --host claude-desktop`.** The wizard opens your existing Claude Desktop config, indexes your schema, and writes the SchemaBrain entry next to (not over) your existing entry. Test both side-by-side for a session, then remove the reference entry once you're comfortable.
   </Tab>
   <Tab title="Want the technical depth">
     **Read [Mechanism: read-only by architecture](/mechanism/read-only)** for the load-bearing claim (no `execute_query` tool exists, by construction), then the [threat model](/threat-model) for what we explicitly do NOT defend against. The comparison table below walks each delta from the reference's 3-tool surface.

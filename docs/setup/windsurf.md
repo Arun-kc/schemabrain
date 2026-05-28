@@ -103,4 +103,4 @@ Cascade reads `recovery.suggested_tool` and `suggested_args.name`, calls `resolv
 - **`postgresql://` URL fails with `ModuleNotFoundError`** — use `postgresql+psycopg://`. `init` auto-rewrites with a one-line confirmation.
 - **`onnxruntime` install fails on Apple Silicon + Python 3.12** — downgrade to Python 3.11 or pass `--no-embed` to skip the embeddings layer.
 
-Full setup reference: [`docs/setup.md`](../setup.md).
+Full setup reference: [`docs/setup.md`](../setup.md) (wizard) · [`docs/setup/manual.md`](manual.md) (manual flow, logs, troubleshooting).

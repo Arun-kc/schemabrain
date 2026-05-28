@@ -29,7 +29,7 @@ SchemaBrain sits between the agent and the database and changes that contract.
     ```bash
     schemabrain init
     ```
-    The wizard auto-detects your MCP host (Claude Desktop, Cursor, Windsurf, Claude Code), spins up a local Postgres demo with a 7-table e-commerce schema, and writes a ready-to-use config. Press Enter at every prompt for the demo defaults.
+    The wizard targets Claude Desktop by default; pass `--host claude-code` / `cursor` / `windsurf` to wire a different MCP host. It spins up a local Postgres demo with a 7-table e-commerce schema and writes a ready-to-use config. Press Enter at every prompt for the demo defaults.
   </Step>
   <Step title="Restart the host and ask">
     Ask your agent: *"list the entities you know about, then describe the user entity."*

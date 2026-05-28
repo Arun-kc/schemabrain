@@ -7,12 +7,14 @@ SchemaBrain sits between LLM-powered agents and production Postgres, exposing 12
 ## Get started
 
 - [Introduction](https://github.com/Arun-kc/schemabrain/blob/main/docs/introduction.mdx): One-page elevator — what SchemaBrain is, the 4 firewall properties, 5-minute install ladder, host picker.
-- [Setup](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup.md): Two paths from "I have a Postgres database" to "an AI agent can answer questions about it" — activation wizard (recommended) or manual flow. Source-install + Docker variants included.
+- [Setup](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup.md): Activation wizard (recommended) — pick a host, run the wizard, ask the agent in ~60s.
+- [Docker install](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup/docker.md): Published image with the embedding model baked in (no first-run download).
+- [Manual flow](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup/manual.md): Explicit `index` + `mine-queries`, Anthropic SDK demo, logs config, troubleshooter, MCP Inspector, SQL-validation ladder.
 - [First 5 Queries](https://github.com/Arun-kc/schemabrain/blob/main/docs/first-5-queries.md): Five queries against your fresh install that exercise each load-bearing mechanism — read-only tools, PII refusal, audit chain, structured recovery — plus a closing CLI step that proves what happened.
 
 ## MCP hosts
 
-Five MCP-compatible hosts with first-class wiring (auto-detected by the activation wizard):
+Five MCP-compatible hosts with first-class wiring. The activation wizard targets Claude Desktop by default; pass `--host claude-code` / `cursor` / `windsurf` to wire a different one. ChatGPT support is via Codex CLI today (no first-party `--host chatgpt` flag yet).
 
 - [Claude Desktop](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup/claude-desktop.md): 60-second wiring. Install SchemaBrain, run `init`, restart with Cmd+Q.
 - [Claude Code](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup/claude-code.md): 60-second wiring. Wizard shells out to `claude mcp add`.

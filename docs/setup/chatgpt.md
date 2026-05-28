@@ -73,4 +73,4 @@ A "ChatGPT setup" page with screenshots and a copy-paste snippet that doesn't ac
 
 If native ChatGPT support matters to you, open an issue on GitHub and we'll prioritize accordingly. Real demand bumps it up the roadmap; speculative work pushes other useful features back.
 
-Full setup reference for supported clients: [`docs/setup.md`](../setup.md).
+Full setup reference for supported clients: [`docs/setup.md`](../setup.md) (wizard) · [`docs/setup/manual.md`](manual.md) (manual flow, logs, troubleshooting).

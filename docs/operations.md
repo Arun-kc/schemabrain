@@ -141,4 +141,4 @@ Point an MCP host at the indexed store via `docker run`:
 
 The `docker compose up` recipe builds SchemaBrain from the repo's `Dockerfile`, so a checkout is all you need. A pre-built multi-platform image (`linux/amd64` + `linux/arm64`) on a public registry is on the v0.3.x roadmap so you can skip the build step.
 
-Full Docker setup (env-var hygiene, host-uid mapping, containerised serve config) is in [`/setup`](/setup#3-docker-alternative-install).
+Full Docker setup (env-var hygiene, host-uid mapping, containerised serve config) is in [`/setup/docker`](/setup/docker).

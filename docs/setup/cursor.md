@@ -104,4 +104,4 @@ The agent reads `recovery.suggested_tool`, pivots to `describe_entity` to find n
 - **`uvx` not on PATH** — install with `pip install uv` (or `brew install uv`). Without `uvx`, the wizard falls back to the installed absolute path.
 - **`postgresql://` URL fails with `ModuleNotFoundError`** — use `postgresql+psycopg://`. `init` auto-rewrites with a one-line confirmation.
 
-Full setup reference: [`docs/setup.md`](../setup.md).
+Full setup reference: [`docs/setup.md`](../setup.md) (wizard) · [`docs/setup/manual.md`](manual.md) (manual flow, logs, troubleshooting).
