@@ -641,6 +641,81 @@ class TestInitHostResolution:
         err = capsys.readouterr().err
         assert "auto-selected --host cursor" in err
 
+    def test_keyboard_interrupt_at_host_prompt_exits_130(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Ctrl-C at the host prompt → clean abort with exit 130 and
+        # "aborted." on stderr. Same shape as the stage-0 source-fork
+        # Ctrl-C handler.
+        def fake_source_prompt(*_a: object, **_kw: object) -> str | None:
+            return "postgresql+psycopg://u:p@h:5432/db"
+
+        def fake_host_prompt(*_a: object, **_kw: object) -> str:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(
+            "schemabrain.setup.setup_stage.prompt_for_init_setup", fake_source_prompt
+        )
+        monkeypatch.setattr(
+            "schemabrain.setup.host_select.prompt_for_host_selection", fake_host_prompt
+        )
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        exit_code = main(["init"])
+        assert exit_code == 130
+        assert "aborted." in capsys.readouterr().err
+
+    def test_eof_at_host_prompt_exits_130(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # EOFError at the host prompt — same abort shape as the
+        # Ctrl-C case. Covers SSH-drop / terminal-recorder paths.
+        def fake_source_prompt(*_a: object, **_kw: object) -> str | None:
+            return "postgresql+psycopg://u:p@h:5432/db"
+
+        def fake_host_prompt(*_a: object, **_kw: object) -> str:
+            raise EOFError
+
+        monkeypatch.setattr(
+            "schemabrain.setup.setup_stage.prompt_for_init_setup", fake_source_prompt
+        )
+        monkeypatch.setattr(
+            "schemabrain.setup.host_select.prompt_for_host_selection", fake_host_prompt
+        )
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        exit_code = main(["init"])
+        assert exit_code == 130
+        assert "aborted." in capsys.readouterr().err
+
+    def test_invalid_host_returns_guided_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Argparse `choices=(...)` already blocks bad --host values
+        # before _cmd_init runs, but the defensive gate inside the
+        # function protects against programmatic callers (tests,
+        # downstream importers) that bypass argparse. Calling
+        # _cmd_init directly with a bad host exercises that gate.
+        from schemabrain.cli import _cmd_init
+
+        exit_code = _cmd_init(
+            positional_url=None,
+            url_env=None,
+            store_path="./schemabrain.db",
+            host="not-a-real-host",
+            env_var="SCHEMABRAIN_DATABASE_URL",
+            skip_index=False,
+            no_entities=False,
+            no_metrics=False,
+            no_joins=False,
+            no_embed=False,
+            enrich=False,
+            entities_max_cost_usd=None,
+            metrics_max_cost_usd=None,
+            assume_yes=False,
+            print_only=False,
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "unknown --host" in err
+        assert "not-a-real-host" in err
+
     def test_tty_no_yes_no_host_fires_the_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Bare `schemabrain init` in an interactive terminal → host
         # prompt fires after the source-fork prompt resolves. We stub
