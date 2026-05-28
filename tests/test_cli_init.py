@@ -559,6 +559,197 @@ class TestInitYesSkipsStageZero:
         assert "no connection URL provided" in capsys.readouterr().err
 
 
+class TestInitHostResolution:
+    """`--host` resolution in ``_cmd_init`` has three paths after PR-#146:
+
+    1. Explicit ``--host <X>`` → use it as-is, skip detection.
+    2. Omitted under TTY + not ``--yes`` → interactive prompt (the
+       new host-selection menu) returns the operator's pick.
+    3. Omitted under non-TTY OR ``--yes`` → silent collapse to
+       ``detect_host`` single-winner, with a one-line stderr note.
+
+    Pre-PR-#146 the argparse default was hardcoded to ``"claude-desktop"``,
+    so a bare ``schemabrain init`` on a machine without Claude Desktop
+    silently wired the wrong host. These tests pin the new contract.
+    """
+
+    def test_explicit_host_skips_prompt_and_detect(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # `--host cursor` explicit → host-selection prompt never fires,
+        # detect_host never called, no stderr auto-select note.
+        host_prompt_called = {"n": 0}
+
+        def fake_prompt(*_a: object, **_kw: object) -> str:
+            host_prompt_called["n"] += 1
+            return "should-not-be-returned"
+
+        monkeypatch.setattr("schemabrain.setup.host_select.prompt_for_host_selection", fake_prompt)
+
+        def fake_detect() -> str:
+            host_prompt_called["n"] += 1
+            return "claude-desktop"
+
+        monkeypatch.setattr("schemabrain.setup.hosts.detect_host", fake_detect)
+        # Force TTY so we're testing the explicit-override branch, not
+        # the non-TTY fallback.
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        # No URL → exit 2 with the standard guided error, but the host
+        # resolution path runs first.
+        exit_code = main(["init", "--host", "cursor", "--yes"])
+        assert exit_code == 2
+        assert host_prompt_called["n"] == 0
+        err = capsys.readouterr().err
+        assert "auto-selected" not in err
+
+    def test_yes_collapses_to_detect_host_silently(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # `--yes` + URL provided + no `--host` → silent collapse to
+        # detect_host, with a one-line stderr note so the operator
+        # can see what got picked. URL is required because host
+        # resolution sits after URL resolution in _cmd_init's flow.
+        host_prompt_called = {"n": 0}
+
+        def fake_host_prompt(*_a: object, **_kw: object) -> str:
+            host_prompt_called["n"] += 1
+            return "should-not-be-returned"
+
+        monkeypatch.setattr(
+            "schemabrain.setup.host_select.prompt_for_host_selection", fake_host_prompt
+        )
+        # Stub detect_host at its source-of-truth module. cli.py
+        # imports the function inside _cmd_init (lazy import), so
+        # the patch targets the hosts module where the function is
+        # defined.
+        monkeypatch.setattr("schemabrain.setup.hosts.detect_host", lambda: "cursor")
+
+        # Short-circuit the wizard so we don't need a real database.
+        def fake_run_wizard(*_a: object, **_kw: object) -> object:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("schemabrain.setup.wizard.run_default_wizard", fake_run_wizard)
+        # Force TTY=True so the gate that picks between prompt and
+        # silent-collapse is `--yes`, not the TTY check.
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        monkeypatch.setenv("DB_URL_FOR_TEST", "postgresql+psycopg://u:p@h:5432/db")
+        exit_code = main(["init", "--yes", "--url-env", "DB_URL_FOR_TEST"])
+        # Wizard KeyboardInterrupt → exit 130 (same as the existing
+        # silent-rewrite test pattern).
+        assert exit_code == 130
+        assert host_prompt_called["n"] == 0
+        err = capsys.readouterr().err
+        assert "auto-selected --host cursor" in err
+
+    def test_keyboard_interrupt_at_host_prompt_exits_130(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Ctrl-C at the host prompt → clean abort with exit 130 and
+        # "aborted." on stderr. Same shape as the stage-0 source-fork
+        # Ctrl-C handler.
+        def fake_source_prompt(*_a: object, **_kw: object) -> str | None:
+            return "postgresql+psycopg://u:p@h:5432/db"
+
+        def fake_host_prompt(*_a: object, **_kw: object) -> str:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(
+            "schemabrain.setup.setup_stage.prompt_for_init_setup", fake_source_prompt
+        )
+        monkeypatch.setattr(
+            "schemabrain.setup.host_select.prompt_for_host_selection", fake_host_prompt
+        )
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        exit_code = main(["init"])
+        assert exit_code == 130
+        assert "aborted." in capsys.readouterr().err
+
+    def test_eof_at_host_prompt_exits_130(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # EOFError at the host prompt — same abort shape as the
+        # Ctrl-C case. Covers SSH-drop / terminal-recorder paths.
+        def fake_source_prompt(*_a: object, **_kw: object) -> str | None:
+            return "postgresql+psycopg://u:p@h:5432/db"
+
+        def fake_host_prompt(*_a: object, **_kw: object) -> str:
+            raise EOFError
+
+        monkeypatch.setattr(
+            "schemabrain.setup.setup_stage.prompt_for_init_setup", fake_source_prompt
+        )
+        monkeypatch.setattr(
+            "schemabrain.setup.host_select.prompt_for_host_selection", fake_host_prompt
+        )
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        exit_code = main(["init"])
+        assert exit_code == 130
+        assert "aborted." in capsys.readouterr().err
+
+    def test_invalid_host_returns_guided_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Argparse `choices=(...)` already blocks bad --host values
+        # before _cmd_init runs, but the defensive gate inside the
+        # function protects against programmatic callers (tests,
+        # downstream importers) that bypass argparse. Calling
+        # _cmd_init directly with a bad host exercises that gate.
+        from schemabrain.cli import _cmd_init
+
+        exit_code = _cmd_init(
+            positional_url=None,
+            url_env=None,
+            store_path="./schemabrain.db",
+            host="not-a-real-host",
+            env_var="SCHEMABRAIN_DATABASE_URL",
+            skip_index=False,
+            no_entities=False,
+            no_metrics=False,
+            no_joins=False,
+            no_embed=False,
+            enrich=False,
+            entities_max_cost_usd=None,
+            metrics_max_cost_usd=None,
+            assume_yes=False,
+            print_only=False,
+        )
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "unknown --host" in err
+        assert "not-a-real-host" in err
+
+    def test_tty_no_yes_no_host_fires_the_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Bare `schemabrain init` in an interactive terminal → host
+        # prompt fires after the source-fork prompt resolves. We stub
+        # source-fork to return a URL, then expect the host prompt to
+        # be invoked, then short-circuit the wizard.
+        host_prompt_called = {"n": 0}
+
+        def fake_host_prompt(*_a: object, **_kw: object) -> str:
+            host_prompt_called["n"] += 1
+            return "manual"
+
+        def fake_source_prompt(*_a: object, **_kw: object) -> str | None:
+            return "postgresql+psycopg://u:p@h:5432/db"
+
+        def fake_run_wizard(*_a: object, **_kw: object) -> object:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(
+            "schemabrain.setup.host_select.prompt_for_host_selection", fake_host_prompt
+        )
+        monkeypatch.setattr(
+            "schemabrain.setup.setup_stage.prompt_for_init_setup", fake_source_prompt
+        )
+        monkeypatch.setattr(
+            "schemabrain.setup.setup_stage.prompt_for_pii_block",
+            lambda *, console: ("credential", "government_id", "payment_card"),
+        )
+        monkeypatch.setattr("schemabrain.setup.wizard.run_default_wizard", fake_run_wizard)
+        monkeypatch.setattr("schemabrain.cli._stderr_is_interactive_tty", lambda: True)
+        exit_code = main(["init"])
+        assert exit_code == 130  # wizard KeyboardInterrupt
+        assert host_prompt_called["n"] == 1
+
+
 class TestInitStageZeroAbortPaths:
     """Round-2 reviewer fold: stage 0 prompt must catch BOTH
     KeyboardInterrupt (Ctrl-C) AND EOFError (stdin closed mid-prompt,
@@ -641,8 +832,11 @@ class TestInitStageZeroAbortPaths:
         )
         monkeypatch.setattr("schemabrain.setup.wizard.run_default_wizard", fake_run_wizard)
         # KeyboardInterrupt from the wizard itself bubbles up to main()
-        # and exits 130 — same shape as stage 0 abort.
-        exit_code = main(["init"])
+        # and exits 130 — same shape as stage 0 abort. `--host manual`
+        # bypasses the new host-selection prompt (PR #146) so this
+        # test stays focused on the URL-rewrite assertion; the host
+        # path is exercised by TestInitHostResolution.
+        exit_code = main(["init", "--host", "manual"])
         assert exit_code == 130
         captured = capsys.readouterr()
         # The wizard received the rewritten URL with +psycopg, not

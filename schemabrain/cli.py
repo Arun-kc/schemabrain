@@ -2044,9 +2044,10 @@ def _build_parser() -> argparse.ArgumentParser:
     g_host.add_argument(
         "--host",
         choices=("claude-desktop", "claude-code", "cursor", "windsurf", "manual"),
-        default="claude-desktop",
-        help="Which host to wire. `manual` prints the snippet without writing "
-        "anywhere (default: claude-desktop)",
+        default=None,
+        help="Which host to wire. Omit to auto-detect (interactive menu shows "
+        "detected hosts; non-TTY / --yes paths use the priority winner from "
+        "detect_host). `manual` prints the snippet without writing.",
     )
     g_host.add_argument(
         "--store-path",
@@ -6183,7 +6184,7 @@ def _cmd_init(
     positional_url: str | None,
     url_env: str | None,
     store_path: str,
-    host: str,
+    host: str | None,
     env_var: str,
     skip_index: bool,
     no_entities: bool,
@@ -6229,20 +6230,24 @@ def _cmd_init(
     """
     from typing import get_args as _get_args
 
-    from schemabrain.setup.hosts import HostName
+    from schemabrain.setup.hosts import HostName, detect_host
     from schemabrain.setup.preflight import detect_apple_silicon_fastembed_gap
     from schemabrain.setup.wizard import WizardConfig, run_default_wizard
 
-    effective_host = "manual" if print_only else host
-    # `WizardConfig.__post_init__` enforces the host literal; argparse
-    # narrows the input to the documented `choices`, but the manual
-    # override path still benefits from a clean error on a typo.
+    # Early validation only: when `--host` was passed explicitly, fail
+    # fast on a typo before stage 0 fires. The full host RESOLUTION
+    # (interactive prompt vs detect_host vs explicit) runs later,
+    # after source-URL resolution — that way the operator answers
+    # questions in the order they think about them (which database
+    # first, where to wire it second). The valid_hosts gate stays
+    # here so argparse-validated choices and the manual override
+    # path both get the same clean error.
     valid_hosts = _get_args(HostName)
-    if effective_host not in valid_hosts:
+    if host is not None and host not in valid_hosts:
         _render_guided(
             GuidedError(
                 kind="init_invalid_host",
-                message=f"unknown --host {effective_host!r}",
+                message=f"unknown --host {host!r}",
                 why="schemabrain init wires one of a fixed list of MCP hosts",
                 fix=f"pass --host one of {sorted(valid_hosts)}",
                 next_step="run `schemabrain init --help` to see the choices",
@@ -6339,6 +6344,38 @@ def _cmd_init(
         print(
             f"[schemabrain init] detected {parsed_scheme}:// URL; using "
             "postgresql+psycopg:// for SQLAlchemy compatibility",
+            file=sys.stderr,
+        )
+
+    # Host resolution: source URL is now known; ask the operator
+    # which MCP host to wire it into. `--print-only` always wins
+    # (alias for manual). Otherwise `--host` explicit → use it.
+    # `--host` omitted (sentinel None) → interactive menu under
+    # TTY+not-`--yes`; silent `detect_host` single-winner under
+    # `--yes` / non-TTY, with a one-line stderr note so a scripted
+    # operator sees what got picked and can lock it in next time
+    # with `--host X`. The stderr note matters — silent auto-detect
+    # is bad UX, not good convenience.
+    if print_only:
+        effective_host: str = "manual"
+    elif host is not None:
+        effective_host = host
+    elif _stderr_is_interactive_tty() and not assume_yes:
+        from schemabrain.setup.host_select import prompt_for_host_selection
+
+        try:
+            effective_host = prompt_for_host_selection(console=_stderr_console())
+        except (KeyboardInterrupt, EOFError):
+            # Ctrl-C / stdin-EOF at the host prompt — clean abort,
+            # same shape as the stage-0 source-fork Ctrl-C handler
+            # above.
+            print("\naborted.", file=sys.stderr)
+            return 130
+    else:
+        effective_host = detect_host()
+        print(
+            f"[schemabrain init] auto-selected --host {effective_host} "
+            "(non-interactive); pass --host explicitly to override.",
             file=sys.stderr,
         )
 

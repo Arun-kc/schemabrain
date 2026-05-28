@@ -39,7 +39,7 @@ On the **demo path**, entities + metrics + joins are pre-applied from a bundled 
 
 On **your own database**, exporting `ANTHROPIC_API_KEY` unlocks the entity + metric suggestion stages; without it the wizard soft-skips them gracefully — you can run `schemabrain entities suggest --apply` later once you have a key.
 
-The wizard wires Claude Desktop by default. To wire a different host pass `--host claude-code` / `cursor` / `windsurf`, or `--host manual` for a paste-ready snippet to stdout. (For ChatGPT see the [Codex CLI page](/setup/chatgpt) — there's no first-party `--host chatgpt` flag yet.)
+After URL resolution, the wizard shows a host-selection menu listing all 4 supported MCP hosts (Claude Desktop, Claude Code, Cursor, Windsurf) plus a Manual paste option. Detected installs get a ✓ chip; the default cursor points at the priority winner (Claude Desktop → Claude Code → Cursor → Windsurf). Press Enter to take the detected default, or type a number to pick something else. Pass `--host X` explicitly to bypass the prompt entirely; under `--yes` / non-TTY the wizard collapses silently to the priority-winner detection with a one-line stderr note. (For ChatGPT see the [Codex CLI page](/setup/codex) — there's no first-party `--host chatgpt` flag yet.)
 
 ```
 SchemaBrain init — activation wizard

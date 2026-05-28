@@ -307,6 +307,47 @@ def detect_host() -> HostName:
     return "manual"
 
 
+def detect_available_hosts() -> tuple[HostName, ...]:
+    """Return every host whose presence we can detect on this machine.
+
+    Same priority order as ``detect_host`` but returns the full list
+    instead of stopping at the first match. The interactive host-
+    selection prompt uses this to render the menu with a ✓ chip next
+    to each detected option; the wizard's default cursor still points
+    at the priority winner (first element, when non-empty).
+
+    ``"manual"`` is never included — it's the always-available
+    fallback and the prompt renders it as a separate menu row, not
+    a detection signal. The empty tuple is a valid return (operator
+    has no MCP host installed) and the prompt handles it by defaulting
+    the cursor to manual.
+
+    Detection signals reused 1:1 from ``detect_host``:
+      - claude-desktop: config dir exists on a platform that has an
+        official Claude Desktop build (macOS / Windows; Linux is None)
+      - claude-code: ``claude --version`` succeeds
+      - cursor: ``~/.cursor`` dir exists
+      - windsurf: ``~/.codeium/windsurf`` dir exists
+
+    Stale-config leniency: same as ``detect_host`` — ``parent.exists()``
+    matches a directory the user might have created but never finished
+    setting up. The trade-off is intentional; a stricter
+    ``path.exists()`` would break "I just installed Cursor and haven't
+    opened it yet" because the config file is created on first launch.
+    """
+    candidates: list[HostName] = []
+    desktop_path = claude_desktop_config_path()
+    if desktop_path is not None and desktop_path.parent.exists():
+        candidates.append("claude-desktop")
+    if claude_code_available():
+        candidates.append("claude-code")
+    if cursor_config_path().parent.exists():
+        candidates.append("cursor")
+    if windsurf_config_path().parent.exists():
+        candidates.append("windsurf")
+    return tuple(candidates)
+
+
 def _claude_mcp_add_command(snippet: SchemabrainSnippet) -> tuple[str, ...]:
     """Build the `claude mcp add` argv for the snippet.
 
