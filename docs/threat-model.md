@@ -211,17 +211,21 @@ oversized identifiers, Unicode confusables, or embedded ANSI escape sequences.
   Error messages bound their echoed input via `_bounded_repr` (capped at
   three identifier lengths). An adversary cannot force a 150 KB string back
   into agent context through SchemaBrain.
-- T4.2, T4.3: The identifier regex `^[A-Za-z_][A-Za-z0-9_$]*$` rejects
-  control characters, ANSI escapes, and Unicode confusables outside the
-  ASCII alphabet. Quoted-identifier syntax (`"Order Items"`) is not
-  currently supported — the trade-off is explicit and accepted.
+- T4.2, T4.3: The unquoted-identifier regex `^[A-Za-z_][A-Za-z0-9_$]*$`
+  rejects control characters, ANSI escapes, and Unicode confusables outside
+  the ASCII alphabet. SQL-standard double-quoted syntax (`"Order Items"`,
+  `"Percent (%) Eligible"`) is supported for schemas that legitimately
+  carry non-identifier-shaped names, with a control-character denylist
+  (C0 controls `\x00-\x1f` plus DEL `\x7f`) enforced at the parser
+  boundary — even a Postgres catalog that admits an ANSI escape in a
+  column name is refused before it can reach an agent-rendered surface.
 
 **Residual risk**
 
-- A schema may legitimately contain identifiers that fail the regex
-  (multi-word names with spaces, names containing diacritics). Those tables
-  are rejected by SchemaBrain today; the operator must rename the column,
-  use a view, or wait for a future quoted-identifier mode.
+- The control-char denylist covers C0 + DEL but not Unicode line/paragraph
+  separators (` `, ` `) or C1 controls (`\x80-\x9f`). These have
+  no known terminal-reflow vector through the MCP response shape, but
+  expanding the denylist if the threat profile widens is a one-line change.
 
 ## Threats explicitly out of scope
 
