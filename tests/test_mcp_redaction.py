@@ -81,9 +81,7 @@ class TestRedactBlockedFkColumns:
         )
         assert result == ["<redacted_column>"]
 
-    def test_unblocked_column_passes_through(
-        self, store_with_tagged_users: SQLiteStore
-    ) -> None:
+    def test_unblocked_column_passes_through(self, store_with_tagged_users: SQLiteStore) -> None:
         """A column whose tags don't intersect ``effective_block`` is
         returned unchanged."""
         result = redact_blocked_fk_columns(
@@ -110,9 +108,7 @@ class TestRedactBlockedFkColumns:
         )
         assert result == ["id", "<redacted_column>", "email"]
 
-    def test_unknown_column_treated_as_public(
-        self, store_with_tagged_users: SQLiteStore
-    ) -> None:
+    def test_unknown_column_treated_as_public(self, store_with_tagged_users: SQLiteStore) -> None:
         """A column the store has no tag-row for defaults to ``public`` and
         therefore passes through. Matches the propagation helper's
         empty-input contract."""
