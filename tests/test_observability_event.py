@@ -187,3 +187,53 @@ class TestEventJsonSerialisation:
         assert parsed["event_subtype"] == "server_start"
         # None fields included for downstream consumers
         assert parsed["tool_name"] is None
+
+    def test_pydantic_model_in_args_summary_round_trips(self) -> None:
+        """F1-C regression: ``order_by`` arrives as a tuple of Pydantic
+        ``MetricOrderByArg`` models, which ``dataclasses.asdict`` leaves
+        un-converted. ``to_json_line`` MUST flatten them via ``model_dump``
+        so the bus doesn't drop the event silently and ``schemabrain tail``
+        keeps showing structured-args metric calls.
+        """
+        from schemabrain.mcp.shapes import MetricOrderByArg
+
+        kw = _tool_call_kwargs()
+        kw["tool_name"] = "get_metric"
+        kw["args_summary"] = {
+            "name": "total_revenue",
+            "group_by": ["product.name"],
+            "order_by": (MetricOrderByArg(column="total_revenue", direction="desc"),),
+        }
+        ev = Event(**kw)
+        parsed = json.loads(ev.to_json_line())
+        assert parsed["args_summary"]["order_by"] == [
+            {"column": "total_revenue", "direction": "desc"},
+        ]
+
+    def test_frozenset_in_args_summary_round_trips(self) -> None:
+        """Adjacent: frozensets are common in the audit / firewall layer
+        (``pii_block``, propagated category sets). JSON has no set type,
+        so the default hook emits them as sorted lists for deterministic
+        wire shape. Without this the bus would drop any event carrying
+        a frozenset alongside the Pydantic case.
+        """
+        kw = _tool_call_kwargs()
+        kw["args_summary"] = {"pii_block": frozenset({"credential", "payment_card"})}
+        parsed = json.loads(Event(**kw).to_json_line())
+        assert parsed["args_summary"]["pii_block"] == ["credential", "payment_card"]
+
+    def test_unhandled_shape_is_loud_not_silent(self) -> None:
+        """The default hook raises ``TypeError`` for shapes it doesn't
+        understand. The event bus catches that on its drop path; a new
+        un-handled shape surfaces as a loud failure here so we add a
+        rule rather than discover the gap in production tail-stream
+        gaps.
+        """
+
+        class _UnknownShape:
+            pass
+
+        kw = _tool_call_kwargs()
+        kw["args_summary"] = {"weird": _UnknownShape()}
+        with pytest.raises(TypeError, match="_UnknownShape"):
+            Event(**kw).to_json_line()

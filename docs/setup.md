@@ -45,7 +45,7 @@ After URL resolution, the wizard shows a host-selection menu listing all 4 suppo
 SchemaBrain init — activation wizard
 
   [1/7] Source check       ✓ source reachable + read-only
-  [2/7] Index schema       ✓ 7 tables, 30 columns indexed
+  [2/7] Index schema       ✓ 8 tables, 39 columns indexed
   [3/7] Curate entities    ✓ 6 entities applied (bundled demo pack)
   [4/7] Curate metrics     ✓ 10 metrics applied (bundled demo pack)
   [5/7] Curate joins       ✓ 7 canonical joins applied (bundled demo pack)
@@ -116,7 +116,7 @@ Re-runs are idempotent: every stage auto-skips when its work is already done. Us
 schemabrain dashboard
 ```
 
-A localhost-only Next.js UI on `http://localhost:8765` showing PII categorization, refusal audit, and the audit chain status. See the [Dashboard overview](/dashboard/overview).
+A localhost-only Next.js UI on `http://localhost:7878` showing PII categorization, refusal audit, and the audit chain status. See the [Dashboard overview](/dashboard/overview).
 
 ## 4. Wire your host
 

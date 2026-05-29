@@ -111,5 +111,39 @@ class Event:
                 raise ValueError("server_event must not set error_kind (tool_call-only field)")
 
     def to_json_line(self) -> str:
-        """Serialise as one JSON line terminated by `\\n`."""
-        return json.dumps(asdict(self), separators=(",", ":")) + "\n"
+        """Serialise as one JSON line terminated by `\\n`.
+
+        ``args_summary`` is a free-shape ``dict[str, Any]`` populated by
+        the instrumentation layer from caller kwargs. MCP tool surfaces
+        increasingly accept Pydantic ``BaseModel`` shapes (e.g.
+        ``MetricOrderByArg`` for ``get_metric.order_by``), and
+        ``dataclasses.asdict`` does NOT recurse into Pydantic models —
+        it leaves them as-is in the resulting dict, where ``json.dumps``
+        then raises ``TypeError``. The event bus catches that and drops
+        the event silently after one stderr warning, so every metric
+        with structured ``order_by`` args becomes invisible to
+        ``schemabrain tail --follow`` and any downstream consumer of the
+        bus stream. The ``default=`` hook below converts Pydantic models
+        on the fly via their public ``model_dump()`` API (duck-typed so
+        the observability package stays free of a Pydantic import).
+        """
+        return json.dumps(asdict(self), separators=(",", ":"), default=_json_default) + "\n"
+
+
+def _json_default(obj: object) -> object:
+    """``json.dumps`` fallback for shapes that survive ``asdict()``.
+
+    Pydantic models expose ``model_dump()`` (v2) — duck-typed here so
+    the observability package stays free of a Pydantic import. Frozen
+    sets are emitted as sorted lists for deterministic wire shape (the
+    JSON spec has no set type, and frozenset iteration order is hash-
+    driven with PYTHONHASHSEED). Anything else falls through to a
+    ``TypeError`` ``json.dumps`` will surface to the bus's drop path —
+    so a new un-handled shape is loud, not silent.
+    """
+    model_dump = getattr(obj, "model_dump", None)
+    if callable(model_dump):
+        return model_dump()
+    if isinstance(obj, (frozenset, set)):
+        return sorted(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")

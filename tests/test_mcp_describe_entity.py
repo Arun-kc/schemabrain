@@ -442,8 +442,12 @@ class TestPiiBlockColumnRedaction:
         return server, store
 
     def test_blocked_column_marked_redacted(self, tmp_path: Path) -> None:
-        """The PII-tagged column ships with `redacted=True` and its
-        description is cleared. The non-PII column is untouched.
+        """The PII-tagged column ships with `redacted=True`, its name
+        is replaced by a ``<redacted_<category>_column_N>`` placeholder,
+        and its description is cleared. The non-PII column is untouched.
+
+        F1-E V3: the real name is no longer exposed in ``columns[*].name`` —
+        only in ``redacted_columns`` (operator-side audit signal).
         """
         server, store = self._build_with_pii_block(tmp_path, frozenset({"contact"}))
         try:
@@ -456,9 +460,16 @@ class TestPiiBlockColumnRedaction:
         assert envelope.status == "success"
         assert envelope.data is not None
         cols_by_name = {c["name"]: c for c in envelope.data["columns"]}
-        assert cols_by_name["email"]["redacted"] is True
-        assert cols_by_name["email"]["description"] == ""
+        # The real ``email`` name MUST NOT appear in the agent-visible
+        # column list — only its placeholder.
+        assert "email" not in cols_by_name
+        redacted_cols = [c for c in envelope.data["columns"] if c["redacted"]]
+        assert len(redacted_cols) == 1
+        assert redacted_cols[0]["name"].startswith("<redacted_contact_column_")
+        assert redacted_cols[0]["description"] == ""
+        # The non-PII column is untouched.
         assert cols_by_name["id"]["redacted"] is False
+        # Real name lives in the operator-side audit field.
         assert envelope.data["redacted_columns"] == ["email"]
 
     def test_unrelated_pii_block_no_redaction(self, tmp_path: Path) -> None:
@@ -512,8 +523,12 @@ class TestPiiBlockColumnRedaction:
                 name="customer",
                 pii_block=frozenset({"contact"}),
             )
-        email_col = next(c for c in detail.columns if c.name == "email")
+        # F1-E V3: the real name is hidden behind a placeholder; look up
+        # the redacted column via the redacted=True flag instead.
+        email_col = next(c for c in detail.columns if c.redacted)
         assert email_col.redacted is True
+        assert email_col.name.startswith("<redacted_contact_column_")
+        # Real name preserved on the operator-side audit field.
         assert detail.redacted_columns == ("email",)
 
 
@@ -523,10 +538,14 @@ class TestCatastrophicCategoriesAlwaysRedact:
     even when the operator passed an empty `--pii-block`. The intent
     is minimum decency — an operator who opted out of refusal
     enforcement still should not let the agent read a `password_hash`
-    or `ssn` column description. The column metadata (name,
-    data_type, nullable) still surfaces so the agent knows the
-    column exists; only the LLM-enriched semantic description and
-    the description-bearing payload are scrubbed.
+    or `ssn` column description.
+
+    F1-E V3: the column NAME is also hidden behind a placeholder of
+    the shape ``<redacted_<category>_column_N>``. Previous versions
+    preserved the name and only scrubbed the description; the 2026-05-29
+    smoke caught Claude reading the real name and emitting raw SQL
+    referencing it. The new name-masking shape closes that loophole.
+    Data type + nullable still surface so the agent sees the slot exists.
     """
 
     def _users_table_with_credential(self) -> Table:
@@ -599,8 +618,13 @@ class TestCatastrophicCategoriesAlwaysRedact:
                 name="customer",
                 pii_block=frozenset(),
             )
-        hashed = next(c for c in detail.columns if c.name == "password_hash")
+        # F1-E V3: catastrophic categories replace the real name with
+        # a placeholder. The category-specific placeholder shape
+        # (``<redacted_<category>_column_N>``) lets the agent see the
+        # SLOT exists without learning the real name.
+        hashed = next(c for c in detail.columns if c.redacted)
         assert hashed.redacted is True
+        assert hashed.name == f"<redacted_{category}_column_1>"
         assert hashed.description == ""
         assert "password_hash" in detail.redacted_columns
 

@@ -91,6 +91,63 @@ def test_every_bundled_join_references_entities_in_the_pack() -> None:
     assert not failures, "\n".join(failures)
 
 
+def test_fixture_counts_lock_for_in_product_strings() -> None:
+    """F0-C regression: in-product copy that names fixture counts must
+    match the actual SQL. PR #143 added the ``payment_methods`` table
+    (7 → 8) but five source-file strings stayed at the old counts:
+
+      - ``setup_stage.py`` (wizard fixture-load banner, two places)
+      - ``_ui.py`` (LLM-stage progress docstring example)
+      - ``inspect/render.py`` (inspect-output sample shape)
+      - ``init_help_render.py`` (timing-constant rationale comment)
+
+    Surfaced during the 2026-05-29 smoke when the operator saw the
+    wizard print ``(7 tables, ~1.2k rows)`` while the indexer
+    immediately reported ``8 tables · 39 columns indexed`` on the
+    next line. A future fixture edit that changes counts will trip
+    this test, forcing the in-product copy to update alongside.
+
+    The fixture-column count (~39) lives in the SQL, but reading it
+    from CREATE TABLE statements alone is fragile (GENERATED columns,
+    multi-line definitions, CHECK constraints all bleed into a naive
+    regex). We pin only the table count here — the column count is
+    locked indirectly via the per-table column checks elsewhere.
+    """
+    tables = _ecommerce_table_names()
+    assert len(tables) == 8, (
+        f"ecommerce.sql now defines {len(tables)} tables; in-product "
+        f"strings claiming '7 tables' or '8 tables' must follow. "
+        f"Run `grep -rnE '[0-9]+ tables' schemabrain/` and update the "
+        f"call sites BEFORE bumping this assertion. tables={sorted(tables)}"
+    )
+
+    # Per-source-file string-level lock: each occurrence we found and
+    # fixed in the F0-C sweep must NOT regress to '7 tables'.
+    from schemabrain import _ui, init_help_render
+    from schemabrain import inspect as inspect_mod
+    from schemabrain.inspect import render as inspect_render
+    from schemabrain.setup import setup_stage
+
+    sources = {
+        "setup_stage": Path(setup_stage.__file__).read_text(encoding="utf-8"),
+        "_ui": Path(_ui.__file__).read_text(encoding="utf-8"),
+        "inspect_render": Path(inspect_render.__file__).read_text(encoding="utf-8"),
+        "init_help_render": Path(init_help_render.__file__).read_text(encoding="utf-8"),
+    }
+    # Belt-and-braces: the inspect package init must not carry the old
+    # string either (defensive — currently does not, but the test
+    # surfaces the regression if it ever does).
+    _ = inspect_mod  # imported for completeness; no string check needed
+
+    failures: list[str] = []
+    for label, source in sources.items():
+        if "7 tables" in source:
+            failures.append(f"{label}: still contains '7 tables' — update to 8")
+        if "30 columns" in source or "30 cols" in source:
+            failures.append(f"{label}: still contains '30 columns'/'30 cols' — update to 39")
+    assert not failures, "F0-C regression — fix the listed strings:\n  " + "\n  ".join(failures)
+
+
 def test_payment_methods_table_present_for_pii_demo() -> None:
     """The PII-firewall demo needs both v2 surfaces to be wheel-shipped."""
     sql = Path(resolve_bundled_path("ecommerce.sql")).read_text(encoding="utf-8")

@@ -67,7 +67,7 @@ def render_summary(
     Shape:
 
         ◆ store · ~/.schemabrain/acme/store.db
-        7 tables · 30 columns · 3 entities · 1 metric · 1 join
+        8 tables · 39 columns · 3 entities · 1 metric · 1 join
 
         Definitions
         ├── Entities (3)

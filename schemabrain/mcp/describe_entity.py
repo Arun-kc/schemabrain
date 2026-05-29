@@ -114,6 +114,11 @@ def describe_entity_impl(
     # should not let the agent read the description of a `password`
     # or `ssn` column. See module docstring.
     effective_block: frozenset[PIICategory] = pii_block | CATASTROPHIC_LEAK_CATEGORIES
+    # F1-E V3: per-category counter for deterministic placeholder
+    # naming (``<redacted_<category>_column_N>``) — matches the scheme
+    # used by ``describe_table`` so an agent that calls both surfaces
+    # sees consistent placeholder numbering per entity.
+    category_counters: dict[str, int] = {}
     for col in table.columns:
         sensitivity, categories = pii_tags.get(col.name, ("public", frozenset()))
         sorted_categories = tuple(sorted(categories))
@@ -122,15 +127,28 @@ def describe_entity_impl(
         # catastrophic-leak floor). Even one matching category
         # warrants redaction because the operator's intent is "do not
         # expose this kind of data to the agent regardless of column".
-        is_redacted = bool(categories & effective_block)
+        blocked = categories & effective_block
+        is_redacted = bool(blocked)
         if is_redacted:
             redacted_names.append(col.name)
+            # F1-E V3: hide the real name behind a placeholder. The
+            # 2026-05-29 smoke caught Claude reading
+            # ``card_number_last4`` from describe_entity (with
+            # ``redacted=True`` but the real name preserved) and
+            # emitting raw SQL referencing it. Replacing the name
+            # closes the loophole — the agent learns "a payment_card
+            # column slot exists" without learning what it's called.
+            cat = sorted(blocked)[0]
+            category_counters[cat] = category_counters.get(cat, 0) + 1
+            display_name = f"<redacted_{cat}_column_{category_counters[cat]}>"
+        else:
+            display_name = col.name
         description = (
             "" if is_redacted else (descriptions[col.name].text if col.name in descriptions else "")
         )
         columns.append(
             EntityColumn(
-                name=col.name,
+                name=display_name,
                 data_type=col.data_type,
                 nullable=col.nullable,
                 description=description,
