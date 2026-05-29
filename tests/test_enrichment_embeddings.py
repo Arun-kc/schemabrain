@@ -11,7 +11,6 @@ log.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -316,14 +315,18 @@ class TestFastEmbedCacheLocation:
 
         actual_cache_dir = _StubTextEmbedding.init_calls[0]["cache_dir"]
         assert actual_cache_dir is not None
-        # Default lives under ~/.cache/fastembed (cross-platform; matches
-        # huggingface_hub / transformers convention).
-        assert "/.cache/fastembed" in actual_cache_dir
-        # And NOT in $TMPDIR (the failing default).
-        tmpdir = os.environ.get("TMPDIR", "/tmp")
-        # On macOS $TMPDIR contains /var/folders/; on Linux it's /tmp.
-        # Either way, we want our cache OUT of it.
-        assert not actual_cache_dir.startswith(tmpdir.rstrip("/"))
+        # Positive contract: the resolver computes ``Path.home() /
+        # ".cache" / "fastembed"`` — anchored to whatever home is
+        # (here, the patched ``tmp_path``). The intent is "the cache
+        # lives under the user's home dir, not under ``$TMPDIR``" —
+        # asserting the positive shape is robust across OSes; a prior
+        # version of this test negated against ``os.environ['TMPDIR']``
+        # and broke on Linux CI where pytest's ``tmp_path`` itself
+        # lives under ``/tmp`` (so ``Path.home() == tmp_path == /tmp/...``
+        # by construction). macOS local passed only because pytest
+        # tunneled through ``/private/var/folders/...`` which doesn't
+        # share a prefix with ``$TMPDIR=/var/folders/...``.
+        assert actual_cache_dir == str(tmp_path / ".cache" / "fastembed")
 
     def test_cache_dir_honors_operator_env_override(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
