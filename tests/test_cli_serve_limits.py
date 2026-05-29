@@ -60,11 +60,16 @@ def _patch_run_stdio_capture(monkeypatch: pytest.MonkeyPatch) -> dict:
 
 
 class TestServeStatementTimeoutMs:
-    def test_omitted_uses_default_options_only(
+    def test_omitted_uses_default_30s_timeout(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Without `--statement-timeout-ms` the engine's connect_args
-        carries only the read-only options string — no timeout."""
+        """IF-3: without `--statement-timeout-ms` the engine's connect_args
+        carries `statement_timeout=30000` (the operator-safe default).
+
+        Pins the safe-by-default posture: a runaway `get_metric` query
+        aborts in 30s rather than blocking the MCP server's process
+        pool indefinitely.
+        """
         import schemabrain.cli as cli_module
 
         store_path = tmp_path / "store.db"
@@ -95,11 +100,53 @@ class TestServeStatementTimeoutMs:
         )
         options = captured_connect_args.get("options", "")
         assert isinstance(options, str)
-        # Read-only is the only option set by default.
         assert "default_transaction_read_only=on" in options
-        assert "statement_timeout" not in options
-        # And max_rows defaults to None on the executor.
-        assert captured["max_rows"] is None
+        assert "statement_timeout=30000" in options
+        # And max_rows defaults to 10000 on the executor.
+        assert captured["max_rows"] == 10000
+
+    def test_zero_disables_statement_timeout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`--statement-timeout-ms 0` is the explicit opt-out path.
+
+        Postgres treats `statement_timeout=0` as unbounded, so the
+        emitted options string still carries the directive — operators
+        choosing the opt-out path stay traceable in PG logs.
+        """
+        import schemabrain.cli as cli_module
+
+        store_path = tmp_path / "store.db"
+        _seed_store(store_path)
+        monkeypatch.setenv("FAKE_URL", "postgresql+psycopg://fake/serve")
+
+        captured_connect_args: dict[str, object] = {}
+        real_create_engine = cli_module.sqlalchemy.create_engine
+
+        def fake_create_engine(*args: object, **kwargs: object) -> object:
+            if "connect_args" in kwargs:
+                captured_connect_args.update(kwargs["connect_args"])  # type: ignore[arg-type]
+            return real_create_engine(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(cli_module.sqlalchemy, "create_engine", fake_create_engine)
+        _patch_run_stdio_capture(monkeypatch)
+
+        cli_main(
+            [
+                "serve",
+                "--url-env",
+                "FAKE_URL",
+                "--store-path",
+                str(store_path),
+                "--no-events",
+                "--no-audit",
+                "--statement-timeout-ms",
+                "0",
+            ]
+        )
+        options = captured_connect_args.get("options", "")
+        assert isinstance(options, str)
+        assert "statement_timeout=0" in options
 
     def test_flag_injects_statement_timeout_into_options(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -145,9 +192,16 @@ class TestServeStatementTimeoutMs:
 
 
 class TestServeMaxRowsPerResult:
-    def test_omitted_passes_max_rows_none(
+    def test_omitted_uses_default_10000_cap(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """IF-3: without `--max-rows-per-result` the executor caps payloads
+        at the safe default of 10000 rows.
+
+        Pins the safe-by-default posture: an LLM-issued `SELECT *` on a
+        million-row table now returns 10k rows instead of the full
+        payload swamping the agent's context window.
+        """
         store_path = tmp_path / "store.db"
         _seed_store(store_path)
         captured = _patch_run_stdio_capture(monkeypatch)
@@ -161,6 +215,35 @@ class TestServeMaxRowsPerResult:
                 str(store_path),
                 "--no-events",
                 "--no-audit",
+            ]
+        )
+        assert captured["max_rows"] == 10000
+
+    def test_zero_disables_max_rows_cap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`--max-rows-per-result 0` is the explicit opt-out path.
+
+        The CLI surface honours the Postgres `statement_timeout=0`
+        convention: `0` means unbounded. The executor's internal
+        contract stays `None`-means-no-cap; cli.py translates `0` to
+        `None` at the boundary.
+        """
+        store_path = tmp_path / "store.db"
+        _seed_store(store_path)
+        captured = _patch_run_stdio_capture(monkeypatch)
+        monkeypatch.setenv("FAKE_URL", "postgresql+psycopg://fake/serve")
+        cli_main(
+            [
+                "serve",
+                "--url-env",
+                "FAKE_URL",
+                "--store-path",
+                str(store_path),
+                "--no-events",
+                "--no-audit",
+                "--max-rows-per-result",
+                "0",
             ]
         )
         assert captured["max_rows"] is None

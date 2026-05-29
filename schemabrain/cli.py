@@ -990,26 +990,31 @@ def _build_parser() -> argparse.ArgumentParser:
         "--statement-timeout-ms",
         dest="statement_timeout_ms",
         type=int,
-        default=None,
+        default=30000,
         metavar="MS",
         help="Postgres-level statement_timeout (milliseconds) applied "
         "to every get_metric query. Caps query runtime at the source "
         "DB; a runaway query aborts with a clear `OperationalError` "
         "rather than blocking the MCP server's process pool. Injected "
         "into `connect_args.options` so it CAN'T be overridden via "
-        "URL query params. Omitted (default) means no timeout.",
+        "URL query params. Default 30000 (30s) — generous headroom "
+        "for analytical queries while bounding pathological ones. "
+        "Pass `0` to disable (Postgres treats `statement_timeout=0` "
+        "as unbounded).",
     )
     p_serve.add_argument(
         "--max-rows-per-result",
         dest="max_rows_per_result",
         type=int,
-        default=None,
+        default=10000,
         metavar="N",
         help="Application-level cap on rows returned by each "
         "get_metric call. Counts after the SQL executes (the source DB "
         "still does the full scan), so this is a payload-size guard, "
         "not a query-cost guard — use `--statement-timeout-ms` for "
-        "the latter. Omitted (default) means no cap.",
+        "the latter. Default 10000 — well past any context window an "
+        "LLM can reason over, while bounding accidental `SELECT *` "
+        "blowups. Pass `0` to disable the cap.",
     )
 
     p_mine = sub.add_parser(
@@ -3197,7 +3202,10 @@ def _cmd_serve(
         print(f"error: cannot construct read-only engine: {exc}", file=sys.stderr)
         return 2
 
-    metric_executor = EngineMetricExecutor(engine, max_rows=max_rows_per_result)
+    # `max_rows=0` on the CLI surface means "no cap" (matches the Postgres
+    # `statement_timeout=0` convention we also honour). The executor's
+    # internal contract is None-means-no-cap; translate at the boundary.
+    metric_executor = EngineMetricExecutor(engine, max_rows=max_rows_per_result or None)
 
     # Construct the audit writer alongside the bus — same fallback
     # posture: an OSError during construction (read-only store dir,

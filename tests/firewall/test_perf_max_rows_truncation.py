@@ -66,7 +66,15 @@ def test_max_rows_truncates_to_cap() -> None:
 
 @pytest.mark.integration
 def test_max_rows_no_cap_returns_full_result() -> None:
-    """When `max_rows=None`, the full 5000-row payload comes back."""
+    """Executor contract: when `max_rows=None`, the full 5000-row
+    payload comes back.
+
+    Pins the executor-internal "None means unbounded" invariant. The
+    CLI surface defaults to 10000 and exposes `0` as the explicit
+    opt-out (`cli.py` translates the operator's `0` to `None` at the
+    executor boundary, so this scenario also documents what
+    `--max-rows-per-result 0` resolves to internally).
+    """
     executor = _make_executor(max_rows=None)
     rows = executor.execute("SELECT id FROM firewall_perf.bigtab", {})
     assert len(rows) == 5000

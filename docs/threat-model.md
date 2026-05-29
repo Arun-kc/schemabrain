@@ -160,19 +160,20 @@ LLM credit (Anthropic side) and database load (Postgres side).
   with `status: degraded`. Read-side tools (`describe_table`,
   `find_relevant_tables`, etc.) are read-only from the store and cost
   effectively zero per call.
-- T3.2: `get_metric` accepts an optional Postgres-side `statement_timeout`
-  (operator-set via `--statement-timeout-ms`; omitted by default, meaning
-  no timeout). When set, it is injected into `connect_args.options` so it
-  can't be overridden via URL query params, and a runaway query aborts
-  with a clear `OperationalError`. The query compiler also refuses grain
-  mismatches at parse time, before any SQL leaves the process.
-- T3.2b: `get_metric` accepts an optional application-level row cap
-  (operator-set via `--max-rows-per-result`; omitted by default, meaning
-  no cap). This is a payload-size guard, not a query-cost guard — the
-  source DB still does the full scan, but the MCP response is bounded
-  before reaching the agent. Use `--statement-timeout-ms` for query-cost
-  bounding. EXPLAIN-based pre-execution cost caps are on the v0.5+
-  roadmap.
+- T3.2: `get_metric` enforces a Postgres-side `statement_timeout`
+  (operator-tunable via `--statement-timeout-ms`; default 30000ms /
+  30s; pass `0` to disable). The value is injected into
+  `connect_args.options` so it can't be overridden via URL query
+  params, and a runaway query aborts with a clear `OperationalError`.
+  The query compiler also refuses grain mismatches at parse time,
+  before any SQL leaves the process.
+- T3.2b: `get_metric` enforces an application-level row cap
+  (operator-tunable via `--max-rows-per-result`; default 10000; pass
+  `0` to disable). This is a payload-size guard, not a query-cost
+  guard — the source DB still does the full scan, but the MCP
+  response is bounded before reaching the agent. Use
+  `--statement-timeout-ms` for query-cost bounding. EXPLAIN-based
+  pre-execution cost caps are on the v0.5+ roadmap.
 - T3.3: Read-side retrieval is stateless and bounded — every call returns
   at most `limit` rows; embeddings are cached; cosine is computed against
   a fixed-size matrix.

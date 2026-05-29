@@ -66,7 +66,8 @@ class EngineMetricExecutor:
     still executes in full at the source DB (no `LIMIT` is appended
     server-side; the cap is a payload-size guard, not a query-cost
     guard). When None, no cap is applied. The wizard's MCP `serve`
-    surface exposes this via `--max-rows-per-result`. Pair with
+    surface exposes this via `--max-rows-per-result` (default 10000;
+    `0` on the CLI translates to None at the boundary). Pair with
     `statement_timeout` (injected at engine-construct time via
     `connect_args`) for the full payload + runtime envelope.
 
