@@ -8,6 +8,7 @@ from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
 from schemabrain.mcp._helpers import _with_token_estimate
 from schemabrain.mcp.shapes import TableHit
+from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES, PIICategory
 
 # Upper bound on columns the bulk-fetch primitive will rank before we
 # aggregate to per-table MAX. Parallel to `_BULK_FETCH_COLUMN_K` in
@@ -27,6 +28,7 @@ def find_relevant_tables_impl(
     embedder: Embedder,
     query: str,
     limit: int,
+    pii_block: frozenset[PIICategory] = frozenset(),
 ) -> list[TableHit]:
     """Embedding-cosine retrieval that returns ranked `TableHit`s.
 
@@ -99,17 +101,41 @@ def find_relevant_tables_impl(
     candidates.sort(key=lambda x: (-x[0], x[1], x[2]))
     top = candidates[:limit]
 
+    # Same effective_block policy describe_table applies: operator's
+    # `--pii-block` union the catastrophic-leak floor. Without this,
+    # `find_relevant_tables(query="user passwords")` happily returns
+    # `best_column="password_hash"` even though describe_table redacts
+    # the same column to `<redacted_credential_column_N>`. The discovery
+    # surface and the per-table view must enforce the same policy.
+    effective_block: frozenset[PIICategory] = pii_block | CATASTROPHIC_LEAK_CATEGORIES
+
     hits: list[TableHit] = []
     for score, schema, table, best_column in top:
-        descs = store.get_table_descriptions(
-            schema, table, source_connection_id=source_connection_id
+        qualified_table = f"{schema}.{table}"
+        tags = store.get_column_pii_tags(
+            source_connection_id=source_connection_id,
+            qualified_table=qualified_table,
+            columns=[best_column],
         )
-        best_desc_obj = descs.get(best_column)
-        best_desc = best_desc_obj.text if best_desc_obj is not None else ""
+        _, categories = tags.get(best_column, ("public", frozenset()))
+        if categories & effective_block:
+            # Hide the real name AND the description (the LLM-authored
+            # text often names the column verbatim — "the bcrypt-hashed
+            # password" — so passing it through would defeat the
+            # column-name redaction).
+            display_column = "<redacted_column>"
+            best_desc = ""
+        else:
+            descs = store.get_table_descriptions(
+                schema, table, source_connection_id=source_connection_id
+            )
+            best_desc_obj = descs.get(best_column)
+            best_desc = best_desc_obj.text if best_desc_obj is not None else ""
+            display_column = best_column
         partial = TableHit(
-            qualified_name=f"{schema}.{table}",
+            qualified_name=qualified_table,
             score=score,
-            best_column=best_column,
+            best_column=display_column,
             best_column_description=best_desc,
             token_estimate=0,  # placeholder; rebuilt by _with_token_estimate
         )
