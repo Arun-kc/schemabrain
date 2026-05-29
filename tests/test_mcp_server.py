@@ -170,6 +170,27 @@ class TestServerInstructionsSteering:
         assert "describe_entity" in instructions
         assert "get_metric" in instructions
 
+    def test_instructions_forbid_raw_sql_even_on_tool_error(self, server_with_one_table) -> None:
+        """F1-E + F1-F regression: when a tool errors, agents under
+        time pressure historically fall back to emitting raw SQL in
+        their response text — bypassing the firewall entirely. The
+        2026-05-29 smoke caught Claude doing exactly this when
+        ``find_relevant_tables`` crashed on a missing model file.
+        Instructions must explicitly forbid raw SQL on error paths
+        and point at ``list_entities`` as the universal fallback.
+        """
+        opts = server_with_one_table._mcp_server.create_initialization_options()
+        instructions = (opts.instructions or "").lower()
+        assert "never write" in instructions or "do not write" in instructions, (
+            "instructions must explicitly forbid raw SQL emission "
+            "so the firewall isn't routed around when tools error"
+        )
+        # The fallback steering — list_entities works without embeddings,
+        # so it's the right place to send an agent on any error path.
+        assert "list_entities" in instructions
+        # The CRIT framing: bypassing the firewall is the failure mode.
+        assert "firewall" in instructions
+
 
 class TestToolRegistry:
     def test_all_tools_are_registered(self, server_with_one_table) -> None:
@@ -865,6 +886,261 @@ class TestInternalErrorCatchAll:
         err = capfd.readouterr().err
         assert "retrieval went sideways" in err
         assert "Traceback" in err
+
+    def test_find_relevant_tables_embedding_unavailable_returns_recovery_hint(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        server_with_one_table,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """F1-E + F1-F regression: when the embedding pipeline is down
+        (missing ONNX model, corrupt cache, network unreachable), the
+        envelope must populate ``recovery.suggested_tool`` so the agent
+        pivots to a non-embedding discovery path instead of writing
+        raw SQL outside the firewall.
+        """
+        from schemabrain.enrichment.embeddings import EmbeddingUnavailableError
+
+        def _embedding_dead(**_: object) -> list:
+            raise EmbeddingUnavailableError(
+                "embedding model unavailable: FileNotFoundError: model_optimized.onnx"
+            )
+
+        monkeypatch.setattr("schemabrain.mcp.server.find_relevant_tables_impl", _embedding_dead)
+        _content, structured = asyncio.run(
+            server_with_one_table.call_tool("find_relevant_tables", {"query": "x", "limit": 5})
+        )
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "internal_error"
+        # The critical F1-E+F1-F bits:
+        assert structured["error"]["recovery"]["suggested_tool"] == "list_entities"
+        msg = structured["error"]["message"]
+        # The error message must steer away from raw SQL.
+        assert "raw SQL" in msg or "raw sql" in msg.lower()
+        # And name the fallback explicitly so an agent skimming the
+        # envelope (not just the structured recovery field) sees it.
+        assert "list_entities" in msg
+        # Sanitized: the underlying FileNotFoundError trace stays on the
+        # operator-side log, not in the agent-visible message.
+        assert "model_optimized.onnx" not in msg
+        # But the operator-side log DOES carry it for triage.
+        err = capfd.readouterr().err
+        assert "model_optimized.onnx" in err
+
+    def test_find_relevant_entities_embedding_unavailable_returns_recovery_hint(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        server_with_one_table,
+    ) -> None:
+        """Same recovery posture on the entity-surface variant — the
+        operator's wired catalog uses entities, so steering to
+        ``list_entities`` from this tool is the natural pivot.
+        """
+        from schemabrain.enrichment.embeddings import EmbeddingUnavailableError
+
+        def _embedding_dead(**_: object) -> list:
+            raise EmbeddingUnavailableError("embedding model unavailable")
+
+        monkeypatch.setattr(
+            "schemabrain.mcp.server.find_relevant_entities_impl",
+            _embedding_dead,
+        )
+        _content, structured = asyncio.run(
+            server_with_one_table.call_tool("find_relevant_entities", {"query": "x", "limit": 5})
+        )
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "internal_error"
+        assert structured["error"]["recovery"]["suggested_tool"] == "list_entities"
+
+
+class TestDescribeTableCatastrophicRedaction:
+    """F1-E V3 regression: ``describe_table`` MUST hide catastrophic-
+    leak column NAMES from the agent-facing response, replacing them
+    with ``<redacted_<category>_column_N>`` placeholders.
+
+    The 2026-05-29 smoke caught Claude calling ``describe_table`` on
+    ``payment_methods``, reading ``card_number_last4`` directly, and
+    emitting raw SQL that referenced it — routing around the firewall.
+    Redaction closes the loophole: the agent learns the column slot
+    exists but can't reference the real name in any output.
+    """
+
+    @pytest.fixture
+    def server_with_pii_table(self, tmp_path: Path):
+        from schemabrain.core.store import SQLiteStore
+
+        def _col(name: str, ord_pos: int) -> Column:
+            return Column(
+                name=name,
+                table_name="users",
+                schema_name="public",
+                data_type="TEXT",
+                nullable=False,
+                ordinal_position=ord_pos,
+            )
+
+        store = SQLiteStore(tmp_path / "store.db")
+        sid = "src1"
+        store.write_table(
+            Table(
+                name="users",
+                schema_name="public",
+                columns=(_col("email", 1), _col("password_hash", 2), _col("id", 3)),
+            ),
+            source_connection_id=sid,
+        )
+        # email = contact (NOT catastrophic), password_hash = credential
+        # (ALWAYS catastrophic), id = public.
+        store.write_column_pii_tags(
+            source_connection_id=sid,
+            qualified_table="public.users",
+            tags={
+                "email": ("pii", frozenset({"contact"})),
+                "password_hash": ("pii", frozenset({"credential"})),
+                "id": ("public", frozenset()),
+            },
+        )
+        app = build_server(store=store, source_connection_id=sid, embedder=_StubEmbedder())
+        yield app
+        store.close()
+
+    def test_credential_column_name_redacted_in_describe_table(self, server_with_pii_table) -> None:
+        """With default ``pii_block=frozenset()``, the catastrophic
+        floor still forces redaction. ``password_hash`` must come back
+        as ``<redacted_credential_column_N>``; the real name must NOT
+        appear in any agent-visible column field.
+        """
+        _content, structured = asyncio.run(
+            server_with_pii_table.call_tool("describe_table", {"qualified_name": "public.users"})
+        )
+        assert structured["status"] == "success"
+        cols = structured["data"]["columns"]
+        names = {c["name"] for c in cols}
+        assert "password_hash" not in names, (
+            "F1-E V3 leak: credential column name visible in describe_table"
+        )
+        assert any(n.startswith("<redacted_credential_column_") for n in names), (
+            f"expected redacted placeholder for credential column; got {sorted(names)}"
+        )
+        # Real name lives in the operator-side audit field.
+        assert "password_hash" in structured["data"]["redacted_columns"]
+
+    def test_contact_column_visible_with_default_policy(self, server_with_pii_table) -> None:
+        """Non-catastrophic categories (``contact``, etc.) are not in
+        the catastrophic floor — with default empty ``pii_block``,
+        ``email`` (contact) remains visible.
+        """
+        _content, structured = asyncio.run(
+            server_with_pii_table.call_tool("describe_table", {"qualified_name": "public.users"})
+        )
+        names = {c["name"] for c in structured["data"]["columns"]}
+        assert "email" in names
+
+    def test_redacted_flag_set_and_metadata_masked(self, server_with_pii_table) -> None:
+        """Placeholder rows MUST carry ``redacted=True``, and ``default``
+        + ``is_primary_key`` + ``description`` must be masked so a
+        determined agent can't reconstruct the real column via metadata.
+        """
+        _content, structured = asyncio.run(
+            server_with_pii_table.call_tool("describe_table", {"qualified_name": "public.users"})
+        )
+        redacted_rows = [c for c in structured["data"]["columns"] if c["redacted"]]
+        assert len(redacted_rows) == 1
+        assert redacted_rows[0]["name"].startswith("<redacted_credential_column_")
+        assert redacted_rows[0]["default"] is None
+        assert redacted_rows[0]["is_primary_key"] is False
+        assert redacted_rows[0]["description"] == ""
+
+
+class TestDescribeColumnCatastrophicRefusal:
+    """F1-E V3 companion: ``describe_column`` MUST refuse with
+    ``pii_blocked`` when the requested column is catastrophic-leak.
+    Without this an agent that learned the real name (e.g. outside
+    the MCP surface) could drill into it via ``describe_column``.
+    """
+
+    @pytest.fixture
+    def server_with_pii_column(self, tmp_path: Path):
+        from schemabrain.core.store import SQLiteStore
+
+        def _col(name: str, ord_pos: int) -> Column:
+            return Column(
+                name=name,
+                table_name="users",
+                schema_name="public",
+                data_type="TEXT",
+                nullable=False,
+                ordinal_position=ord_pos,
+            )
+
+        store = SQLiteStore(tmp_path / "store.db")
+        sid = "src1"
+        store.write_table(
+            Table(
+                name="users",
+                schema_name="public",
+                columns=(_col("email", 1), _col("password_hash", 2)),
+            ),
+            source_connection_id=sid,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=sid,
+            qualified_table="public.users",
+            tags={
+                "email": ("pii", frozenset({"contact"})),
+                "password_hash": ("pii", frozenset({"credential"})),
+            },
+        )
+        app = build_server(store=store, source_connection_id=sid, embedder=_StubEmbedder())
+        yield app
+        store.close()
+
+    def test_credential_column_refused_with_pii_blocked_envelope(
+        self, server_with_pii_column
+    ) -> None:
+        """Drilling into a credential column returns
+        ``kind='pii_blocked'`` with ``recovery.suggested_tool=
+        'describe_table'`` so the agent's pivot stays in the firewall
+        surface.
+        """
+        _content, structured = asyncio.run(
+            server_with_pii_column.call_tool(
+                "describe_column", {"qualified_name": "public.users.password_hash"}
+            )
+        )
+        assert structured["status"] == "refused"
+        assert structured["error"]["kind"] == "pii_blocked"
+        assert "credential" in structured["error"]["pii_categories"]
+        assert structured["error"]["recovery"]["suggested_tool"] == "describe_table"
+        assert structured["error"]["recovery"]["suggested_args"] == {
+            "qualified_name": "public.users"
+        }
+
+    def test_non_catastrophic_column_drilldown_still_works(self, server_with_pii_column) -> None:
+        """``email`` is ``contact`` (not catastrophic) — under default
+        empty ``pii_block``, agents CAN drill into it.
+        """
+        _content, structured = asyncio.run(
+            server_with_pii_column.call_tool(
+                "describe_column", {"qualified_name": "public.users.email"}
+            )
+        )
+        assert structured["status"] == "success"
+        assert structured["data"]["name"] == "email"
+
+
+class TestInternalErrorCatchAllExtras:
+    """Continuation of ``TestInternalErrorCatchAll`` for tools whose
+    internal-error coverage was originally appended here. Lives in a
+    separate class only because the F1-E V3 redaction tests above
+    split the parent class for fixture-scope hygiene; the tests below
+    follow the same contract as ``TestInternalErrorCatchAll``.
+
+    See ``TestInternalErrorCatchAll`` (above) for the rationale +
+    sanitization invariants the assertions enforce.
+    """
+
+    _SANITIZED_FRAGMENT = "unexpected internal error"
 
     def test_describe_table_internal_error(
         self,

@@ -102,7 +102,7 @@ schemabrain init
 SchemaBrain init — activation wizard
 
   [1/7] Source check       ✓ source reachable + read-only
-  [2/7] Index schema       ✓ 7 tables, 30 columns indexed
+  [2/7] Index schema       ✓ 8 tables, 39 columns indexed
   [3/7] Curate entities    ✓ 6 entities suggested + applied (cost: $0.01)
   [4/7] Curate metrics     ✓ 10 metrics suggested + applied (cost: $0.03)
   [5/7] Curate joins       ✓ 5 canonical joins created (FK-mined, no LLM)
@@ -309,7 +309,7 @@ If you need ChatGPT support today, a community stdio→HTTPS bridge (`mcp-remote
 
 ## Sample session
 
-Real Claude Desktop session against the bundled e-commerce fixture (7 tables, 30 columns, 6 entities curated for **~$0.03**):
+Real Claude Desktop session against the bundled e-commerce fixture (8 tables, 39 columns, 6 entities curated for **~$0.03**):
 
 > **You:** Using SchemaBrain, write me a SQL query to compute each customer's total spend by product category.
 >
@@ -346,7 +346,7 @@ Real Claude Desktop session against the bundled e-commerce fixture (7 tables, 30
 
 The differentiator is what *didn't* happen: most LLM-over-database tools, asked this exact question, would confidently emit `JOIN categories c ON p.category_id = c.id` and produce SQL that errors against a column that isn't there. SchemaBrain refused — `resolve_join` returned `kind: no_canonical_join` with `recovery.suggested_tool: suggest_joins`, not prose. The agent **acted on the structured recovery contract programmatically** instead of fabricating a join. Refusal-not-fabrication is the safety mechanism, demonstrated live.
 
-**Cost.** ~$0.001/column with Claude Haiku 4.5 + Sonnet 4.6 (Sonnet for the structured curation prompt). The bundled 7-table fixture (30 columns, 6 entities + 10 metrics + 5 joins) indexes + curates for **~$0.03 in ~85s**. The Pagila DVD-rental sample (87 columns after partition deduplication) runs for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
+**Cost.** ~$0.001/column with Claude Haiku 4.5 + Sonnet 4.6 (Sonnet for the structured curation prompt). The bundled 8-table fixture (39 columns, 6 entities + 10 metrics + 5 joins) indexes + curates for **~$0.03 in ~85s**. The Pagila DVD-rental sample (87 columns after partition deduplication) runs for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
 
 To verify Claude's SQL is mechanically correct (and that flagged caveats are the actual data behavior), see [Validating SQL Claude generates](docs/setup/manual.md#6-validating-sql-claude-generates).
 

@@ -486,7 +486,7 @@ def _docker_load_fixture(*, console: Console) -> bool:
         return False
 
     console.print(
-        f"  [bright_black]{GLYPH_PENDING} Loading ecommerce fixture (7 tables, ~1.2k rows)...[/]"
+        f"  [bright_black]{GLYPH_PENDING} Loading ecommerce fixture (8 tables, ~1.2k rows)...[/]"
     )
     result = _safe_subprocess(
         [
@@ -727,7 +727,7 @@ def _handle_demo_path(*, console: Console) -> str | None:
     console.print(f"    [cyan]{DEMO_DOCKER_RUN_COMMAND}[/]")
     console.print()
     console.print(
-        f"  [bold]{GLYPH_PENDING} Then load the ecommerce sample (7 tables, ~1.2k rows):[/]"
+        f"  [bold]{GLYPH_PENDING} Then load the ecommerce sample (8 tables, ~1.2k rows):[/]"
     )
     console.print(f"    [cyan]{DEMO_FIXTURE_LOAD_COMMAND}[/]")
     console.print()

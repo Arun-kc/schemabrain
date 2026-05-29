@@ -44,6 +44,14 @@ class ColumnInfo(BaseModel):
     as-is so an agent sees what it would write in SQL. Type
     normalization (`raw_data_type` → canonical enum) stays deferred —
     track in deferred-decisions doc.
+
+    F1-E V3: when ``redacted=True``, the ``name`` field carries a
+    placeholder (``<redacted_<category>_column_N>``) — NOT the real
+    column name. The real name remains in the store and on the
+    operator-facing dashboard; only the agent-facing MCP response
+    masks it. This closes the firewall-bypass loophole where an
+    agent could read a catastrophic-leak column name from
+    ``describe_table`` and emit raw SQL referencing it.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -57,6 +65,16 @@ class ColumnInfo(BaseModel):
         default="",
         description="LLM-generated semantic description, or empty string if "
         "the column was indexed without enrichment.",
+    )
+    redacted: bool = Field(
+        default=False,
+        description=(
+            "True when the real column name is hidden behind a "
+            "``<redacted_<category>_column_N>`` placeholder because the "
+            "column's PII categories intersect the firewall's effective "
+            "block set (operator policy union catastrophic-leak floor). "
+            "Agents MUST NOT emit SQL referencing a redacted column."
+        ),
     )
 
 
@@ -208,6 +226,15 @@ class TableDescription(BaseModel):
     """Return shape for `describe_table`. Everything an agent needs to
     understand the table at a single look — structure, semantics, and
     join targets — without making a second round-trip.
+
+    F1-E V3: ``redacted_columns`` lists the REAL names of columns whose
+    PII categories intersect the effective firewall block set. The
+    columns appear in the ``columns`` list under
+    ``<redacted_<category>_column_N>`` placeholders; the real names live
+    here as an audit-trail surface for operators (and for the dashboard
+    when it cross-references against the store). Agents should treat
+    this as "these column kinds exist but you can't reference them" —
+    never as a list to feed into SQL.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -218,6 +245,14 @@ class TableDescription(BaseModel):
     columns: list[ColumnInfo]
     foreign_keys: list[ForeignKeyInfo]
     token_estimate: int
+    redacted_columns: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "Real names of columns hidden behind placeholders in "
+            "``columns``. Operator-side audit signal; agents should not "
+            "echo these names in SQL."
+        ),
+    )
 
 
 class TableHit(BaseModel):

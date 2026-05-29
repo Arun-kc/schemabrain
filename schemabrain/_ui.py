@@ -877,7 +877,7 @@ def live_llm_stage_progress(
 
     ::
 
-        ◇ Asking Claude to identify business entities (7 tables) ·
+        ◇ Asking Claude to identify business entities (8 tables) ·
             ~$0.01 · capped at $1.00 · claude-sonnet-4-6
           elapsed 12s
 

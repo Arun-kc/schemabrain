@@ -1,4 +1,18 @@
-"""MCP tool implementation: describe_column."""
+"""MCP tool implementation: describe_column.
+
+F1-E V3: refuses with ``PiiBlockedError`` when the requested column's
+PII categories intersect the effective firewall block set (operator's
+``pii_block`` unioned with the catastrophic-leak floor). The MCP
+wrapper translates this into a ``pii_blocked`` refusal envelope with
+``recovery.suggested_tool="describe_table"`` so the agent's natural
+pivot path stays inside the firewall surface.
+
+The whole-column refusal is symmetric to ``describe_table``'s per-
+column name-masking: if an agent reaches ``describe_column`` knowing
+the real catastrophic-leak column name, it must have learned it from
+outside the MCP surface — at which point the firewall's job is to
+refuse cleanly rather than leak more shape.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +25,8 @@ from schemabrain.mcp.shapes import (
     IncomingForeignKeyInfo,
     TableNotFoundError,
 )
+from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES, PIICategory
+from schemabrain.semantic.compiler import PiiBlockedError
 
 
 def describe_column_impl(
@@ -18,6 +34,7 @@ def describe_column_impl(
     store: Store,
     source_connection_id: str,
     qualified_name: str,
+    pii_block: frozenset[PIICategory] = frozenset(),
 ) -> ColumnDetail:
     """Return a full `ColumnDetail` for `schema.table.column`.
 
@@ -31,6 +48,8 @@ def describe_column_impl(
         TableNotFoundError: if the table is absent from the store under
             the configured `source_connection_id`.
         ColumnNotFoundError: if the table exists but the column doesn't.
+        PiiBlockedError: F1-E V3 — if the column's PII categories
+            intersect ``pii_block | CATASTROPHIC_LEAK_CATEGORIES``.
     """
     schema, table_name, column_name = _parse_column_qualified_name(qualified_name)
 
@@ -47,6 +66,36 @@ def describe_column_impl(
         raise ColumnNotFoundError(
             f"{qualified_name} does not exist on {schema}.{table_name}. "
             f"Existing columns: {sorted(c.name for c in table.columns)}"
+        )
+
+    # F1-E V3: refuse before returning anything if the column's tags
+    # intersect the effective firewall block set. The check happens
+    # BEFORE we read the description / FK graph so a refusal never
+    # carries semantic context that could leak the column's role.
+    qualified_table = f"{schema}.{table_name}"
+    pii_tags = store.get_column_pii_tags(
+        source_connection_id=source_connection_id,
+        qualified_table=qualified_table,
+        columns=[column_name],
+    )
+    _, categories = pii_tags.get(column_name, ("public", frozenset()))
+    effective_block: frozenset[PIICategory] = pii_block | CATASTROPHIC_LEAK_CATEGORIES
+    blocked = categories & effective_block
+    if blocked:
+        # ``attempted`` is the full propagated category set the agent
+        # would have seen on the column; ``blocked`` is the intersection
+        # that triggered the refusal. We surface ``blocked`` only in
+        # the agent-facing envelope (the server wrapper handles this)
+        # for the same probe-resistance reason ``get_metric`` does.
+        raise PiiBlockedError(
+            f"describe_column refused: column {qualified_name!r} touches "
+            f"PII categories {sorted(blocked)} that this server policy blocks",
+            attempted_categories=tuple(sorted(categories)),
+            blocked_categories=tuple(sorted(blocked)),
+            # No anchor entity — describe_column has no semantic-layer
+            # binding. The server wrapper routes recovery to
+            # ``describe_table`` instead.
+            anchor_entity=None,
         )
 
     descriptions = store.get_table_descriptions(

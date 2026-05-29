@@ -17,6 +17,8 @@ Behavioural contract (per RFC §2.2 + §3.2):
 from __future__ import annotations
 
 import contextlib
+import errno
+import socket
 import sys
 import webbrowser
 from pathlib import Path
@@ -27,6 +29,44 @@ from schemabrain.dashboard.sidecar import (
     SidecarConfig,
     create_sidecar,
 )
+
+
+def _port_is_available(host: str, port: int) -> bool:
+    """Probe whether ``(host, port)`` can be bound for a TCP listener.
+
+    F1-A: ``uvicorn.run(...)`` catches ``OSError`` internally — it
+    logs the bind failure via its own logger and returns without
+    raising — so wrapping the call in ``try / except OSError`` never
+    fires for the common port-collision case. The pre-flight probe
+    binds-and-closes a throwaway socket; if the bind succeeds the
+    port is (probably) free and we hand off to uvicorn; if the bind
+    fails with ``EADDRINUSE`` we surface our own friendly message
+    BEFORE uvicorn ever runs.
+
+    There IS a TOCTOU race (port could be taken between our probe
+    and uvicorn's bind) but the race is short and rare in practice —
+    even if uvicorn ends up logging its own error after winning the
+    race, the operator still sees the friendly version first. Worth
+    the trade for the common case where the message is right.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # SO_REUSEADDR off so the probe genuinely fails when the port
+        # is held by a live listener — otherwise the probe could
+        # succeed transiently on a TIME_WAIT socket and mask a real
+        # collision.
+        sock.bind((host, port))
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            return False
+        # Any other OSError (permission denied, address not available)
+        # means the port is logically unavailable too — fall through
+        # so uvicorn can produce its own diagnostic for the unusual
+        # case rather than swallowing it here.
+        return False
+    finally:
+        sock.close()
+    return True
 
 
 def run_dashboard(
@@ -72,6 +112,19 @@ def run_dashboard(
         # defensive belt for a future refactor that decouples the two.
         print(f"schemabrain dashboard: {exc}", file=sys.stderr)
         return 2
+
+    # F1-A: pre-flight bind-probe BEFORE uvicorn runs. uvicorn's own
+    # error path swallows ``OSError`` and exits cleanly, so a wrapper
+    # try/except never fires for the port-collision case.
+    if not _port_is_available(BIND_HOST, config.port):
+        print(
+            f"schemabrain dashboard: port {config.port} is already in use on "
+            f"{BIND_HOST}. Another SchemaBrain dashboard may already be running. "
+            f"Either stop it (Ctrl+C in its window, or `lsof -nP -iTCP:{config.port}` "
+            f"to find the PID) or rerun with `--port <other>`.",
+            file=sys.stderr,
+        )
+        return 1
 
     url = f"http://{BIND_HOST}:{config.port}/"
     print(f"schemabrain dashboard: serving at {url}", file=sys.stderr)

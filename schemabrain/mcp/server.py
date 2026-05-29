@@ -39,7 +39,7 @@ from schemabrain import __version__ as _SCHEMABRAIN_VERSION
 from schemabrain.audit.writer import AuditWriter
 from schemabrain.core.metric import MalformedMetricRowError
 from schemabrain.core.store_protocol import Store
-from schemabrain.enrichment.embeddings import Embedder
+from schemabrain.enrichment.embeddings import Embedder, EmbeddingUnavailableError
 from schemabrain.mcp._helpers import _MAX_IDENT_LEN
 from schemabrain.mcp.describe_column import describe_column_impl
 from schemabrain.mcp.describe_entity import describe_entity_impl
@@ -176,6 +176,13 @@ _SERVER_INSTRUCTIONS = (
     "SchemaBrain — a SQL firewall between AI agents and a Postgres "
     "database. You never write raw SQL; you call these 12 read-only "
     "tools to learn the schema and request validated aggregations. "
+    "The firewall enforces PII and policy ONLY through these tools — "
+    "raw SQL you emit in your response text bypasses it. If a tool "
+    "errors, follow the `recovery.suggested_tool` hint in the error "
+    "envelope; if no hint, fall back to `list_entities` + "
+    "`describe_entity` + `get_metric`. NEVER write SQL in your "
+    "response to work around a tool error — that defeats the "
+    "firewall the operator deployed. "
     "When the user asks about their data: call "
     "`find_relevant_entities(query)` to find what's available, then "
     "`describe_entity(name)` for fields/joins/PII tags, then "
@@ -563,6 +570,11 @@ def build_server(
                 query=query,
                 limit=limit,
             )
+        except EmbeddingUnavailableError as exc:
+            # F1-E + F1-F: semantic search down → steer agent to the
+            # non-embedding discovery surface (``list_entities``) so it
+            # doesn't fall back to writing raw SQL outside the firewall.
+            return _wrap_embedding_unavailable(exc, fallback_tool="list_entities")
         except Exception as exc:
             return _wrap_internal_error(exc)
         if not hits:
@@ -642,6 +654,12 @@ def build_server(
                 query=query,
                 limit=limit,
             )
+        except EmbeddingUnavailableError as exc:
+            # F1-E + F1-F: same recovery posture as find_relevant_tables —
+            # steer the agent at ``list_entities`` (the entity-surface
+            # equivalent of catalog walk) rather than leaving it with
+            # an opaque ``internal_error``.
+            return _wrap_embedding_unavailable(exc, fallback_tool="list_entities")
         except Exception as exc:  # pragma: no cover — defensive catch-all wraps unexpected errors as internal_error
             return _wrap_internal_error(exc)
         if not hits:
@@ -713,6 +731,7 @@ def build_server(
                 store=store,
                 source_connection_id=source_connection_id,
                 qualified_name=qualified_name,
+                pii_block=pii_block,
             )
         except ValueError as exc:
             return _malformed_name_response(
@@ -766,6 +785,29 @@ def build_server(
                 store=store,
                 source_connection_id=source_connection_id,
                 qualified_name=qualified_name,
+                pii_block=pii_block,
+            )
+        except PiiBlockedError as exc:
+            # F1-E V3: catastrophic-leak column refuses to drill. Route
+            # the agent's recovery toward ``describe_table`` so it sees
+            # the parent table's redacted column list (which carries the
+            # ``<redacted_<category>_column_N>`` placeholders) instead of
+            # leaving the agent stuck on this specific column name.
+            parent_qn = _parent_table_qualified_name(qualified_name)
+            recovery_args: dict[str, object] | None = (
+                {"qualified_name": parent_qn} if parent_qn is not None else None
+            )
+            return ToolResponse[ColumnDetail](
+                status="refused",
+                error=ToolError(
+                    kind="pii_blocked",
+                    message=str(exc),
+                    recovery=Recovery(
+                        suggested_tool="describe_table",
+                        suggested_args=recovery_args,
+                    ),
+                    pii_categories=exc.blocked_categories,
+                ),
             )
         except ValueError as exc:
             return _malformed_name_response(
@@ -1824,6 +1866,49 @@ def _wrap_internal_error(exc: Exception) -> ToolResponse:
             kind="internal_error",
             message=("An unexpected internal error occurred. Check server logs for details."),
             recovery=Recovery(),
+        ),
+    )
+
+
+def _wrap_embedding_unavailable(exc: Exception, *, fallback_tool: str) -> ToolResponse:
+    """F1-E + F1-F: dedicated envelope for embedding-pipeline failures.
+
+    When ``FastEmbedEmbedder.embed`` raises ``EmbeddingUnavailableError``
+    (missing model file, corrupt cache, network down on cold start),
+    the discovery tools that depend on semantic search cannot return
+    useful hits. Without a populated ``Recovery``, the agent sees a
+    generic ``internal_error`` and falls back to its training prior —
+    which for an analytics question often means emitting raw SQL that
+    bypasses the firewall entirely (Tier-1 finding F1-E from the
+    2026-05-29 smoke).
+
+    This wrapper points the agent at a non-embedding discovery tool
+    (``list_entities`` or ``list_tables``) so the recovery path stays
+    inside the firewall surface: the agent enumerates known names by
+    catalog walk, then composes ``describe_entity`` + ``get_metric``
+    without ever needing to write SQL itself.
+
+    The Charter's ``internal_error`` kind says "the agent should not
+    retry" — that still applies: the agent should not retry the SAME
+    tool. The recovery hint points to a DIFFERENT tool, which honors
+    both the no-retry contract and the firewall-coherent recovery
+    contract.
+    """
+    _logger.error(
+        "embedding unavailable: returning recovery envelope",
+        exc_info=exc,
+    )
+    return ToolResponse(
+        status="error",
+        error=ToolError(
+            kind="internal_error",
+            message=(
+                "Semantic search is currently unavailable (embedding model could "
+                f"not load). Use `{fallback_tool}` to enumerate known names, then "
+                "compose `describe_entity` and `get_metric`. Do NOT write raw SQL "
+                "— the firewall only enforces through the read-only tools."
+            ),
+            recovery=Recovery(suggested_tool=fallback_tool),
         ),
     )
 

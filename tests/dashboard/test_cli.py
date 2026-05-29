@@ -109,3 +109,105 @@ def test_run_dashboard_open_browser_does_not_crash_when_browser_missing(
     )
     assert code == 0
     assert len(mock_uvicorn) == 1
+
+
+def test_run_dashboard_friendly_message_on_port_collision(
+    store_path: Path, monkeypatch, capsys
+) -> None:
+    """F1-A regression: when the operator launches a second dashboard
+    against a port that's already bound, surface ONE actionable
+    message instead of uvicorn's raw ``[Errno 48]`` log line, and
+    return exit code 1.
+
+    Implementation note: ``uvicorn.run`` swallows ``OSError`` internally
+    (logs via its own logger and returns exit 0 without raising), so
+    the friendly handling lives in a pre-flight ``socket.bind`` probe
+    BEFORE ``uvicorn.run`` is invoked. We patch the probe to simulate
+    the collision without actually binding a real socket — keeps the
+    test deterministic on shared CI runners.
+    """
+    from schemabrain.dashboard import cli as dashboard_cli
+
+    monkeypatch.setattr(dashboard_cli, "_port_is_available", lambda host, port: False)
+    from schemabrain.dashboard.cli import run_dashboard
+
+    code = run_dashboard(
+        store_path=store_path,
+        port=7878,
+        open_browser=False,
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "port 7878 is already in use" in err
+    assert "--port" in err  # actionable: suggests the override
+    # Stack trace is NOT in stderr — confirms we handled the error.
+    assert "Traceback" not in err
+
+
+def test_port_is_available_returns_true_for_free_port(monkeypatch) -> None:
+    """Port-probe primitive: a port that successfully binds returns
+    True. Implementation uses a throwaway socket so the probe doesn't
+    rely on a real free port (CI runners have unpredictable
+    availability).
+    """
+    from schemabrain.dashboard.cli import _port_is_available
+
+    # 0 means OS-assigned port — guaranteed available; we don't care
+    # which one ends up bound, just that the probe semantics work.
+    assert _port_is_available("127.0.0.1", 0) is True
+
+
+def test_port_is_available_returns_false_on_eaddrinuse(monkeypatch) -> None:
+    """Port-probe primitive: when ``socket.bind`` raises EADDRINUSE,
+    the probe returns False so the CLI can surface the friendly
+    message instead of trying uvicorn and getting silently swallowed.
+    """
+    import errno
+    import socket
+
+    from schemabrain.dashboard.cli import _port_is_available
+
+    original_socket = socket.socket
+
+    class _FakeSocket:
+        def __init__(self, *args, **kwargs) -> None:
+            self._real = original_socket(*args, **kwargs)
+
+        def bind(self, address) -> None:
+            raise OSError(errno.EADDRINUSE, "address already in use")
+
+        def close(self) -> None:
+            self._real.close()
+
+    monkeypatch.setattr(socket, "socket", _FakeSocket)
+
+    assert _port_is_available("127.0.0.1", 7878) is False
+
+
+def test_port_is_available_returns_false_on_unexpected_oserror(monkeypatch) -> None:
+    """Defensive: any other ``OSError`` (permission denied, address
+    family not supported, etc.) also yields False — the port is
+    logically unavailable, the operator gets the friendly EADDRINUSE
+    message which still points at ``--port`` as the escape hatch even
+    if the root cause was different.
+    """
+    import errno
+    import socket
+
+    from schemabrain.dashboard.cli import _port_is_available
+
+    original_socket = socket.socket
+
+    class _FakeSocket:
+        def __init__(self, *args, **kwargs) -> None:
+            self._real = original_socket(*args, **kwargs)
+
+        def bind(self, address) -> None:
+            raise OSError(errno.EACCES, "permission denied")
+
+        def close(self) -> None:
+            self._real.close()
+
+    monkeypatch.setattr(socket, "socket", _FakeSocket)
+
+    assert _port_is_available("127.0.0.1", 7878) is False
