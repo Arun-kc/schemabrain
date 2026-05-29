@@ -332,6 +332,38 @@ class TestFindRelevantTablesImpl:
         assert result == []
         assert embedder.calls == []  # no embedder call when limit is degenerate
 
+    def test_pii_block_redacts_best_column_and_description(
+        self, populated_store: SQLiteStore
+    ) -> None:
+        """When the winning column's tags intersect ``pii_block``, the
+        hit ships ``best_column='<redacted_column>'`` and an empty
+        description — same posture ``describe_table`` already applies
+        to its column list. Locks the FW-002 regression: without this,
+        ``find_relevant_tables`` is the easier discovery path to the
+        same catastrophic-leak column names that ``describe_table``
+        carefully masks.
+        """
+        # Tag users.email as a `contact` category. Then ban contact
+        # via pii_block so the existing axis-0 query (whose top hit IS
+        # users.email at score 1.0) lands on the redaction path.
+        populated_store.write_column_pii_tags(
+            source_connection_id=SOURCE_ID,
+            qualified_table="public.users",
+            tags={"email": ("pii", frozenset({"contact"}))},
+        )
+        embedder = _AxisEmbedder({"q": _unit(0)})
+        result = find_relevant_tables_impl(
+            store=populated_store,
+            source_connection_id=SOURCE_ID,
+            embedder=embedder,
+            query="q",
+            limit=10,
+            pii_block=frozenset({"contact"}),
+        )
+        assert result[0].qualified_name == "public.users"
+        assert result[0].best_column == "<redacted_column>"
+        assert result[0].best_column_description == ""
+
     def test_empty_query_returns_empty_without_embedder_call(
         self, populated_store: SQLiteStore
     ) -> None:

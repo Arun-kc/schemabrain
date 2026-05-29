@@ -256,6 +256,36 @@ class TestFindRelevantEntitiesImpl:
         assert result[0].best_column_description == "user contact email"
         assert result[0].score == pytest.approx(1.0)
 
+    def test_pii_block_redacts_best_column_and_description(
+        self, populated_store: SQLiteStore
+    ) -> None:
+        """When the winning column's tags intersect ``pii_block``, the
+        hit ships ``best_column='<redacted_column>'`` and an empty
+        description — mirrors the ``find_relevant_tables`` fix. Locks
+        the FW-002 regression on the entity discovery surface.
+        """
+        populated_store.write_entity(
+            _entity("customer", "public.users"), source_connection_id=SOURCE_ID
+        )
+        # Tag users.email as `contact`; ban it via pii_block.
+        populated_store.write_column_pii_tags(
+            source_connection_id=SOURCE_ID,
+            qualified_table="public.users",
+            tags={"email": ("pii", frozenset({"contact"}))},
+        )
+        embedder = _AxisEmbedder({"q": _unit(0)})
+        result = find_relevant_entities_impl(
+            store=populated_store,
+            source_connection_id=SOURCE_ID,
+            embedder=embedder,
+            query="q",
+            limit=10,
+            pii_block=frozenset({"contact"}),
+        )
+        assert result[0].name == "customer"
+        assert result[0].best_column == "<redacted_column>"
+        assert result[0].best_column_description == ""
+
     def test_ranks_multiple_entities_by_score(self, populated_store: SQLiteStore) -> None:
         populated_store.write_entity(
             _entity("customer", "public.users"), source_connection_id=SOURCE_ID
