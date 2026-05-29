@@ -42,6 +42,7 @@ from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder
 from schemabrain.mcp._helpers import _with_token_estimate
 from schemabrain.mcp.shapes import EntityHit
+from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES, PIICategory
 
 # Same value as `find_relevant_tables._BULK_FETCH_COLUMN_K`. Mirrored
 # rather than imported so the two callers stay coupled by intent (cover
@@ -135,6 +136,7 @@ def find_relevant_entities_impl(
     embedder: Embedder,
     query: str,
     limit: int,
+    pii_block: frozenset[PIICategory] = frozenset(),
 ) -> list[EntityHit]:
     """Embedding-cosine retrieval scoped to curated entities.
 
@@ -248,27 +250,52 @@ def find_relevant_entities_impl(
     )
     top = ranked[:limit]
 
+    # Same effective_block policy describe_entity applies: operator's
+    # `--pii-block` union the catastrophic-leak floor. Mirrors the fix
+    # in find_relevant_tables — without it, this discovery surface
+    # leaks the catastrophic-leak column NAMES that describe_entity
+    # masks behind `<redacted_<category>_column_N>` placeholders.
+    effective_block: frozenset[PIICategory] = pii_block | CATASTROPHIC_LEAK_CATEGORIES
+
     hits: list[EntityHit] = []
     for entity_name, best in top:
+        qualified_table = f"{best.schema}.{best.table}"
         if best.best_column == _ENTITY_DESCRIPTION_MATCH_LABEL:
             # Entity-description match path. The sentinel best_column
             # isn't a real column, so we don't query the column-
             # description store; instead surface the entity's own
             # description text as `best_column_description` so the
-            # agent sees WHY the entity scored.
+            # agent sees WHY the entity scored. No redaction needed
+            # — the sentinel is opaque by construction.
             entity = table_to_entity[(best.schema, best.table)]
+            display_column = best.best_column
             best_desc = entity.description
         else:
-            descs = store.get_table_descriptions(
-                best.schema, best.table, source_connection_id=source_connection_id
+            # Column-match path: redact if the winning column's tags
+            # intersect effective_block. Both the column name AND its
+            # description are masked because the description text often
+            # names the column verbatim.
+            tags = store.get_column_pii_tags(
+                source_connection_id=source_connection_id,
+                qualified_table=qualified_table,
+                columns=[best.best_column],
             )
-            best_desc_obj = descs.get(best.best_column)
-            best_desc = best_desc_obj.text if best_desc_obj is not None else ""
+            _, categories = tags.get(best.best_column, ("public", frozenset()))
+            if categories & effective_block:
+                display_column = "<redacted_column>"
+                best_desc = ""
+            else:
+                descs = store.get_table_descriptions(
+                    best.schema, best.table, source_connection_id=source_connection_id
+                )
+                best_desc_obj = descs.get(best.best_column)
+                best_desc = best_desc_obj.text if best_desc_obj is not None else ""
+                display_column = best.best_column
         partial = EntityHit(
             name=entity_name,
             score=best.score,
-            qualified_table=f"{best.schema}.{best.table}",
-            best_column=best.best_column,
+            qualified_table=qualified_table,
+            best_column=display_column,
             best_column_description=best_desc,
             token_estimate=0,  # placeholder; rebuilt by _with_token_estimate
         )

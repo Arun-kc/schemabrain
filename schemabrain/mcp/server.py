@@ -569,6 +569,7 @@ def build_server(
                 embedder=embedder,
                 query=query,
                 limit=limit,
+                pii_block=pii_block,
             )
         except EmbeddingUnavailableError as exc:
             # semantic search down → steer agent to the
@@ -653,6 +654,7 @@ def build_server(
                 embedder=embedder,
                 query=query,
                 limit=limit,
+                pii_block=pii_block,
             )
         except EmbeddingUnavailableError as exc:
             # same recovery posture as find_relevant_tables —

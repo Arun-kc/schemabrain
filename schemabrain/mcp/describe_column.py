@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from schemabrain.core.store_protocol import Store
 from schemabrain.mcp._helpers import _parse_column_qualified_name, _with_token_estimate
+from schemabrain.mcp._redaction import redact_blocked_fk_columns
 from schemabrain.mcp.shapes import (
     ColumnDetail,
     ColumnNotFoundError,
@@ -106,13 +107,28 @@ def describe_column_impl(
     # Outgoing FKs: walk the table's FK list and pick any whose
     # `source_columns` includes our column name. Composite FKs are
     # surfaced whole — sibling source columns are kept so the agent
-    # sees the full join shape.
+    # sees the full join shape. Both source and target column lists
+    # are scrubbed against the effective_block: sibling sources may
+    # name another catastrophic-leak column on this table, and
+    # target_columns may name one on the referenced table.
     outgoing: list[ForeignKeyInfo] = [
         ForeignKeyInfo(
             name=fk.name,
-            source_columns=list(fk.source_columns),
+            source_columns=redact_blocked_fk_columns(
+                list(fk.source_columns),
+                qualified_table=qualified_table,
+                store=store,
+                source_connection_id=source_connection_id,
+                effective_block=effective_block,
+            ),
             target_qualified_name=f"{fk.target_schema}.{fk.target_table}",
-            target_columns=list(fk.target_columns),
+            target_columns=redact_blocked_fk_columns(
+                list(fk.target_columns),
+                qualified_table=f"{fk.target_schema}.{fk.target_table}",
+                store=store,
+                source_connection_id=source_connection_id,
+                effective_block=effective_block,
+            ),
         )
         for fk in table.foreign_keys
         if column_name in fk.source_columns
@@ -120,7 +136,10 @@ def describe_column_impl(
 
     # Incoming FKs: ask the store for everything pointing at us.
     # Returns IncomingForeignKey domain objects already filtered to FKs
-    # whose `target_columns` includes this column.
+    # whose `target_columns` includes this column. Scrub both
+    # directions: source_columns live on the back-referencing table;
+    # target_columns are on THIS table (and may name siblings of the
+    # current column that fall in the catastrophic-leak set).
     incoming_raw = store.get_foreign_keys_targeting(
         schema, table_name, column_name, source_connection_id=source_connection_id
     )
@@ -128,8 +147,20 @@ def describe_column_impl(
         IncomingForeignKeyInfo(
             name=ifk.name,
             source_qualified_name=ifk.source_qualified_name,
-            source_columns=list(ifk.source_columns),
-            target_columns=list(ifk.target_columns),
+            source_columns=redact_blocked_fk_columns(
+                list(ifk.source_columns),
+                qualified_table=ifk.source_qualified_name,
+                store=store,
+                source_connection_id=source_connection_id,
+                effective_block=effective_block,
+            ),
+            target_columns=redact_blocked_fk_columns(
+                list(ifk.target_columns),
+                qualified_table=qualified_table,
+                store=store,
+                source_connection_id=source_connection_id,
+                effective_block=effective_block,
+            ),
         )
         for ifk in incoming_raw
     ]

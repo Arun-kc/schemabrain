@@ -36,17 +36,22 @@ skips them automatically.
 
 ### Bypass repros — confirmed via live verification
 
-| Test file | Finding ID | Confirmed | Severity | Notes |
+`Status` reflects the current state on `main`:
+
+- **OPEN** — bypass still reproduces; test FAILS as expected.
+- **FIXED** — remediation has landed; test PASSES and now serves as a regression guard against future re-introduction.
+
+| Test file | Finding ID | Status | Severity | Notes |
 |---|---|---|---|---|
-| `test_fw_001_quoted_ident_ansi_escape.py` | FW-001 | CONFIRMED | HIGH | ANSI escape + 5 other control-char payloads accepted via double-quoted ident path |
-| `test_fw_002_semantic_search_leak.py` | FW-002 / IF-1 | CONFIRMED | **CRIT** | `find_relevant_tables` leaks raw catastrophic-leak column names that `describe_table` redacts |
-| `test_fw_003_fk_metadata_leak.py` | FW-003 / IF-2 | CONFIRMED | **CRIT** | Outgoing-FK `target_columns` leaks the redacted column name |
-| `test_fw_005_aggregate_pii_leak.py` | FW-005 | CONFIRMED | HIGH | `MAX(email)` returns a raw row value through the metric envelope (live Postgres) |
-| `test_fw_009_probe_oracle.py` | FW-009 | CONFIRMED | MED | `describe_entity.pii_categories` leaks the category family of a redacted column; second-order oracle: the redacted placeholder name itself encodes the category |
-| `test_pii_001_i18n_classifier_bypass.py` | PII-001 | CONFIRMED | HIGH | 7 non-English column names (`correo_electronico`, `numero_seguridad_social`, `cpf`, `cnpj`, `kreditkartennummer`, `sozialversicherungsnummer`, `telefonnummer`) classify as `('public', frozenset())` |
-| `test_pii_013_auth_secrets_classifier_bypass.py` | PII-013 | CONFIRMED | **CRIT** | 12 auth-secret column names (`pin`, `pin_code`, `recovery_code`, `ssh_key`, `kms_key`, `encryption_key`, `signing_key`, `aws_access_key`, …) all classify as `public` and bypass catastrophic-leak block |
-| `test_sf_002_propagation_empty_fail_open.py` | SF-002 | CONFIRMED | HIGH | `propagate([])` is bit-identical to confirmed-clean data — empty tag input fail-opens |
-| `test_sf_005_build_server_default_allow.py` | SF-005 | CONFIRMED | MED | `build_server(...)` API default `pii_block=frozenset()` = zero policy for library consumers |
+| `test_fw_001_quoted_ident_ansi_escape.py` | FW-001 | OPEN | HIGH | ANSI escape + 5 other control-char payloads accepted via double-quoted ident path |
+| `test_fw_002_semantic_search_leak.py` | FW-002 / IF-1 | FIXED | **CRIT** | `find_relevant_tables` / `find_relevant_entities` now redact catastrophic-leak column names + descriptions when blocked |
+| `test_fw_003_fk_metadata_leak.py` | FW-003 / IF-2 | FIXED | **CRIT** | FK `source_columns` + `target_columns` now scrubbed through the same effective-block policy as the column list, in both `describe_table` and `describe_column` (outgoing + incoming directions) |
+| `test_fw_005_aggregate_pii_leak.py` | FW-005 | OPEN | HIGH | `MAX(email)` returns a raw row value through the metric envelope (live Postgres) |
+| `test_fw_009_probe_oracle.py` | FW-009 | FIXED | MED | `describe_entity` now sets `pii_categories=()` on redacted columns (closes the category-oracle leak). The second-order placeholder-name oracle (`<redacted_credential_column_N>` itself encoding the category) remains and is tracked separately |
+| `test_pii_001_i18n_classifier_bypass.py` | PII-001 | OPEN | HIGH | 7 non-English column names (`correo_electronico`, `numero_seguridad_social`, `cpf`, `cnpj`, `kreditkartennummer`, `sozialversicherungsnummer`, `telefonnummer`) classify as `('public', frozenset())` |
+| `test_pii_013_auth_secrets_classifier_bypass.py` | PII-013 | OPEN | **CRIT** | 12 auth-secret column names (`pin`, `pin_code`, `recovery_code`, `ssh_key`, `kms_key`, `encryption_key`, `signing_key`, `aws_access_key`, …) all classify as `public` and bypass catastrophic-leak block |
+| `test_sf_002_propagation_empty_fail_open.py` | SF-002 | OPEN | HIGH | `propagate([])` is bit-identical to confirmed-clean data — empty tag input fail-opens |
+| `test_sf_005_build_server_default_allow.py` | SF-005 | OPEN | MED | `build_server(...)` API default `pii_block=frozenset()` = zero policy for library consumers |
 
 ### Fuzz-discovered findings — net-new
 

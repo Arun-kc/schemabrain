@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from schemabrain.core.store_protocol import Store
 from schemabrain.mcp._helpers import _parse_qualified_name, _with_token_estimate
+from schemabrain.mcp._redaction import redact_blocked_fk_columns
 from schemabrain.mcp.shapes import ColumnInfo, ForeignKeyInfo, TableDescription, TableNotFoundError
 from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES, PIICategory
 
@@ -114,12 +115,31 @@ def describe_table_impl(
                     redacted=False,
                 )
             )
+    # Scrub FK metadata against the same effective_block policy used
+    # for the column list above. Without this, an agent that sees
+    # `<redacted_credential_column_1>` on the column list can still
+    # learn the real name through `outgoing_foreign_keys[*].source_columns`
+    # (this table) or `target_columns` (a referenced table). Source
+    # columns reuse the already-fetched `pii_tags`; target columns
+    # require a per-target-table lookup inside the helper.
     foreign_keys = [
         ForeignKeyInfo(
             name=fk.name,
-            source_columns=list(fk.source_columns),
+            source_columns=redact_blocked_fk_columns(
+                list(fk.source_columns),
+                qualified_table=qualified_name,
+                store=store,
+                source_connection_id=source_connection_id,
+                effective_block=effective_block,
+            ),
             target_qualified_name=f"{fk.target_schema}.{fk.target_table}",
-            target_columns=list(fk.target_columns),
+            target_columns=redact_blocked_fk_columns(
+                list(fk.target_columns),
+                qualified_table=f"{fk.target_schema}.{fk.target_table}",
+                store=store,
+                source_connection_id=source_connection_id,
+                effective_block=effective_block,
+            ),
         )
         for fk in table.foreign_keys
     ]

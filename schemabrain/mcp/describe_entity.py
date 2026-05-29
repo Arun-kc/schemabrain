@@ -146,6 +146,13 @@ def describe_entity_impl(
         description = (
             "" if is_redacted else (descriptions[col.name].text if col.name in descriptions else "")
         )
+        # When a column is redacted, scrub ``pii_categories`` too. The
+        # placeholder name already hides the column's identity; shipping
+        # the real category tuple alongside (`('credential',)`) would
+        # be a probe oracle — the agent learns "the redacted column at
+        # ordinal N is a credential field of type T" and can deduce the
+        # real name from data_type + ordinal position. Treat the
+        # category field as part of the redacted shape.
         columns.append(
             EntityColumn(
                 name=display_name,
@@ -153,7 +160,7 @@ def describe_entity_impl(
                 nullable=col.nullable,
                 description=description,
                 pii_sensitivity=sensitivity,
-                pii_categories=sorted_categories,
+                pii_categories=() if is_redacted else sorted_categories,
                 redacted=is_redacted,
             )
         )
