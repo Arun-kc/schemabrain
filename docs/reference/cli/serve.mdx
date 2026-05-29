@@ -55,8 +55,8 @@ The default — three catastrophic-leak categories — is the floor every produc
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--statement-timeout-ms MS` | (no timeout) | Postgres-level `statement_timeout` applied to every `get_metric` query. A runaway query aborts with `OperationalError` rather than blocking the process pool. Injected into `connect_args.options` so it **cannot** be overridden via URL query params. |
-| `--max-rows-per-result N` | (no cap) | Application-level cap on rows returned by each `get_metric` call. Counts **after** the SQL executes (the source DB still does the full scan) — this is a payload-size guard, not a query-cost guard. Use `--statement-timeout-ms` for the latter. |
+| `--statement-timeout-ms MS` | `30000` (30s) | Postgres-level `statement_timeout` applied to every `get_metric` query. A runaway query aborts with `OperationalError` rather than blocking the process pool. Injected into `connect_args.options` so it **cannot** be overridden via URL query params. Pass `0` to disable (Postgres treats `statement_timeout=0` as unbounded). |
+| `--max-rows-per-result N` | `10000` | Application-level cap on rows returned by each `get_metric` call. Counts **after** the SQL executes (the source DB still does the full scan) — this is a payload-size guard, not a query-cost guard. Use `--statement-timeout-ms` for the latter. Pass `0` to disable the cap. |
 
 ---
 
@@ -113,12 +113,16 @@ schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db \
     --pii-block credential,payment_card,government_id,contact,health
 ```
 
-### Bound runtime safety
+### Tighter runtime budget than the default
+
+Defaults are already safe (30s timeout, 10k row cap). Tighten further
+for interactive use, where you'd rather see a fast refusal than wait
+out a slow query:
 
 ```bash
 schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db \
     --statement-timeout-ms 5000 \
-    --max-rows-per-result 10000
+    --max-rows-per-result 1000
 ```
 
 ### Disable enforcement for a debug session

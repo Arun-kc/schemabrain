@@ -64,7 +64,7 @@ skips them automatically.
 | Test file | Finding ID | Verdict | Notes |
 |---|---|---|---|
 | `test_perf_audit_chain_race.py` | FW-008 | **NOT exploitable** (positive) | 123k cumulative concurrent writes, zero chain mismatches. `AuditWriter._lock` + commit-before-publish closes the race |
-| `test_perf_statement_timeout_enforcement.py` | IF-3, FW-010 | IF-3 CONFIRMED; FW-010 NOT exploitable | No default timeout on `serve`; URL-smuggled `options=` correctly stripped; view-embedded `pg_sleep` correctly aborts under outer timeout |
+| `test_perf_statement_timeout_enforcement.py` | IF-3, FW-010 | IF-3 FIXED; FW-010 NOT exploitable | `--statement-timeout-ms` now defaults to 30000ms (30s) with `--statement-timeout-ms 0` as the explicit opt-out; `--max-rows-per-result` now defaults to 10000 with `0` as opt-out. URL-smuggled `options=` correctly stripped; view-embedded `pg_sleep` correctly aborts under outer timeout |
 | `test_perf_max_rows_truncation.py` | SF-003 | CONFIRMED | Truncation fires correctly but is SILENT — no envelope signal. Eager materialisation: 10M-row source query peaks at 10M dicts before clip |
 
 ### New DoS condition discovered during stress

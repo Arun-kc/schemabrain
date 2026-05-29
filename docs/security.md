@@ -76,8 +76,8 @@ The full version with code citations is at [`docs/threat-model.md`](threat-model
 | Threat | Mitigation |
 |---|---|
 | Runaway tool-call loop drains LLM budget | `--max-cost` cap on `index`; read-side tools cost effectively zero per call |
-| `get_metric` blow-up via repeated grain-mismatched queries | Optional Postgres-side `statement_timeout` (operator-set via `--statement-timeout-ms`; no default); grain mismatches refused at compile time before SQL leaves the process |
-| Unbounded result-set rows | Optional application-level row cap via `--max-rows-per-result` (operator-set; no default) — defense against an LLM that asks for a `SELECT *` equivalent |
+| `get_metric` blow-up via repeated grain-mismatched queries | Postgres-side `statement_timeout` (operator-tunable via `--statement-timeout-ms`; default 30000ms / 30s; pass `0` to disable); grain mismatches refused at compile time before SQL leaves the process |
+| Unbounded result-set rows | Application-level row cap via `--max-rows-per-result` (operator-tunable; default 10000; pass `0` to disable) — defense against an LLM that asks for a `SELECT *` equivalent |
 
 ### Asset 4 — Adversarial schema names
 
@@ -124,7 +124,7 @@ For procurement teams comparing to enterprise products:
 - **RBAC / fine-grained per-user policies.** SchemaBrain is single-operator. Multi-operator policy enforcement is a future product surface.
 - **Hosted control plane / centralized audit aggregation.** No SaaS today; local-first is architecturally committed.
 - **External audit anchor (`audit checkpoint`).** Manual workaround: cron `schemabrain audit verify --full` + persist the chain head hash externally.
-- **EXPLAIN-based cost cap.** `--statement-timeout-ms` and `--max-rows-per-result` are the v0.4 cost guards; both are operator-set with no default. EXPLAIN dry-run is on the v0.5+ roadmap.
+- **EXPLAIN-based cost cap.** `--statement-timeout-ms` (30s default) and `--max-rows-per-result` (10000 default) are the v0.4 cost guards. EXPLAIN-based pre-execution cost estimation is on the v0.5+ roadmap.
 - **HTTPS / SSE transport.** stdio only today. Required for cloud MCP clients like ChatGPT Connectors; v0.5+ roadmap.
 - **Content-aware PII classification.** v0.4 classifier is name-based with structural refinements (integer-FK guard). Sample-based content matching is roadmap.
 - **Anti-prompt-injection at the data-retrieval layer.** Sample values are PII-redacted but not delimiter-wrapped or pattern-stripped against generic injection payloads. Roadmap.

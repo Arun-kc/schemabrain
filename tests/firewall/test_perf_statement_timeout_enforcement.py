@@ -1,9 +1,12 @@
 """Verify `--statement-timeout-ms` actually bounds slow Postgres queries.
 
-Background — IF-3: `schemabrain serve` default omits the timeout,
-making the firewall operationally weak by default. This test pins
-that behaviour and verifies that WHEN configured, the timeout fires
-and aborts long-running queries inside the configured budget.
+Background — IF-3: earlier versions of `schemabrain serve` shipped
+with the timeout default OMITTED, making the firewall operationally
+weak out of the box. The default is now 30000ms (30s) with `0` as the
+explicit opt-out; these tests pin enforcement behaviour AT the
+executor layer (independent of argparse defaults) so the cap
+mechanics stay regression-tested even if defaults shift again in the
+future.
 
 We don't drive `get_metric` end-to-end (that requires a curated
 semantic layer); instead we exercise the same `EngineMetricExecutor`
@@ -12,8 +15,11 @@ executor's engine and the serve path's engine surfaces here.
 
 Three scenarios:
 
-  1. NO timeout configured → a 5-second `pg_sleep` query completes
-     normally (i.e., the firewall enforces NOTHING by default).
+  1. Timeout EXPLICITLY disabled (None at the executor) → a 3-second
+     `pg_sleep` query completes normally. Pins the executor's
+     "unbounded when None" contract — the CLI default is now 30000ms,
+     and this scenario documents what passing `--statement-timeout-ms 0`
+     ultimately resolves to inside the executor.
   2. Timeout = 1000ms → the same query aborts in ~1-2s with a
      `OperationalError` wrapped in `RuntimeError`.
   3. URL-param bypass attempt (`?options=-c statement_timeout=0`) is
@@ -52,11 +58,14 @@ def _make_executor(*, statement_timeout_ms: int | None) -> EngineMetricExecutor:
 
 
 @pytest.mark.integration
-def test_no_timeout_default_lets_slow_query_run() -> None:
-    """IF-3: without `--statement-timeout-ms`, a 3s pg_sleep COMPLETES.
+def test_executor_without_timeout_lets_slow_query_run() -> None:
+    """Executor contract: when statement_timeout is None, a 3s pg_sleep
+    COMPLETES normally.
 
-    Documents the operational weakness so a future "secure by default"
-    change has a regression target to flip.
+    Pins the executor-internal "None means unbounded" invariant. The
+    CLI surface defaults to 30000ms and exposes `0` as the explicit
+    opt-out (which the cli.py wiring passes through to Postgres as
+    `statement_timeout=0`, semantically equivalent to None here).
     """
     executor = _make_executor(statement_timeout_ms=None)
     t0 = time.perf_counter()
