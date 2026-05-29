@@ -44,6 +44,19 @@ _MAX_ECHO_LEN = _MAX_IDENT_LEN * 3 + 2
 # value still has to satisfy `_MAX_IDENT_LEN` (NAMEDATALEN-1).
 _IDENT_REGEX = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 
+# Control-character denylist for the quoted-identifier path. Postgres
+# permits these bytes at the catalog layer (a `CREATE TABLE` with a
+# control char in a quoted name succeeds), but the MCP firewall
+# refuses to echo them into agent-rendered surfaces — terminal UIs
+# that pipe MCP responses to stdout would interpret embedded ANSI
+# escape sequences (`\x1b[`) live, hiding payload after a colour or
+# screen-clear directive. The denylist covers C0 controls (`\x00`
+# through `\x1f`, includes NUL/BEL/TAB/LF/CR/ESC) plus DEL (`\x7f`).
+# Unicode line/paragraph separators (U+2028, U+2029) and C1
+# controls (`\x80`-`\x9f`) are deferred to a v0.5+ broadening of the
+# denylist; the current set closes every audit-corpus payload.
+_CONTROL_CHAR_REGEX = re.compile(r"[\x00-\x1f\x7f]")
+
 # Upper bound on the raw qualified_name input length before parsing.
 # Worst legitimate 3-part input with all parts at NAMEDATALEN-1 and
 # every char doubled by `""` escaping: 3 * (2 + 63*2) + 2 dots = 386.
@@ -197,9 +210,14 @@ def _validate_parsed_segment(value: str, *, was_quoted: bool, role: IdentRole) -
     """Validate one parsed segment with its quoting metadata.
 
     Unquoted segments must still satisfy `_IDENT_REGEX`. Quoted
-    segments may carry any printable content but still face the
-    NAMEDATALEN-1 length cap and non-empty requirement (Postgres
-    rejects `""` as an identifier; so do we).
+    segments may carry any PRINTABLE content but face three further
+    constraints: the NAMEDATALEN-1 length cap, the non-empty
+    requirement (Postgres rejects `""` as an identifier; so do we),
+    and a control-character denylist that closes the ANSI-escape
+    smuggling vector — even a Postgres column whose catalog name
+    legitimately carries control bytes is refused at this boundary
+    because echoing the name into a `ColumnDetail` response would
+    reflow the operator's terminal.
     """
     if not value:
         raise ValueError(f"{role} must not be empty")
@@ -207,6 +225,19 @@ def _validate_parsed_segment(value: str, *, was_quoted: bool, role: IdentRole) -
         raise ValueError(
             f"{role} too long: {len(value)} chars (max {_MAX_IDENT_LEN}); "
             f"got {_bounded_repr(value)}"
+        )
+    # Control-char check fires on BOTH quoted and unquoted paths. The
+    # unquoted path also enforces `_IDENT_REGEX` (which would reject
+    # control chars anyway), so this is redundant defense-in-depth
+    # there but the canonical gate for the quoted path. Run BEFORE
+    # the regex check so the more specific error message fires for
+    # the more specific failure mode.
+    if _CONTROL_CHAR_REGEX.search(value):
+        raise ValueError(
+            f"{role} contains invalid control character; "
+            f"got {_bounded_repr(value)}. "
+            f"Identifiers cannot carry C0 control bytes (\\x00-\\x1f) or "
+            f"DEL (\\x7f) even inside a double-quoted segment."
         )
     if not was_quoted and not _IDENT_REGEX.match(value):
         raise ValueError(

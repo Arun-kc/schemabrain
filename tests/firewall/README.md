@@ -43,7 +43,7 @@ skips them automatically.
 
 | Test file | Finding ID | Status | Severity | Notes |
 |---|---|---|---|---|
-| `test_fw_001_quoted_ident_ansi_escape.py` | FW-001 | OPEN | HIGH | ANSI escape + 5 other control-char payloads accepted via double-quoted ident path |
+| `test_fw_001_quoted_ident_ansi_escape.py` | FW-001 | FIXED | HIGH | `_validate_parsed_segment` now applies a `[\x00-\x1f\x7f]` control-char denylist on both quoted and unquoted paths. All 6 audit payloads (CSI colour, CSI clear-screen, OSC title-bar rewrite, NUL, BEL, CRLF) refused at the parser boundary before reaching any agent-rendered surface |
 | `test_fw_002_semantic_search_leak.py` | FW-002 / IF-1 | FIXED | **CRIT** | `find_relevant_tables` / `find_relevant_entities` now redact catastrophic-leak column names + descriptions when blocked |
 | `test_fw_003_fk_metadata_leak.py` | FW-003 / IF-2 | FIXED | **CRIT** | FK `source_columns` + `target_columns` now scrubbed through the same effective-block policy as the column list, in both `describe_table` and `describe_column` (outgoing + incoming directions) |
 | `test_fw_005_aggregate_pii_leak.py` | FW-005 | OPEN | HIGH | `MAX(email)` returns a raw row value through the metric envelope (live Postgres) |

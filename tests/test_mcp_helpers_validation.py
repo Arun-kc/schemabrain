@@ -267,3 +267,51 @@ class TestQuotedQualifiedName:
         with pytest.raises(ValueError) as exc_info:
             _parse_column_qualified_name(f'public.t."{attack}"')
         assert len(str(exc_info.value)) < 2_000
+
+
+class TestQuotedSegmentControlCharDenylist:
+    """Quoted segments must reject C0 control bytes (\\x00-\\x1f) and
+    DEL (\\x7f) — the catalog layer in Postgres allows them, but the
+    MCP firewall refuses to echo them into agent-rendered surfaces
+    where a terminal UI would interpret embedded ANSI escapes live.
+    """
+
+    @pytest.mark.parametrize(
+        ("payload", "description"),
+        [
+            ("\x1b[31m evil \x1b[0m", "ANSI CSI colour codes"),
+            ("\x1b[2J cleared", "ANSI CSI clear-screen"),
+            ("\x1b]0;hacked\x07", "OSC 0 title-bar rewrite"),
+            ("\x00null_byte", "embedded NUL"),
+            ("\x07bell_attempt", "BEL"),
+            ("\r\n CRLF_injection", "CRLF"),
+            ("tab\there", "TAB"),
+            ("delete\x7fchar", "DEL"),
+        ],
+    )
+    def test_control_char_in_quoted_column_rejected(self, payload: str, description: str) -> None:
+        with pytest.raises(ValueError, match="control"):
+            _parse_column_qualified_name(f'public.t."{payload}"')
+
+    def test_control_char_at_segment_boundary_rejected(self) -> None:
+        # Single ESC at the start — minimal payload, still blocked.
+        with pytest.raises(ValueError, match="control"):
+            _parse_column_qualified_name('public.t."\x1bfoo"')
+
+    def test_printable_unicode_in_quoted_segment_still_accepted(self) -> None:
+        # The denylist is C0 + DEL only. Printable Unicode (e.g.
+        # accented Latin) continues to pass for operators with i18n
+        # column names that legitimately appear in the catalog.
+        assert _parse_column_qualified_name('public.t."Café"') == ("public", "t", "Café")
+
+    def test_control_char_message_is_bounded(self) -> None:
+        # A medium payload (under the length cap) with an embedded ESC
+        # reaches the new control-char check; the error message must
+        # still be bounded by `_bounded_repr` so the attacker can't
+        # round-trip a 200-char payload through the error string.
+        attack = "x" * 60 + "\x1b[31m"
+        with pytest.raises(ValueError) as exc_info:
+            _parse_column_qualified_name(f'public.t."{attack}"')
+        # Either "too long" or "control character" message is fine;
+        # both go through `_bounded_repr` for the echoed value.
+        assert len(str(exc_info.value)) < 2_000
