@@ -154,6 +154,19 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("seed_phrase", frozenset({"credential"})),
     ("mnemonic", frozenset({"credential"})),
     ("mnemonic_phrase", frozenset({"credential"})),
+    # Auth-secret coverage (PII-013).
+    ("pin", frozenset({"credential"})),
+    ("pin_code", frozenset({"credential"})),
+    ("recovery_code", frozenset({"credential"})),
+    ("security_answer", frozenset({"credential"})),
+    ("ssh_key", frozenset({"credential"})),
+    ("kms_key", frozenset({"credential"})),
+    ("encryption_key", frozenset({"credential"})),
+    ("signing_key", frozenset({"credential"})),
+    ("aws_access_key", frozenset({"credential"})),
+    ("magic_link", frozenset({"credential"})),
+    ("webauthn_credential", frozenset({"credential"})),
+    ("totp_seed", frozenset({"credential"})),
     # government_id
     ("ssn", frozenset({"government_id"})),
     ("tin", frozenset({"government_id"})),
@@ -206,6 +219,23 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("marital_status", frozenset({"demographic_protected"})),
     ("nationality", frozenset({"demographic_protected"})),
     ("veteran_status", frozenset({"demographic_protected"})),
+    # i18n coverage (PII-001) — ES, FR, DE, PT-BR shapes for the
+    # regulatory categories most likely to appear in localised
+    # schemas. Each row uses the native-language column name an
+    # operator would actually see in production.
+    ("correo_electronico", frozenset({"contact"})),
+    ("courriel", frozenset({"contact"})),
+    ("telefonnummer", frozenset({"contact"})),
+    ("numero_telefono", frozenset({"contact"})),
+    ("numero_telephone", frozenset({"contact"})),
+    ("kreditkartennummer", frozenset({"payment_card"})),
+    ("numero_carte_credit", frozenset({"payment_card"})),
+    ("numero_tarjeta_credito", frozenset({"payment_card"})),
+    ("sozialversicherungsnummer", frozenset({"government_id"})),
+    ("numero_seguridad_social", frozenset({"government_id"})),
+    ("numero_securite_sociale", frozenset({"government_id"})),
+    ("cpf", frozenset({"government_id"})),
+    ("cnpj", frozenset({"government_id"})),
 )
 
 
@@ -310,7 +340,7 @@ class TestRuleTableInvariants:
         # classifier and bump this assertion alongside. Pinning the
         # count makes accidental rule churn visible at PR review time.
         #
-        # Post-S1-S4 (2026-05-18) accounting:
+        # Post-S1-S4 accounting:
         #   - DOB rule moved from contact to demographic_protected.
         #     It was always a standalone tuple, so the migration is
         #     net 0.
@@ -321,14 +351,32 @@ class TestRuleTableInvariants:
         #     new ones: net 0.
         # Subtotal: 40 + 1 = 41.
         #
-        # Non-e-commerce-domain coverage (2026-05-22):
+        # Non-e-commerce-domain coverage:
         #   - +1 health encounter/visit/admission/discharge_id rule
         #   - +1 health insurance_member_id/insurance_subscriber_id rule
         #   - +1 online_identifier wallet_address/blockchain_address rule
         #   - +1 credential private_key/seed_phrase/mnemonic rule
         #   - +1 government_id npi/provider_npi/dea_number rule
-        # Total: 41 + 5 = 46.
-        assert RULE_COUNT == 46
+        # Subtotal: 41 + 5 = 46.
+        #
+        # Auth-secret coverage (PII-013):
+        #   - +1 credential pin/recovery_code/security_answer rule
+        #   - +1 credential ssh_key/kms_key/encryption_key/signing_key/
+        #     aws_access_key rule
+        #   - +1 credential magic_link/webauthn_credential/totp_seed rule
+        # Subtotal: 46 + 3 = 49.
+        #
+        # i18n coverage (PII-001) — ES/FR/DE/PT-BR:
+        #   - +1 contact correo_electronico/courriel rule
+        #   - +1 contact telefonnummer/numero_telefono/numero_telephone rule
+        #   - +1 payment_card kreditkartennummer/numero_carte_credit/
+        #     numero_tarjeta_credito rule
+        #   - +1 government_id sozialversicherungsnummer/
+        #     numero_seguridad_social/numero_securite_sociale rule
+        #   - +1 government_id cpf rule
+        #   - +1 government_id cnpj rule
+        # Total: 49 + 6 = 55.
+        assert RULE_COUNT == 55
 
     def test_every_category_has_at_least_one_rule(self) -> None:
         # Every category in PII_CATEGORIES must be producible by at
