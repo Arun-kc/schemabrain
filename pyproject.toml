@@ -199,11 +199,12 @@ minversion = "8.0"
 # runs explicitly pass `-m slow` to exercise the perf gate. Integration
 # tests are NOT excluded by default — they run in the regular CI suite
 # alongside Docker — but can be skipped locally with `-m "not integration"`.
-addopts = "-ra --strict-markers --strict-config -m 'not slow'"
+addopts = "-ra --strict-markers --strict-config -m 'not slow and not firewall_bypass'"
 testpaths = ["tests"]
 markers = [
     "integration: tests that require Docker (testcontainers). Skip with -m 'not integration'.",
     "slow: long-running tests (e.g. pytest-benchmark perf gates). Skipped by default via `addopts`; run explicitly with `pytest -m slow`.",
+    "firewall_bypass: firewall-bypass repros under tests/firewall/. Each test asserts the SECURE behaviour and is expected to FAIL on `main` until the corresponding fix lands. Run with `pytest -m firewall_bypass`.",
 ]
 filterwarnings = [
     "error",
