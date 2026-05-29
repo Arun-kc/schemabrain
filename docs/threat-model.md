@@ -45,6 +45,8 @@ and the audit log that records every call.
 | T1.3 | Audit log tampered after the fact to hide a tool call | Medium |
 | T1.4 | URL query string smuggles a session config (`?options=...`) | Medium |
 | T1.5 | Connection pool reuses a connection with poisoned session state | Medium |
+| T1.6 | Agent reads a PII row value through `MAX`/`MIN` over a tagged column | High |
+| T1.7 | Operator runs `--pii-block` against an unclassified source and the firewall silently fails open | High |
 
 **Current mitigations**
 
@@ -76,6 +78,27 @@ and the audit log that records every call.
   and [schemabrain/cli.py](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/cli.py) — `_make_metric_engine`).
   Every database call opens a fresh connection and disposes of it; there is
   no pool state to escape from.
+- T1.6: `MAX` and `MIN` over a text column return the lexicographically
+  ordered row value, not a derived aggregate — the returned value IS a row
+  value, indistinguishable from a `SELECT`. `_resolve_pii_categories` in
+  [schemabrain/mcp/get_metric.py](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/mcp/get_metric.py)
+  refuses any metric whose `agg` is `min` or `max` over a column with
+  non-empty PII categories, independent of the operator's `--pii-block`
+  policy. The operator's policy governs which *aggregate* categories may
+  pass; MIN/MAX of a tagged column isn't aggregation. `SUM`, `COUNT`,
+  `COUNT_DISTINCT`, and `AVG` remain pure aggregates and continue to flow
+  through the existing `--pii-block` gate. Composite expressions
+  (`expression: a * b`) under MIN/MAX refuse if any operand is tagged.
+- T1.7: When `--pii-block` enforcement is active but the store returns
+  zero PII tag rows across every column touched, the call refuses with
+  `PiiBlockedError` rather than letting the empty lookup pose as
+  confirmed-clean data. The operator opted into enforcement, so the
+  firewall must surface tag-coverage gaps explicitly rather than
+  silently passing. The opt-out is the existing `--pii-block ''` (no
+  enforcement) flag; the matching `schemabrain index` invocation
+  populates the tag table for sources the operator intends to keep
+  classified. See `_resolve_pii_categories` in
+  [schemabrain/mcp/get_metric.py](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/mcp/get_metric.py).
 
 **Residual risk**
 

@@ -36,6 +36,7 @@ from schemabrain.core.entity import Entity, SingleTableBinding
 from schemabrain.core.metric import Metric, MetricMeasure
 from schemabrain.core.models import Column, Table
 from schemabrain.mcp.get_metric import get_metric_impl
+from schemabrain.semantic.compiler import PiiBlockedError
 
 pytestmark = [pytest.mark.firewall_bypass, pytest.mark.integration]
 
@@ -144,44 +145,55 @@ def _seed_store_with_max_email_metric(store) -> None:
     )
 
 
-def test_get_metric_max_email_does_not_leak_raw_address(store, fw_005_pg) -> None:
-    """The ``MAX(email)`` aggregate MUST NOT return a raw email string.
+def test_get_metric_max_email_refused_before_executor_runs(store, fw_005_pg) -> None:
+    """The ``MAX(email)`` aggregate MUST refuse before SQL emission.
 
     The default ``pii_block`` is the catastrophic-leak set
     (``credential``, ``payment_card``, ``government_id``). ``contact``
-    is not in that set, so a metric defined as ``max(email)`` runs end-
-    to-end and returns the lexicographic max email — leaking the row
-    value disguised as an aggregate.
+    is not in that set, so without a dedicated gate a metric defined
+    as ``max(email)`` would have run end-to-end and returned the
+    lexicographic max email — leaking the row value disguised as an
+    aggregate.
 
-    The assertion below is the SECURE shape — either the metric must
-    refuse (``PiiBlockedError``) or the row value must not be a raw
-    email. Today the call succeeds and ``rows[0]['max_email_user']`` is
-    ``'zachary@firewall.test'``.
+    The secure posture, locked by ``_resolve_pii_categories`` in
+    ``mcp/get_metric.py``: MIN/MAX over a column with non-empty PII
+    categories raises ``PiiBlockedError`` independent of the
+    operator's ``--pii-block`` policy. The operator's policy is about
+    which aggregate categories may pass; MIN/MAX of a tagged column
+    isn't aggregation — the returned value IS a row value,
+    indistinguishable from a SELECT.
     """
     _seed_store_with_max_email_metric(store)
     executor = _CapturingExecutor(fw_005_pg)
 
-    result = get_metric_impl(
-        store=store,
-        executor=executor,
-        source_connection_id=SOURCE_ID,
-        name="max_email_user",
+    with pytest.raises(PiiBlockedError) as exc_info:
+        get_metric_impl(
+            store=store,
+            executor=executor,
+            source_connection_id=SOURCE_ID,
+            name="max_email_user",
+        )
+
+    # The refusal names the column that triggered it so the operator
+    # can act. The category surfaced is the column's tag set, NOT a
+    # subset of the operator's policy — the policy is independent of
+    # this gate.
+    assert exc_info.value.blocked_categories == ("contact",), (
+        "BYPASS: MIN/MAX-as-sampling gate must refuse with the "
+        "column's category set, regardless of the operator's "
+        "--pii-block policy. The category disclosure here is the row "
+        "leak, not a policy violation."
     )
+    assert "max" in str(exc_info.value)
+    assert "email" in str(exc_info.value)
 
-    # `MetricResult.rows` is a list of dicts. The aggregate alias is
-    # the metric name. We expect either a refusal (no rows returned
-    # because PiiBlockedError fired upstream of the executor) or a
-    # masked / coarse-grained value.
-    assert result.rows, "sanity: real Postgres returned rows"
-    max_value = result.rows[0].get("max_email_user")
-    assert max_value is not None, "sanity: max aggregate populated"
-
-    # Today: max_value == 'zachary@firewall.test' — a real row value.
-    assert "@" not in str(max_value), (
-        f"BYPASS: get_metric(max_email_user) returned {max_value!r} — "
-        f"a raw email pulled from a user row, surfaced through a MAX "
-        f"aggregate. The 'contact' tag is not in the default "
-        f"catastrophic-leak block, so the firewall let the row escape "
-        f"as an aggregate value. Treat MAX/MIN over PII text columns "
-        f"as row-level reads."
+    # CRITICAL: the executor must NEVER have been invoked. Refusal
+    # happens pre-SQL-emission, so even the parameterised SQL is
+    # never compiled, never logged, never sent to Postgres.
+    assert executor.calls == [], (
+        "BYPASS: refusal must fire before SQL emission. Any executor "
+        "call here means the firewall let the query through and we're "
+        "relying on the post-execution gate to redact the row, which "
+        "is a defense-in-depth issue: a logged SQL is itself a leak "
+        "surface."
     )

@@ -281,9 +281,38 @@ def _resolve_pii_categories(
         envelope kind instead of letting an `IndexError` fall
         through to `internal_error`.
     """
+    anchor_table = plan.anchor_table
+
+    # MIN/MAX over a PII-tagged column samples row data — the returned
+    # value IS one row's column value, indistinguishable from a SELECT.
+    # The `--pii-block` policy is about which aggregate categories may
+    # flow through; MIN/MAX of a tagged column isn't aggregation, so
+    # refusal here is independent of the operator's policy set.
+    # SUM/COUNT/AVG/COUNT_DISTINCT remain pure aggregates and keep
+    # using the existing `pii_block` gate further down.
+    if plan.metric.measure.agg in ("min", "max"):
+        measure_columns = plan.metric.measure.measure_columns
+        measure_tags = store.get_column_pii_tags(
+            source_connection_id=source_connection_id,
+            qualified_table=anchor_table,
+            columns=measure_columns,
+        )
+        for col in sorted(measure_columns):
+            _sensitivity, categories = measure_tags.get(col, ("public", frozenset()))
+            if categories:
+                cats_tuple = cast(tuple[PIICategory, ...], tuple(sorted(categories)))
+                raise PiiBlockedError(
+                    f"get_metric refused: agg={plan.metric.measure.agg!r} on "
+                    f"column {col!r} samples row data — MIN/MAX over a "
+                    f"PII-tagged column is row-level disclosure, not "
+                    f"aggregation.",
+                    attempted_categories=cats_tuple,
+                    blocked_categories=cats_tuple,
+                    anchor_entity=plan.metric.entity,
+                )
+
     by_table: dict[str, set[str]] = {}
 
-    anchor_table = plan.anchor_table
     # Composite-expression measures (`measure.expression is not None`)
     # reference multiple operand columns, all on the anchor table. The
     # `measure_columns` property returns the set for both the v1
@@ -344,6 +373,27 @@ def _resolve_pii_categories(
         for col in columns:
             tag: tuple[Sensitivity, frozenset[PIICategory]] = tags.get(col, ("public", frozenset()))
             per_column.append(tag)
+
+    # When `--pii-block` enforcement is active but the store returns
+    # zero tag rows across every touched column, the empty lookup is
+    # indistinguishable from "no PII touched" — both paths produce
+    # ("public", frozenset()) per the propagation contract. Refuse
+    # rather than fail open: the operator opted into enforcement, so
+    # an un-classified source is a confidence gap the firewall must
+    # surface, not paper over. Opt-out path is `--pii-block ''`
+    # (existing semantic: empty policy disables enforcement).
+    if total_hits == 0 and pii_block:
+        blocked_tuple = cast(tuple[PIICategory, ...], tuple(sorted(pii_block)))
+        raise PiiBlockedError(
+            f"get_metric refused: no PII tags available for any column "
+            f"touched and --pii-block enforcement is active "
+            f"({list(blocked_tuple)}). Run `schemabrain index` to "
+            f"classify columns, or set --pii-block='' to opt out of "
+            f"enforcement.",
+            attempted_categories=(),
+            blocked_categories=blocked_tuple,
+            anchor_entity=plan.metric.entity,
+        )
 
     if total_hits == 0 and source_connection_id not in _empty_tag_table_warned:
         _empty_tag_table_warned.add(source_connection_id)
