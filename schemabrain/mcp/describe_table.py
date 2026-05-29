@@ -1,6 +1,6 @@
 """MCP tool implementation: describe_table.
 
-F1-E V3: applies the firewall's catastrophic-leak floor at the agent-
+applies the firewall's catastrophic-leak floor at the agent-
 facing boundary so an agent that calls ``describe_table`` cannot
 retrieve the real names of credential / payment_card / government_id
 columns. Without this, an agent that hit ``find_relevant_tables`` (or
@@ -56,7 +56,7 @@ def describe_table_impl(
         schema, name, source_connection_id=source_connection_id
     )
 
-    # F1-E V3: pull PII tags for the columns we're about to expose and
+    # pull PII tags for the columns we're about to expose and
     # compute the effective block set the same way ``describe_entity``
     # does — operator policy unioned with the catastrophic-leak floor.
     pii_tags = store.get_column_pii_tags(

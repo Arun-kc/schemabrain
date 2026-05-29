@@ -1,6 +1,6 @@
 """MCP tool implementation: describe_column.
 
-F1-E V3: refuses with ``PiiBlockedError`` when the requested column's
+refuses with ``PiiBlockedError`` when the requested column's
 PII categories intersect the effective firewall block set (operator's
 ``pii_block`` unioned with the catastrophic-leak floor). The MCP
 wrapper translates this into a ``pii_blocked`` refusal envelope with
@@ -48,7 +48,7 @@ def describe_column_impl(
         TableNotFoundError: if the table is absent from the store under
             the configured `source_connection_id`.
         ColumnNotFoundError: if the table exists but the column doesn't.
-        PiiBlockedError: F1-E V3 — if the column's PII categories
+        PiiBlockedError: — if the column's PII categories
             intersect ``pii_block | CATASTROPHIC_LEAK_CATEGORIES``.
     """
     schema, table_name, column_name = _parse_column_qualified_name(qualified_name)
@@ -68,7 +68,7 @@ def describe_column_impl(
             f"Existing columns: {sorted(c.name for c in table.columns)}"
         )
 
-    # F1-E V3: refuse before returning anything if the column's tags
+    # refuse before returning anything if the column's tags
     # intersect the effective firewall block set. The check happens
     # BEFORE we read the description / FK graph so a refusal never
     # carries semantic context that could leak the column's role.

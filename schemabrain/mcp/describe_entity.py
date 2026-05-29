@@ -114,7 +114,7 @@ def describe_entity_impl(
     # should not let the agent read the description of a `password`
     # or `ssn` column. See module docstring.
     effective_block: frozenset[PIICategory] = pii_block | CATASTROPHIC_LEAK_CATEGORIES
-    # F1-E V3: per-category counter for deterministic placeholder
+    # per-category counter for deterministic placeholder
     # naming (``<redacted_<category>_column_N>``) — matches the scheme
     # used by ``describe_table`` so an agent that calls both surfaces
     # sees consistent placeholder numbering per entity.
@@ -131,8 +131,8 @@ def describe_entity_impl(
         is_redacted = bool(blocked)
         if is_redacted:
             redacted_names.append(col.name)
-            # F1-E V3: hide the real name behind a placeholder. The
-            # 2026-05-29 smoke caught Claude reading
+            # hide the real name behind a placeholder. The
+            # end-to-end smoke run caught Claude reading
             # ``card_number_last4`` from describe_entity (with
             # ``redacted=True`` but the real name preserved) and
             # emitting raw SQL referencing it. Replacing the name

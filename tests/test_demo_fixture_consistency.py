@@ -92,7 +92,7 @@ def test_every_bundled_join_references_entities_in_the_pack() -> None:
 
 
 def test_fixture_counts_lock_for_in_product_strings() -> None:
-    """F0-C regression: in-product copy that names fixture counts must
+    """regression: in-product copy that names fixture counts must
     match the actual SQL. PR #143 added the ``payment_methods`` table
     (7 → 8) but five source-file strings stayed at the old counts:
 
@@ -101,7 +101,7 @@ def test_fixture_counts_lock_for_in_product_strings() -> None:
       - ``inspect/render.py`` (inspect-output sample shape)
       - ``init_help_render.py`` (timing-constant rationale comment)
 
-    Surfaced during the 2026-05-29 smoke when the operator saw the
+    Surfaced during an end-to-end smoke run when the operator saw the
     wizard print ``(7 tables, ~1.2k rows)`` while the indexer
     immediately reported ``8 tables · 39 columns indexed`` on the
     next line. A future fixture edit that changes counts will trip
@@ -122,7 +122,7 @@ def test_fixture_counts_lock_for_in_product_strings() -> None:
     )
 
     # Per-source-file string-level lock: each occurrence we found and
-    # fixed in the F0-C sweep must NOT regress to '7 tables'.
+    # fixed in the fixture-count sweep must NOT regress to '7 tables'.
     from schemabrain import _ui, init_help_render
     from schemabrain import inspect as inspect_mod
     from schemabrain.inspect import render as inspect_render
@@ -145,7 +145,7 @@ def test_fixture_counts_lock_for_in_product_strings() -> None:
             failures.append(f"{label}: still contains '7 tables' — update to 8")
         if "30 columns" in source or "30 cols" in source:
             failures.append(f"{label}: still contains '30 columns'/'30 cols' — update to 39")
-    assert not failures, "F0-C regression — fix the listed strings:\n  " + "\n  ".join(failures)
+    assert not failures, "regression — fix the listed strings:\n  " + "\n  ".join(failures)
 
 
 def test_payment_methods_table_present_for_pii_demo() -> None:

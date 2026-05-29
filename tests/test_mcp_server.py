@@ -171,10 +171,10 @@ class TestServerInstructionsSteering:
         assert "get_metric" in instructions
 
     def test_instructions_forbid_raw_sql_even_on_tool_error(self, server_with_one_table) -> None:
-        """F1-E + F1-F regression: when a tool errors, agents under
+        """regression: when a tool errors, agents under
         time pressure historically fall back to emitting raw SQL in
         their response text — bypassing the firewall entirely. The
-        2026-05-29 smoke caught Claude doing exactly this when
+        end-to-end smoke run caught Claude doing exactly this when
         ``find_relevant_tables`` crashed on a missing model file.
         Instructions must explicitly forbid raw SQL on error paths
         and point at ``list_entities`` as the universal fallback.
@@ -893,7 +893,7 @@ class TestInternalErrorCatchAll:
         server_with_one_table,
         capfd: pytest.CaptureFixture[str],
     ) -> None:
-        """F1-E + F1-F regression: when the embedding pipeline is down
+        """regression: when the embedding pipeline is down
         (missing ONNX model, corrupt cache, network unreachable), the
         envelope must populate ``recovery.suggested_tool`` so the agent
         pivots to a non-embedding discovery path instead of writing
@@ -954,11 +954,11 @@ class TestInternalErrorCatchAll:
 
 
 class TestDescribeTableCatastrophicRedaction:
-    """F1-E V3 regression: ``describe_table`` MUST hide catastrophic-
+    """regression: ``describe_table`` MUST hide catastrophic-
     leak column NAMES from the agent-facing response, replacing them
     with ``<redacted_<category>_column_N>`` placeholders.
 
-    The 2026-05-29 smoke caught Claude calling ``describe_table`` on
+    An end-to-end smoke run caught Claude calling ``describe_table`` on
     ``payment_methods``, reading ``card_number_last4`` directly, and
     emitting raw SQL that referenced it — routing around the firewall.
     Redaction closes the loophole: the agent learns the column slot
@@ -1017,7 +1017,7 @@ class TestDescribeTableCatastrophicRedaction:
         cols = structured["data"]["columns"]
         names = {c["name"] for c in cols}
         assert "password_hash" not in names, (
-            "F1-E V3 leak: credential column name visible in describe_table"
+            "leak: credential column name visible in describe_table"
         )
         assert any(n.startswith("<redacted_credential_column_") for n in names), (
             f"expected redacted placeholder for credential column; got {sorted(names)}"
@@ -1053,7 +1053,7 @@ class TestDescribeTableCatastrophicRedaction:
 
 
 class TestDescribeColumnCatastrophicRefusal:
-    """F1-E V3 companion: ``describe_column`` MUST refuse with
+    """companion: ``describe_column`` MUST refuse with
     ``pii_blocked`` when the requested column is catastrophic-leak.
     Without this an agent that learned the real name (e.g. outside
     the MCP surface) could drill into it via ``describe_column``.
@@ -1132,7 +1132,7 @@ class TestDescribeColumnCatastrophicRefusal:
 class TestInternalErrorCatchAllExtras:
     """Continuation of ``TestInternalErrorCatchAll`` for tools whose
     internal-error coverage was originally appended here. Lives in a
-    separate class only because the F1-E V3 redaction tests above
+    separate class only because the redaction tests above
     split the parent class for fixture-scope hygiene; the tests below
     follow the same contract as ``TestInternalErrorCatchAll``.
 

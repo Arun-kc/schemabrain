@@ -113,7 +113,7 @@ def run_dashboard(
         print(f"schemabrain dashboard: {exc}", file=sys.stderr)
         return 2
 
-    # F1-A: pre-flight bind-probe BEFORE uvicorn runs. uvicorn's own
+    # pre-flight bind-probe BEFORE uvicorn runs. uvicorn's own
     # error path swallows ``OSError`` and exits cleanly, so a wrapper
     # try/except never fires for the port-collision case.
     if not _port_is_available(BIND_HOST, config.port):

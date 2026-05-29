@@ -45,7 +45,7 @@ class ColumnInfo(BaseModel):
     normalization (`raw_data_type` → canonical enum) stays deferred —
     track in deferred-decisions doc.
 
-    F1-E V3: when ``redacted=True``, the ``name`` field carries a
+    when ``redacted=True``, the ``name`` field carries a
     placeholder (``<redacted_<category>_column_N>``) — NOT the real
     column name. The real name remains in the store and on the
     operator-facing dashboard; only the agent-facing MCP response
@@ -227,7 +227,7 @@ class TableDescription(BaseModel):
     understand the table at a single look — structure, semantics, and
     join targets — without making a second round-trip.
 
-    F1-E V3: ``redacted_columns`` lists the REAL names of columns whose
+    ``redacted_columns`` lists the REAL names of columns whose
     PII categories intersect the effective firewall block set. The
     columns appear in the ``columns`` list under
     ``<redacted_<category>_column_N>`` placeholders; the real names live
