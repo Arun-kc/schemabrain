@@ -256,6 +256,35 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
         _kw("private_key", "seed_phrase", "mnemonic_phrase", "mnemonic"),
         frozenset({"credential"}),
     ),
+    # Knowledge-based auth factors: PINs, recovery codes, and the
+    # classic "security question" answer. Disclosure of any of these
+    # is equivalent to disclosing a password — they're typed in lieu
+    # of one during second-factor flows.
+    (
+        _kw("pin", "pin_code", "recovery_code", "security_answer"),
+        frozenset({"credential"}),
+    ),
+    # Cryptographic and cloud-credential key material. SSH/KMS/signing
+    # keys decrypt at-rest data or forge identity; an `aws_access_key`
+    # is the public half of a credential pair whose disclosure narrows
+    # the brute-force surface to the matching secret.
+    (
+        _kw(
+            "ssh_key",
+            "kms_key",
+            "encryption_key",
+            "signing_key",
+            "aws_access_key",
+        ),
+        frozenset({"credential"}),
+    ),
+    # Passwordless and 2FA secrets. Magic-link tokens, WebAuthn
+    # credential blobs, and TOTP shared seeds all let an attacker
+    # authenticate without the user's password.
+    (
+        _kw("magic_link", "webauthn_credential", "totp_seed"),
+        frozenset({"credential"}),
+    ),
     # ---- government_id ----
     (_kw("ssn", "tin", "nino"), frozenset({"government_id"})),
     (_kw("passport"), frozenset({"government_id"})),
@@ -336,6 +365,54 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
         ),
         frozenset({"demographic_protected"}),
     ),
+    # ---- i18n ----
+    # Non-English column-name shapes for the same underlying PII. The
+    # English rule table is the canonical surface; this block extends
+    # coverage to ES, FR, DE, and PT-BR for the regulatory categories
+    # most likely to appear in localised schemas. Tokens are listed
+    # under the English category they semantically map to so the
+    # category-coverage invariant continues to hold.
+    #
+    # `email_adresse` (DE) is intentionally absent — the existing
+    # `e_?mail` rule already matches its `email` substring through the
+    # non-alphanumeric boundary semantics.
+    (
+        # ES: correo electrónico; FR: courriel.
+        _kw("correo_electronico", "courriel"),
+        frozenset({"contact"}),
+    ),
+    (
+        # DE: Telefonnummer; ES: número de teléfono; FR: numéro de
+        # téléphone.
+        _kw("telefonnummer", "numero_telefono", "numero_telephone"),
+        frozenset({"contact"}),
+    ),
+    (
+        # DE: Kreditkartennummer; FR: numéro de carte de crédit; ES:
+        # número de tarjeta de crédito.
+        _kw(
+            "kreditkartennummer",
+            "numero_carte_credit",
+            "numero_tarjeta_credito",
+        ),
+        frozenset({"payment_card"}),
+    ),
+    (
+        # DE: Sozialversicherungsnummer; ES: número de seguridad social;
+        # FR: numéro de sécurité sociale.
+        _kw(
+            "sozialversicherungsnummer",
+            "numero_seguridad_social",
+            "numero_securite_sociale",
+        ),
+        frozenset({"government_id"}),
+    ),
+    # PT-BR: CPF is the individual tax/national ID; CNPJ is the
+    # corporate equivalent. Both are sensitive enough that disclosure
+    # enables identity-bound queries against Brazilian government
+    # systems.
+    (_kw("cpf"), frozenset({"government_id"})),
+    (_kw("cnpj"), frozenset({"government_id"})),
 )
 
 # Public count constant — pinned by CI so adding a rule is a deliberate
