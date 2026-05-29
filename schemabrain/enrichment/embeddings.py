@@ -49,11 +49,18 @@ DEFAULT_EMBEDDING_DIM = 384
 # explicit integrity checking + retry) instead of relying on
 # fastembed's internal download path.
 #
-# Keyed by the model name we pass to ``TextEmbedding(...)``. Adding
-# a new model means adding a row here AND verifying the chosen
-# blob's expected on-disk size for the integrity check below.
-_HF_REPO_MAP: dict[str, tuple[str, str, int]] = {
-    # model_name → (hf_repo_id, model_filename, min_expected_size_bytes)
+# Keyed by the model name we pass to ``TextEmbedding(...)``. Each
+# row pins (repo_id, model_filename, min_expected_size_bytes,
+# revision_sha). ``revision_sha`` is a HF Hub commit SHA — pinning is
+# required by bandit's B615 check (CWE-494, "Download of code without
+# integrity check"): if Qdrant's org account is ever compromised, an
+# unpinned ``snapshot_download`` would silently consume whatever the
+# attacker pushed to ``main``. Pinning to the SHA that produced the
+# 66 MB model we observed in the 2026-05-29 smoke is content-addressable
+# safety. Bumping the model means updating BOTH the SHA and re-verifying
+# the size floor.
+_HF_REPO_MAP: dict[str, tuple[str, str, int, str]] = {
+    # model_name → (hf_repo_id, model_filename, min_expected_size_bytes, revision_sha)
     "BAAI/bge-small-en-v1.5": (
         "qdrant/bge-small-en-v1.5-onnx-q",
         "model_optimized.onnx",
@@ -61,6 +68,9 @@ _HF_REPO_MAP: dict[str, tuple[str, str, int]] = {
         # partial-download case without being so tight we'd false-flag
         # a legitimately smaller future variant.
         10_000_000,
+        # HF Hub commit SHA observed on 2026-05-29 — the snapshot that
+        # produces a verified 66,465,124-byte ``model_optimized.onnx``.
+        "52398278842ec682c6f32300af41344b1c0b0bb2",
     ),
 }
 
@@ -133,7 +143,7 @@ def _ensure_model_files_present(cache_dir: Path, model_name: str) -> None:
         # registry pattern, not a generic resolver.
         return
 
-    repo_id, model_filename, min_size = mapping
+    repo_id, model_filename, min_size, revision = mapping
 
     try:
         from huggingface_hub import snapshot_download
@@ -146,6 +156,11 @@ def _ensure_model_files_present(cache_dir: Path, model_name: str) -> None:
     try:
         snapshot_path = snapshot_download(
             repo_id=repo_id,
+            # Pin the revision (bandit B615 / CWE-494): without this an
+            # attacker who compromises the HF repo could push a malicious
+            # model and our download would silently consume it.
+            # Content-addressable safety via the SHA in ``_HF_REPO_MAP``.
+            revision=revision,
             cache_dir=str(cache_dir),
             # Narrow allow_patterns so we don't pull the unquantized
             # model variant or sample data that some repos ship

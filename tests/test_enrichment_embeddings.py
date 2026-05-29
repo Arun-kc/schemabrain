@@ -380,6 +380,13 @@ class TestFastEmbedHFEagerDownload:
         # this we'd pull a giant unquantized model alongside the
         # quantized one we actually want.
         assert "*.onnx" in calls[0]["allow_patterns"]
+        # Bandit B615 / CWE-494: revision MUST be pinned so a compromised
+        # HF org account can't substitute a malicious model under us.
+        assert calls[0]["revision"] is not None
+        # 40-char hex commit SHA is the safe shape — accept either lower
+        # or upper case but reject branch names like ``main``.
+        assert len(calls[0]["revision"]) == 40
+        assert all(c in "0123456789abcdefABCDEF" for c in calls[0]["revision"])
 
     def test_integrity_check_fails_on_zero_byte_model(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
