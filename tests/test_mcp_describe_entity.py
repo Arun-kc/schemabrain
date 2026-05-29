@@ -446,7 +446,7 @@ class TestPiiBlockColumnRedaction:
         is replaced by a ``<redacted_<category>_column_N>`` placeholder,
         and its description is cleared. The non-PII column is untouched.
 
-        F1-E V3: the real name is no longer exposed in ``columns[*].name`` —
+        the real name is no longer exposed in ``columns[*].name`` —
         only in ``redacted_columns`` (operator-side audit signal).
         """
         server, store = self._build_with_pii_block(tmp_path, frozenset({"contact"}))
@@ -523,7 +523,7 @@ class TestPiiBlockColumnRedaction:
                 name="customer",
                 pii_block=frozenset({"contact"}),
             )
-        # F1-E V3: the real name is hidden behind a placeholder; look up
+        # the real name is hidden behind a placeholder; look up
         # the redacted column via the redacted=True flag instead.
         email_col = next(c for c in detail.columns if c.redacted)
         assert email_col.redacted is True
@@ -540,10 +540,10 @@ class TestCatastrophicCategoriesAlwaysRedact:
     enforcement still should not let the agent read a `password_hash`
     or `ssn` column description.
 
-    F1-E V3: the column NAME is also hidden behind a placeholder of
+    the column NAME is also hidden behind a placeholder of
     the shape ``<redacted_<category>_column_N>``. Previous versions
     preserved the name and only scrubbed the description; the 2026-05-29
-    smoke caught Claude reading the real name and emitting raw SQL
+    an end-to-end run caught Claude reading the real name and emitting raw SQL
     referencing it. The new name-masking shape closes that loophole.
     Data type + nullable still surface so the agent sees the slot exists.
     """
@@ -618,7 +618,7 @@ class TestCatastrophicCategoriesAlwaysRedact:
                 name="customer",
                 pii_block=frozenset(),
             )
-        # F1-E V3: catastrophic categories replace the real name with
+        # catastrophic categories replace the real name with
         # a placeholder. The category-specific placeholder shape
         # (``<redacted_<category>_column_N>``) lets the agent see the
         # SLOT exists without learning the real name.

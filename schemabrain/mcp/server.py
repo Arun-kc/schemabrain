@@ -571,7 +571,7 @@ def build_server(
                 limit=limit,
             )
         except EmbeddingUnavailableError as exc:
-            # F1-E + F1-F: semantic search down → steer agent to the
+            # semantic search down → steer agent to the
             # non-embedding discovery surface (``list_entities``) so it
             # doesn't fall back to writing raw SQL outside the firewall.
             return _wrap_embedding_unavailable(exc, fallback_tool="list_entities")
@@ -655,7 +655,7 @@ def build_server(
                 limit=limit,
             )
         except EmbeddingUnavailableError as exc:
-            # F1-E + F1-F: same recovery posture as find_relevant_tables —
+            # same recovery posture as find_relevant_tables —
             # steer the agent at ``list_entities`` (the entity-surface
             # equivalent of catalog walk) rather than leaving it with
             # an opaque ``internal_error``.
@@ -788,7 +788,7 @@ def build_server(
                 pii_block=pii_block,
             )
         except PiiBlockedError as exc:
-            # F1-E V3: catastrophic-leak column refuses to drill. Route
+            # catastrophic-leak column refuses to drill. Route
             # the agent's recovery toward ``describe_table`` so it sees
             # the parent table's redacted column list (which carries the
             # ``<redacted_<category>_column_N>`` placeholders) instead of
@@ -1871,7 +1871,7 @@ def _wrap_internal_error(exc: Exception) -> ToolResponse:
 
 
 def _wrap_embedding_unavailable(exc: Exception, *, fallback_tool: str) -> ToolResponse:
-    """F1-E + F1-F: dedicated envelope for embedding-pipeline failures.
+    """dedicated envelope for embedding-pipeline failures.
 
     When ``FastEmbedEmbedder.embed`` raises ``EmbeddingUnavailableError``
     (missing model file, corrupt cache, network down on cold start),
@@ -1879,8 +1879,8 @@ def _wrap_embedding_unavailable(exc: Exception, *, fallback_tool: str) -> ToolRe
     useful hits. Without a populated ``Recovery``, the agent sees a
     generic ``internal_error`` and falls back to its training prior —
     which for an analytics question often means emitting raw SQL that
-    bypasses the firewall entirely (Tier-1 finding F1-E from the
-    2026-05-29 smoke).
+    bypasses the firewall entirely (a recent smoke finding from the
+    end-to-end smoke run).
 
     This wrapper points the agent at a non-embedding discovery tool
     (``list_entities`` or ``list_tables``) so the recovery path stays

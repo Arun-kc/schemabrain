@@ -114,7 +114,7 @@ def test_run_dashboard_open_browser_does_not_crash_when_browser_missing(
 def test_run_dashboard_friendly_message_on_port_collision(
     store_path: Path, monkeypatch, capsys
 ) -> None:
-    """F1-A regression: when the operator launches a second dashboard
+    """regression: when the operator launches a second dashboard
     against a port that's already bound, surface ONE actionable
     message instead of uvicorn's raw ``[Errno 48]`` log line, and
     return exit code 1.

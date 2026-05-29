@@ -137,7 +137,7 @@ class _StubTextEmbedding:
     init_calls: list[dict] = []  # noqa: RUF012 — class-level test capture; reset per-test via monkeypatch
 
     def __init__(self, *, model_name: str, cache_dir: str | None = None) -> None:
-        # F1-D added ``cache_dir`` kwarg pass-through. Stub mirrors the
+        # the v2 fix added ``cache_dir`` kwarg pass-through. Stub mirrors the
         # real upstream signature (`fastembed.TextEmbedding.__init__`
         # line 82) so the production call shape is exercised.
         type(self).init_calls.append({"model_name": model_name, "cache_dir": cache_dir})
@@ -181,7 +181,7 @@ class TestFastEmbedEmbedder:
         # Model name + cache_dir were passed to the underlying loader.
         assert len(_StubTextEmbedding.init_calls) == 1
         assert _StubTextEmbedding.init_calls[0]["model_name"] == DEFAULT_EMBEDDING_MODEL
-        # cache_dir is the new F1-D contract: never None, always a path.
+        # cache_dir is the new current contract: never None, always a path.
         assert _StubTextEmbedding.init_calls[0]["cache_dir"] is not None
         # tuple-of-floats at the boundary, not numpy.
         assert isinstance(v, tuple)
@@ -241,7 +241,7 @@ def _stub_huggingface_download(
     """Replace ``huggingface_hub.snapshot_download`` with a stub that
     materializes a dummy model file of the requested size.
 
-    F1-D V2 changed ``_ensure_model`` to invoke ``snapshot_download``
+    v2 changed ``_ensure_model`` to invoke ``snapshot_download``
     eagerly before constructing ``TextEmbedding``. Tests that exercise
     the embed path now need to short-circuit the real HF Hub call —
     network access in unit tests is wrong, and the real call would
@@ -283,7 +283,7 @@ def _stub_huggingface_download(
 
 
 class TestFastEmbedCacheLocation:
-    """F1-D regression: fastembed cache must NOT default to ``$TMPDIR``.
+    """regression: fastembed cache must NOT default to ``$TMPDIR``.
 
     On macOS the default fastembed cache lives at
     ``$TMPDIR/fastembed_cache/`` which resolves to
@@ -351,7 +351,7 @@ class TestFastEmbedCacheLocation:
 
 
 class TestFastEmbedHFEagerDownload:
-    """F1-D V2 regression: the eager ``huggingface_hub.snapshot_download``
+    """regression: the eager ``huggingface_hub.snapshot_download``
     must fire BEFORE ``TextEmbedding`` constructs, with the right
     repo_id, allow_patterns narrow enough to skip unquantized variants,
     and an integrity check that catches the zero-byte partial-download
@@ -391,7 +391,7 @@ class TestFastEmbedHFEagerDownload:
     def test_integrity_check_fails_on_zero_byte_model(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """The smoke caught fastembed's auto-download producing a 0-byte
+        """The an end-to-end run caught fastembed's auto-download producing a 0-byte
         ``model_optimized.onnx`` blob. ``_ensure_model_files_present``
         must catch this case and raise rather than letting the loader
         fail downstream with a confusing NoSuchFile.
@@ -494,7 +494,7 @@ class TestFastEmbedHFEagerDownload:
 
 
 class TestFastEmbedFailureClassification:
-    """F1-E + F1-F regression: ``FastEmbedEmbedder.embed`` must
+    """regression: ``FastEmbedEmbedder.embed`` must
     convert raw fastembed/ONNX failures into ``EmbeddingUnavailableError``
     so the MCP wrapper can return a recovery envelope steering the
     agent to ``list_entities``. Already-classified errors must
@@ -557,7 +557,7 @@ class TestFastEmbedFailureClassification:
 
 
 class TestFastEmbedPartialDownloadHealing:
-    """F1-D regression: a half-finished model download leaves the
+    """regression: a half-finished model download leaves the
     snapshot dir intact with an ``*.incomplete`` blob orphan. fastembed
     then loads symlinks pointing at a non-existent file and crashes
     with ``NoSuchFile`` deep inside ONNXRuntime. The heal step wipes

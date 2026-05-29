@@ -189,7 +189,7 @@ class TestEventJsonSerialisation:
         assert parsed["tool_name"] is None
 
     def test_pydantic_model_in_args_summary_round_trips(self) -> None:
-        """F1-C regression: ``order_by`` arrives as a tuple of Pydantic
+        """regression: ``order_by`` arrives as a tuple of Pydantic
         ``MetricOrderByArg`` models, which ``dataclasses.asdict`` leaves
         un-converted. ``to_json_line`` MUST flatten them via ``model_dump``
         so the bus doesn't drop the event silently and ``schemabrain tail``

@@ -35,7 +35,7 @@ from schemabrain.core.embedding import ColumnEmbedding
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_EMBEDDING_DIM = 384
 
-# F1-D V2: fastembed maps the model name to a HuggingFace Hub repo
+# fastembed maps the model name to a HuggingFace Hub repo
 # internally — `BAAI/bge-small-en-v1.5` → `qdrant/bge-small-en-v1.5-onnx-q`
 # with file `model_optimized.onnx`. We use this mapping for an eager
 # pre-fetch via huggingface_hub.snapshot_download because fastembed's
@@ -56,7 +56,7 @@ DEFAULT_EMBEDDING_DIM = 384
 # integrity check"): if Qdrant's org account is ever compromised, an
 # unpinned ``snapshot_download`` would silently consume whatever the
 # attacker pushed to ``main``. Pinning to the SHA that produced the
-# 66 MB model we observed in the 2026-05-29 smoke is content-addressable
+# 66 MB model we observed in an end-to-end smoke run is content-addressable
 # safety. Bumping the model means updating BOTH the SHA and re-verifying
 # the size floor.
 _HF_REPO_MAP: dict[str, tuple[str, str, int, str]] = {
@@ -74,7 +74,7 @@ _HF_REPO_MAP: dict[str, tuple[str, str, int, str]] = {
     ),
 }
 
-# F1-D: fastembed defaults the cache to `$TMPDIR/fastembed_cache/`,
+# fastembed defaults the cache to `$TMPDIR/fastembed_cache/`,
 # which on macOS resolves to `/var/folders/.../T/` — a system-managed
 # directory subject to periodic cleanup (~3-day TTL on `cleanup-T`,
 # plus reboot purge). Once macOS evicts the model, the snapshot dir
@@ -108,7 +108,7 @@ def _resolve_fastembed_cache_dir() -> Path:
 def _ensure_model_files_present(cache_dir: Path, model_name: str) -> None:
     """Eager-fetch the model files via ``huggingface_hub.snapshot_download``.
 
-    F1-D V2: fastembed's internal download path silently fails on large
+    fastembed's internal download path silently fails on large
     blobs for the bge-small-en-v1.5 model. After the (partial) download,
     the snapshot dir has the small config/tokenizer files but the
     ~67 MB ``model_optimized.onnx`` is left as a zero-byte
@@ -355,7 +355,7 @@ class FastEmbedEmbedder:
             # Already classified — let it bubble up to the MCP wrapper.
             raise
         except Exception as exc:
-            # F1-E + F1-F: any failure inside fastembed / ONNX (missing
+            # any failure inside fastembed / ONNX (missing
             # model file, network down, corrupt blob, OOM) needs to be
             # promoted to ``EmbeddingUnavailableError`` so the MCP tool
             # wrappers can produce an envelope with a useful recovery
@@ -375,7 +375,7 @@ class FastEmbedEmbedder:
             # the cost of importing onnxruntime.
             from fastembed import TextEmbedding
 
-            # F1-D: fastembed defaults the cache to `$TMPDIR/fastembed_cache/`
+            # fastembed defaults the cache to `$TMPDIR/fastembed_cache/`
             # which macOS purges every ~3 days. Pin to `~/.cache/fastembed/`
             # so the model survives system housekeeping. Then sniff for a
             # partial download corruption (`.incomplete` blob orphans from
@@ -389,7 +389,7 @@ class FastEmbedEmbedder:
             cache_dir = _resolve_fastembed_cache_dir()
             cache_dir.mkdir(parents=True, exist_ok=True)
             _heal_partial_download(cache_dir, self.model_name)
-            # F1-D V2: pre-fetch + integrity check via huggingface_hub
+            # pre-fetch + integrity check via huggingface_hub
             # so fastembed's silent-failure download path can't leave
             # us with a dangling ``model_optimized.onnx`` symlink.
             _ensure_model_files_present(cache_dir, self.model_name)
@@ -409,7 +409,7 @@ class EmbeddingUnavailableError(RuntimeError):
     """Embedding pipeline failure that MCP wrappers can recognize.
 
     Raised by ``FastEmbedEmbedder.embed`` when the underlying fastembed
-    runtime fails — missing model file (F1-D heal couldn't recover),
+    runtime fails — missing model file (the heal step couldn't recover),
     corrupt cache, network unreachable on cold start, ONNX runtime
     crash. The MCP tool wrappers (``find_relevant_tables``,
     ``find_relevant_entities``) catch this specifically and return an
