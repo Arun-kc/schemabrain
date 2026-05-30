@@ -46,7 +46,7 @@ from schemabrain.core.metric import (
     MetricMeasure,
 )
 from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
-from schemabrain.pii.categories import ColumnPiiTag
+from schemabrain.pii.categories import ColumnPiiTag, PIICategory, Sensitivity
 
 # Re-export so existing `from schemabrain.core.store import
 # DbtOwnedEntityError` imports keep working. The exceptions now live
@@ -2420,6 +2420,134 @@ class SQLiteStore:
             )
             for row in rows
         }
+
+    def upsert_column_pii_tag_override(
+        self,
+        *,
+        source_connection_id: str,
+        qualified_table: str,
+        column_name: str,
+        sensitivity: Sensitivity,
+        categories: frozenset[PIICategory],
+    ) -> None:
+        """Write one operator-asserted PII tag override.
+
+        Unlike `write_column_pii_tags` (bulk DELETE+INSERT, always
+        `origin='heuristic'`), this is a granular single-column
+        upsert that always writes `origin='operator'`. The shared
+        primary key `(source_connection_id, qualified_table,
+        column_name)` means an operator override REPLACES any prior
+        heuristic OR operator row for the same column — there is no
+        layering, by design (per the schema comment at the table DDL).
+
+        Re-running `schemabrain index` after an override exists will
+        overwrite the operator row with the new heuristic value
+        unless the index pipeline is taught to skip override rows.
+        That's tracked separately; for v0.4 the operator workflow is
+        "override → server reads the override → next index wipes the
+        override, operator re-applies from pii_policy.yaml."
+        """
+        conn = self._require_conn()
+        now = int(time.time())
+        with conn:
+            conn.execute(
+                "INSERT INTO column_pii_tags "
+                "(source_connection_id, qualified_table, column_name, "
+                "sensitivity, categories, origin, classified_at) "
+                "VALUES (?, ?, ?, ?, ?, 'operator', ?) "
+                "ON CONFLICT (source_connection_id, qualified_table, column_name) "
+                "DO UPDATE SET "
+                "sensitivity = excluded.sensitivity, "
+                "categories = excluded.categories, "
+                "origin = excluded.origin, "
+                "classified_at = excluded.classified_at",
+                (
+                    source_connection_id,
+                    qualified_table,
+                    column_name,
+                    sensitivity,
+                    _encode_pii_categories(categories),
+                    now,
+                ),
+            )
+
+    def delete_column_pii_tag_override(
+        self,
+        *,
+        source_connection_id: str,
+        qualified_table: str,
+        column_name: str,
+    ) -> bool:
+        """Delete one operator-asserted PII tag override.
+
+        Returns True if a row was deleted, False if no operator row
+        existed for the column. The filter on `origin='operator'`
+        prevents accidentally wiping a heuristic row when the
+        operator meant to clear THEIR override only — the next
+        `schemabrain index` would otherwise need to re-classify.
+
+        Deletion is the v0.4 clear semantic; immediate re-tag via
+        the classifier is deferred to v0.5.
+        """
+        conn = self._require_conn()
+        with conn:
+            cursor = conn.execute(
+                "DELETE FROM column_pii_tags "
+                "WHERE source_connection_id = ? "
+                "AND qualified_table = ? "
+                "AND column_name = ? "
+                "AND origin = 'operator'",
+                (source_connection_id, qualified_table, column_name),
+            )
+            return cursor.rowcount > 0
+
+    def list_column_pii_tags_with_origin(
+        self,
+        *,
+        source_connection_id: str,
+        origin: str | None = None,
+    ) -> list[tuple[str, str, Sensitivity, frozenset[PIICategory], str]]:
+        """List every PII tag row for a source, with provenance.
+
+        Returns a list of `(qualified_table, column_name, sensitivity,
+        categories, origin)` tuples. `origin` filter (`heuristic` or
+        `operator`) narrows the result when set; default returns
+        both.
+
+        Used by the dashboard policy view + CLI `policy tag list` to
+        render the per-column verdict surface. Distinct from
+        `get_column_pii_tags` (which is bulk-fetch by column-name list
+        for a single table, no origin information).
+        """
+        conn = self._require_conn()
+        if origin is not None:
+            rows = conn.execute(
+                "SELECT qualified_table, column_name, sensitivity, "
+                "categories, origin "
+                "FROM column_pii_tags "
+                "WHERE source_connection_id = ? AND origin = ? "
+                "ORDER BY qualified_table, column_name",
+                (source_connection_id, origin),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT qualified_table, column_name, sensitivity, "
+                "categories, origin "
+                "FROM column_pii_tags "
+                "WHERE source_connection_id = ? "
+                "ORDER BY qualified_table, column_name",
+                (source_connection_id,),
+            ).fetchall()
+        return [
+            (
+                row["qualified_table"],
+                row["column_name"],
+                row["sensitivity"],
+                _decode_pii_categories(row["categories"]),
+                row["origin"],
+            )
+            for row in rows
+        ]
 
     def count_stale_tables_and_columns(
         self, *, source_connection_id: str, since_ts: int

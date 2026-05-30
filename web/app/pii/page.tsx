@@ -1,5 +1,6 @@
 import { HeaderStrip } from "@/components/dashboard/HeaderStrip";
 import { Matrix } from "@/components/pii/Matrix";
+import { PolicyView } from "@/components/pii/PolicyView";
 
 export default function PiiPage() {
   return (
@@ -14,6 +15,7 @@ export default function PiiPage() {
       <div className="relative z-10">
         <HeaderStrip surface="pii ledger" />
         <Matrix />
+        <PolicyView />
       </div>
     </main>
   );

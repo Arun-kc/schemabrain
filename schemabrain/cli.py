@@ -180,6 +180,12 @@ if TYPE_CHECKING:
 
 _DEFAULT_STORE_PATH = "./schemabrain.db"
 _DEFAULT_EVENTS_PATH = "~/.schemabrain/events.jsonl"
+# Conventional location for the operator-editable pii_policy.yaml,
+# sibling to the entities/ metrics/ joins/ subdirectories produced by
+# `init --emit-yaml-dir`. `serve` reads `block:` from this path at
+# startup unless `--pii-block` is explicitly passed; `apply` reads
+# both `block:` and `column_overrides:` to populate the store.
+_DEFAULT_POLICY_PATH = "./schemabrain/pii_policy.yaml"
 # Default cap deliberately low — a first-time user's `schemabrain index`
 # should not be able to surprise-spend more than $1 against the LLM
 # vendor before they understand what's running. Override with
@@ -344,6 +350,7 @@ def _dispatch(argv: list[str] | None) -> int:
             no_events=args.no_events,
             no_audit=args.no_audit,
             pii_block_csv=args.pii_block,
+            policy_path=args.policy_path,
             statement_timeout_ms=args.statement_timeout_ms,
             max_rows_per_result=args.max_rows_per_result,
         )
@@ -602,6 +609,45 @@ def _dispatch(argv: list[str] | None) -> int:
             port=args.port,
             open_browser=args.open_browser,
         )
+    if args.command == "policy":
+        if args.policy_action == "show":
+            return _cmd_policy_show(
+                store_path=args.store_path,
+                policy_path=args.policy_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+            )
+        if args.policy_action == "apply":
+            return _cmd_policy_apply(
+                yaml_path=args.yaml_path,
+                store_path=args.store_path,
+                positional_url=args.source,
+                url_env=args.url_env,
+            )
+        if args.policy_action == "tag":
+            if args.policy_tag_action == "override":
+                return _cmd_policy_tag_override(
+                    qualified_column=args.qualified_column,
+                    sensitivity=args.sensitivity,
+                    categories_csv=args.categories,
+                    store_path=args.store_path,
+                    positional_url=args.source,
+                    url_env=args.url_env,
+                )
+            if args.policy_tag_action == "clear":
+                return _cmd_policy_tag_clear(
+                    qualified_column=args.qualified_column,
+                    store_path=args.store_path,
+                    positional_url=args.source,
+                    url_env=args.url_env,
+                )
+            if args.policy_tag_action == "list":
+                return _cmd_policy_tag_list(
+                    origin=args.origin,
+                    store_path=args.store_path,
+                    positional_url=args.source,
+                    url_env=args.url_env,
+                )
     # argparse `required=True` on subparsers prevents reaching here, but
     # leaving an explicit branch is cheaper than a guarded assertion.
     parser.error(f"unknown command: {args.command}")  # pragma: no cover
@@ -980,11 +1026,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "(refusal_reason='pii_blocked'). Example: "
         "--pii-block contact,health. Unknown category names abort "
         "startup with an error listing the 12 valid values. "
-        "Omitted (no flag) defaults to credential,payment_card,"
-        "government_id — the catastrophic-leak categories where no "
-        "plausible aggregate-analytics use case exists. Pass "
-        "--pii-block '' to explicitly disable enforcement (PII tags "
-        "still flow to the audit row).",
+        "Omitted (no flag) reads `block:` from --policy-path if the "
+        "file exists, otherwise defaults to credential,payment_card,"
+        "government_id (the catastrophic-leak categories). Pass "
+        "--pii-block '' to explicitly disable enforcement (overrides "
+        "the YAML file; PII tags still flow to the audit row).",
+    )
+    p_serve.add_argument(
+        "--policy-path",
+        dest="policy_path",
+        default=_DEFAULT_POLICY_PATH,
+        help=f"Path to a pii_policy.yaml file. When present, its "
+        f"`block:` field is read at startup as the default --pii-block "
+        f"set. Default: {_DEFAULT_POLICY_PATH}. Explicit --pii-block "
+        f"always wins. Per-column overrides live in the store and are "
+        f"populated by `schemabrain policy apply`.",
     )
     p_serve.add_argument(
         "--statement-timeout-ms",
@@ -2333,6 +2389,189 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
     )
 
+    # `policy` is the operator-facing surface for PII enforcement.
+    # Five actions: `show` (read-only state inspection), `apply`
+    # (load a pii_policy.yaml file into the store + emit a confirmation),
+    # `tag override` (single-column upsert with `origin='operator'`),
+    # `tag clear` (single-column delete of an operator override), and
+    # `tag list` (provenance-filterable listing).
+    p_policy = sub.add_parser(
+        "policy",
+        help="View and edit PII enforcement policy (block set + per-column overrides)",
+    )
+    policy_sub = p_policy.add_subparsers(dest="policy_action", required=True)
+
+    p_policy_show = policy_sub.add_parser(
+        "show",
+        help="Print the active PII policy: block set + per-column tag listing",
+    )
+    p_policy_show.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_policy_show.add_argument(
+        "--policy-path",
+        default=_DEFAULT_POLICY_PATH,
+        help=f"Path to the pii_policy.yaml file (default: {_DEFAULT_POLICY_PATH}). "
+        "If absent, falls back to the catastrophic-leak default block set.",
+    )
+    p_policy_show.add_argument(
+        "--source",
+        default=None,
+        help="The same source URL passed to `index`. DEPRECATED when the URL "
+        "contains a password; prefer --url-env.",
+    )
+    p_policy_show.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL.",
+    )
+
+    p_policy_apply = policy_sub.add_parser(
+        "apply",
+        help="Load a pii_policy.yaml file into the local store "
+        "(persists column_overrides; block set is read by `serve` from the YAML)",
+    )
+    p_policy_apply.add_argument(
+        "yaml_path",
+        nargs="?",
+        default=_DEFAULT_POLICY_PATH,
+        help=f"Path to a pii_policy.yaml file (default: {_DEFAULT_POLICY_PATH}). "
+        "Errors are surfaced; nothing is written if the YAML fails to parse.",
+    )
+    p_policy_apply.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_policy_apply.add_argument(
+        "--source",
+        default=None,
+        help="The same source URL passed to `index`. DEPRECATED when "
+        "the URL contains a password; prefer --url-env.",
+    )
+    p_policy_apply.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL.",
+    )
+
+    # `policy tag` is a noun group inside `policy` — three actions
+    # against the per-column override surface. Operators who edit
+    # YAML get the round-trip; operators who prefer one-off CLI
+    # commands use these.
+    p_policy_tag = policy_sub.add_parser(
+        "tag",
+        help="Per-column PII tag overrides (operator-asserted)",
+    )
+    policy_tag_sub = p_policy_tag.add_subparsers(dest="policy_tag_action", required=True)
+
+    p_policy_tag_override = policy_tag_sub.add_parser(
+        "override",
+        help="Upsert one operator-asserted PII tag override for a column",
+    )
+    p_policy_tag_override.add_argument(
+        "qualified_column",
+        help="The column to override in `schema.table.column` form "
+        "(e.g. `public.users.email`). Identifier-shape per part.",
+    )
+    p_policy_tag_override.add_argument(
+        "--sensitivity",
+        required=True,
+        choices=["public", "internal", "confidential", "pii"],
+        help="The new sensitivity level. `public` and `internal` are "
+        "common downgrade targets for over-tagged columns "
+        "(e.g. `card_number_last4` per PCI-DSS Q&A).",
+    )
+    p_policy_tag_override.add_argument(
+        "--categories",
+        default="",
+        help="Comma-separated PII category list (empty string = none). "
+        "Example: --categories=contact,location. Unknown category "
+        "names abort with an error.",
+    )
+    p_policy_tag_override.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_policy_tag_override.add_argument(
+        "--source",
+        default=None,
+        help="The same source URL passed to `index`. DEPRECATED when "
+        "the URL contains a password; prefer --url-env.",
+    )
+    p_policy_tag_override.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL.",
+    )
+
+    p_policy_tag_clear = policy_tag_sub.add_parser(
+        "clear",
+        help="Delete an operator-asserted PII tag override for one column. "
+        "Does NOT touch the heuristic row; next `schemabrain index` will "
+        "re-classify the column from scratch.",
+    )
+    p_policy_tag_clear.add_argument(
+        "qualified_column",
+        help="The column whose override to clear in `schema.table.column` form.",
+    )
+    p_policy_tag_clear.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_policy_tag_clear.add_argument(
+        "--source",
+        default=None,
+        help="The same source URL passed to `index`. DEPRECATED when "
+        "the URL contains a password; prefer --url-env.",
+    )
+    p_policy_tag_clear.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL.",
+    )
+
+    p_policy_tag_list = policy_tag_sub.add_parser(
+        "list",
+        help="List PII tag rows with provenance (heuristic vs operator)",
+    )
+    p_policy_tag_list.add_argument(
+        "--origin",
+        choices=["heuristic", "operator"],
+        default=None,
+        help="Filter listing to one origin. Default lists both.",
+    )
+    p_policy_tag_list.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+    p_policy_tag_list.add_argument(
+        "--source",
+        default=None,
+        help="The same source URL passed to `index`. DEPRECATED when "
+        "the URL contains a password; prefer --url-env.",
+    )
+    p_policy_tag_list.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL.",
+    )
+
     # `dashboard` boots a read-only FastAPI sidecar that serves the
     # bundled Next.js static export. Importing DEFAULT_PORT from the
     # sidecar module is safe here — sidecar.py defers its fastapi /
@@ -3045,6 +3284,43 @@ def _cmd_eval(
     return 0
 
 
+def _try_load_policy_yaml_block(
+    policy_path: str | None,
+) -> frozenset[PIICategory] | None:  # type: ignore[name-defined]  # noqa: F821 — runtime import
+    """Try to load `block:` from `policy_path`. Returns None if the
+    file is absent (legitimate — operator may not have created one
+    yet). A malformed file is loud — surfaces the parse error to
+    stderr and returns None so serve falls back to the default; the
+    operator can then either fix the YAML or pass --pii-block
+    explicitly to override.
+
+    Lives at module level so the test surface can exercise it
+    independently of the full `_cmd_serve` startup.
+    """
+    from schemabrain.pii.categories import PIICategory  # noqa: F401 — used in return type
+    from schemabrain.pii.policy_yaml import (
+        PolicyYamlError,
+        parse_policy_yaml_file,
+    )
+
+    if not policy_path:
+        return None
+    path = Path(policy_path).expanduser()
+    if not path.exists():
+        return None
+    try:
+        policy = parse_policy_yaml_file(path)
+    except PolicyYamlError as exc:
+        print(
+            f"schemabrain serve: cannot parse {policy_path}: {exc}. "
+            f"Falling back to default; pass --pii-block to override "
+            f"or fix the YAML and restart.",
+            file=sys.stderr,
+        )
+        return None
+    return policy.block
+
+
 def _cmd_serve(
     *,
     positional_url: str | None,
@@ -3054,6 +3330,7 @@ def _cmd_serve(
     no_events: bool = False,
     no_audit: bool = False,
     pii_block_csv: str | None = None,
+    policy_path: str | None = None,
     statement_timeout_ms: int | None = None,
     max_rows_per_result: int | None = None,
 ) -> int:
@@ -3102,13 +3379,23 @@ def _cmd_serve(
     # remain a distinguishable escape hatch from "no flag passed".
     pii_block: frozenset[PIICategory]
     if pii_block_csv is None:
-        pii_block = CATASTROPHIC_LEAK_CATEGORIES
-        print(
-            "schemabrain serve: --pii-block not passed; defaulting to "
-            f"{','.join(sorted(CATASTROPHIC_LEAK_CATEGORIES))} "
-            "(use --pii-block '' to disable, --pii-block <csv> to override).",
-            file=sys.stderr,
-        )
+        yaml_block = _try_load_policy_yaml_block(policy_path)
+        if yaml_block is not None:
+            pii_block = yaml_block
+            print(
+                f"schemabrain serve: --pii-block read from "
+                f"{policy_path}: "
+                f"{','.join(sorted(yaml_block)) if yaml_block else '(empty — enforcement off)'}.",
+                file=sys.stderr,
+            )
+        else:
+            pii_block = CATASTROPHIC_LEAK_CATEGORIES
+            print(
+                "schemabrain serve: --pii-block not passed; defaulting to "
+                f"{','.join(sorted(CATASTROPHIC_LEAK_CATEGORIES))} "
+                "(use --pii-block '' to disable, --pii-block <csv> to override).",
+                file=sys.stderr,
+            )
     elif pii_block_csv == "":
         pii_block = frozenset()
         print(
@@ -3308,6 +3595,408 @@ def _cmd_serve(
         return 2
     finally:
         engine.dispose()
+    return 0
+
+
+def _resolve_single_source_id(
+    store: SQLiteStore,
+    *,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+) -> tuple[str | None, int]:
+    """Resolve the operator's source_id, or auto-pick a single source.
+
+    Three outcomes:
+      - Explicit --source/--url-env: parses, validates, returns the
+        canonical id (`make_source_id`).
+      - Neither flag passed AND exactly one source in the store:
+        auto-pick. Lets `policy show` work in the common single-source
+        project without requiring the operator to retype a URL they
+        already indexed.
+      - Neither flag passed AND zero/multiple sources: error out with
+        a clear remediation hint.
+
+    Returns `(source_id, exit_code)`. exit_code 0 = success;
+    2 = malformed / ambiguous; 1 = no sources.
+
+    Mirrors `_resolve_source_id_or_walk`'s shape but is stricter —
+    the policy commands act against a single source and would
+    silently break if walked across multiple.
+    """
+    if positional_url is not None or url_env is not None:
+        source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
+        if source_url is None:
+            return None, 2
+        if _resolve_url(source_url) is None:  # pragma: no cover — defensive
+            return None, 2
+        return _make_source_id(source_url), 0
+    source_ids = store.list_distinct_source_connection_ids()
+    if not source_ids:
+        print(
+            f"error: no indexed sources in {store_path!r}. Run `schemabrain index` first.",
+            file=sys.stderr,
+        )
+        return None, 1
+    if len(source_ids) > 1:
+        print(
+            f"error: {len(source_ids)} sources indexed in {store_path!r}; "
+            f"pass --source or --url-env to pick one.\n"
+            f"  available: {', '.join(source_ids)}",
+            file=sys.stderr,
+        )
+        return None, 2
+    return source_ids[0], 0
+
+
+def _cmd_policy_show(
+    *,
+    store_path: str,
+    policy_path: str | None,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """Print the active PII policy: block set + per-column tag listing.
+
+    Resolves the active block from `policy_path` if present (matches
+    what `serve` would do at startup with no `--pii-block` flag),
+    else falls back to the catastrophic-leak default. Reads per-column
+    tags from the store and renders them grouped by qualified table,
+    with origin (heuristic / operator) annotated.
+    """
+    from schemabrain.pii.categories import (
+        CATASTROPHIC_LEAK_CATEGORIES,
+    )
+
+    with SQLiteStore(store_path) as store:
+        source_id, rc = _resolve_single_source_id(
+            store,
+            positional_url=positional_url,
+            url_env=url_env,
+            store_path=store_path,
+        )
+        if rc:
+            return rc
+        # `source_id is None` only happens when rc != 0; the type
+        # checker doesn't narrow through the helper so re-assert.
+        assert (
+            source_id is not None
+        )  # pragma: no cover — defensive; rc gate above caught all None paths
+
+        yaml_block = _try_load_policy_yaml_block(policy_path)
+        if yaml_block is not None:
+            block_source = f"yaml ({policy_path})"
+            active_block = yaml_block
+        else:
+            block_source = "catastrophic-leak default"
+            active_block = CATASTROPHIC_LEAK_CATEGORIES
+
+        rows = store.list_column_pii_tags_with_origin(source_connection_id=source_id)
+
+    print(f"source:        {source_id}")
+    print(f"policy_path:   {policy_path}")
+    print(f"block source:  {block_source}")
+    print(
+        f"active block:  "
+        f"{','.join(sorted(active_block)) if active_block else '(empty — enforcement off)'}"
+    )
+    print(
+        f"catastrophic floor (always-on for describe_*): "
+        f"{','.join(sorted(CATASTROPHIC_LEAK_CATEGORIES))}"
+    )
+    print()
+    if not rows:
+        print(
+            "no PII tags recorded for this source.\n"
+            "  next: run `schemabrain index` to populate classifier tags."
+        )
+        return 0
+    print(f"per-column tags ({len(rows)} rows):")
+    print()
+    current_table: str | None = None
+    for qt, col, sens, cats, origin in rows:
+        if qt != current_table:
+            print(f"  {qt}")
+            current_table = qt
+        cat_str = ",".join(sorted(cats)) if cats else "-"
+        # Effective block check: would the active block refuse this
+        # column? `describe_entity` always unions with catastrophic;
+        # `get_metric` uses operator block only. Show both.
+        effective_for_get_metric = bool(cats & active_block)
+        effective_for_describe = bool(cats & (active_block | CATASTROPHIC_LEAK_CATEGORIES))
+        if effective_for_get_metric:
+            verdict = "blocked"
+        elif effective_for_describe:
+            verdict = "describe-blocked"
+        else:
+            verdict = "allowed"
+        marker = "*" if origin == "operator" else " "
+        print(f"    {marker} {col:30s} {sens:13s} {cat_str:30s} {origin:9s} {verdict}")
+    print()
+    print("legend: `*` = operator override · verdict columns are advisory")
+    return 0
+
+
+def _cmd_policy_apply(
+    *,
+    yaml_path: str,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """Load a pii_policy.yaml file and persist column_overrides to the store.
+
+    The `block` field is NOT persisted — `serve` reads it directly
+    from the YAML at startup. Only the per-column overrides need
+    store-side persistence because `get_metric` reads tags from the
+    store during query resolution.
+
+    Refuses cleanly on parse error; prints a one-line confirmation
+    of what was written on success.
+    """
+    from schemabrain.pii.policy_yaml import PolicyYamlError, parse_policy_yaml_file
+
+    try:
+        policy = parse_policy_yaml_file(Path(yaml_path).expanduser())
+    except FileNotFoundError:
+        print(
+            f"error: pii_policy YAML not found at {yaml_path!r}.\n"
+            f"  next: create the file, or pass a different path. "
+            f"Example shape:\n"
+            f"    version: 1\n"
+            f"    block:\n"
+            f"      - credential\n"
+            f"      - payment_card\n"
+            f"      - government_id\n",
+            file=sys.stderr,
+        )
+        return 2
+    except IsADirectoryError:
+        print(
+            f"error: {yaml_path!r} is a directory; expected a YAML file path",
+            file=sys.stderr,
+        )
+        return 2
+    except PolicyYamlError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    with SQLiteStore(store_path) as store:
+        source_id, rc = _resolve_single_source_id(
+            store,
+            positional_url=positional_url,
+            url_env=url_env,
+            store_path=store_path,
+        )
+        if rc:
+            return rc
+        assert (
+            source_id is not None
+        )  # pragma: no cover — defensive; rc gate above caught all None paths
+
+        for override in policy.column_overrides:
+            store.upsert_column_pii_tag_override(
+                source_connection_id=source_id,
+                qualified_table=override.qualified_table,
+                column_name=override.column_name,
+                sensitivity=override.sensitivity,
+                categories=override.categories,
+            )
+
+    print(
+        f"applied {yaml_path}: block={','.join(sorted(policy.block)) or '(empty)'}; "
+        f"{len(policy.column_overrides)} column override(s) "
+        f"persisted to {store_path} for source {source_id}."
+    )
+    if policy.column_overrides:
+        print("  block set lives in YAML; `serve` reads it at startup.")
+    return 0
+
+
+def _split_qualified_column(value: str) -> tuple[str, str, str] | None:
+    """Validate `schema.table.column` shape; return parts or None."""
+    parts = value.split(".")
+    if len(parts) != 3:
+        return None
+    schema, table, column = parts
+    if not (schema and table and column):
+        return None
+    return schema, table, column
+
+
+def _cmd_policy_tag_override(
+    *,
+    qualified_column: str,
+    sensitivity: str,
+    categories_csv: str,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """Upsert one operator-asserted PII tag override for a column."""
+    from typing import cast as _cast
+
+    from schemabrain.pii.categories import PII_CATEGORIES, PIICategory, Sensitivity
+    from schemabrain.pii.policy import ColumnOverride
+
+    parts = _split_qualified_column(qualified_column)
+    if parts is None:
+        print(
+            f"error: qualified_column must be `schema.table.column` "
+            f"(three identifier-shaped parts joined by dots); got "
+            f"{qualified_column!r}",
+            file=sys.stderr,
+        )
+        return 2
+    schema, table, column = parts
+
+    if categories_csv:
+        requested = frozenset(c.strip() for c in categories_csv.split(",") if c.strip())
+    else:
+        requested = frozenset()
+    unknown = requested - PII_CATEGORIES
+    if unknown:
+        print(
+            f"error: --categories contains unknown values: {sorted(unknown)}.\n"
+            f"  valid: {sorted(PII_CATEGORIES)}",
+            file=sys.stderr,
+        )
+        return 2
+    typed_categories = _cast(frozenset[PIICategory], requested)
+    typed_sensitivity = _cast(Sensitivity, sensitivity)
+
+    # Validate via the dataclass to share the qualified-column shape
+    # check with the YAML path (so CLI + YAML errors stay symmetric).
+    try:
+        ColumnOverride(
+            qualified_column=qualified_column,
+            sensitivity=typed_sensitivity,
+            categories=typed_categories,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    with SQLiteStore(store_path) as store:
+        source_id, rc = _resolve_single_source_id(
+            store,
+            positional_url=positional_url,
+            url_env=url_env,
+            store_path=store_path,
+        )
+        if rc:
+            return rc
+        assert (
+            source_id is not None
+        )  # pragma: no cover — defensive; rc gate above caught all None paths
+
+        store.upsert_column_pii_tag_override(
+            source_connection_id=source_id,
+            qualified_table=f"{schema}.{table}",
+            column_name=column,
+            sensitivity=typed_sensitivity,
+            categories=typed_categories,
+        )
+
+    cat_str = ",".join(sorted(typed_categories)) if typed_categories else "(empty)"
+    print(
+        f"override written: {qualified_column} -> "
+        f"sensitivity={typed_sensitivity}, categories={cat_str} "
+        f"(origin=operator)"
+    )
+    return 0
+
+
+def _cmd_policy_tag_clear(
+    *,
+    qualified_column: str,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """Delete an operator-asserted PII tag override for one column."""
+    parts = _split_qualified_column(qualified_column)
+    if parts is None:
+        print(
+            f"error: qualified_column must be `schema.table.column`; got {qualified_column!r}",
+            file=sys.stderr,
+        )
+        return 2
+    schema, table, column = parts
+
+    with SQLiteStore(store_path) as store:
+        source_id, rc = _resolve_single_source_id(
+            store,
+            positional_url=positional_url,
+            url_env=url_env,
+            store_path=store_path,
+        )
+        if rc:
+            return rc
+        assert (
+            source_id is not None
+        )  # pragma: no cover — defensive; rc gate above caught all None paths
+
+        deleted = store.delete_column_pii_tag_override(
+            source_connection_id=source_id,
+            qualified_table=f"{schema}.{table}",
+            column_name=column,
+        )
+
+    if deleted:
+        print(
+            f"override cleared: {qualified_column}. Next `schemabrain index` "
+            f"run will re-classify the column from the heuristic rules."
+        )
+        return 0
+    print(
+        f"no operator override found for {qualified_column}; nothing to clear.\n"
+        f"  (heuristic rows are not affected by `policy tag clear` — that's by design.)",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _cmd_policy_tag_list(
+    *,
+    origin: str | None,
+    store_path: str,
+    positional_url: str | None,
+    url_env: str | None,
+) -> int:
+    """List PII tag rows with provenance."""
+    with SQLiteStore(store_path) as store:
+        source_id, rc = _resolve_single_source_id(
+            store,
+            positional_url=positional_url,
+            url_env=url_env,
+            store_path=store_path,
+        )
+        if rc:
+            return rc
+        assert (
+            source_id is not None
+        )  # pragma: no cover — defensive; rc gate above caught all None paths
+
+        rows = store.list_column_pii_tags_with_origin(
+            source_connection_id=source_id,
+            origin=origin,
+        )
+
+    if not rows:
+        if origin:
+            print(f"no {origin} PII tags for source {source_id}.")
+        else:
+            print(f"no PII tags for source {source_id}.")
+        return 0
+    print(f"source: {source_id} ({len(rows)} tag(s))")
+    print()
+    print(f"  {'qualified_column':50s} {'sensitivity':13s} {'categories':30s} origin")
+    print(f"  {'-' * 50} {'-' * 13} {'-' * 30} {'-' * 9}")
+    for qt, col, sens, cats, row_origin in rows:
+        cat_str = ",".join(sorted(cats)) if cats else "-"
+        qualified = f"{qt}.{col}"
+        print(f"  {qualified:50s} {sens:13s} {cat_str:30s} {row_origin}")
     return 0
 
 
@@ -6583,8 +7272,37 @@ def _emit_yaml_projection(
         )
         if rc != 0:
             return rc
+
+    # Seed pii_policy.yaml at the project root (not under a subdir)
+    # alongside entities/ metrics/ joins/. Mirrors dbt's `selectors.yml`
+    # layout — top-level, one-file-per-project. The starter file
+    # carries the catastrophic-leak defaults so the operator's first
+    # view shows what's actually enforced (avoids "what does --pii-block
+    # do without a flag?" being a source-code question). Refuses to
+    # overwrite an existing file so a re-run of `init --emit-yaml-dir`
+    # against a directory the operator has hand-edited stays safe.
+    from schemabrain.pii.categories import CATASTROPHIC_LEAK_CATEGORIES
+    from schemabrain.pii.policy import Policy
+    from schemabrain.pii.policy_yaml import policy_to_yaml
+
+    policy_path = base / "pii_policy.yaml"
+    if policy_path.exists():
+        print(
+            f"emit: skipped {policy_path} (already exists; hand-edits preserved)",
+            file=sys.stderr,
+        )
+    else:
+        starter = Policy(
+            block=CATASTROPHIC_LEAK_CATEGORIES,
+            description="Edit `block` to change the categories the firewall refuses.\n"
+            "`column_overrides` lets operators downgrade over-tagged columns\n"
+            "(e.g. card_number_last4 per PCI-DSS Q&A — declare it `internal`\n"
+            "with empty categories to allow analytics on it).",
+        )
+        policy_path.write_text(policy_to_yaml(starter) + "\n", encoding="utf-8")
+
     print(
-        f"emitted YAML projection under {base}/ (entities/, metrics/, joins/)",
+        f"emitted YAML projection under {base}/ (entities/, metrics/, joins/, pii_policy.yaml)",
         file=sys.stderr,
     )
     return 0
@@ -6656,6 +7374,25 @@ def _cmd_apply_project(
         summary_lines.append(f"  {subdir_name}/: {verb} {len(yaml_files)} file(s) (rc={rc})")
         if rc > overall_rc:
             overall_rc = rc
+
+    # pii_policy.yaml is a single file at the project root (not under
+    # a subdirectory). Pick it up alongside the entity/metric/join
+    # subdirs so a single `schemabrain apply ./schemabrain` covers
+    # every YAML artefact the operator can edit.
+    policy_file = base / "pii_policy.yaml"
+    if policy_file.exists():
+        rc = _cmd_policy_apply(
+            yaml_path=str(policy_file),
+            store_path=store_path,
+            positional_url=positional_url,
+            url_env=url_env,
+        )
+        verb = "applied" if rc == 0 else "applied with errors"
+        summary_lines.append(f"  pii_policy.yaml: {verb} (rc={rc})")
+        if rc > overall_rc:
+            overall_rc = rc
+    else:
+        summary_lines.append("  pii_policy.yaml: skipped (file missing)")
 
     print(f"schemabrain apply: {base}/")
     for line in summary_lines:

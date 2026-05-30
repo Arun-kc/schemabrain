@@ -148,6 +148,7 @@ def create_sidecar(config: SidecarConfig) -> FastAPI:
     _register_meta_route(app, config)
     _register_entity_routes(app, config)
     _register_audit_routes(app, config)
+    _register_policy_route(app, config)
     _register_stream_route(app, config)
 
     has_static_export = STATIC_DIR.exists() and any(
@@ -589,6 +590,141 @@ def _register_audit_routes(app: FastAPI, config: SidecarConfig) -> None:
                     detail=f"refusal row {row_id} not found (or not a refused row)",
                 )
         return _serialize_refusal(row, include_envelope=True)
+
+
+def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
+    """GET /api/pii/policy — operator-editable PII enforcement state.
+
+    Returns the active block set + per-column tag listing with
+    provenance. Mirrors the data the CLI `policy show` renders so
+    the dashboard view and the CLI stay symmetric.
+
+    `block_source` is `"yaml"` when a pii_policy.yaml file was found
+    at the conventional path (resolved relative to the sidecar's
+    working directory), otherwise `"default"`. The active block is
+    the catastrophic-leak floor in either case when no YAML +
+    explicit `--pii-block` is passed at serve time — the sidecar
+    can't see what `--pii-block` flag the serve process was invoked
+    with, so it reports the policy that WOULD be active if serve
+    were restarted in the same working directory.
+
+    Per-column verdict: each tag row carries an `effective_enforcement`
+    field (one of `allowed` / `describe_blocked` / `blocked`) computed
+    from the column's categories intersected with (active_block | catastrophic_floor).
+    """
+    from schemabrain.core.store import SQLiteStore
+    from schemabrain.pii.categories import (
+        CATASTROPHIC_LEAK_CATEGORIES,
+        PII_CATEGORIES_ORDERED,
+        PIICategory,
+    )
+    from schemabrain.pii.policy_yaml import (
+        PolicyYamlError,
+        parse_policy_yaml_file,
+    )
+
+    _POLICY_YAML_PATH = Path("./schemabrain/pii_policy.yaml")
+
+    def _load_active_block() -> tuple[frozenset[PIICategory], str, str | None]:
+        """(active_block, source_label, error_message)."""
+        if not _POLICY_YAML_PATH.exists():
+            return CATASTROPHIC_LEAK_CATEGORIES, "default", None
+        try:
+            policy = parse_policy_yaml_file(_POLICY_YAML_PATH)
+        except PolicyYamlError as exc:
+            return CATASTROPHIC_LEAK_CATEGORIES, "default", str(exc)
+        return policy.block, "yaml", None
+
+    @app.get("/api/pii/policy")
+    def policy_route(source_connection_id: str | None = None) -> dict[str, Any]:
+        active_block, block_source, yaml_error = _load_active_block()
+        effective_block = active_block | CATASTROPHIC_LEAK_CATEGORIES
+
+        with SQLiteStore(config.store_path) as store:
+            resolved_source = _resolve_source(store, config, source_connection_id)
+            rows = store.list_column_pii_tags_with_origin(source_connection_id=resolved_source)
+
+        # Per-category roll-up: column count + entity count + sample
+        # names + whether the active policy blocks the category. Iterated
+        # in `PII_CATEGORIES_ORDERED` so the JSON key order is stable.
+        category_columns: dict[str, list[tuple[str, str]]] = {
+            cat: [] for cat in PII_CATEGORIES_ORDERED
+        }
+        per_column: list[dict[str, Any]] = []
+        for qt, col, sens, cats, origin in rows:
+            in_metric_block = bool(cats & active_block)
+            in_describe_block = bool(cats & effective_block)
+            if in_metric_block:
+                verdict = "blocked"
+            elif in_describe_block:
+                verdict = "describe_blocked"
+            else:
+                verdict = "allowed"
+            per_column.append(
+                {
+                    "qualified_table": qt,
+                    "column_name": col,
+                    "qualified_column": f"{qt}.{col}",
+                    "sensitivity": sens,
+                    "categories": sorted(cats),
+                    "origin": origin,
+                    "effective_enforcement": verdict,
+                }
+            )
+            for cat in cats:
+                if (
+                    cat in category_columns
+                ):  # pragma: no branch — cats is frozenset[PIICategory], same enum as category_columns keys
+                    category_columns[cat].append((qt, col))
+
+        category_rollup = []
+        for cat in PII_CATEGORIES_ORDERED:
+            cols = category_columns[cat]
+            entities = sorted({qt for qt, _col in cols})
+            samples = [f"{qt}.{col}" for qt, col in cols[:3]]
+            category_rollup.append(
+                {
+                    "category": cat,
+                    "column_count": len(cols),
+                    "entity_count": len(entities),
+                    "sample_columns": samples,
+                    "blocked_by_active_policy": cat in active_block,
+                    "blocked_by_catastrophic_floor": cat in CATASTROPHIC_LEAK_CATEGORIES,
+                }
+            )
+
+        # Diff preview: how many columns would each posture change?
+        # "all" (every PIICategory blocks); "catastrophic_only" (just
+        # the floor); "none" (empty block, but describe still uses
+        # the floor). Computed from per-column intersections so the
+        # operator sees the concrete impact of switching postures.
+        all_block: frozenset[PIICategory] = frozenset(PII_CATEGORIES_ORDERED)
+        current_blocked = sum(
+            1 for entry in per_column if entry["effective_enforcement"] == "blocked"
+        )
+        diff_preview = {
+            "current_blocked": current_blocked,
+            "if_all_blocked": sum(
+                1 for entry in per_column if set(entry["categories"]) & all_block
+            ),
+            "if_catastrophic_only": sum(
+                1 for entry in per_column if set(entry["categories"]) & CATASTROPHIC_LEAK_CATEGORIES
+            ),
+            "if_none_blocked": 0,
+        }
+
+        return {
+            "source_connection_id": resolved_source,
+            "policy_path": str(_POLICY_YAML_PATH),
+            "block_source": block_source,
+            "active_block": sorted(active_block),
+            "catastrophic_floor": sorted(CATASTROPHIC_LEAK_CATEGORIES),
+            "effective_block_for_describe": sorted(effective_block),
+            "category_rollup": category_rollup,
+            "per_column": per_column,
+            "diff_preview": diff_preview,
+            "yaml_parse_error": yaml_error,
+        }
 
 
 def _register_stream_route(app: FastAPI, config: SidecarConfig) -> None:

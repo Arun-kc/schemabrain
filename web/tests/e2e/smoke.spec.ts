@@ -72,12 +72,14 @@ test.describe("dashboard E2E smoke", () => {
     await expect(page.getByText("catastrophic exposure", { exact: true })).toBeVisible();
 
     // The matrix must list at least one entity from the fixture.
-    // Anchor on the qualified table name (`public.users`) — it's
-    // unique to the data layer and unambiguous about which row is
-    // present. Each matrix cell renders the entity name + qualified
-    // table on two lines, so an `exact: "user"` role lookup misses;
-    // a substring on the qualified name doesn't.
-    await expect(page.getByText("public.users")).toBeVisible();
+    // Anchor on the qualified table name (`public.users`) inside the
+    // matrix label so the assertion stays scoped to the Ledger pane
+    // even after PolicyView (which also renders the qualified-column
+    // strings in its rollup samples + per-column rows) lands on the
+    // same surface. Without the scope, strict-mode fires.
+    await expect(
+      page.getByLabel("pii ledger matrix").getByText("public.users"),
+    ).toBeVisible();
 
     await page.screenshot({ path: "test-results/02-pii.png", fullPage: true });
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);

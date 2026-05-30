@@ -10,6 +10,7 @@ import type {
   Meta,
   PaginatedAuditResponse,
   PiiMatrixResponse,
+  PolicyResponse,
   RefusalEntry,
 } from "@/lib/types";
 
@@ -57,6 +58,11 @@ export const api = {
   piiMatrix: (sourceId?: string) => {
     const qs = sourceId ? `?source_connection_id=${encodeURIComponent(sourceId)}` : "";
     return getJson<PiiMatrixResponse>(`/api/entities/pii-matrix${qs}`);
+  },
+
+  piiPolicy: (sourceId?: string) => {
+    const qs = sourceId ? `?source_connection_id=${encodeURIComponent(sourceId)}` : "";
+    return getJson<PolicyResponse>(`/api/pii/policy${qs}`);
   },
 
   auditRows: (params?: { limit?: number; offset?: number; status?: string }) => {

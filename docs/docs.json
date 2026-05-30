@@ -178,6 +178,7 @@
             "pages": [
               "security",
               "threat-model",
+              "pii-policy",
               "operations",
               "observability",
               "reliability"
