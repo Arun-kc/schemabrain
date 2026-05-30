@@ -1089,6 +1089,140 @@ class TestMinMaxOverPiiColumnRefused:
             store.close()
 
 
+# ----- LB-1: catastrophic-leak floor enforced on the aggregate path -----------
+
+
+class TestCatastrophicFloorEnforcedOnAggregatePath:
+    """LB-1 (firewall E2E audit 2026-05-30): the catastrophic-leak floor
+    (credential / payment_card / government_id) is enforced at the
+    `describe_*` metadata gate (``pii_block | CATASTROPHIC_LEAK_CATEGORIES``)
+    but was NOT applied on the ``get_metric`` aggregate gate, which
+    intersected against the raw ``pii_block`` policy only.
+
+    That gap let a tagged catastrophic column flow through aggregates as
+    row-level disclosure (group_by labels, etc.) whenever the operator's
+    policy omitted the floor category — reachable via:
+      - a ``pii_policy.yaml`` ``block: [contact]`` that strips the floor,
+      - the ``build_server(pii_block=frozenset())`` library default (SF-005).
+
+    The fix unions the floor into the effective block at the aggregate
+    gate, mirroring ``describe_column.py`` / ``describe_table.py``. The
+    floor is always-on by contract; ``--pii-block`` only widens it.
+    """
+
+    def test_credential_group_by_refused_when_policy_omits_floor(self, tmp_path: Path) -> None:
+        # The exact PR #155 operator workflow: a YAML `block: [contact]`
+        # strips the floor. A group_by on a credential-tagged column
+        # would surface each distinct hash as a result-row label.
+        store = SQLiteStore(tmp_path / "sb.db")
+        try:
+            _seed_table_and_entity(store)
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                tags={"email": ("pii", frozenset({"credential"}))},
+            )
+            _write_metric(store, name="amount_sum", column="amount", agg="sum")
+            executor = _FakeExecutor()
+            with pytest.raises(PiiBlockedError) as exc_info:
+                get_metric_impl(
+                    store=store,
+                    executor=executor,
+                    source_connection_id=SRC,
+                    name="amount_sum",
+                    group_by=("user.email",),
+                    # Floor category `credential` deliberately ABSENT —
+                    # simulating the stripped policy. Pre-fix this let
+                    # the credential group_by labels through.
+                    pii_block=frozenset({"contact"}),  # type: ignore[arg-type]
+                )
+            assert "credential" in exc_info.value.blocked_categories
+            assert executor.execute_calls == []
+        finally:
+            store.close()
+
+    def test_credential_count_refused_under_empty_policy_default(self, tmp_path: Path) -> None:
+        # SF-005: build_server(pii_block=frozenset()) is the library
+        # default. The floor must still pin a credential column even
+        # with a fully empty operator policy.
+        store = SQLiteStore(tmp_path / "sb.db")
+        try:
+            _seed_table_and_entity(store)
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                tags={"email": ("pii", frozenset({"credential"}))},
+            )
+            _write_metric(store, name="email_count", column="email", agg="count")
+            executor = _FakeExecutor()
+            with pytest.raises(PiiBlockedError) as exc_info:
+                get_metric_impl(
+                    store=store,
+                    executor=executor,
+                    source_connection_id=SRC,
+                    name="email_count",
+                    # No pii_block — the empty-policy default.
+                )
+            assert "credential" in exc_info.value.blocked_categories
+            assert executor.execute_calls == []
+        finally:
+            store.close()
+
+    def test_payment_card_group_by_refused_when_policy_disjoint(self, tmp_path: Path) -> None:
+        store = SQLiteStore(tmp_path / "sb.db")
+        try:
+            _seed_table_and_entity(store)
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                tags={"email": ("pii", frozenset({"payment_card"}))},
+            )
+            _write_metric(store, name="amount_sum", column="amount", agg="sum")
+            executor = _FakeExecutor()
+            with pytest.raises(PiiBlockedError) as exc_info:
+                get_metric_impl(
+                    store=store,
+                    executor=executor,
+                    source_connection_id=SRC,
+                    name="amount_sum",
+                    group_by=("user.email",),
+                    pii_block=frozenset({"health"}),  # type: ignore[arg-type]
+                )
+            assert "payment_card" in exc_info.value.blocked_categories
+            assert executor.execute_calls == []
+        finally:
+            store.close()
+
+    def test_non_catastrophic_category_still_passes_under_disjoint_policy(
+        self, tmp_path: Path
+    ) -> None:
+        # Regression guard: the floor union must NOT over-block. A
+        # `contact`-tagged column under a disjoint policy still passes —
+        # only the three catastrophic categories are floored.
+        store = SQLiteStore(tmp_path / "sb.db")
+        try:
+            _seed_table_and_entity(store)
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                tags={"email": ("pii", frozenset({"contact"}))},
+            )
+            _write_metric(store, name="amount_sum", column="amount", agg="sum")
+            executor = _FakeExecutor()
+            result = get_metric_impl(
+                store=store,
+                executor=executor,
+                source_connection_id=SRC,
+                name="amount_sum",
+                group_by=("user.email",),
+                pii_block=frozenset({"financial"}),  # type: ignore[arg-type]
+            )
+            assert result.pii_categories == ("contact",)
+            assert len(executor.execute_calls) == 1
+        finally:
+            store.close()
+
+
 # ----- SF-002: fail-closed when policy is on but tag data is missing ----------
 
 

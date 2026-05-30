@@ -1174,4 +1174,14 @@ class TestServeReadsPolicyYaml:
             )
 
         assert rc == 0
-        assert captured["pii_block"] == frozenset({"contact", "location"})
+        # LB-1 (firewall E2E audit 2026-05-30): the catastrophic-leak
+        # floor is always-on and CANNOT be dropped via pii_policy.yaml.
+        # The resolved policy unions the operator's `block:` set with the
+        # floor, so a YAML that omits a floor category cannot strip it.
+        # Pre-fix this asserted `{contact, location}` verbatim — the
+        # exact bypass the audit flagged.
+        from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES
+
+        assert captured["pii_block"] == (
+            frozenset({"contact", "location"}) | CATASTROPHIC_LEAK_CATEGORIES
+        )
