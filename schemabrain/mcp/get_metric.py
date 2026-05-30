@@ -45,7 +45,12 @@ from schemabrain.mcp._helpers import _with_token_estimate
 from schemabrain.mcp.envelope import derive_confidence
 from schemabrain.mcp.metric_executor import MetricExecutor
 from schemabrain.mcp.shapes import MetricFilterArg, MetricOrderByArg, MetricResult
-from schemabrain.pii import PIICategory, Sensitivity, propagate
+from schemabrain.pii import (
+    CATASTROPHIC_LEAK_CATEGORIES,
+    PIICategory,
+    Sensitivity,
+    propagate,
+)
 from schemabrain.semantic.compiler import (
     InvalidTimeGrainError,
     MalformedColumnError,
@@ -408,27 +413,38 @@ def _resolve_pii_categories(
 
     _, propagated = propagate(per_column)
 
-    if pii_block:
-        blocked = propagated & pii_block
-        if blocked:
-            attempted_tuple = cast(tuple[PIICategory, ...], tuple(sorted(propagated)))
-            blocked_tuple = cast(tuple[PIICategory, ...], tuple(sorted(blocked)))
-            # Message references `blocked_tuple` — the policy
-            # intersection that actually triggered refusal — not
-            # `attempted_tuple` (the full propagated set). Surfacing
-            # `attempted` to the agent would be a probe oracle: an
-            # adversarial agent could iterate `get_metric` calls with
-            # different `group_by` columns and reconstruct the full
-            # PII tagging in O(columns) calls without ever calling
-            # `describe_entity`. `attempted_tuple` stays in the audit
-            # row (operator-visible) via the `PiiBlockedError` field.
-            raise PiiBlockedError(
-                f"get_metric refused: metric touches PII categories "
-                f"{list(blocked_tuple)} that this server policy blocks",
-                attempted_categories=attempted_tuple,
-                blocked_categories=blocked_tuple,
-                anchor_entity=plan.metric.entity,
-            )
+    # The catastrophic-leak floor (credential / payment_card /
+    # government_id) is enforced at EVERY gate, not just `describe_*`.
+    # `describe_column.py` / `describe_table.py` already intersect
+    # against `pii_block | CATASTROPHIC_LEAK_CATEGORIES`; this gate must
+    # match. Without the union, an operator policy that omits a floor
+    # category — a `pii_policy.yaml` `block: [contact]` that strips the
+    # floor, or the `build_server(pii_block=frozenset())` library
+    # default — would let a tagged credential/PAN/SSN column flow
+    # through aggregates (group_by labels are row-level disclosure). The
+    # floor is always-on by contract; `--pii-block` only widens it, so
+    # `--pii-block ''` cannot disable it here (matching `describe_*`).
+    effective_block = pii_block | CATASTROPHIC_LEAK_CATEGORIES
+    blocked = propagated & effective_block
+    if blocked:
+        attempted_tuple = cast(tuple[PIICategory, ...], tuple(sorted(propagated)))
+        blocked_tuple = cast(tuple[PIICategory, ...], tuple(sorted(blocked)))
+        # Message references `blocked_tuple` — the policy
+        # intersection that actually triggered refusal — not
+        # `attempted_tuple` (the full propagated set). Surfacing
+        # `attempted` to the agent would be a probe oracle: an
+        # adversarial agent could iterate `get_metric` calls with
+        # different `group_by` columns and reconstruct the full
+        # PII tagging in O(columns) calls without ever calling
+        # `describe_entity`. `attempted_tuple` stays in the audit
+        # row (operator-visible) via the `PiiBlockedError` field.
+        raise PiiBlockedError(
+            f"get_metric refused: metric touches PII categories "
+            f"{list(blocked_tuple)} that this server policy blocks",
+            attempted_categories=attempted_tuple,
+            blocked_categories=blocked_tuple,
+            anchor_entity=plan.metric.entity,
+        )
 
     return cast(tuple[PIICategory, ...], tuple(sorted(propagated)))
 

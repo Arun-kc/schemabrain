@@ -3381,11 +3381,19 @@ def _cmd_serve(
     if pii_block_csv is None:
         yaml_block = _try_load_policy_yaml_block(policy_path)
         if yaml_block is not None:
-            pii_block = yaml_block
+            # The catastrophic-leak floor is always-on and CANNOT be
+            # dropped via pii_policy.yaml — only the explicit
+            # `--pii-block ''` CLI escape hatch disables enforcement.
+            # Union the floor so the resolved policy (and the startup
+            # message) honestly reflect what the firewall enforces at
+            # every gate. A YAML `block: []` is "floor only", NOT
+            # "enforcement off" — the prior message lied about that.
+            pii_block = yaml_block | CATASTROPHIC_LEAK_CATEGORIES
             print(
                 f"schemabrain serve: --pii-block read from "
                 f"{policy_path}: "
-                f"{','.join(sorted(yaml_block)) if yaml_block else '(empty — enforcement off)'}.",
+                f"{','.join(sorted(pii_block))} "
+                f"(includes always-on catastrophic-leak floor).",
                 file=sys.stderr,
             )
         else:
