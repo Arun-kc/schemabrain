@@ -556,6 +556,517 @@ class TestPolicyTagList:
         assert "no PII tags" in out
 
 
+# ---- coverage close-out tests (per-branch targeting) ------------------
+#
+# The handlers each have a `_resolve_single_source_id` gate up front;
+# the no-source branch is shared. One test per handler exercises that
+# return path so the branch is observably covered for each surface.
+# Smaller error-path branches (describe-blocked verdict, operator
+# marker, sensitivity validation, origin-filter empty result, apply's
+# overrides-trailer print) are covered here too.
+
+
+def _seed_empty_store(path: Path) -> None:
+    """A store with the schema initialised but no indexed sources."""
+    store = SQLiteStore(path)
+    store.close()
+
+
+def _seed_store_with_credential_tag(path: Path) -> None:
+    """Seed a column tagged with `credential` (catastrophic floor) so
+    the show-verdict path can return `describe-blocked` when the active
+    block is something OTHER than credential."""
+    store = SQLiteStore(path)
+    try:
+        store.write_table(
+            Table(
+                name="sessions",
+                schema_name="public",
+                columns=(
+                    Column(
+                        name="id",
+                        table_name="sessions",
+                        schema_name="public",
+                        data_type="BIGINT",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                    Column(
+                        name="token",
+                        table_name="sessions",
+                        schema_name="public",
+                        data_type="TEXT",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                ),
+            ),
+            source_connection_id=SRC,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=SRC,
+            qualified_table="public.sessions",
+            tags={"token": ("pii", frozenset({"credential"}))},
+        )
+    finally:
+        store.close()
+
+
+class TestPolicyHandlerNoSource:
+    """Each handler's no-source branch — store schema exists but no
+    `schemabrain index` has been run yet against any source."""
+
+    def test_tag_override_returns_1_when_no_source(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        store_path = tmp_path / "sb.db"
+        _seed_empty_store(store_path)
+        rc = _cmd_policy_tag_override(
+            qualified_column="public.users.email",
+            sensitivity="internal",
+            categories_csv="",
+            store_path=str(store_path),
+            positional_url=None,
+            url_env=None,
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "no indexed sources" in err
+
+    def test_apply_returns_1_when_no_source(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        store_path = tmp_path / "sb.db"
+        _seed_empty_store(store_path)
+        yaml_path = tmp_path / "pii_policy.yaml"
+        yaml_path.write_text("version: 1\nblock: []\n", encoding="utf-8")
+        rc = _cmd_policy_apply(
+            yaml_path=str(yaml_path),
+            store_path=str(store_path),
+            positional_url=None,
+            url_env=None,
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "no indexed sources" in err
+
+    def test_tag_clear_returns_1_when_no_source(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        store_path = tmp_path / "sb.db"
+        _seed_empty_store(store_path)
+        rc = _cmd_policy_tag_clear(
+            qualified_column="public.users.email",
+            store_path=str(store_path),
+            positional_url=None,
+            url_env=None,
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "no indexed sources" in err
+
+    def test_tag_list_returns_1_when_no_source(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        store_path = tmp_path / "sb.db"
+        _seed_empty_store(store_path)
+        rc = _cmd_policy_tag_list(
+            origin=None,
+            store_path=str(store_path),
+            positional_url=None,
+            url_env=None,
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "no indexed sources" in err
+
+
+class TestPolicyShowVerdicts:
+    def test_describe_blocked_when_only_floor_intersects(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Column tagged with `credential` (in catastrophic floor) but
+        the active block YAML restricts to `contact` only. get_metric
+        would allow it; describe_entity would refuse. Verdict surfaces
+        as `describe-blocked`."""
+        store_path = tmp_path / "sb.db"
+        _seed_store_with_credential_tag(store_path)
+        policy_path = tmp_path / "pii_policy.yaml"
+        policy_path.write_text("version: 1\nblock:\n  - contact\n", encoding="utf-8")
+        rc = _cmd_policy_show(
+            store_path=str(store_path),
+            policy_path=str(policy_path),
+            positional_url=None,
+            url_env=None,
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "describe-blocked" in out
+
+    def test_operator_marker_renders_for_overrides(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path)
+        store = SQLiteStore(store_path)
+        try:
+            store.upsert_column_pii_tag_override(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                column_name="email",
+                sensitivity="internal",
+                categories=frozenset(),
+            )
+        finally:
+            store.close()
+        rc = _cmd_policy_show(
+            store_path=str(store_path),
+            policy_path=None,
+            positional_url=None,
+            url_env=None,
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        # The operator override row is prefixed with `*`; the
+        # heuristic row is prefixed with a space. Asserting on the
+        # `*` glyph isolates the marker branch.
+        assert "*" in out
+
+
+class TestPolicyApplyTrailer:
+    def test_trailer_omitted_when_no_overrides(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Applying a YAML with an empty column_overrides skips the
+        closing YAML hint. Covers the false branch of the trailer
+        condition."""
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path)
+        yaml_path = tmp_path / "pii_policy.yaml"
+        yaml_path.write_text("version: 1\nblock:\n  - credential\n", encoding="utf-8")
+        rc = _cmd_policy_apply(
+            yaml_path=str(yaml_path),
+            store_path=str(store_path),
+            positional_url=None,
+            url_env=None,
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "0 column override(s) persisted" in out
+        assert "block set lives in YAML" not in out
+
+    def test_overrides_trailer_print_runs_when_overrides_present(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """When the applied YAML has at least one column_override,
+        the handler emits a closing hint about the YAML being the
+        canonical block source. Exercises the trailer-print branch."""
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path)
+        yaml_path = tmp_path / "pii_policy.yaml"
+        yaml_path.write_text(
+            "version: 1\nblock:\n  - credential\n"
+            "column_overrides:\n"
+            "  public.users.email:\n"
+            "    sensitivity: internal\n",
+            encoding="utf-8",
+        )
+        rc = _cmd_policy_apply(
+            yaml_path=str(yaml_path),
+            store_path=str(store_path),
+            positional_url=None,
+            url_env=None,
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "block set lives in YAML" in out
+
+
+class TestPolicyTagOverrideValidation:
+    def test_rejects_unknown_sensitivity(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An invalid `--sensitivity` value gets caught by the
+        ColumnOverride dataclass post-init before any store write."""
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path)
+        rc = _cmd_policy_tag_override(
+            qualified_column="public.users.email",
+            sensitivity="top_secret",
+            categories_csv="",
+            store_path=str(store_path),
+            positional_url=None,
+            url_env=None,
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "sensitivity" in err
+
+
+class TestPolicyTagListEmpty:
+    def test_origin_filter_with_no_matches_prints_zero_message(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A store seeded with heuristic tags only + the `--origin=operator`
+        filter returns zero rows. The handler prints the origin-tagged
+        zero message rather than the unfiltered one."""
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path)  # heuristic-only tags
+        rc = _cmd_policy_tag_list(
+            origin="operator",
+            store_path=str(store_path),
+            positional_url=None,
+            url_env=None,
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "no operator PII tags" in out
+
+
+class TestPolicyShowIteration:
+    def test_two_columns_on_same_table_share_one_header(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Two tagged columns on the same qualified_table render under
+        one table header — `current_table != qt` is true for the first
+        row and false for the second. Exercises the branch where the
+        header-print path doesn't fire on the second iteration."""
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path)
+        # Re-tag the same table with TWO entries in one call.
+        # `write_column_pii_tags` replaces all tags atomically, so a
+        # second call would wipe the first row rather than add to it.
+        store = SQLiteStore(store_path)
+        try:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                tags={
+                    "email": ("pii", frozenset({"contact"})),
+                    "id": ("internal", frozenset()),
+                },
+            )
+        finally:
+            store.close()
+        rc = _cmd_policy_show(
+            store_path=str(store_path),
+            policy_path=None,
+            positional_url=None,
+            url_env=None,
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        # The table header `public.users` should appear exactly once
+        # even though two tags reference it.
+        assert out.count("  public.users\n") == 1
+        # Both tagged column names are listed.
+        assert "email" in out and "id" in out
+
+
+class TestPolicyExplicitSourceUrl:
+    def test_rejects_empty_url_env(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A URL env var that's set but empty makes `_resolve_url_source`
+        return None; the resolver short-circuits with exit code 2
+        before any store I/O."""
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path)
+        monkeypatch.setenv("SB_TEST_URL", "")
+        rc = _cmd_policy_show(
+            store_path=str(store_path),
+            policy_path=None,
+            positional_url=None,
+            url_env="SB_TEST_URL",
+        )
+        assert rc == 2
+
+    def test_show_with_explicit_url_env(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The explicit-flag branch of `_resolve_single_source_id`:
+        operator passes a URL via env var instead of letting auto-pick
+        walk the store. The URL goes through the CLI's normalization
+        (postgresql:// → postgresql+psycopg://) before hashing into
+        the source_id, so the seed has to use the same path."""
+        from schemabrain.cli import _make_source_id, _resolve_url_source
+
+        url = "postgresql://demo:demo@127.0.0.1:5432/demo"
+        monkeypatch.setenv("SB_TEST_URL", url)
+        normalized_url = _resolve_url_source(positional=None, url_env="SB_TEST_URL")
+        assert normalized_url is not None  # type narrowing for static checkers
+        seed_source_id = _make_source_id(normalized_url)
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path, source_id=seed_source_id)
+        rc = _cmd_policy_show(
+            store_path=str(store_path),
+            policy_path=None,
+            positional_url=None,
+            url_env="SB_TEST_URL",
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "public.users" in out
+
+
+class TestDispatcherWiring:
+    """End-to-end dispatch tests: call `_dispatch` with argv instead
+    of the handler functions directly. Covers the policy/show/apply/tag
+    routing layer that wires parser output to handler calls."""
+
+    def test_policy_show_via_dispatch(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from schemabrain.cli import _dispatch
+
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path)
+        rc = _dispatch(["policy", "show", "--store-path", str(store_path)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "active block" in out
+
+    def test_policy_apply_via_dispatch(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from schemabrain.cli import _dispatch
+
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path)
+        yaml_path = tmp_path / "pii_policy.yaml"
+        yaml_path.write_text("version: 1\nblock:\n  - credential\n", encoding="utf-8")
+        rc = _dispatch(["policy", "apply", str(yaml_path), "--store-path", str(store_path)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "applied" in out
+
+    def test_policy_tag_override_via_dispatch(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from schemabrain.cli import _dispatch
+
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path)
+        rc = _dispatch(
+            [
+                "policy",
+                "tag",
+                "override",
+                "public.users.email",
+                "--sensitivity=internal",
+                "--categories=",
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "override written" in out
+
+    def test_policy_tag_clear_via_dispatch(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from schemabrain.cli import _dispatch
+
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path)
+        store = SQLiteStore(store_path)
+        try:
+            store.upsert_column_pii_tag_override(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                column_name="email",
+                sensitivity="internal",
+                categories=frozenset(),
+            )
+        finally:
+            store.close()
+        rc = _dispatch(
+            [
+                "policy",
+                "tag",
+                "clear",
+                "public.users.email",
+                "--store-path",
+                str(store_path),
+            ]
+        )
+        assert rc == 0
+
+    def test_policy_tag_list_via_dispatch(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from schemabrain.cli import _dispatch
+
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path)
+        rc = _dispatch(["policy", "tag", "list", "--store-path", str(store_path)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "public.users.email" in out
+
+
+class TestSplitQualifiedColumnEmptyParts:
+    def test_three_dots_empty_segment_rejected(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`public..email` (3 parts but middle is empty) must be
+        rejected by `_split_qualified_column`'s empty-segment branch,
+        not just the part-count branch."""
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path)
+        rc = _cmd_policy_tag_clear(
+            qualified_column="public..email",  # 3 parts, middle empty
+            store_path=str(store_path),
+            positional_url=None,
+            url_env=None,
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "qualified_column" in err
+
+
 # ---- serve --policy-path wiring (unit, no real serve) ----------------
 
 

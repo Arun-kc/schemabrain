@@ -3679,7 +3679,9 @@ def _cmd_policy_show(
             return rc
         # `source_id is None` only happens when rc != 0; the type
         # checker doesn't narrow through the helper so re-assert.
-        assert source_id is not None
+        assert (
+            source_id is not None
+        )  # pragma: no cover — defensive; rc gate above caught all None paths
 
         yaml_block = _try_load_policy_yaml_block(policy_path)
         if yaml_block is not None:
@@ -3788,7 +3790,9 @@ def _cmd_policy_apply(
         )
         if rc:
             return rc
-        assert source_id is not None
+        assert (
+            source_id is not None
+        )  # pragma: no cover — defensive; rc gate above caught all None paths
 
         for override in policy.column_overrides:
             store.upsert_column_pii_tag_override(
@@ -3882,7 +3886,9 @@ def _cmd_policy_tag_override(
         )
         if rc:
             return rc
-        assert source_id is not None
+        assert (
+            source_id is not None
+        )  # pragma: no cover — defensive; rc gate above caught all None paths
 
         store.upsert_column_pii_tag_override(
             source_connection_id=source_id,
@@ -3927,7 +3933,9 @@ def _cmd_policy_tag_clear(
         )
         if rc:
             return rc
-        assert source_id is not None
+        assert (
+            source_id is not None
+        )  # pragma: no cover — defensive; rc gate above caught all None paths
 
         deleted = store.delete_column_pii_tag_override(
             source_connection_id=source_id,
@@ -3966,7 +3974,9 @@ def _cmd_policy_tag_list(
         )
         if rc:
             return rc
-        assert source_id is not None
+        assert (
+            source_id is not None
+        )  # pragma: no cover — defensive; rc gate above caught all None paths
 
         rows = store.list_column_pii_tags_with_origin(
             source_connection_id=source_id,

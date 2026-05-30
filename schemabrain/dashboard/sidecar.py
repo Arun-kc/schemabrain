@@ -672,7 +672,9 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
                 }
             )
             for cat in cats:
-                if cat in category_columns:
+                if (
+                    cat in category_columns
+                ):  # pragma: no branch — cats is frozenset[PIICategory], same enum as category_columns keys
                     category_columns[cat].append((qt, col))
 
         category_rollup = []
