@@ -36,6 +36,41 @@ from schemabrain.pii.categories import (
     Sensitivity,
 )
 
+
+class CatastrophicDowngradeError(Exception):
+    """Raised when an operator override would strip a column's
+    catastrophic-leak protection (LB-2, firewall E2E audit 2026-05-30).
+
+    The catastrophic-leak floor (credential / payment_card /
+    government_id) is always-on by contract: a column the classifier
+    tagged with one of those categories must stay redacted unconditionally
+    across every MCP read. Because an operator override REPLACES the
+    stored row (no layering), emptying or re-categorising a catastrophic
+    column to a non-floor category would silently re-expose it. The store
+    refuses such a write unless the operator passes an explicit force flag
+    (`--force-catastrophic-downgrade`).
+    """
+
+    def __init__(
+        self,
+        *,
+        qualified_table: str,
+        column_name: str,
+        dropped_categories: frozenset[PIICategory],
+    ) -> None:
+        self.qualified_table = qualified_table
+        self.column_name = column_name
+        self.dropped_categories = dropped_categories
+        dropped = ", ".join(sorted(dropped_categories))
+        super().__init__(
+            f"refusing to downgrade {qualified_table}.{column_name}: the "
+            f"override would strip the always-on catastrophic-leak "
+            f"protection ({dropped}). Catastrophic columns stay redacted "
+            f"unconditionally. Re-run with --force-catastrophic-downgrade "
+            f"to override this safeguard (NOT recommended for production)."
+        )
+
+
 # `schema.table.column` form — three identifier-shaped parts joined by
 # dots. Matches the Postgres-flavored alphabet used elsewhere in the
 # project (`core/entity.py`, `core/metric.py`). Three dots permit

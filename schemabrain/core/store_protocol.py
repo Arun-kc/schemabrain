@@ -575,6 +575,7 @@ class Store(Protocol):  # pragma: no cover
         column_name: str,
         sensitivity: Sensitivity,
         categories: frozenset[PIICategory],
+        force_catastrophic_downgrade: bool = False,
     ) -> None:
         """Upsert one operator-asserted PII tag override (`origin='operator'`).
 
@@ -582,6 +583,11 @@ class Store(Protocol):  # pragma: no cover
         qualified_table, column_name)` key — heuristic OR operator.
         Per the schema, the primary key is the storage discriminator;
         there is no layering of heuristic + operator on the same row.
+
+        Raises `CatastrophicDowngradeError` when the override would strip
+        a column's always-on catastrophic-leak protection (credential /
+        payment_card / government_id) and `force_catastrophic_downgrade`
+        is False (LB-2 guard).
         """
         ...
 
@@ -591,6 +597,7 @@ class Store(Protocol):  # pragma: no cover
         source_connection_id: str,
         qualified_table: str,
         column_name: str,
+        force_catastrophic_downgrade: bool = False,
     ) -> bool:
         """Delete one operator-asserted PII tag override row.
 
