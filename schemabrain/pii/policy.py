@@ -83,8 +83,7 @@ class ColumnOverride:
             )
         if self.sensitivity not in SENSITIVITIES:
             raise ValueError(
-                f"sensitivity must be one of {list(SENSITIVITIES)} "
-                f"(got {self.sensitivity!r})"
+                f"sensitivity must be one of {list(SENSITIVITIES)} (got {self.sensitivity!r})"
             )
         unknown = self.categories - PII_CATEGORIES
         if unknown:

@@ -123,7 +123,7 @@ class TestParseRejectsBadStructure:
     def test_unknown_top_level_key_rejected(self) -> None:
         # Required keys present so the unknown-key check is the one
         # that fires (required-key check runs first).
-        with pytest.raises(PolicyYamlError, match="unknown.*deny"):
+        with pytest.raises(PolicyYamlError, match=r"unknown.*deny"):
             parse_policy_yaml(
                 """
                 version: 1
@@ -270,9 +270,7 @@ class TestEmitAndRoundTrip:
         # `payment_card` before `credential`. Two writes of the same
         # frozenset must produce byte-identical YAML so no-op edits
         # don't make noisy git diffs.
-        policy = Policy(
-            block=frozenset({"payment_card", "contact", "credential"})
-        )
+        policy = Policy(block=frozenset({"payment_card", "contact", "credential"}))
         text = policy_to_yaml(policy)
         contact_pos = text.index("contact")
         payment_card_pos = text.index("payment_card")

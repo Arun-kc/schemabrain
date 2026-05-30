@@ -554,6 +554,34 @@ class TestStoreProtocolSeamUsable:
             ) -> dict[str, tuple[str, frozenset[str]]]:
                 return {}
 
+            def upsert_column_pii_tag_override(
+                self,
+                *,
+                source_connection_id: str,
+                qualified_table: str,
+                column_name: str,
+                sensitivity: str,
+                categories: frozenset[str],
+            ) -> None:
+                pass
+
+            def delete_column_pii_tag_override(
+                self,
+                *,
+                source_connection_id: str,
+                qualified_table: str,
+                column_name: str,
+            ) -> bool:
+                return False
+
+            def list_column_pii_tags_with_origin(
+                self,
+                *,
+                source_connection_id: str,
+                origin: str | None = None,
+            ) -> list[tuple[str, str, str, frozenset[str], str]]:
+                return []
+
         store = _InMemoryStore()
         assert isinstance(store, Store), (
             "A minimal in-memory Store impl must satisfy the Protocol "

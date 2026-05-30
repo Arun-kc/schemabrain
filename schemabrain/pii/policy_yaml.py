@@ -90,8 +90,7 @@ def parse_policy_yaml(text: str) -> Policy:
         raise PolicyYamlError("policy YAML is empty")
     if not isinstance(data, dict):
         raise PolicyYamlError(
-            f"policy YAML must be a mapping at the top level "
-            f"(got {type(data).__name__})"
+            f"policy YAML must be a mapping at the top level (got {type(data).__name__})"
         )
 
     _check_keys(
@@ -143,15 +142,11 @@ def policy_to_yaml(policy: Policy) -> str:
         body["description"] = policy.description
     body["block"] = [c for c in PII_CATEGORIES_ORDERED if c in policy.block]
     if policy.column_overrides:
-        sorted_overrides = sorted(
-            policy.column_overrides, key=lambda o: o.qualified_column
-        )
+        sorted_overrides = sorted(policy.column_overrides, key=lambda o: o.qualified_column)
         body["column_overrides"] = {
             override.qualified_column: {
                 "sensitivity": override.sensitivity,
-                "categories": [
-                    c for c in PII_CATEGORIES_ORDERED if c in override.categories
-                ],
+                "categories": [c for c in PII_CATEGORIES_ORDERED if c in override.categories],
             }
             for override in sorted_overrides
         }
@@ -181,8 +176,7 @@ def parse_policy_yaml_file(path: Path) -> Policy:
         ) from exc
     except UnicodeDecodeError as exc:
         raise PolicyYamlError(
-            f"{path} is not a valid UTF-8 text file (policy YAML must be UTF-8): "
-            f"{exc.reason}"
+            f"{path} is not a valid UTF-8 text file (policy YAML must be UTF-8): {exc.reason}"
         ) from exc
     return parse_policy_yaml(text)
 
@@ -213,8 +207,7 @@ def _check_version(value: Any) -> None:
     # signal a hand-typed file that drifted from the grammar.
     if not isinstance(value, int) or isinstance(value, bool):
         raise PolicyYamlError(
-            f"version must be the integer 1 (got {value!r}, "
-            f"type {type(value).__name__})"
+            f"version must be the integer 1 (got {value!r}, type {type(value).__name__})"
         )
     if value != _SUPPORTED_VERSION:
         raise PolicyYamlError(
@@ -228,9 +221,7 @@ def _optional_str(data: dict[str, Any], field: str, *, default: str) -> str:
         return default
     value = data[field]
     if not isinstance(value, str):
-        raise PolicyYamlError(
-            f"{field} must be a string (got {type(value).__name__}: {value!r})"
-        )
+        raise PolicyYamlError(f"{field} must be a string (got {type(value).__name__}: {value!r})")
     return value
 
 
@@ -309,8 +300,7 @@ def _parse_column_overrides(raw: Any) -> tuple[ColumnOverride, ...]:
                 )
             if cat in category_set:
                 raise PolicyYamlError(
-                    f"column_overrides[{qualified_column!r}].categories "
-                    f"contains duplicate: {cat!r}"
+                    f"column_overrides[{qualified_column!r}].categories contains duplicate: {cat!r}"
                 )
             category_set.add(cat)
 
@@ -323,8 +313,6 @@ def _parse_column_overrides(raw: Any) -> tuple[ColumnOverride, ...]:
                 )
             )
         except ValueError as exc:
-            raise PolicyYamlError(
-                f"column_overrides[{qualified_column!r}]: {exc}"
-            ) from exc
+            raise PolicyYamlError(f"column_overrides[{qualified_column!r}]: {exc}") from exc
 
     return tuple(overrides)

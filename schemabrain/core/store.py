@@ -46,7 +46,7 @@ from schemabrain.core.metric import (
     MetricMeasure,
 )
 from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
-from schemabrain.pii.categories import ColumnPiiTag
+from schemabrain.pii.categories import ColumnPiiTag, PIICategory, Sensitivity
 
 # Re-export so existing `from schemabrain.core.store import
 # DbtOwnedEntityError` imports keep working. The exceptions now live

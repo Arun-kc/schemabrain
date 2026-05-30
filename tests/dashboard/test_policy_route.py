@@ -1,0 +1,246 @@
+"""Tests for the GET /api/pii/policy sidecar route."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import pytest
+
+from schemabrain.core.models import Column, Table
+from schemabrain.core.store import SQLiteStore
+from schemabrain.dashboard.sidecar import is_ui_available
+
+pytestmark = pytest.mark.skipif(
+    not is_ui_available(),
+    reason="`schemabrain[ui]` extra not installed",
+)
+
+if TYPE_CHECKING:
+    from fastapi.testclient import TestClient
+
+SRC = "policy-test-source"
+
+
+def _seed_user_table_with_tags(store_path: Path) -> None:
+    store = SQLiteStore(store_path)
+    try:
+        store.write_table(
+            Table(
+                name="users",
+                schema_name="public",
+                columns=(
+                    Column(
+                        name="id",
+                        table_name="users",
+                        schema_name="public",
+                        data_type="BIGINT",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                    Column(
+                        name="email",
+                        table_name="users",
+                        schema_name="public",
+                        data_type="TEXT",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                ),
+            ),
+            source_connection_id=SRC,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=SRC,
+            qualified_table="public.users",
+            tags={"email": ("pii", frozenset({"contact"}))},
+        )
+    finally:
+        store.close()
+
+
+def test_policy_route_returns_catastrophic_default_when_no_yaml(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["source_connection_id"] == SRC
+    assert body["block_source"] == "default"
+    assert set(body["active_block"]) == {"credential", "payment_card", "government_id"}
+    assert set(body["catastrophic_floor"]) == {"credential", "payment_card", "government_id"}
+    assert body["yaml_parse_error"] is None
+
+
+def test_policy_route_reads_block_from_yaml_when_present(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    yaml_dir = tmp_path / "schemabrain"
+    yaml_dir.mkdir()
+    (yaml_dir / "pii_policy.yaml").write_text(
+        "version: 1\nblock:\n  - credential\n  - contact\n",
+        encoding="utf-8",
+    )
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["block_source"] == "yaml"
+    assert set(body["active_block"]) == {"credential", "contact"}
+
+
+def test_policy_route_per_column_verdict(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-column verdict surfaces with effective_enforcement = blocked
+    when the column's categories intersect the active block."""
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    yaml_dir = tmp_path / "schemabrain"
+    yaml_dir.mkdir()
+    (yaml_dir / "pii_policy.yaml").write_text(
+        "version: 1\nblock:\n  - contact\n",
+        encoding="utf-8",
+    )
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    body = resp.json()
+    email_entry = next(e for e in body["per_column"] if e["column_name"] == "email")
+    assert email_entry["effective_enforcement"] == "blocked"
+    assert email_entry["origin"] == "heuristic"
+    assert email_entry["categories"] == ["contact"]
+
+
+def test_policy_route_describe_blocked_when_only_floor_intersects(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Column tagged `credential` (in catastrophic floor) but active
+    block is just `contact`: get_metric path allows, but describe_*
+    blocks via the floor union."""
+    monkeypatch.chdir(tmp_path)
+    store = SQLiteStore(store_path)
+    try:
+        store.write_table(
+            Table(
+                name="sessions",
+                schema_name="public",
+                columns=(
+                    Column(
+                        name="id",
+                        table_name="sessions",
+                        schema_name="public",
+                        data_type="BIGINT",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                    Column(
+                        name="token",
+                        table_name="sessions",
+                        schema_name="public",
+                        data_type="TEXT",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                ),
+            ),
+            source_connection_id=SRC,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=SRC,
+            qualified_table="public.sessions",
+            tags={"token": ("pii", frozenset({"credential"}))},
+        )
+    finally:
+        store.close()
+    yaml_dir = tmp_path / "schemabrain"
+    yaml_dir.mkdir()
+    (yaml_dir / "pii_policy.yaml").write_text(
+        "version: 1\nblock:\n  - contact\n",
+        encoding="utf-8",
+    )
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    body = resp.json()
+    token_entry = next(e for e in body["per_column"] if e["column_name"] == "token")
+    # `credential` IS in the catastrophic floor but NOT in the
+    # operator-configured `{contact}` block — so describe_* would
+    # refuse via the floor union, but get_metric would let it through.
+    # The verdict surfaces the "describe-only" intermediate state.
+    assert token_entry["effective_enforcement"] == "describe_blocked"
+
+
+def test_policy_route_category_rollup_counts(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    body = resp.json()
+    contact_entry = next(e for e in body["category_rollup"] if e["category"] == "contact")
+    assert contact_entry["column_count"] == 1
+    assert contact_entry["entity_count"] == 1
+    assert contact_entry["sample_columns"] == ["public.users.email"]
+
+
+def test_policy_route_diff_preview_present(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    body = resp.json()
+    diff = body["diff_preview"]
+    assert "current_blocked" in diff
+    assert "if_all_blocked" in diff
+    assert "if_catastrophic_only" in diff
+    assert "if_none_blocked" in diff
+    assert diff["if_none_blocked"] == 0
+
+
+def test_policy_route_surfaces_yaml_parse_error(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    yaml_dir = tmp_path / "schemabrain"
+    yaml_dir.mkdir()
+    # Missing required `block:` key — should parse error.
+    (yaml_dir / "pii_policy.yaml").write_text(
+        "version: 1\ndescription: malformed\n",
+        encoding="utf-8",
+    )
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    body = resp.json()
+    # Falls back to default on parse error, surfaces the error.
+    assert body["block_source"] == "default"
+    assert body["yaml_parse_error"] is not None
+    assert "block" in body["yaml_parse_error"]
+
+
+def test_policy_route_operator_override_origin_visible(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An operator override surfaces with origin='operator' in
+    the per-column verdict."""
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    store = SQLiteStore(store_path)
+    try:
+        store.upsert_column_pii_tag_override(
+            source_connection_id=SRC,
+            qualified_table="public.users",
+            column_name="email",
+            sensitivity="internal",
+            categories=frozenset(),
+        )
+    finally:
+        store.close()
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    body = resp.json()
+    email_entry = next(e for e in body["per_column"] if e["column_name"] == "email")
+    assert email_entry["origin"] == "operator"
+    assert email_entry["sensitivity"] == "internal"
+    assert email_entry["categories"] == []
