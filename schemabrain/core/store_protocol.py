@@ -30,7 +30,7 @@ from schemabrain.core.example_query import ExampleQuery
 from schemabrain.core.join import CanonicalJoin
 from schemabrain.core.metric import Metric
 from schemabrain.core.models import ForeignKey, IncomingForeignKey, Table
-from schemabrain.pii.categories import ColumnPiiTag
+from schemabrain.pii.categories import ColumnPiiTag, PIICategory, Sensitivity
 
 
 @runtime_checkable
@@ -564,5 +564,55 @@ class Store(Protocol):  # pragma: no cover
         columns with a stored row. Columns absent from the result
         are treated as `("public", frozenset())` by callers (matches
         the propagation helper's empty-input contract).
+        """
+        ...
+
+    def upsert_column_pii_tag_override(
+        self,
+        *,
+        source_connection_id: str,
+        qualified_table: str,
+        column_name: str,
+        sensitivity: Sensitivity,
+        categories: frozenset[PIICategory],
+    ) -> None:
+        """Upsert one operator-asserted PII tag override (`origin='operator'`).
+
+        Replaces any prior row for the same `(source_connection_id,
+        qualified_table, column_name)` key — heuristic OR operator.
+        Per the schema, the primary key is the storage discriminator;
+        there is no layering of heuristic + operator on the same row.
+        """
+        ...
+
+    def delete_column_pii_tag_override(
+        self,
+        *,
+        source_connection_id: str,
+        qualified_table: str,
+        column_name: str,
+    ) -> bool:
+        """Delete one operator-asserted PII tag override row.
+
+        Filtered on `origin='operator'` so the call cannot wipe a
+        heuristic row by accident. Returns True if a row was deleted.
+        The next `schemabrain index` run will re-classify the column
+        from scratch.
+        """
+        ...
+
+    def list_column_pii_tags_with_origin(
+        self,
+        *,
+        source_connection_id: str,
+        origin: str | None = None,
+    ) -> list[tuple[str, str, Sensitivity, frozenset[PIICategory], str]]:
+        """List every PII tag row for a source, with origin (`heuristic`
+        / `operator`) preserved.
+
+        Returns `(qualified_table, column_name, sensitivity,
+        categories, origin)` tuples. `origin` filter narrows the
+        result when set. Used by the dashboard policy view + CLI
+        `policy tag list` to render the per-column verdict surface.
         """
         ...
