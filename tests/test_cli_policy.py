@@ -938,6 +938,67 @@ class TestPolicyExplicitSourceUrl:
         assert "public.users" in out
 
 
+class TestEmitProjectionAndApplyProject:
+    """Cover the pii_policy.yaml branches of `_emit_yaml_projection`
+    (skip-if-exists, write-if-absent) and `_cmd_apply_project`
+    (apply-if-present, skip-if-missing). The full `init --emit-yaml-dir`
+    flow needs a populated store (Postgres-backed) and is exercised by
+    the test_cli_yaml_roundtrip integration tests; these stub the inner
+    handlers so we cover the policy-file branches without Postgres."""
+
+    def test_emit_skips_pii_policy_when_already_present(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from schemabrain import cli as cli_module
+
+        base = tmp_path / "proj"
+        base.mkdir()
+        (base / "pii_policy.yaml").write_text(
+            "version: 1\nblock:\n  - credential\n", encoding="utf-8"
+        )
+        # Stub the three inner export handlers so the emit body runs
+        # all the way through to the pii_policy.yaml check without
+        # needing a populated store.
+        with (
+            mock.patch.object(cli_module, "_cmd_entities_export_all", return_value=0),
+            mock.patch.object(cli_module, "_cmd_metrics_export_all", return_value=0),
+            mock.patch.object(cli_module, "_cmd_joins_export_all", return_value=0),
+        ):
+            rc = cli_module._emit_yaml_projection(
+                base_dir=str(base),
+                store_path=str(tmp_path / "sb.db"),
+                source_url="postgresql://demo:demo@127.0.0.1:5432/demo",
+            )
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "skipped" in err and "pii_policy.yaml" in err
+
+    def test_apply_project_logs_missing_pii_policy(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`apply <project_dir>` against a tree with NO `pii_policy.yaml`
+        records a 'skipped (file missing)' line in the summary instead
+        of erroring out. Empty subdirs are skipped silently too — the
+        whole apply is a no-op summary."""
+        from schemabrain.cli import _cmd_apply_project
+
+        base = tmp_path / "proj"
+        base.mkdir()
+        rc = _cmd_apply_project(
+            project_dir=str(base),
+            store_path=str(tmp_path / "sb.db"),
+            positional_url="postgresql://demo:demo@127.0.0.1:5432/demo",
+            url_env=None,
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "pii_policy.yaml: skipped (file missing)" in out
+
+
 class TestDispatcherWiring:
     """End-to-end dispatch tests: call `_dispatch` with argv instead
     of the handler functions directly. Covers the policy/show/apply/tag
