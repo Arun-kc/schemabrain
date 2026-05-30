@@ -1174,4 +1174,182 @@ class TestServeReadsPolicyYaml:
             )
 
         assert rc == 0
-        assert captured["pii_block"] == frozenset({"contact", "location"})
+        # LB-1 (firewall E2E audit 2026-05-30): the catastrophic-leak
+        # floor is always-on and CANNOT be dropped via pii_policy.yaml.
+        # The resolved policy unions the operator's `block:` set with the
+        # floor, so a YAML that omits a floor category cannot strip it.
+        # Pre-fix this asserted `{contact, location}` verbatim — the
+        # exact bypass the audit flagged.
+        from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES
+
+        assert captured["pii_block"] == (
+            frozenset({"contact", "location"}) | CATASTROPHIC_LEAK_CATEGORIES
+        )
+
+
+class TestPolicyCatastrophicDowngradeGuard:
+    """LB-2 (firewall E2E audit 2026-05-30): the CLI refuses an operator
+    override or clear that would strip a column's always-on catastrophic-
+    leak protection, surfacing exit code 2 and the `--force-...` escape
+    hatch. Forcing it through is honoured."""
+
+    @staticmethod
+    def _seed_credential(store_path: Path) -> None:
+        _seed_minimal_store(store_path)
+        store = SQLiteStore(store_path)
+        try:
+            # Re-tag email as a catastrophic category for these tests.
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                tags={"email": ("pii", frozenset({"credential"}))},
+            )
+        finally:
+            store.close()
+
+    def test_tag_override_emptying_credential_refused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_path = tmp_path / "sb.db"
+        self._seed_credential(store_path)
+        rc = _cmd_policy_tag_override(
+            qualified_column="public.users.email",
+            sensitivity="internal",
+            categories_csv="",
+            store_path=str(store_path),
+            positional_url=None,
+            url_env=None,
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "refused" in err
+        assert "credential" in err
+        assert "--force-catastrophic-downgrade" in err
+        # The dangerous override must NOT have landed.
+        store = SQLiteStore(store_path)
+        try:
+            rows = store.list_column_pii_tags_with_origin(
+                source_connection_id=SRC, origin="operator"
+            )
+        finally:
+            store.close()
+        assert rows == []
+
+    def test_tag_override_credential_with_force_succeeds(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "sb.db"
+        self._seed_credential(store_path)
+        rc = _cmd_policy_tag_override(
+            qualified_column="public.users.email",
+            sensitivity="internal",
+            categories_csv="",
+            store_path=str(store_path),
+            positional_url=None,
+            url_env=None,
+            force_catastrophic_downgrade=True,
+        )
+        assert rc == 0
+        store = SQLiteStore(store_path)
+        try:
+            rows = store.list_column_pii_tags_with_origin(
+                source_connection_id=SRC, origin="operator"
+            )
+        finally:
+            store.close()
+        assert rows[0][3] == frozenset()
+
+    def test_tag_clear_catastrophic_override_refused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path)
+        # Operator override that keeps the column catastrophic.
+        store = SQLiteStore(store_path)
+        try:
+            store.upsert_column_pii_tag_override(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                column_name="email",
+                sensitivity="pii",
+                categories=frozenset({"credential"}),
+            )
+        finally:
+            store.close()
+        rc = _cmd_policy_tag_clear(
+            qualified_column="public.users.email",
+            store_path=str(store_path),
+            positional_url=None,
+            url_env=None,
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "refused" in err
+
+    def test_tag_clear_catastrophic_with_force_succeeds(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "sb.db"
+        _seed_minimal_store(store_path)
+        store = SQLiteStore(store_path)
+        try:
+            store.upsert_column_pii_tag_override(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                column_name="email",
+                sensitivity="pii",
+                categories=frozenset({"credential"}),
+            )
+        finally:
+            store.close()
+        rc = _cmd_policy_tag_clear(
+            qualified_column="public.users.email",
+            store_path=str(store_path),
+            positional_url=None,
+            url_env=None,
+            force_catastrophic_downgrade=True,
+        )
+        assert rc == 0
+
+    def test_apply_yaml_downgrading_override_refused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_path = tmp_path / "sb.db"
+        self._seed_credential(store_path)
+        yaml_path = tmp_path / "pii_policy.yaml"
+        yaml_path.write_text(
+            "version: 1\n"
+            "block:\n  - credential\n"
+            "column_overrides:\n"
+            "  public.users.email:\n"
+            "    sensitivity: internal\n"
+            "    categories: []\n",
+            encoding="utf-8",
+        )
+        rc = _cmd_policy_apply(
+            yaml_path=str(yaml_path),
+            store_path=str(store_path),
+            positional_url=None,
+            url_env=None,
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "refused" in err
+
+    def test_apply_yaml_downgrading_override_with_force_succeeds(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "sb.db"
+        self._seed_credential(store_path)
+        yaml_path = tmp_path / "pii_policy.yaml"
+        yaml_path.write_text(
+            "version: 1\n"
+            "block:\n  - credential\n"
+            "column_overrides:\n"
+            "  public.users.email:\n"
+            "    sensitivity: internal\n"
+            "    categories: []\n",
+            encoding="utf-8",
+        )
+        rc = _cmd_policy_apply(
+            yaml_path=str(yaml_path),
+            store_path=str(store_path),
+            positional_url=None,
+            url_env=None,
+            force_catastrophic_downgrade=True,
+        )
+        assert rc == 0

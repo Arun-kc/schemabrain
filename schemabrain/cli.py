@@ -623,6 +623,7 @@ def _dispatch(argv: list[str] | None) -> int:
                 store_path=args.store_path,
                 positional_url=args.source,
                 url_env=args.url_env,
+                force_catastrophic_downgrade=args.force_catastrophic_downgrade,
             )
         if args.policy_action == "tag":
             if args.policy_tag_action == "override":
@@ -633,6 +634,7 @@ def _dispatch(argv: list[str] | None) -> int:
                     store_path=args.store_path,
                     positional_url=args.source,
                     url_env=args.url_env,
+                    force_catastrophic_downgrade=args.force_catastrophic_downgrade,
                 )
             if args.policy_tag_action == "clear":
                 return _cmd_policy_tag_clear(
@@ -640,6 +642,7 @@ def _dispatch(argv: list[str] | None) -> int:
                     store_path=args.store_path,
                     positional_url=args.source,
                     url_env=args.url_env,
+                    force_catastrophic_downgrade=args.force_catastrophic_downgrade,
                 )
             if args.policy_tag_action == "list":
                 return _cmd_policy_tag_list(
@@ -2460,6 +2463,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Name of the environment variable that holds the source URL.",
     )
+    p_policy_apply.add_argument(
+        "--force-catastrophic-downgrade",
+        dest="force_catastrophic_downgrade",
+        action="store_true",
+        help="Permit a column_override that strips a column's always-on "
+        "catastrophic-leak protection (credential / payment_card / "
+        "government_id). Refused by default; NOT recommended for production.",
+    )
 
     # `policy tag` is a noun group inside `policy` — three actions
     # against the per-column override surface. Operators who edit
@@ -2513,6 +2524,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Name of the environment variable that holds the source URL.",
     )
+    p_policy_tag_override.add_argument(
+        "--force-catastrophic-downgrade",
+        dest="force_catastrophic_downgrade",
+        action="store_true",
+        help="Permit an override that strips a column's always-on "
+        "catastrophic-leak protection (credential / payment_card / "
+        "government_id). Refused by default; NOT recommended for production.",
+    )
 
     p_policy_tag_clear = policy_tag_sub.add_parser(
         "clear",
@@ -2541,6 +2560,14 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="VARNAME",
         default=None,
         help="Name of the environment variable that holds the source URL.",
+    )
+    p_policy_tag_clear.add_argument(
+        "--force-catastrophic-downgrade",
+        dest="force_catastrophic_downgrade",
+        action="store_true",
+        help="Permit clearing an override that would leave a catastrophic "
+        "column (credential / payment_card / government_id) untagged. "
+        "Refused by default; NOT recommended for production.",
     )
 
     p_policy_tag_list = policy_tag_sub.add_parser(
@@ -3381,11 +3408,19 @@ def _cmd_serve(
     if pii_block_csv is None:
         yaml_block = _try_load_policy_yaml_block(policy_path)
         if yaml_block is not None:
-            pii_block = yaml_block
+            # The catastrophic-leak floor is always-on and CANNOT be
+            # dropped via pii_policy.yaml — only the explicit
+            # `--pii-block ''` CLI escape hatch disables enforcement.
+            # Union the floor so the resolved policy (and the startup
+            # message) honestly reflect what the firewall enforces at
+            # every gate. A YAML `block: []` is "floor only", NOT
+            # "enforcement off" — the prior message lied about that.
+            pii_block = yaml_block | CATASTROPHIC_LEAK_CATEGORIES
             print(
                 f"schemabrain serve: --pii-block read from "
                 f"{policy_path}: "
-                f"{','.join(sorted(yaml_block)) if yaml_block else '(empty — enforcement off)'}.",
+                f"{','.join(sorted(pii_block))} "
+                f"(includes always-on catastrophic-leak floor).",
                 file=sys.stderr,
             )
         else:
@@ -3743,6 +3778,7 @@ def _cmd_policy_apply(
     store_path: str,
     positional_url: str | None,
     url_env: str | None,
+    force_catastrophic_downgrade: bool = False,
 ) -> int:
     """Load a pii_policy.yaml file and persist column_overrides to the store.
 
@@ -3752,8 +3788,13 @@ def _cmd_policy_apply(
     store during query resolution.
 
     Refuses cleanly on parse error; prints a one-line confirmation
-    of what was written on success.
+    of what was written on success. A column_override that would strip a
+    column's catastrophic-leak protection is refused (LB-2) unless
+    `force_catastrophic_downgrade` is set; the offending override aborts
+    the apply at that point (earlier, safe overrides are already
+    persisted — fix the YAML and re-run, which is idempotent).
     """
+    from schemabrain.pii.policy import CatastrophicDowngradeError
     from schemabrain.pii.policy_yaml import PolicyYamlError, parse_policy_yaml_file
 
     try:
@@ -3795,13 +3836,18 @@ def _cmd_policy_apply(
         )  # pragma: no cover — defensive; rc gate above caught all None paths
 
         for override in policy.column_overrides:
-            store.upsert_column_pii_tag_override(
-                source_connection_id=source_id,
-                qualified_table=override.qualified_table,
-                column_name=override.column_name,
-                sensitivity=override.sensitivity,
-                categories=override.categories,
-            )
+            try:
+                store.upsert_column_pii_tag_override(
+                    source_connection_id=source_id,
+                    qualified_table=override.qualified_table,
+                    column_name=override.column_name,
+                    sensitivity=override.sensitivity,
+                    categories=override.categories,
+                    force_catastrophic_downgrade=force_catastrophic_downgrade,
+                )
+            except CatastrophicDowngradeError as exc:
+                print(f"refused: {exc}", file=sys.stderr)
+                return 2
 
     print(
         f"applied {yaml_path}: block={','.join(sorted(policy.block)) or '(empty)'}; "
@@ -3832,12 +3878,13 @@ def _cmd_policy_tag_override(
     store_path: str,
     positional_url: str | None,
     url_env: str | None,
+    force_catastrophic_downgrade: bool = False,
 ) -> int:
     """Upsert one operator-asserted PII tag override for a column."""
     from typing import cast as _cast
 
     from schemabrain.pii.categories import PII_CATEGORIES, PIICategory, Sensitivity
-    from schemabrain.pii.policy import ColumnOverride
+    from schemabrain.pii.policy import CatastrophicDowngradeError, ColumnOverride
 
     parts = _split_qualified_column(qualified_column)
     if parts is None:
@@ -3890,13 +3937,18 @@ def _cmd_policy_tag_override(
             source_id is not None
         )  # pragma: no cover — defensive; rc gate above caught all None paths
 
-        store.upsert_column_pii_tag_override(
-            source_connection_id=source_id,
-            qualified_table=f"{schema}.{table}",
-            column_name=column,
-            sensitivity=typed_sensitivity,
-            categories=typed_categories,
-        )
+        try:
+            store.upsert_column_pii_tag_override(
+                source_connection_id=source_id,
+                qualified_table=f"{schema}.{table}",
+                column_name=column,
+                sensitivity=typed_sensitivity,
+                categories=typed_categories,
+                force_catastrophic_downgrade=force_catastrophic_downgrade,
+            )
+        except CatastrophicDowngradeError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 2
 
     cat_str = ",".join(sorted(typed_categories)) if typed_categories else "(empty)"
     print(
@@ -3913,8 +3965,11 @@ def _cmd_policy_tag_clear(
     store_path: str,
     positional_url: str | None,
     url_env: str | None,
+    force_catastrophic_downgrade: bool = False,
 ) -> int:
     """Delete an operator-asserted PII tag override for one column."""
+    from schemabrain.pii.policy import CatastrophicDowngradeError
+
     parts = _split_qualified_column(qualified_column)
     if parts is None:
         print(
@@ -3937,11 +3992,16 @@ def _cmd_policy_tag_clear(
             source_id is not None
         )  # pragma: no cover — defensive; rc gate above caught all None paths
 
-        deleted = store.delete_column_pii_tag_override(
-            source_connection_id=source_id,
-            qualified_table=f"{schema}.{table}",
-            column_name=column,
-        )
+        try:
+            deleted = store.delete_column_pii_tag_override(
+                source_connection_id=source_id,
+                qualified_table=f"{schema}.{table}",
+                column_name=column,
+                force_catastrophic_downgrade=force_catastrophic_downgrade,
+            )
+        except CatastrophicDowngradeError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 2
 
     if deleted:
         print(
