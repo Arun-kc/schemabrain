@@ -375,8 +375,19 @@ class TestRuleTableInvariants:
         #     numero_seguridad_social/numero_securite_sociale rule
         #   - +1 government_id cpf rule
         #   - +1 government_id cnpj rule
-        # Total: 49 + 6 = 55.
-        assert RULE_COUNT == 55
+        # Subtotal: 49 + 6 = 55.
+        #
+        # Catastrophic-shape coverage (LB-3, firewall E2E audit
+        # 2026-05-30) — no-misconfig leaks where concatenated /
+        # abbreviated / non-EN names classified to `public`:
+        #   - +1 payment_card credit_card/creditcard/cc_num/swift_code/
+        #     bic rule
+        #   - +1 credential passwordhash/apikey/accesstoken/privatekey
+        #     rule
+        #   - +1 government_id dni/nif/codice_fiscale/curp/nric/bsn/pesel
+        #     rule
+        # Total: 55 + 3 = 58.
+        assert RULE_COUNT == 58
 
     def test_every_category_has_at_least_one_rule(self) -> None:
         # Every category in PII_CATEGORIES must be producible by at
@@ -760,3 +771,71 @@ class TestColumnTypeBackwardsCompat:
         sensitivity, cats = classify_column("address_id", column_type="WIDGET")
         assert sensitivity == "pii"
         assert "contact" in cats
+
+
+class TestLB3CatastrophicShapeCoverage:
+    """LB-3 (firewall E2E audit 2026-05-30): concatenated, abbreviated,
+    and non-English column-name shapes for the three catastrophic-leak
+    categories classified to `public` with NO operator misconfiguration,
+    so nothing downstream redacted them — a no-misconfig leak. The
+    boundary semantics of `_kw` mean `password` does not match
+    `passwordhash` (trailing `h` is alphanumeric), and several extremely
+    common shapes (`credit_card`, `creditcard`) had no rule at all.
+
+    These must now classify to a catastrophic category so the always-on
+    floor tags them on a default install.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "expected_cat"),
+        [
+            # payment_card — the most glaring miss: `credit_card` had no rule
+            ("credit_card", "payment_card"),
+            ("creditcard", "payment_card"),
+            ("credit_card_no", "payment_card"),
+            ("debit_card", "payment_card"),
+            ("debitcard", "payment_card"),
+            ("cardnumber", "payment_card"),
+            ("card_no", "payment_card"),
+            ("cardno", "payment_card"),
+            ("cc_num", "payment_card"),
+            ("ccnum", "payment_card"),
+            ("cc_number", "payment_card"),
+            ("swift_code", "payment_card"),
+            ("bic", "payment_card"),
+            # credential — concatenated forms the `_kw` boundary missed
+            ("passwordhash", "credential"),
+            ("pwhash", "credential"),
+            ("passhash", "credential"),
+            ("apikey", "credential"),
+            ("apisecret", "credential"),
+            ("apitoken", "credential"),
+            ("accesstoken", "credential"),
+            ("refreshtoken", "credential"),
+            ("authtoken", "credential"),
+            ("bearertoken", "credential"),
+            ("privatekey", "credential"),
+            ("secretkey", "credential"),
+            ("accesskey", "credential"),
+            # government_id — non-English national / tax IDs
+            ("dni", "government_id"),
+            ("nif", "government_id"),
+            ("nie", "government_id"),
+            ("codice_fiscale", "government_id"),
+            ("curp", "government_id"),
+            ("nric", "government_id"),
+            ("bsn", "government_id"),
+            ("pesel", "government_id"),
+        ],
+    )
+    def test_catastrophic_shape_classifies(self, name: str, expected_cat: PIICategory) -> None:
+        sensitivity, cats = classify_column(name)
+        assert sensitivity == "pii", f"{name!r} classified public — no-misconfig leak"
+        assert expected_cat in cats, f"{name!r} -> {sorted(cats)}, expected {expected_cat}"
+
+    def test_underscored_credit_card_number_already_covered(self) -> None:
+        # Regression guard: the underscored `credit_card_number` already
+        # matched the `card_number` rule pre-LB-3; confirm we didn't
+        # regress that while adding the concatenated forms.
+        _sens, cats = classify_column("credit_card_number")
+        assert "payment_card" in cats

@@ -145,6 +145,32 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
         _kw("account_number", "bank_account", "routing_number", "sort_code"),
         frozenset({"payment_card"}),
     ),
+    # LB-3 (firewall E2E audit 2026-05-30): concatenated + abbreviated
+    # card-number shapes the `card_number` rule missed — `_kw` boundaries
+    # don't fire mid-word (`creditcard`), and several of the most common
+    # names had no rule at all (`credit_card`, `cc_num`). SWIFT/BIC bank
+    # identifier codes join here as catastrophic financial identifiers.
+    # These classified to `public` with no operator misconfig pre-fix.
+    (
+        _kw(
+            "credit_card",
+            "creditcard",
+            "credit_card_no",
+            "debit_card",
+            "debitcard",
+            "cardnumber",
+            "card_no",
+            "cardno",
+            "cc_num",
+            "ccnum",
+            "cc_number",
+            "ccnumber",
+            "swift_code",
+            "swift_bic",
+            "bic",
+        ),
+        frozenset({"payment_card"}),
+    ),
     # ---- health ----
     (_kw("diagnosis", "medication", "treatment"), frozenset({"health"})),
     (_kw("icd9", "icd_9", "icd10", "icd_10", "cpt_code"), frozenset({"health"})),
@@ -285,6 +311,33 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
         _kw("magic_link", "webauthn_credential", "totp_seed"),
         frozenset({"credential"}),
     ),
+    # LB-3 (firewall E2E audit 2026-05-30): concatenated credential
+    # shapes the `_kw` boundary missed — `password` does not match
+    # `passwordhash`, `api_key` does not match `apikey`, `access_token`
+    # does not match `accesstoken`. Disclosure of any is catastrophic;
+    # these classified to `public` with no operator misconfig pre-fix.
+    (
+        _kw(
+            "passwordhash",
+            "pwhash",
+            "passhash",
+            "pwdhash",
+            "apikey",
+            "apisecret",
+            "apitoken",
+            "accesstoken",
+            "refreshtoken",
+            "authtoken",
+            "bearertoken",
+            "sessiontoken",
+            "privatekey",
+            "secretkey",
+            "accesskey",
+            "signingkey",
+            "encryptionkey",
+        ),
+        frozenset({"credential"}),
+    ),
     # ---- government_id ----
     (_kw("ssn", "tin", "nino"), frozenset({"government_id"})),
     (_kw("passport"), frozenset({"government_id"})),
@@ -413,6 +466,25 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
     # systems.
     (_kw("cpf"), frozenset({"government_id"})),
     (_kw("cnpj"), frozenset({"government_id"})),
+    # LB-3 (firewall E2E audit 2026-05-30): non-English national / tax
+    # identifiers that classified to `public` under the default floor —
+    # ES (DNI / NIF / NIE), IT (codice fiscale), MX (CURP), SG (NRIC),
+    # NL (BSN), PL (PESEL). Disclosure enables identity-bound queries
+    # against the issuing government's systems, so they belong in the
+    # always-on catastrophic floor alongside SSN.
+    (
+        _kw(
+            "dni",
+            "nif",
+            "nie",
+            "codice_fiscale",
+            "curp",
+            "nric",
+            "bsn",
+            "pesel",
+        ),
+        frozenset({"government_id"}),
+    ),
 )
 
 # Public count constant — pinned by CI so adding a rule is a deliberate
