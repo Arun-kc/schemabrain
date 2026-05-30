@@ -73,3 +73,50 @@ export interface ColumnPiiTag {
   sensitivity: Sensitivity;
   pii_categories: readonly PIICategory[];
 }
+
+/* ───────── PII policy response (GET /api/pii/policy) ───────── */
+
+export type PolicyOrigin = "heuristic" | "operator";
+
+export type EffectiveEnforcement = "allowed" | "describe_blocked" | "blocked";
+
+export type PolicyBlockSource = "yaml" | "default";
+
+export interface PolicyCategoryRollup {
+  category: PIICategory;
+  column_count: number;
+  entity_count: number;
+  sample_columns: readonly string[];
+  blocked_by_active_policy: boolean;
+  blocked_by_catastrophic_floor: boolean;
+}
+
+export interface PolicyColumnEntry {
+  qualified_table: string;
+  column_name: string;
+  qualified_column: string;
+  sensitivity: Sensitivity;
+  categories: readonly PIICategory[];
+  origin: PolicyOrigin;
+  effective_enforcement: EffectiveEnforcement;
+}
+
+export interface PolicyDiffPreview {
+  current_blocked: number;
+  if_all_blocked: number;
+  if_catastrophic_only: number;
+  if_none_blocked: number;
+}
+
+export interface PolicyResponse {
+  source_connection_id: string;
+  policy_path: string;
+  block_source: PolicyBlockSource;
+  active_block: readonly PIICategory[];
+  catastrophic_floor: readonly PIICategory[];
+  effective_block_for_describe: readonly PIICategory[];
+  category_rollup: readonly PolicyCategoryRollup[];
+  per_column: readonly PolicyColumnEntry[];
+  diff_preview: PolicyDiffPreview;
+  yaml_parse_error: string | null;
+}
