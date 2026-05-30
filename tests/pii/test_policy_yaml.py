@@ -236,6 +236,106 @@ class TestParseRejectsBadStructure:
         with pytest.raises(PolicyYamlError, match="parse"):
             parse_policy_yaml("version: 1\nblock: [: unbalanced")
 
+    def test_description_non_string_rejected(self) -> None:
+        with pytest.raises(PolicyYamlError, match="description"):
+            parse_policy_yaml("version: 1\ndescription: 42\nblock: []\n")
+
+    def test_block_item_not_string_rejected(self) -> None:
+        with pytest.raises(PolicyYamlError, match="block items"):
+            parse_policy_yaml("version: 1\nblock:\n  - 42\n")
+
+    def test_column_overrides_non_string_key_rejected(self) -> None:
+        # YAML maps allow int keys. Surface the type mismatch at the
+        # grammar layer so the qualified-column regex doesn't blow up
+        # later with a less informative message.
+        with pytest.raises(PolicyYamlError, match="column_overrides keys"):
+            parse_policy_yaml(
+                """
+                version: 1
+                block: []
+                column_overrides:
+                  42:
+                    sensitivity: internal
+                """
+            )
+
+    def test_column_overrides_scalar_body_rejected(self) -> None:
+        with pytest.raises(PolicyYamlError, match="must be a mapping"):
+            parse_policy_yaml(
+                """
+                version: 1
+                block: []
+                column_overrides:
+                  public.users.email: internal
+                """
+            )
+
+    def test_column_overrides_non_string_sensitivity_rejected(self) -> None:
+        with pytest.raises(PolicyYamlError, match="sensitivity must be"):
+            parse_policy_yaml(
+                """
+                version: 1
+                block: []
+                column_overrides:
+                  public.users.email:
+                    sensitivity: 42
+                """
+            )
+
+    def test_column_overrides_unknown_sensitivity_rejected(self) -> None:
+        with pytest.raises(PolicyYamlError, match="sensitivity must be"):
+            parse_policy_yaml(
+                """
+                version: 1
+                block: []
+                column_overrides:
+                  public.users.email:
+                    sensitivity: top_secret
+                """
+            )
+
+    def test_column_overrides_categories_not_list_rejected(self) -> None:
+        with pytest.raises(PolicyYamlError, match="categories must be a"):
+            parse_policy_yaml(
+                """
+                version: 1
+                block: []
+                column_overrides:
+                  public.users.email:
+                    sensitivity: internal
+                    categories: credential
+                """
+            )
+
+    def test_column_overrides_category_item_not_string_rejected(self) -> None:
+        with pytest.raises(PolicyYamlError, match="categories items"):
+            parse_policy_yaml(
+                """
+                version: 1
+                block: []
+                column_overrides:
+                  public.users.email:
+                    sensitivity: internal
+                    categories:
+                      - 42
+                """
+            )
+
+    def test_column_overrides_duplicate_category_rejected(self) -> None:
+        with pytest.raises(PolicyYamlError, match="duplicate"):
+            parse_policy_yaml(
+                """
+                version: 1
+                block: []
+                column_overrides:
+                  public.users.email:
+                    sensitivity: pii
+                    categories:
+                      - credential
+                      - credential
+                """
+            )
+
 
 class TestEmitAndRoundTrip:
     def test_minimal_policy_round_trips(self) -> None:
@@ -330,3 +430,28 @@ class TestParseFile:
     def test_directory_propagates_is_a_directory(self, tmp_path: Path) -> None:
         with pytest.raises(IsADirectoryError):
             parse_policy_yaml_file(tmp_path)
+
+    def test_permission_error_wraps_as_policy_yaml_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Real chmod-based denial is non-portable (no-op for root in
+        # CI containers); patching `read_text` makes the contract test
+        # deterministic across runners.
+        target = tmp_path / "pii_policy.yaml"
+        target.write_text("version: 1\nblock: []\n", encoding="utf-8")
+
+        def _raise_permission_error(*_args: object, **_kwargs: object) -> str:
+            raise PermissionError(13, "Permission denied", str(target))
+
+        monkeypatch.setattr(Path, "read_text", _raise_permission_error)
+        with pytest.raises(PolicyYamlError, match="permission denied"):
+            parse_policy_yaml_file(target)
+
+    def test_unicode_decode_error_wraps_as_policy_yaml_error(self, tmp_path: Path) -> None:
+        # Real-world failure mode: an operator hands a file saved in
+        # latin-1 / utf-16 / a binary blob. The parser must surface
+        # "not UTF-8" rather than letting the decoder bubble up.
+        target = tmp_path / "pii_policy.yaml"
+        target.write_bytes(b"\xff\xfe\x00v\x00e\x00r\x00s\x00i\x00o\x00n\x00")
+        with pytest.raises(PolicyYamlError, match="not a valid UTF-8"):
+            parse_policy_yaml_file(target)
