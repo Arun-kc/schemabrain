@@ -46,7 +46,13 @@ from schemabrain.core.metric import (
     MetricMeasure,
 )
 from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
-from schemabrain.pii.categories import ColumnPiiTag, PIICategory, Sensitivity
+from schemabrain.pii.categories import (
+    CATASTROPHIC_LEAK_CATEGORIES,
+    ColumnPiiTag,
+    PIICategory,
+    Sensitivity,
+)
+from schemabrain.pii.policy import CatastrophicDowngradeError
 
 # Re-export so existing `from schemabrain.core.store import
 # DbtOwnedEntityError` imports keep working. The exceptions now live
@@ -2429,6 +2435,7 @@ class SQLiteStore:
         column_name: str,
         sensitivity: Sensitivity,
         categories: frozenset[PIICategory],
+        force_catastrophic_downgrade: bool = False,
     ) -> None:
         """Write one operator-asserted PII tag override.
 
@@ -2446,8 +2453,32 @@ class SQLiteStore:
         That's tracked separately; for v0.4 the operator workflow is
         "override → server reads the override → next index wipes the
         override, operator re-applies from pii_policy.yaml."
+
+        LB-2 guard (firewall E2E audit 2026-05-30): because the override
+        replaces the row with no layering, emptying or re-categorising a
+        catastrophic column (credential / payment_card / government_id)
+        to a non-floor category would leave it untagged and re-expose it
+        through every MCP read. Refuse such a downgrade unless
+        `force_catastrophic_downgrade=True`. An override that keeps the
+        column in a floor category (e.g. credential → payment_card) is
+        not a downgrade and is allowed.
         """
         conn = self._require_conn()
+        if not force_catastrophic_downgrade and not (categories & CATASTROPHIC_LEAK_CATEGORIES):
+            prior = conn.execute(
+                "SELECT categories FROM column_pii_tags "
+                "WHERE source_connection_id = ? AND qualified_table = ? "
+                "AND column_name = ?",
+                (source_connection_id, qualified_table, column_name),
+            ).fetchone()
+            if prior is not None:
+                dropped = CATASTROPHIC_LEAK_CATEGORIES & _decode_pii_categories(prior["categories"])
+                if dropped:
+                    raise CatastrophicDowngradeError(
+                        qualified_table=qualified_table,
+                        column_name=column_name,
+                        dropped_categories=dropped,
+                    )
         now = int(time.time())
         with conn:
             conn.execute(
@@ -2477,6 +2508,7 @@ class SQLiteStore:
         source_connection_id: str,
         qualified_table: str,
         column_name: str,
+        force_catastrophic_downgrade: bool = False,
     ) -> bool:
         """Delete one operator-asserted PII tag override.
 
@@ -2488,8 +2520,31 @@ class SQLiteStore:
 
         Deletion is the v0.4 clear semantic; immediate re-tag via
         the classifier is deferred to v0.5.
+
+        LB-2 guard (firewall E2E audit 2026-05-30): because the override
+        replaced any heuristic row at the shared PK, clearing an operator
+        override that itself carries a catastrophic category leaves the
+        column with NO row → untagged → re-exposed through every MCP
+        read. Refuse the clear unless `force_catastrophic_downgrade=True`.
         """
         conn = self._require_conn()
+        if not force_catastrophic_downgrade:
+            existing = conn.execute(
+                "SELECT categories FROM column_pii_tags "
+                "WHERE source_connection_id = ? AND qualified_table = ? "
+                "AND column_name = ? AND origin = 'operator'",
+                (source_connection_id, qualified_table, column_name),
+            ).fetchone()
+            if existing is not None:
+                dropped = CATASTROPHIC_LEAK_CATEGORIES & _decode_pii_categories(
+                    existing["categories"]
+                )
+                if dropped:
+                    raise CatastrophicDowngradeError(
+                        qualified_table=qualified_table,
+                        column_name=column_name,
+                        dropped_categories=dropped,
+                    )
         with conn:
             cursor = conn.execute(
                 "DELETE FROM column_pii_tags "
