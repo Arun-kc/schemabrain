@@ -745,7 +745,7 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
                 "recorded_at": recorded_iso,
                 "current_mtime": None,
             }
-        except OSError:
+        except OSError:  # pragma: no cover — defensive; same fail-closed posture as the read_text / resolve OSError branches above which ARE pinned
             return {
                 "detected": False,
                 "recorded_at": recorded_iso,

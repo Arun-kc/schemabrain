@@ -95,6 +95,10 @@ schemabrain-*.db
 *.schemabrain.db
 .schemabrain/
 .fastembed_cache/
+# schemabrain serve writes a drift-detection sentinel here when invoked
+# from a project root (sibling of pii_policy.yaml). Operator-local
+# artifact; never belongs in source control.
+schemabrain/.serve_policy_mtime
 
 # Benchmark / cache artifacts not covered above
 .benchmarks/

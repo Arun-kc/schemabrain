@@ -650,6 +650,71 @@ def test_policy_drift_undetected_when_sentinel_recorded_at_iso_is_non_string(
     assert drift["recorded_at"] is None
 
 
+def test_policy_drift_undetected_when_sentinel_read_raises_permission_error(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OSError other than FileNotFoundError on sentinel read (e.g.
+    permission denied) → fail-closed detected=False, route stays
+    available."""
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    yaml_path = _write_yaml(tmp_path)
+    # Write a real sentinel, then patch read_text to raise PermissionError.
+    _write_sentinel(
+        tmp_path,
+        {
+            "policy_path": str(yaml_path.resolve()),
+            "recorded_at_mtime": yaml_path.stat().st_mtime,
+            "recorded_at_iso": "2026-05-31T12:00:00+00:00",
+            "yaml_existed_at_boot": True,
+        },
+    )
+    original_read_text = Path.read_text
+
+    def _patched(self: Path, *a: object, **kw: object) -> str:
+        if str(self).endswith(".serve_policy_mtime"):
+            raise PermissionError("denied")
+        return original_read_text(self, *a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", _patched)
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    assert resp.status_code == 200
+    drift = resp.json()["policy_drift"]
+    assert drift["detected"] is False
+    assert drift["recorded_at"] is None
+
+
+def test_policy_drift_undetected_when_yaml_resolve_raises(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OSError on yaml_path.resolve() → fail-closed detected=False."""
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    yaml_path = _write_yaml(tmp_path)
+    _write_sentinel(
+        tmp_path,
+        {
+            "policy_path": str(yaml_path.resolve()),
+            "recorded_at_mtime": yaml_path.stat().st_mtime,
+            "recorded_at_iso": "2026-05-31T12:00:00+00:00",
+            "yaml_existed_at_boot": True,
+        },
+    )
+    original_resolve = Path.resolve
+
+    def _patched(self: Path, *a: object, **kw: object) -> Path:
+        if str(self).endswith("pii_policy.yaml"):
+            raise PermissionError("can't resolve")
+        return original_resolve(self, *a, **kw)  # type: ignore[misc]
+
+    monkeypatch.setattr(Path, "resolve", _patched)
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    assert resp.status_code == 200
+    drift = resp.json()["policy_drift"]
+    assert drift["detected"] is False
+    assert drift["current_mtime"] is None
+
+
 def test_policy_drift_undetected_when_sentinel_malformed_json(
     client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
