@@ -167,6 +167,18 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("magic_link", frozenset({"credential"})),
     ("webauthn_credential", frozenset({"credential"})),
     ("totp_seed", frozenset({"credential"})),
+    # Pre-publish SaaS hardening (2026-05-31): full-word / plural /
+    # concatenated credential shapes that classified to `public` under
+    # the default floor. `recovery_code` (singular) missed the
+    # `recovery_codes` plural (the trailing `s` defeats the `_kw`
+    # boundary); the underscore forms `seed_phrase` / `client_secret`
+    # missed the concatenated `seedphrase` / `clientsecret`; `backup_code`
+    # had no rule at all.
+    ("recovery_codes", frozenset({"credential"})),
+    ("backup_code", frozenset({"credential"})),
+    ("backup_codes", frozenset({"credential"})),
+    ("seedphrase", frozenset({"credential"})),
+    ("clientsecret", frozenset({"credential"})),
     # government_id
     ("ssn", frozenset({"government_id"})),
     ("tin", frozenset({"government_id"})),
@@ -187,6 +199,32 @@ _POSITIVE_CASES: tuple[tuple[str, frozenset[PIICategory]], ...] = (
     ("npi", frozenset({"government_id"})),
     ("provider_npi", frozenset({"government_id"})),
     ("dea_number", frozenset({"government_id"})),
+    # Pre-publish SaaS hardening (2026-05-31): full-word / concatenated
+    # national-ID shapes that classified to `public`. The `ssn` / `nino`
+    # abbreviations matched but the spelled-out `social_security_number`
+    # / `national_insurance_number` did not; `passport` missed the
+    # concatenated `passportno`; VAT registration numbers (EU business
+    # tax IDs, sibling of `ein` / `tax_id`) had no rule. Bare `sin` is
+    # deliberately NOT covered — it false-positives on trig / `sin_*`
+    # columns and would wrongly trip the always-on catastrophic floor;
+    # the unambiguous `social_insurance_number` is covered instead.
+    ("social_security_number", frozenset({"government_id"})),
+    ("social_security_no", frozenset({"government_id"})),
+    ("national_insurance_number", frozenset({"government_id"})),
+    ("national_insurance_no", frozenset({"government_id"})),
+    ("social_insurance_number", frozenset({"government_id"})),
+    ("social_insurance_no", frozenset({"government_id"})),
+    ("passportno", frozenset({"government_id"})),
+    ("passportnumber", frozenset({"government_id"})),
+    # `passport_no` is covered by the pre-existing `passport` rule (the
+    # `_` boundary), not the new `passportno` alternative — pinned here
+    # as a realistic shape regardless of which rule credits it.
+    ("passport_no", frozenset({"government_id"})),
+    ("vat_number", frozenset({"government_id"})),
+    ("vat_numbers", frozenset({"government_id"})),
+    ("vat_no", frozenset({"government_id"})),
+    ("vat_id", frozenset({"government_id"})),
+    ("vat_registration", frozenset({"government_id"})),
     # location
     ("lat", frozenset({"location"})),
     ("latitude", frozenset({"location"})),
@@ -386,8 +424,16 @@ class TestRuleTableInvariants:
         #     rule
         #   - +1 government_id dni/nif/codice_fiscale/curp/nric/bsn/pesel
         #     rule
-        # Total: 55 + 3 = 58.
-        assert RULE_COUNT == 58
+        # Subtotal: 55 + 3 = 58.
+        #
+        # Pre-publish SaaS hardening (2026-05-31) — full-word / plural /
+        # concatenated no-misconfig leaks that classified to `public`:
+        #   - +1 credential recovery_codes/backup_code(s)/seedphrase/
+        #     clientsecret rule
+        #   - +1 government_id social_security_number/national_insurance_*/
+        #     social_insurance_*/passportno/passportnumber/vat_* rule
+        # Total: 58 + 2 = 60.
+        assert RULE_COUNT == 60
 
     def test_every_category_has_at_least_one_rule(self) -> None:
         # Every category in PII_CATEGORIES must be producible by at
