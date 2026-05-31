@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -373,6 +375,211 @@ def test_policy_route_surfaces_yaml_parse_error(
     assert body["block_source"] == "default"
     assert body["yaml_parse_error"] is not None
     assert "block" in body["yaml_parse_error"]
+
+
+# ---------- policy_drift signal ----------
+
+
+SENTINEL_REL = "schemabrain/.serve_policy_mtime"
+YAML_REL = "schemabrain/pii_policy.yaml"
+
+
+def _write_sentinel(tmp_path: Path, payload: dict[str, object]) -> Path:
+    """Write the sentinel JSON serve would have written at startup."""
+    sentinel = tmp_path / SENTINEL_REL
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    return sentinel
+
+
+def _write_yaml(tmp_path: Path, body: str = "version: 1\nblock: []\n") -> Path:
+    yaml_path = tmp_path / YAML_REL
+    yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    yaml_path.write_text(body, encoding="utf-8")
+    return yaml_path
+
+
+def test_policy_drift_field_present_in_response_shape(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The response shape MUST always carry the `policy_drift` field
+    so the TypeScript PolicyResponse interface is honoured."""
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    body = resp.json()
+    assert "policy_drift" in body
+    drift = body["policy_drift"]
+    assert set(drift.keys()) == {"detected", "recorded_at", "current_mtime"}
+
+
+def test_policy_drift_undetected_when_no_sentinel(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No sentinel + no YAML — drift is False and both timestamps are
+    None (this is the steady state when neither serve nor a YAML file
+    is around)."""
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    drift = resp.json()["policy_drift"]
+    assert drift["detected"] is False
+    assert drift["recorded_at"] is None
+    assert drift["current_mtime"] is None
+
+
+def test_policy_drift_undetected_when_sentinel_matches_yaml_mtime(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sentinel + YAML present + recorded mtime ≈ current mtime →
+    no drift; both timestamps populated."""
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    yaml_path = _write_yaml(tmp_path)
+    mtime = yaml_path.stat().st_mtime
+    _write_sentinel(
+        tmp_path,
+        {
+            "policy_path": str(yaml_path.resolve()),
+            "recorded_at_mtime": mtime,
+            "recorded_at_iso": "2026-05-31T12:00:00+00:00",
+            "yaml_existed_at_boot": True,
+        },
+    )
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    drift = resp.json()["policy_drift"]
+    assert drift["detected"] is False
+    assert drift["recorded_at"] == "2026-05-31T12:00:00+00:00"
+    assert drift["current_mtime"] is not None
+
+
+def test_policy_drift_detected_when_yaml_edited_after_serve(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sentinel records an mtime; YAML is then edited so its mtime
+    bumps above the recorded value → drift fires."""
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    yaml_path = _write_yaml(tmp_path)
+    original_mtime = yaml_path.stat().st_mtime
+    _write_sentinel(
+        tmp_path,
+        {
+            "policy_path": str(yaml_path.resolve()),
+            "recorded_at_mtime": original_mtime,
+            "recorded_at_iso": "2026-05-31T12:00:00+00:00",
+            "yaml_existed_at_boot": True,
+        },
+    )
+    # Wait long enough to bump mtime beyond the 1ms epsilon, then
+    # rewrite the YAML.
+    time.sleep(0.05)
+    yaml_path.write_text(
+        "version: 1\nblock:\n  - contact\n",
+        encoding="utf-8",
+    )
+
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    drift = resp.json()["policy_drift"]
+    assert drift["detected"] is True
+    assert drift["recorded_at"] == "2026-05-31T12:00:00+00:00"
+    assert drift["current_mtime"] is not None
+    # current_mtime must be DIFFERENT from recorded (post-edit).
+
+
+def test_policy_drift_detected_when_yaml_deleted_after_serve(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sentinel says yaml existed at boot; YAML is now gone → drift."""
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    # Sentinel says YAML was there at boot, but no YAML file exists now.
+    fake_yaml_path = (tmp_path / YAML_REL).resolve()
+    _write_sentinel(
+        tmp_path,
+        {
+            "policy_path": str(fake_yaml_path),
+            "recorded_at_mtime": 1_717_000_000.0,
+            "recorded_at_iso": "2026-05-31T12:00:00+00:00",
+            "yaml_existed_at_boot": True,
+        },
+    )
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    drift = resp.json()["policy_drift"]
+    assert drift["detected"] is True
+    assert drift["recorded_at"] == "2026-05-31T12:00:00+00:00"
+    assert drift["current_mtime"] is None
+
+
+def test_policy_drift_detected_when_yaml_appears_after_yaml_less_serve(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sentinel says yaml DID NOT exist at boot; YAML appears later → drift."""
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    yaml_path = _write_yaml(tmp_path)
+    _write_sentinel(
+        tmp_path,
+        {
+            "policy_path": str(yaml_path.resolve()),
+            "recorded_at_mtime": None,
+            "recorded_at_iso": "2026-05-31T12:00:00+00:00",
+            "yaml_existed_at_boot": False,
+        },
+    )
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    drift = resp.json()["policy_drift"]
+    assert drift["detected"] is True
+    assert drift["recorded_at"] == "2026-05-31T12:00:00+00:00"
+    assert drift["current_mtime"] is not None
+
+
+def test_policy_drift_undetected_when_sentinel_path_differs(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sentinel was written by a serve watching a different YAML path
+    — sidecar can't reason about that drift, so it reports False."""
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    yaml_path = _write_yaml(tmp_path)
+    _write_sentinel(
+        tmp_path,
+        {
+            "policy_path": "/some/other/elsewhere/pii_policy.yaml",
+            "recorded_at_mtime": yaml_path.stat().st_mtime + 100.0,
+            "recorded_at_iso": "2026-05-31T12:00:00+00:00",
+            "yaml_existed_at_boot": True,
+        },
+    )
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    drift = resp.json()["policy_drift"]
+    # Sentinel path doesn't match sidecar's hardcoded path — sidecar
+    # has no way to verify, so reports False but keeps recorded_at
+    # populated so the operator can see a sentinel exists.
+    assert drift["detected"] is False
+    assert drift["recorded_at"] == "2026-05-31T12:00:00+00:00"
+
+
+def test_policy_drift_undetected_when_sentinel_malformed_json(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sentinel with broken JSON is treated as no-sentinel —
+    fail-closed posture: better silent than misleading."""
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    yaml_path = _write_yaml(tmp_path)
+    sentinel = tmp_path / SENTINEL_REL
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text("{not valid json", encoding="utf-8")
+
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    drift = resp.json()["policy_drift"]
+    assert drift["detected"] is False
+    assert drift["recorded_at"] is None
+    # current_mtime is still surfaced — operator can see YAML is here.
+    assert drift["current_mtime"] is not None
+    # silence unused-warning
+    _ = yaml_path
 
 
 def test_policy_route_operator_override_origin_visible(

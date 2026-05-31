@@ -3311,6 +3311,106 @@ def _cmd_eval(
     return 0
 
 
+_SERVE_POLICY_MTIME_SENTINEL = "./schemabrain/.serve_policy_mtime"
+
+
+def _record_serve_policy_mtime(policy_path: str) -> None:
+    """Write a JSON sentinel describing the policy file serve resolved
+    against at startup.
+
+    The sidecar reads this sentinel on every ``/api/pii/policy``
+    request to detect drift: when the YAML mtime on disk diverges
+    from what serve recorded, the dashboard surfaces a "restart
+    required" banner. Same posture ``schemabrain policy show``
+    already takes — both read the live YAML, but the running
+    firewall is frozen at startup.
+
+    The sentinel lives at ``./schemabrain/.serve_policy_mtime``
+    (CWD-relative, sibling of ``pii_policy.yaml``). Write is
+    best-effort: any ``OSError`` is logged to stderr and serve
+    continues — drift detection is observability, not safety.
+
+    Payload schema (JSON object with stable keys):
+
+        {
+            "policy_path": "/abs/path/to/pii_policy.yaml",
+            "recorded_at_mtime": 1717112233.456 | null,
+            "recorded_at_iso": "2026-05-31T12:30:33+00:00",
+            "yaml_existed_at_boot": true | false
+        }
+
+    ``recorded_at_mtime`` is null when the YAML did not exist at
+    boot (the sidecar still surfaces a drift signal if a YAML
+    appears later).
+    """
+    import json
+    from datetime import UTC, datetime
+
+    sentinel = Path(_SERVE_POLICY_MTIME_SENTINEL)
+    try:
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(
+            f"schemabrain serve: cannot create sentinel directory "
+            f"{sentinel.parent}: {exc}. Drift detection disabled.",
+            file=sys.stderr,
+        )
+        return
+
+    path = Path(policy_path).expanduser()
+    try:
+        resolved_path = str(path.resolve())
+    except OSError as exc:
+        print(
+            f"schemabrain serve: cannot resolve {policy_path}: {exc}. Drift detection disabled.",
+            file=sys.stderr,
+        )
+        return
+
+    try:
+        stat = path.stat()
+        yaml_existed = True
+        mtime: float | None = stat.st_mtime
+    except FileNotFoundError:
+        yaml_existed = False
+        mtime = None
+    except OSError as exc:
+        print(
+            f"schemabrain serve: cannot stat {policy_path}: {exc}. Drift detection disabled.",
+            file=sys.stderr,
+        )
+        return
+
+    payload = {
+        "policy_path": resolved_path,
+        "recorded_at_mtime": mtime,
+        "recorded_at_iso": datetime.now(UTC).isoformat(timespec="seconds"),
+        "yaml_existed_at_boot": yaml_existed,
+    }
+    try:
+        sentinel.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    except OSError as exc:
+        print(
+            f"schemabrain serve: cannot write sentinel {sentinel}: {exc}. "
+            f"Drift detection disabled.",
+            file=sys.stderr,
+        )
+
+
+def _delete_stale_serve_policy_sentinel() -> None:
+    """Remove the sentinel from a prior serve boot.
+
+    Called when the current serve is using the ``--pii-block`` CLI
+    flag (default OR explicit), so YAML drift is meaningless — the
+    YAML isn't being read, and a leftover sentinel from an earlier
+    YAML-driven serve would fire a misleading banner. Best-effort.
+    """
+    import contextlib
+
+    with contextlib.suppress(OSError):
+        Path(_SERVE_POLICY_MTIME_SENTINEL).unlink(missing_ok=True)
+
+
 def _try_load_policy_yaml_block(
     policy_path: str | None,
 ) -> frozenset[PIICategory] | None:  # type: ignore[name-defined]  # noqa: F821 — runtime import
@@ -3460,6 +3560,16 @@ def _cmd_serve(
             "enforced but not persisted to mcp_audit.",
             file=sys.stderr,
         )
+
+    # Record the YAML state serve resolved against so the dashboard
+    # sidecar can detect drift between the running firewall and the
+    # operator's edits to pii_policy.yaml. Only meaningful when the
+    # YAML is the source of truth — when --pii-block is explicit, the
+    # CLI flag overrides YAML and drift is by-definition irrelevant.
+    if pii_block_csv is None:
+        _record_serve_policy_mtime(policy_path or _DEFAULT_POLICY_PATH)
+    else:
+        _delete_stale_serve_policy_sentinel()
 
     source_url = _resolve_url_source(positional=positional_url, url_env=url_env)
     if source_url is None:

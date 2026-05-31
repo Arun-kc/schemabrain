@@ -10,6 +10,7 @@ import type {
   PIICategory,
   PolicyCategoryRollup,
   PolicyColumnEntry,
+  PolicyDriftState,
   PolicyOrigin,
   PolicyResponse,
 } from "@/lib/types";
@@ -70,6 +71,7 @@ function PolicyContent({ data }: { data: PolicyResponse }) {
       />
 
       {data.yaml_parse_error && <YamlParseError error={data.yaml_parse_error} />}
+      {data.policy_drift.detected && <DriftBanner drift={data.policy_drift} />}
 
       <div className={styles.posture}>
         <ActiveBlockPanel
@@ -122,6 +124,26 @@ function YamlParseError({ error }: { error: string }) {
       <span className={styles.parseErrorLabel}>pii_policy.yaml failed to parse</span>
       <span className={styles.parseErrorBody}>
         falling back to catastrophic floor · {error}
+      </span>
+    </div>
+  );
+}
+
+/* ─────────── policy drift alert ─────────── */
+
+function DriftBanner({ drift }: { drift: PolicyDriftState }) {
+  const recorded = drift.recorded_at ?? "unknown";
+  const current = drift.current_mtime ?? "missing";
+  return (
+    <div className={styles.driftBanner} role="alert">
+      <span className={styles.driftBannerLabel}>
+        pii_policy.yaml changed since serve started
+      </span>
+      <span className={styles.driftBannerBody}>
+        serve resolved policy at <code className={styles.inlineCode}>{recorded}</code>; YAML
+        last edited at <code className={styles.inlineCode}>{current}</code>. The running
+        firewall is enforcing the older policy until you restart{" "}
+        <code className={styles.inlineCode}>schemabrain serve</code>.
       </span>
     </div>
   );

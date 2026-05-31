@@ -624,6 +624,118 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
     )
 
     _POLICY_YAML_PATH = Path("./schemabrain/pii_policy.yaml")
+    _SENTINEL_PATH = Path("./schemabrain/.serve_policy_mtime")
+
+    def _compute_policy_drift(yaml_path: Path) -> dict[str, Any]:
+        """Compare ``schemabrain serve``'s recorded YAML mtime against
+        the current on-disk YAML mtime.
+
+        Returns a dict with stable keys:
+
+            {
+                "detected": bool,
+                "recorded_at": iso8601 | None,
+                "current_mtime": iso8601 | None,
+            }
+
+        ``detected`` fires when:
+          - sentinel records ``yaml_existed_at_boot=True`` AND the
+            current YAML is missing (operator removed the file),
+          - sentinel mtime differs from the current YAML mtime by
+            more than 1ms (operator edited the file),
+          - sentinel records ``yaml_existed_at_boot=False`` AND a
+            YAML appears now (operator created the file).
+
+        Returns ``detected=False`` when:
+          - no sentinel exists (no serve running OR serve used
+            ``--pii-block`` CLI override),
+          - sentinel's recorded ``policy_path`` does not resolve to
+            ``yaml_path`` (serve was watching a different file),
+          - any stat/parse error (fail-closed: better silent than
+            misleading).
+        """
+        import json
+        from datetime import UTC, datetime
+
+        def _iso_from_mtime(mtime: float) -> str:
+            return datetime.fromtimestamp(mtime, tz=UTC).isoformat(timespec="seconds")
+
+        def _current_mtime_iso() -> str | None:
+            try:
+                return _iso_from_mtime(yaml_path.stat().st_mtime)
+            except OSError:
+                return None
+
+        if not _SENTINEL_PATH.exists():
+            return {
+                "detected": False,
+                "recorded_at": None,
+                "current_mtime": _current_mtime_iso(),
+            }
+
+        try:
+            payload = json.loads(_SENTINEL_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {
+                "detected": False,
+                "recorded_at": None,
+                "current_mtime": _current_mtime_iso(),
+            }
+
+        recorded_iso = payload.get("recorded_at_iso")
+        recorded_mtime = payload.get("recorded_at_mtime")
+        sentinel_path = payload.get("policy_path")
+        yaml_existed = bool(payload.get("yaml_existed_at_boot"))
+
+        try:
+            resolved_yaml = str(yaml_path.expanduser().resolve())
+        except OSError:
+            return {
+                "detected": False,
+                "recorded_at": recorded_iso,
+                "current_mtime": None,
+            }
+
+        # Sentinel watched a different file — drift signal isn't meaningful.
+        if sentinel_path != resolved_yaml:
+            return {
+                "detected": False,
+                "recorded_at": recorded_iso,
+                "current_mtime": _current_mtime_iso(),
+            }
+
+        if not yaml_path.exists():
+            return {
+                "detected": yaml_existed,
+                "recorded_at": recorded_iso,
+                "current_mtime": None,
+            }
+
+        try:
+            current_mtime_float = yaml_path.stat().st_mtime
+        except OSError:
+            return {
+                "detected": False,
+                "recorded_at": recorded_iso,
+                "current_mtime": None,
+            }
+
+        current_iso = _iso_from_mtime(current_mtime_float)
+        if recorded_mtime is None:
+            # Serve booted with no YAML; a YAML appeared since.
+            return {
+                "detected": True,
+                "recorded_at": recorded_iso,
+                "current_mtime": current_iso,
+            }
+
+        # 1ms epsilon to avoid float precision false positives.
+        drifted = abs(current_mtime_float - float(recorded_mtime)) > 0.001
+        return {
+            "detected": drifted,
+            "recorded_at": recorded_iso,
+            "current_mtime": current_iso,
+        }
 
     def _load_active_block() -> tuple[frozenset[PIICategory], str, str | None]:
         """(active_block, source_label, error_message)."""
@@ -730,6 +842,7 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
             "per_column": per_column,
             "diff_preview": diff_preview,
             "yaml_parse_error": yaml_error,
+            "policy_drift": _compute_policy_drift(_POLICY_YAML_PATH),
         }
 
 

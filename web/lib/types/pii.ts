@@ -108,6 +108,21 @@ export interface PolicyDiffPreview {
   if_none_blocked: number;
 }
 
+/**
+ * Drift between schemabrain serve's recorded YAML mtime and the
+ * current on-disk YAML mtime. `detected=true` means the operator
+ * edited `pii_policy.yaml` after serve booted, so the running
+ * firewall is enforcing a stale policy; the dashboard surfaces a
+ * "restart `schemabrain serve`" banner. Both timestamps are ISO8601
+ * UTC; either may be null when serve isn't running or there's no
+ * YAML on disk.
+ */
+export interface PolicyDriftState {
+  detected: boolean;
+  recorded_at: string | null;
+  current_mtime: string | null;
+}
+
 export interface PolicyResponse {
   source_connection_id: string;
   policy_path: string;
@@ -119,4 +134,5 @@ export interface PolicyResponse {
   per_column: readonly PolicyColumnEntry[];
   diff_preview: PolicyDiffPreview;
   yaml_parse_error: string | null;
+  policy_drift: PolicyDriftState;
 }
