@@ -338,6 +338,24 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
         ),
         frozenset({"credential"}),
     ),
+    # Pre-publish SaaS hardening (2026-05-31): full-word / plural /
+    # concatenated credential shapes the existing rules missed. The
+    # `_kw` boundary defeats the `recovery_codes` plural (the trailing
+    # `s` is alphanumeric), and the underscore forms `seed_phrase` /
+    # `client_secret` don't match the concatenated `seedphrase` /
+    # `clientsecret`; `backup_code(s)` had no rule at all. All are
+    # catastrophic auth / key material — they classified to `public`
+    # with no operator misconfig pre-fix.
+    (
+        _kw(
+            "recovery_codes",
+            "backup_code",
+            "backup_codes",
+            "seedphrase",
+            "clientsecret",
+        ),
+        frozenset({"credential"}),
+    ),
     # ---- government_id ----
     (_kw("ssn", "tin", "nino"), frozenset({"government_id"})),
     (_kw("passport"), frozenset({"government_id"})),
@@ -482,6 +500,36 @@ _RULES: Final[tuple[tuple[re.Pattern[str], frozenset[PIICategory]], ...]] = (
             "nric",
             "bsn",
             "pesel",
+        ),
+        frozenset({"government_id"}),
+    ),
+    # Pre-publish SaaS hardening (2026-05-31): full-word / concatenated
+    # national-ID shapes that classified to `public`. The abbreviations
+    # (`ssn` / `nino`) matched but the spelled-out `social_security_number`
+    # / `national_insurance_number` did not; `passport` missed the
+    # concatenated `passportno` / `passportnumber`; VAT registration
+    # numbers (EU business tax IDs, the sibling of `ein` / `tax_id`) had
+    # no rule, and the `_kw` trailing-boundary missed the `vat_numbers`
+    # plural. Both `_number` and `_no` abbreviation forms are listed for
+    # each identifier so the set is symmetric. Bare `sin` is deliberately
+    # EXCLUDED — it false-positives on trig / `sin_*` columns and would
+    # wrongly trip the always-on catastrophic floor; the unambiguous
+    # `social_insurance_number` is covered instead.
+    (
+        _kw(
+            "social_security_number",
+            "social_security_no",
+            "national_insurance_number",
+            "national_insurance_no",
+            "social_insurance_number",
+            "social_insurance_no",
+            "passportno",
+            "passportnumber",
+            "vat_number",
+            "vat_numbers",
+            "vat_no",
+            "vat_id",
+            "vat_registration",
         ),
         frozenset({"government_id"}),
     ),

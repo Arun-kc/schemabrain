@@ -109,7 +109,7 @@ from schemabrain.observability.instrument import (
     _safe_audit_write,
     _safe_emit,
 )
-from schemabrain.pii import PIICategory
+from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES, PIICategory
 from schemabrain.semantic.compiler import (
     AmbiguousJoinError as CompilerAmbiguousJoinError,
 )
@@ -418,7 +418,7 @@ def build_server(
     event_bus: EventBus | None = None,
     server_session_id: str | None = None,
     audit_writer: AuditWriter | None = None,
-    pii_block: frozenset[PIICategory] = frozenset(),
+    pii_block: frozenset[PIICategory] = CATASTROPHIC_LEAK_CATEGORIES,
     tracer: Tracer | None = None,
 ) -> FastMCP:
     """Build (but do not run) a configured `FastMCP` app.
@@ -456,6 +456,17 @@ def build_server(
     OpenLIT, otel-tui, etc.). Constructed via `init_tracer_from_env()`
     in `_cmd_serve`; defaults to None so test contexts and the
     `schemabrain[otel]`-not-installed case pay zero overhead.
+
+    `pii_block` is the operator-policy set of PII categories to refuse
+    on. It defaults to `CATASTROPHIC_LEAK_CATEGORIES` (credential /
+    payment_card / government_id) to match the CLI's `schemabrain serve`
+    default, so a library consumer who omits it inherits the safe policy
+    rather than an empty one (SF-005). The catastrophic-leak floor is
+    unioned into the effective block at every read path regardless, so a
+    narrower set never disables it — `pii_block` only widens enforcement.
+    NOTE: a non-empty policy activates the `get_metric` fail-closed gate,
+    which refuses when a touched column has no PII tags (an un-indexed
+    store) rather than returning unenforced rows.
     """
     _bus = event_bus if event_bus is not None else NullEventBus()
     _session_id = server_session_id or str(uuid.uuid4())
@@ -1947,7 +1958,7 @@ def run_stdio(
     event_bus: EventBus | None = None,
     server_session_id: str | None = None,
     audit_writer: AuditWriter | None = None,
-    pii_block: frozenset[PIICategory] = frozenset(),
+    pii_block: frozenset[PIICategory] = CATASTROPHIC_LEAK_CATEGORIES,
     tracer: Tracer | None = None,
 ) -> None:
     """Build the server and run it forever on stdio.
@@ -1973,6 +1984,11 @@ def run_stdio(
     would corrupt the MCP frame. Skipped entirely when the CLI (or any
     other caller) already attached our named handler, so the caller's
     chosen verbosity is respected.
+
+    `pii_block` mirrors `build_server`: it defaults to
+    `CATASTROPHIC_LEAK_CATEGORIES` so a thin wrapper around this stdio
+    entrypoint that omits the argument inherits the safe operator policy
+    (SF-005), not an empty one.
     """
     import logging as _logging
 
