@@ -115,12 +115,13 @@ def test_policy_route_per_column_verdict(
     assert email_entry["categories"] == ["contact"]
 
 
-def test_policy_route_describe_blocked_when_only_floor_intersects(
+def test_policy_route_floor_blocked_when_only_floor_intersects(
     client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Column tagged `credential` (in catastrophic floor) but active
-    block is just `contact`: get_metric path allows, but describe_*
-    blocks via the floor union."""
+    block is just `contact`: the always-on floor blocks it at every read
+    gate (describe_* AND get_metric), so the verdict is `floor_blocked`,
+    not the operator's `blocked` (the operator never listed credential)."""
     monkeypatch.chdir(tmp_path)
     store = SQLiteStore(store_path)
     try:
@@ -167,10 +168,93 @@ def test_policy_route_describe_blocked_when_only_floor_intersects(
     body = resp.json()
     token_entry = next(e for e in body["per_column"] if e["column_name"] == "token")
     # `credential` IS in the catastrophic floor but NOT in the
-    # operator-configured `{contact}` block — so describe_* would
-    # refuse via the floor union, but get_metric would let it through.
-    # The verdict surfaces the "describe-only" intermediate state.
-    assert token_entry["effective_enforcement"] == "describe_blocked"
+    # operator-configured `{contact}` block — so it is blocked by the
+    # always-on floor (at describe_* AND get_metric), not by the
+    # operator's policy. The verdict attributes that to `floor_blocked`.
+    assert token_entry["effective_enforcement"] == "floor_blocked"
+
+
+def test_policy_route_three_verdict_buckets(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """All three verdicts in one place, pinning the corrected attribution
+    model: `blocked` = in the operator's active policy; `floor_blocked` =
+    not in the operator's policy but caught by the always-on catastrophic
+    floor (enforced at describe_* AND get_metric); `allowed` = neither."""
+    monkeypatch.chdir(tmp_path)
+    store = SQLiteStore(store_path)
+    try:
+        store.write_table(
+            Table(
+                name="accounts",
+                schema_name="public",
+                columns=(
+                    Column(
+                        name="id",
+                        table_name="accounts",
+                        schema_name="public",
+                        data_type="BIGINT",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                    Column(
+                        name="email",
+                        table_name="accounts",
+                        schema_name="public",
+                        data_type="TEXT",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                    Column(
+                        name="ssn",
+                        table_name="accounts",
+                        schema_name="public",
+                        data_type="TEXT",
+                        nullable=True,
+                        ordinal_position=3,
+                    ),
+                    Column(
+                        name="city",
+                        table_name="accounts",
+                        schema_name="public",
+                        data_type="TEXT",
+                        nullable=True,
+                        ordinal_position=4,
+                    ),
+                ),
+            ),
+            source_connection_id=SRC,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=SRC,
+            qualified_table="public.accounts",
+            tags={
+                "email": ("pii", frozenset({"contact"})),
+                "ssn": ("pii", frozenset({"government_id"})),
+                "city": ("internal", frozenset({"location"})),
+            },
+        )
+    finally:
+        store.close()
+    yaml_dir = tmp_path / "schemabrain"
+    yaml_dir.mkdir()
+    # Operator blocks `contact` only — NOT government_id, NOT location.
+    (yaml_dir / "pii_policy.yaml").write_text(
+        "version: 1\nblock:\n  - contact\n",
+        encoding="utf-8",
+    )
+
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    assert resp.status_code == 200
+    verdicts = {e["column_name"]: e["effective_enforcement"] for e in resp.json()["per_column"]}
+    # email: contact IS in the operator's active policy → blocked.
+    assert verdicts["email"] == "blocked"
+    # ssn: government_id is a floor category the operator never listed →
+    # floor_blocked (the floor catches it at describe_* AND get_metric).
+    assert verdicts["ssn"] == "floor_blocked"
+    # city: location is neither in the policy nor the floor → allowed.
+    assert verdicts["city"] == "allowed"
 
 
 def test_policy_route_floor_holds_when_yaml_block_is_empty(
@@ -179,15 +263,16 @@ def test_policy_route_floor_holds_when_yaml_block_is_empty(
     """Pin the most direct circumvention attempt: operator writes a
     YAML with `block: []` to suppress an over-eager block, expecting
     enforcement to be off. The catastrophic floor MUST still gate the
-    describe-side verdict for any column tagged with credential /
-    payment_card / government_id — otherwise an empty block would
-    silently re-expose every secret column the heuristic classifier
-    already tagged.
+    verdict for any column tagged with credential / payment_card /
+    government_id — at every read gate (describe_* AND get_metric) —
+    otherwise an empty block would silently re-expose every secret
+    column the heuristic classifier already tagged.
 
     Without this pin, a future refactor that introduces an
     `if not active_block: effective_block = active_block`
-    short-circuit at sidecar.py:641 would regress to verdict='allowed'
-    for credential columns and the rest of the suite would still pass.
+    short-circuit at the effective_block union would regress to
+    verdict='allowed' for credential columns and the rest of the suite
+    would still pass.
     """
     monkeypatch.chdir(tmp_path)
     store = SQLiteStore(store_path)
@@ -239,19 +324,19 @@ def test_policy_route_floor_holds_when_yaml_block_is_empty(
     # YAML was loaded successfully (parse error path NOT taken).
     assert body["block_source"] == "yaml"
     assert body["yaml_parse_error"] is None
-    # Active block is empty — operator's intent honoured at the
-    # metric-aggregate layer.
+    # Active block is empty — the operator's editable policy is off.
     assert body["active_block"] == []
-    # But the describe-side effective block STILL surfaces the floor.
+    # But the effective block STILL surfaces the always-on floor (which
+    # get_metric also enforces — this is not a "describe-only" state).
     assert set(body["effective_block_for_describe"]) == {
         "credential",
         "payment_card",
         "government_id",
     }
     # And the per-column verdict for the credential token row is
-    # describe_blocked — NOT allowed. This is the load-bearing assertion.
+    # floor_blocked — NOT allowed. This is the load-bearing assertion.
     token_entry = next(e for e in body["per_column"] if e["column_name"] == "token")
-    assert token_entry["effective_enforcement"] == "describe_blocked"
+    assert token_entry["effective_enforcement"] == "floor_blocked"
     # Belt-and-suspenders: no per_column row whose categories intersect
     # the floor may ever report 'allowed' regardless of YAML state.
     floor = {"credential", "payment_card", "government_id"}
@@ -267,9 +352,10 @@ def test_policy_route_diff_preview_floor_holds_when_yaml_block_is_empty(
     client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Companion pin for the diff_preview branch under the same
-    empty-block scenario. `current_blocked` reflects the metric-block
-    posture (empty → 0), but `if_catastrophic_only` must still count
-    every column tagged with a floor category."""
+    empty-block scenario. `current_blocked` counts the operator's
+    active-policy blocks (empty → 0), but `if_catastrophic_only` must
+    still count every column tagged with a floor category (the floor
+    blocks them everywhere regardless of the operator's policy)."""
     monkeypatch.chdir(tmp_path)
     store = SQLiteStore(store_path)
     try:
@@ -316,7 +402,7 @@ def test_policy_route_diff_preview_floor_holds_when_yaml_block_is_empty(
     resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
     body = resp.json()
     diff = body["diff_preview"]
-    # Operator's metric-block posture is empty.
+    # Operator's active-policy block is empty.
     assert diff["current_blocked"] == 0
     # But the catastrophic-only preview still shows the token row.
     assert diff["if_catastrophic_only"] == 1

@@ -619,8 +619,11 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
     were restarted in the same working directory.
 
     Per-column verdict: each tag row carries an `effective_enforcement`
-    field (one of `allowed` / `describe_blocked` / `blocked`) computed
-    from the column's categories intersected with (active_block | catastrophic_floor).
+    field (one of `allowed` / `floor_blocked` / `blocked`). `blocked` =
+    the column's category is in the operator's active policy block;
+    `floor_blocked` = not in the operator's block, but caught by the
+    always-on catastrophic-leak floor (enforced at every read gate —
+    `describe_*` AND `get_metric`); `allowed` = neither.
     """
     from schemabrain.core.store import SQLiteStore
     from schemabrain.pii.categories import (
@@ -801,8 +804,9 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
         active_block, block_source, yaml_error = _load_active_block()
         # Floor union is UNCONDITIONAL — even when active_block is the
         # empty frozenset (operator wrote `block: []` to suppress an
-        # over-eager block), describe-side enforcement must still floor
-        # on the catastrophic-leak triple. Do NOT introduce an
+        # over-eager block), the catastrophic-leak triple is still
+        # enforced at EVERY read gate (`describe_*` AND `get_metric` —
+        # get_metric.py unions the same floor). Do NOT introduce an
         # `if not active_block` short-circuit here — pinned by
         # `test_policy_route_floor_holds_when_yaml_block_is_empty`.
         effective_block = active_block | CATASTROPHIC_LEAK_CATEGORIES
@@ -819,12 +823,19 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
         }
         per_column: list[dict[str, Any]] = []
         for qt, col, sens, cats, origin in rows:
-            in_metric_block = bool(cats & active_block)
-            in_describe_block = bool(cats & effective_block)
-            if in_metric_block:
+            # `blocked` = the operator's active policy blocks this
+            # category. `floor_blocked` = the operator's policy does NOT
+            # list it, but the always-on catastrophic floor does — and
+            # that floor is enforced everywhere, incl. get_metric, so the
+            # column is genuinely blocked, not "describe-only". The split
+            # is attribution (your editable policy vs the floor you can't
+            # disable), not which tool enforces it.
+            in_policy_block = bool(cats & active_block)
+            in_effective_block = bool(cats & effective_block)
+            if in_policy_block:
                 verdict = "blocked"
-            elif in_describe_block:
-                verdict = "describe_blocked"
+            elif in_effective_block:
+                verdict = "floor_blocked"
             else:
                 verdict = "allowed"
             per_column.append(
@@ -862,9 +873,12 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
 
         # Diff preview: how many columns would each posture change?
         # "all" (every PIICategory blocks); "catastrophic_only" (just
-        # the floor); "none" (empty block, but describe still uses
-        # the floor). Computed from per-column intersections so the
-        # operator sees the concrete impact of switching postures.
+        # the always-on floor); "none" (empty operator block — but the
+        # floor still blocks its columns at every read gate). Computed
+        # from per-column intersections so the operator sees the concrete
+        # impact of switching postures. `current_blocked` counts only
+        # columns in the operator's ACTIVE POLICY block; floor-only
+        # columns surface separately as `if_catastrophic_only`.
         all_block: frozenset[PIICategory] = frozenset(PII_CATEGORIES_ORDERED)
         current_blocked = sum(
             1 for entry in per_column if entry["effective_enforcement"] == "blocked"

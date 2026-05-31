@@ -3847,10 +3847,10 @@ def _cmd_policy_show(
     print(f"block source:  {block_source}")
     print(
         f"active block:  "
-        f"{','.join(sorted(active_block)) if active_block else '(empty — enforcement off)'}"
+        f"{','.join(sorted(active_block)) if active_block else '(empty — operator policy off; floor still enforced)'}"
     )
     print(
-        f"catastrophic floor (always-on for describe_*): "
+        f"catastrophic floor (always-on at describe_* AND get_metric): "
         f"{','.join(sorted(CATASTROPHIC_LEAK_CATEGORIES))}"
     )
     print()
@@ -3868,21 +3868,29 @@ def _cmd_policy_show(
             print(f"  {qt}")
             current_table = qt
         cat_str = ",".join(sorted(cats)) if cats else "-"
-        # Effective block check: would the active block refuse this
-        # column? `describe_entity` always unions with catastrophic;
-        # `get_metric` uses operator block only. Show both.
-        effective_for_get_metric = bool(cats & active_block)
-        effective_for_describe = bool(cats & (active_block | CATASTROPHIC_LEAK_CATEGORIES))
-        if effective_for_get_metric:
+        # Verdict attribution: `blocked` = the column's category is in
+        # the operator's active policy block. `floor-blocked` = not in
+        # the operator's block, but caught by the always-on catastrophic
+        # floor — which is enforced at EVERY read gate (`describe_*` AND
+        # `get_metric`), so it is genuinely blocked, not "describe-only".
+        # The split tells the operator what they can change (blocked) vs
+        # what the floor enforces no matter what (floor-blocked).
+        in_policy_block = bool(cats & active_block)
+        in_effective_block = bool(cats & (active_block | CATASTROPHIC_LEAK_CATEGORIES))
+        if in_policy_block:
             verdict = "blocked"
-        elif effective_for_describe:
-            verdict = "describe-blocked"
+        elif in_effective_block:
+            verdict = "floor-blocked"
         else:
             verdict = "allowed"
         marker = "*" if origin == "operator" else " "
         print(f"    {marker} {col:30s} {sens:13s} {cat_str:30s} {origin:9s} {verdict}")
     print()
-    print("legend: `*` = operator override · verdict columns are advisory")
+    print(
+        "legend: `*` = operator override · `blocked` = your active policy · "
+        "`floor-blocked` = always-on catastrophic floor (can't be disabled) · "
+        "verdicts are advisory"
+    )
     return 0
 
 
