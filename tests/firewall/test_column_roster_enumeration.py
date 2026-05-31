@@ -165,20 +165,62 @@ def test_column_not_found_message_preserves_qualified_name_prefix(store) -> None
 
 
 def test_safe_column_suggestion_is_allowed(store) -> None:
-    """A close match to the only non-catastrophic column (``id``) is a
-    legitimate suggestion — the redaction filter must not be so
-    aggressive that it suppresses safe recovery hints."""
-    _seed_users_with_three_catastrophic_columns(store)
+    """A close match to a non-catastrophic column is a legitimate
+    suggestion — the redaction filter must not be so aggressive that
+    it suppresses safe recovery hints. Uses a fresh fixture with a
+    deterministically-matchable safe column (`user_id` vs `usr_id`,
+    SequenceMatcher ratio 0.77 > cutoff 0.6) so the positive
+    assertion is load-bearing — NOT vacuously true."""
+    users = Table(
+        name="users",
+        schema_name="public",
+        columns=(
+            Column(
+                name="id",
+                table_name="users",
+                schema_name="public",
+                data_type="bigint",
+                nullable=False,
+                ordinal_position=1,
+                is_primary_key=True,
+            ),
+            Column(
+                name="user_id",
+                table_name="users",
+                schema_name="public",
+                data_type="bigint",
+                nullable=False,
+                ordinal_position=2,
+            ),
+            Column(
+                name="password_hash",
+                table_name="users",
+                schema_name="public",
+                data_type="text",
+                nullable=False,
+                ordinal_position=3,
+            ),
+        ),
+    )
+    store.write_table(users, source_connection_id=SOURCE_ID)
+    store.write_column_pii_tags(
+        source_connection_id=SOURCE_ID,
+        qualified_table="public.users",
+        tags={"password_hash": ("pii", frozenset({"credential"}))},
+    )
     with pytest.raises(ColumnNotFoundError) as excinfo:
         describe_column_impl(
             store=store,
             source_connection_id=SOURCE_ID,
-            qualified_name="public.users.iD",
+            qualified_name="public.users.usr_id",
         )
     msg = str(excinfo.value)
-    # Lowercase difflib match should suggest 'id'. The safe column may
-    # surface as a hint.
-    assert "Did you mean 'id'?" in msg or "Did you mean" not in msg
+    # Load-bearing positive assertion: the safe column IS surfaced.
+    assert "Did you mean 'user_id'?" in msg, (
+        f"safe close-match suggestion must be surfaced; got: {msg!r}"
+    )
+    # And the catastrophic one is NOT surfaced.
+    assert "password_hash" not in msg
 
 
 def test_catastrophic_floor_filter_unconditional() -> None:

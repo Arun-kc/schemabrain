@@ -285,6 +285,15 @@ def suggest_joins_impl(
                 lo, hi = sorted([start, end])
                 unreachable.append([lo, hi])
                 continue
+            # Confidence is a routing-quality signal computed from the
+            # FK confidence each BFS edge carries. Source it from the
+            # ORIGINAL edges, not the redacted copies — redaction is
+            # presentation-only and a future refactor that drops the
+            # confidence field from the redacted view should not be
+            # able to silently zero out the path's confidence score.
+            # BFS only returns a non-None list with at least one edge,
+            # so `min` always sees at least one value here.
+            confidence = min(e.confidence for e in edges)
             # Per-edge PII redaction BEFORE token-estimate. Token count
             # then reflects the bytes the agent actually receives over
             # the wire (placeholder `<redacted_column>` instead of the
@@ -298,9 +307,6 @@ def suggest_joins_impl(
                 )
                 for e in edges
             ]
-            # BFS only returns a non-None list with at least one edge,
-            # so `min` always sees at least one value here.
-            confidence = min(e.confidence for e in redacted_edges)
             partial_path = JoinPath(
                 start_qualified_name=start,
                 end_qualified_name=end,

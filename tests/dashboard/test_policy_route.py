@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -457,7 +456,13 @@ def test_policy_drift_detected_when_yaml_edited_after_serve(
     client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Sentinel records an mtime; YAML is then edited so its mtime
-    bumps above the recorded value → drift fires."""
+    bumps above the recorded value → drift fires.
+
+    Uses `os.utime` to set a future mtime explicitly rather than
+    `time.sleep` — keeps the test fast and out of the `slow` marker.
+    """
+    import os
+
     monkeypatch.chdir(tmp_path)
     _seed_user_table_with_tags(store_path)
     yaml_path = _write_yaml(tmp_path)
@@ -471,13 +476,14 @@ def test_policy_drift_detected_when_yaml_edited_after_serve(
             "yaml_existed_at_boot": True,
         },
     )
-    # Wait long enough to bump mtime beyond the 1ms epsilon, then
-    # rewrite the YAML.
-    time.sleep(0.05)
+    # Rewrite the YAML and bump its mtime past the 1ms epsilon
+    # explicitly — no sleep needed.
     yaml_path.write_text(
         "version: 1\nblock:\n  - contact\n",
         encoding="utf-8",
     )
+    future_mtime = original_mtime + 10.0
+    os.utime(yaml_path, (future_mtime, future_mtime))
 
     resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
     drift = resp.json()["policy_drift"]
@@ -558,6 +564,90 @@ def test_policy_drift_undetected_when_sentinel_path_differs(
     # populated so the operator can see a sentinel exists.
     assert drift["detected"] is False
     assert drift["recorded_at"] == "2026-05-31T12:00:00+00:00"
+
+
+def test_policy_drift_undetected_when_recorded_mtime_is_non_numeric(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sentinel with structurally-valid JSON but a non-numeric
+    `recorded_at_mtime` (string / list / object) MUST NOT crash the
+    /api/pii/policy route. Without the float() coercion guard, this
+    case returns HTTP 500 — the bug a hand-edited or corrupt sentinel
+    can trigger."""
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    yaml_path = _write_yaml(tmp_path)
+    _write_sentinel(
+        tmp_path,
+        {
+            "policy_path": str(yaml_path.resolve()),
+            # Hostile value: a string where a float is expected.
+            "recorded_at_mtime": "not-a-number",
+            "recorded_at_iso": "2026-05-31T12:00:00+00:00",
+            "yaml_existed_at_boot": True,
+        },
+    )
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    # 200 status proves the route stayed available.
+    assert resp.status_code == 200
+    drift = resp.json()["policy_drift"]
+    # Fail-closed posture: detected=False on type error.
+    assert drift["detected"] is False
+    # Other fields still populated so the operator can see a sentinel exists.
+    assert drift["recorded_at"] == "2026-05-31T12:00:00+00:00"
+    assert drift["current_mtime"] is not None
+
+
+def test_policy_drift_undetected_when_sentinel_has_inconsistent_yaml_existed(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sentinel claiming yaml_existed_at_boot=True with recorded_at_mtime=None
+    is internally inconsistent — the writer cannot produce that state.
+    Treat as fail-closed (detected=False) rather than fire a false-positive
+    drift banner."""
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    yaml_path = _write_yaml(tmp_path)
+    _write_sentinel(
+        tmp_path,
+        {
+            "policy_path": str(yaml_path.resolve()),
+            "recorded_at_mtime": None,
+            "recorded_at_iso": "2026-05-31T12:00:00+00:00",
+            # Inconsistent: claims yaml existed AND mtime is null.
+            "yaml_existed_at_boot": True,
+        },
+    )
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    drift = resp.json()["policy_drift"]
+    assert drift["detected"] is False
+    assert drift["recorded_at"] == "2026-05-31T12:00:00+00:00"
+
+
+def test_policy_drift_undetected_when_sentinel_recorded_at_iso_is_non_string(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """recorded_at_iso of an unexpected type (e.g. int) must be
+    coerced to None on the wire so the TypeScript PolicyDriftState
+    interface (`recorded_at: string | null`) holds."""
+    monkeypatch.chdir(tmp_path)
+    _seed_user_table_with_tags(store_path)
+    yaml_path = _write_yaml(tmp_path)
+    _write_sentinel(
+        tmp_path,
+        {
+            "policy_path": str(yaml_path.resolve()),
+            "recorded_at_mtime": yaml_path.stat().st_mtime,
+            # Hostile value: an integer where a string is expected.
+            "recorded_at_iso": 12345,
+            "yaml_existed_at_boot": True,
+        },
+    )
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    assert resp.status_code == 200
+    drift = resp.json()["policy_drift"]
+    # The non-string is sanitized to None.
+    assert drift["recorded_at"] is None
 
 
 def test_policy_drift_undetected_when_sentinel_malformed_json(

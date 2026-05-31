@@ -3311,7 +3311,14 @@ def _cmd_eval(
     return 0
 
 
-_SERVE_POLICY_MTIME_SENTINEL = "./schemabrain/.serve_policy_mtime"
+def _serve_policy_mtime_sentinel_path() -> Path:
+    """Return the CWD-relative sentinel path. Sources from
+    ``schemabrain.dashboard.sidecar`` so writer (cli) and reader
+    (sidecar) share one source of truth — a typo in one site can
+    no longer silently disable drift detection."""
+    from schemabrain.dashboard.sidecar import SERVE_POLICY_MTIME_SENTINEL_PATH
+
+    return SERVE_POLICY_MTIME_SENTINEL_PATH
 
 
 def _record_serve_policy_mtime(policy_path: str) -> None:
@@ -3343,10 +3350,7 @@ def _record_serve_policy_mtime(policy_path: str) -> None:
     boot (the sidecar still surfaces a drift signal if a YAML
     appears later).
     """
-    import json
-    from datetime import UTC, datetime
-
-    sentinel = Path(_SERVE_POLICY_MTIME_SENTINEL)
+    sentinel = _serve_policy_mtime_sentinel_path()
     try:
         sentinel.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -3408,7 +3412,7 @@ def _delete_stale_serve_policy_sentinel() -> None:
     import contextlib
 
     with contextlib.suppress(OSError):
-        Path(_SERVE_POLICY_MTIME_SENTINEL).unlink(missing_ok=True)
+        _serve_policy_mtime_sentinel_path().unlink(missing_ok=True)
 
 
 def _try_load_policy_yaml_block(

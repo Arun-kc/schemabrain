@@ -286,3 +286,54 @@ class TestServeSentinelWrite:
         monkeypatch.chdir(tmp_path)
         # No sentinel created.
         _delete_stale_serve_policy_sentinel()  # must not raise
+
+    def test_record_serve_policy_mtime_handles_mkdir_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """When the sentinel's parent directory can't be created
+        (e.g. `./schemabrain` exists as a regular file, not a dir),
+        serve must log a warning and skip the write — never crash."""
+        from schemabrain.cli import _record_serve_policy_mtime
+
+        monkeypatch.chdir(tmp_path)
+        original_mkdir = Path.mkdir
+
+        def _patched_mkdir(self: Path, *a: object, **kw: object) -> None:
+            if str(self).endswith("schemabrain"):
+                raise OSError("not a directory")
+            return original_mkdir(self, *a, **kw)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "mkdir", _patched_mkdir)
+        _record_serve_policy_mtime(str(tmp_path / "any.yaml"))
+        captured = capsys.readouterr()
+        assert "cannot create sentinel directory" in captured.err
+        sentinel = tmp_path / SENTINEL_REL_PATH
+        assert not sentinel.exists()
+
+    def test_record_serve_policy_mtime_handles_resolve_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """When the policy path can't be resolved (rare — usually only
+        on permission-denied parent), serve logs and skips the write."""
+        from schemabrain.cli import _record_serve_policy_mtime
+
+        monkeypatch.chdir(tmp_path)
+        original_resolve = Path.resolve
+
+        def _patched_resolve(self: Path, *a: object, **kw: object) -> Path:
+            if str(self).endswith("pii_policy.yaml"):
+                raise PermissionError("can't resolve")
+            return original_resolve(self, *a, **kw)  # type: ignore[misc]
+
+        monkeypatch.setattr(Path, "resolve", _patched_resolve)
+        _record_serve_policy_mtime(str(tmp_path / "schemabrain" / "pii_policy.yaml"))
+        captured = capsys.readouterr()
+        assert "cannot resolve" in captured.err
+        sentinel = tmp_path / SENTINEL_REL_PATH
+        assert not sentinel.exists()

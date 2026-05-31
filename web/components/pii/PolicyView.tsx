@@ -71,7 +71,7 @@ function PolicyContent({ data }: { data: PolicyResponse }) {
       />
 
       {data.yaml_parse_error && <YamlParseError error={data.yaml_parse_error} />}
-      {data.policy_drift.detected && <DriftBanner drift={data.policy_drift} />}
+      {data.policy_drift?.detected && <DriftBanner drift={data.policy_drift} />}
 
       <div className={styles.posture}>
         <ActiveBlockPanel
@@ -142,7 +142,8 @@ function DriftBanner({ drift }: { drift: PolicyDriftState }) {
       <span className={styles.driftBannerBody}>
         serve resolved policy at <code className={styles.inlineCode}>{recorded}</code>; YAML
         last edited at <code className={styles.inlineCode}>{current}</code>. The running
-        firewall is enforcing the older policy until you restart{" "}
+        firewall is still enforcing the older policy — the panels below reflect the
+        edited YAML that will become active after you restart{" "}
         <code className={styles.inlineCode}>schemabrain serve</code>.
       </span>
     </div>
