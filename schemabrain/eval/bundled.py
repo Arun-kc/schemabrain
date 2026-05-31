@@ -20,6 +20,7 @@ inside the bundled dirs cannot escape to host-system files.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -27,20 +28,81 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent
 # searches across `eval/`, `imports/`, and `joins/` so the user-facing
 # `fixture-path` CLI doesn't leak the internal directory layout.
 _IMPORTS_FIXTURES_DIR: Path = _PACKAGE_ROOT.parent / "imports" / "fixtures"
-# Bundled canonical-join example pack. Files live at
-# `joins/fixtures/ecommerce/*.yaml` — one directory deeper than the
-# other bundled fixtures so the per-vertical grouping is explicit.
-_JOINS_FIXTURES_DIR: Path = _PACKAGE_ROOT.parent / "joins" / "fixtures" / "ecommerce"
-# Bundled metric example pack. Mirrors the joins fixture layout — one
-# directory deeper than the other bundled fixtures so the per-vertical
-# grouping is explicit.
-_METRICS_FIXTURES_DIR: Path = _PACKAGE_ROOT.parent / "metrics" / "fixtures" / "ecommerce"
-# Bundled entity example pack. Sibling of the SQL fixture dir; nested
-# one directory deeper (per-vertical grouping) so the demo path can
-# auto-apply these when the user picks the bundled ecommerce demo.
-# The wizard's stage 3 reads this to pre-curate the demo store
-# without requiring `ANTHROPIC_API_KEY`.
-_ENTITIES_FIXTURES_DIR: Path = _PACKAGE_ROOT / "fixtures" / "entities" / "ecommerce"
+# ----- demo pack registry --------------------------------------------------
+# A "pack" is one vertical's demo semantic layer: the three YAML dir
+# roots (entities / canonical joins / metrics) the wizard auto-applies
+# when the user picks the bundled demo. The vertical name lives at three
+# different physical depths — entities under `eval/fixtures/entities/`,
+# joins + metrics under the package root — so the per-field joins in
+# `_make_pack` absorb that asymmetry rather than a single shared prefix.
+#
+# ADD model: ecommerce is the only pack today and the default. Phase 1
+# adds a second pack as a one-line drop-in —
+#     _PACKS["saas"] = _make_pack("saas")
+# and flips `DEFAULT_PACK = "saas"` (which also moves the joins/metrics
+# search roots in `_BUNDLED_DIRS` below). Shipping the matching
+# `*/fixtures/saas/*.yaml` dirs in the wheel is the only other step.
+
+# Flipping this default ALSO moves resolve_bundled_path's joins/metrics
+# search roots: `_BUNDLED_DIRS` (below) embeds the default pack's dirs,
+# so a Phase-1 flip to "saas" changes what the `fixture-path` CLI
+# resolves, not just the wizard demo. Intended, but flip deliberately.
+DEFAULT_PACK = "ecommerce"
+
+
+@dataclass(frozen=True)
+class Pack:
+    """The demo-YAML directory roots for one vertical.
+
+    Returned by `_get_pack`; the three public `bundled_*_fixture_dir`
+    accessors read its fields. Frozen because a pack's layout is fixed
+    at import time.
+    """
+
+    name: str
+    entities_dir: Path
+    joins_dir: Path
+    metrics_dir: Path
+
+
+def _make_pack(name: str) -> Pack:
+    """Build the `Pack` for vertical `name` from the fixed dir layout."""
+    return Pack(
+        name=name,
+        entities_dir=_PACKAGE_ROOT / "fixtures" / "entities" / name,
+        joins_dir=_PACKAGE_ROOT.parent / "joins" / "fixtures" / name,
+        metrics_dir=_PACKAGE_ROOT.parent / "metrics" / "fixtures" / name,
+    )
+
+
+_PACKS: dict[str, Pack] = {"ecommerce": _make_pack("ecommerce")}
+
+
+def _get_pack(pack: str | None = None) -> Pack:
+    """Return the registered `Pack` for `pack`, or the default.
+
+    Only `None` resolves to `DEFAULT_PACK`, so every zero-arg accessor
+    call keeps returning the default pack's dirs. Any other value —
+    including an empty string — is treated as an explicit pack name and
+    raises `ValueError` (the same bad-input convention as
+    `resolve_bundled_path`) listing the available packs when it is not
+    registered, rather than silently falling back to the default.
+    """
+    key = DEFAULT_PACK if pack is None else pack
+    try:
+        return _PACKS[key]
+    except KeyError:
+        raise ValueError(f"unknown demo pack {key!r}; available: {sorted(_PACKS)}") from None
+
+
+# Module-level aliases of the DEFAULT pack's YAML dirs. Kept as named
+# constants because `_BUNDLED_DIRS` (the resolve_bundled_path search
+# surface) embeds the joins/metrics dirs, and the existing test suite
+# references these names. A vertical rename of joins/metrics therefore
+# changes behavior on two surfaces at once (the getter and the resolver).
+_ENTITIES_FIXTURES_DIR: Path = _get_pack().entities_dir
+_JOINS_FIXTURES_DIR: Path = _get_pack().joins_dir
+_METRICS_FIXTURES_DIR: Path = _get_pack().metrics_dir
 
 # Module-private — internal layout of the wheel is not a public API
 # contract. Callers outside the package go through `resolve_bundled_path`
@@ -53,7 +115,8 @@ _BUNDLED_GOLDEN_DIR: Path = _PACKAGE_ROOT / "golden_sets"
 # Search order matters for collision-handling: if a future contributor
 # accidentally ships the same basename in two directories, the first
 # match wins. fixtures/ first because SQL seeds are the more common
-# README quickstart target.
+# README quickstart target. The joins/metrics members are the DEFAULT
+# pack's dirs.
 _BUNDLED_DIRS: tuple[Path, ...] = (
     _BUNDLED_FIXTURES_DIR,
     _BUNDLED_GOLDEN_DIR,
@@ -63,37 +126,42 @@ _BUNDLED_DIRS: tuple[Path, ...] = (
 )
 
 
-def bundled_joins_fixture_dir() -> Path:
-    """Return the absolute path to the bundled canonical-join example pack.
+def bundled_joins_fixture_dir(pack: str | None = None) -> Path:
+    """Return the absolute path to a bundled canonical-join example pack.
 
     The pack is a directory of YAML files (one canonical join per file)
     consumable by `schemabrain joins apply <dir>`. Distinct from
     `resolve_bundled_path` because joins are applied AS A SET, not as
     individual files — a `directory` is the natural unit of
     composition.
+
+    `pack` selects the vertical; `None` resolves to `DEFAULT_PACK`
+    (ecommerce), so existing zero-arg callers are unaffected. Raises
+    `ValueError` for an unregistered pack.
     """
-    return _JOINS_FIXTURES_DIR
+    return _get_pack(pack).joins_dir
 
 
-def bundled_metrics_fixture_dir() -> Path:
-    """Return the absolute path to the bundled metric example pack.
+def bundled_metrics_fixture_dir(pack: str | None = None) -> Path:
+    """Return the absolute path to a bundled metric example pack.
 
     The pack is a directory of YAML files (one metric per file)
     consumable by `schemabrain metrics apply <dir>`. Same shape as
-    `bundled_joins_fixture_dir`.
+    `bundled_joins_fixture_dir`, including the `pack` selector.
     """
-    return _METRICS_FIXTURES_DIR
+    return _get_pack(pack).metrics_dir
 
 
-def bundled_entities_fixture_dir() -> Path:
-    """Return the absolute path to the bundled entity example pack.
+def bundled_entities_fixture_dir(pack: str | None = None) -> Path:
+    """Return the absolute path to a bundled entity example pack.
 
     The pack is a directory of YAML files (one entity per file)
     consumable by `schemabrain entities apply <dir>`. Used by the
-    wizard's demo path to pre-curate the bundled ecommerce store
-    without an LLM round-trip.
+    wizard's demo path to pre-curate the bundled demo store without an
+    LLM round-trip. `pack` selects the vertical; `None` resolves to
+    `DEFAULT_PACK` (ecommerce).
     """
-    return _ENTITIES_FIXTURES_DIR
+    return _get_pack(pack).entities_dir
 
 
 def resolve_bundled_path(name: str) -> Path:

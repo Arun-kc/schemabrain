@@ -420,7 +420,9 @@ def test_apply_bundled_demo_yamls_collects_per_file_failures(tmp_path: Path) -> 
     import schemabrain.eval.bundled as bundled_mod
 
     bundled_mod_orig = bundled_mod.bundled_entities_fixture_dir
-    bundled_mod.bundled_entities_fixture_dir = lambda: fake_dir  # type: ignore[assignment]
+    # The helper now calls the getter with `pack=cfg.demo_pack`, so the
+    # replacement must accept (and ignore) the keyword.
+    bundled_mod.bundled_entities_fixture_dir = lambda pack=None: fake_dir  # type: ignore[assignment]
     try:
         applied, failures = _apply_bundled_demo_yamls(
             kind="entities", cfg=_demo_wizard_config(store_path), source_id=source_id

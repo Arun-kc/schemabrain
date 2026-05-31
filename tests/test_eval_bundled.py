@@ -15,7 +15,13 @@ from pathlib import Path
 import pytest
 
 from schemabrain.eval import bundled
-from schemabrain.eval.bundled import list_bundled_files, resolve_bundled_path
+from schemabrain.eval.bundled import (
+    bundled_entities_fixture_dir,
+    bundled_joins_fixture_dir,
+    bundled_metrics_fixture_dir,
+    list_bundled_files,
+    resolve_bundled_path,
+)
 
 
 class TestResolveBundledPath:
@@ -128,3 +134,76 @@ class TestListBundledFiles:
         for name in list_bundled_files():
             assert "/" not in name
             assert "\\" not in name
+
+
+class TestPackRegistry:
+    """The ADD-model pack registry: named packs, ecommerce the default.
+
+    A pack is the three demo-YAML dir roots (entities/joins/metrics).
+    Phase 1 adds `saas` as a one-line `_PACKS["saas"] = _make_pack("saas")`
+    drop-in and flips `DEFAULT_PACK`; these tests pin the contract that
+    makes that drop-in safe.
+    """
+
+    def test_default_pack_is_ecommerce(self) -> None:
+        assert bundled.DEFAULT_PACK == "ecommerce"
+        assert "ecommerce" in bundled._PACKS
+
+    def test_get_pack_none_resolves_to_default(self) -> None:
+        # Zero-arg / None must resolve to the default pack — this is
+        # what every existing zero-arg getter call depends on.
+        assert bundled._get_pack().name == "ecommerce"
+        assert bundled._get_pack(None) is bundled._get_pack("ecommerce")
+
+    def test_get_pack_explicit_ecommerce(self) -> None:
+        assert bundled._get_pack("ecommerce").name == "ecommerce"
+
+    def test_get_pack_unknown_raises_value_error_listing_available(self) -> None:
+        # The ADD-model error path: asking for a pack that hasn't been
+        # registered yet (saas, before Phase 1) fails loudly and lists
+        # what IS available.
+        with pytest.raises(ValueError, match="unknown demo pack") as exc:
+            bundled._get_pack("saas")
+        assert "ecommerce" in str(exc.value)
+
+    def test_get_pack_empty_string_is_not_default(self) -> None:
+        # Only None means "use the default". An empty string is an
+        # explicit (unregistered) pack name and must fail loudly rather
+        # than silently falling back to ecommerce.
+        with pytest.raises(ValueError, match="unknown demo pack"):
+            bundled._get_pack("")
+
+    def test_pack_dir_path_depths(self) -> None:
+        # The 'ecommerce' segment lives at three different physical
+        # depths; pin each so the factory's per-field join can't drift.
+        pack = bundled._get_pack("ecommerce")
+        assert pack.entities_dir.parts[-3:] == ("fixtures", "entities", "ecommerce")
+        assert pack.joins_dir.parts[-3:] == ("joins", "fixtures", "ecommerce")
+        assert pack.metrics_dir.parts[-3:] == ("metrics", "fixtures", "ecommerce")
+
+
+class TestFixtureDirBackcompat:
+    """The three dir getters: zero-arg, pack=None, and pack='ecommerce'
+    are all identical, so every existing zero-arg caller is unaffected.
+    """
+
+    @pytest.mark.parametrize(
+        "getter,tail",
+        [
+            (bundled_entities_fixture_dir, ("fixtures", "entities", "ecommerce")),
+            (bundled_joins_fixture_dir, ("joins", "fixtures", "ecommerce")),
+            (bundled_metrics_fixture_dir, ("metrics", "fixtures", "ecommerce")),
+        ],
+    )
+    def test_zero_arg_default_and_explicit_ecommerce_agree(
+        self, getter: object, tail: tuple[str, ...]
+    ) -> None:
+        zero_arg = getter()  # type: ignore[operator]
+        explicit_none = getter(pack=None)  # type: ignore[operator]
+        explicit_ecommerce = getter(pack="ecommerce")  # type: ignore[operator]
+        assert zero_arg == explicit_none == explicit_ecommerce
+        assert zero_arg.parts[-3:] == tail
+
+    def test_unknown_pack_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="unknown demo pack"):
+            bundled_entities_fixture_dir(pack="saas")
