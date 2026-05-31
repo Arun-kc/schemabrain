@@ -26,7 +26,7 @@ schemabrain eval --url-env DATABASE_URL --store-path ./schemabrain.db
 |---|---|---|
 | `--source URL` | (none) | Source URL — used to resolve which tables in the store to score against. Deprecated when the URL contains a password. |
 | `--url-env VARNAME` | (none) | Env var holding the source URL. Preferred. |
-| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--store-path PATH` | `./schemabrain.db` | Path to the local SQLite store. |
 | `--golden PATH` | Bundled e-commerce starter set | Path to a golden-set JSON file. For your own schema, author a matching JSON. |
 | `--retriever {embedding,keyword}` | `embedding` | `embedding` uses stored column embeddings + cosine (requires `index` without `--no-embed`). `keyword` uses the keyword-overlap baseline. |
 | `--limit N` | (built-in default) | Top-K cap passed to the retriever. |
@@ -55,7 +55,7 @@ schemabrain mine-queries --url-env DATABASE_URL --store-path ./schemabrain.db
 |---|---|---|
 | `--source URL` | (none) | Source URL. Deprecated when the URL contains a password. |
 | `--url-env VARNAME` | (none) | Env var holding the source URL. Preferred. |
-| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--store-path PATH` | `./schemabrain.db` | Path to the local SQLite store. |
 
 ### Prerequisites
 
@@ -112,7 +112,7 @@ schemabrain import dbt /path/to/dbt/target/manifest.json --url-env DATABASE_URL
 | `manifest_path` (positional) | (required) | Path to your dbt project's compiled `target/manifest.json`. Run `dbt compile` to produce it. Remote (dbt Cloud) manifests aren't supported — download locally and pass the path. |
 | `--source URL` | (none) | Source URL. Deprecated when the URL contains a password. |
 | `--url-env VARNAME` | (none) | Env var holding the source URL. Preferred. |
-| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--store-path PATH` | `./schemabrain.db` | Path to the local SQLite store. |
 | `--dry-run` | (off) | Compute the plan (added / updated / ownership-transferred / skipped / orphans) and print the summary, but write nothing. Best mode for CI previews. |
 | `--report PATH` | (none) | Optional. Writes a JSON report of the plan (bucket counts + per-model details) to this path. Works with both dry-run and apply. |
 | `--include-metrics` | (off) | Also import dbt metrics (type=`simple` only) anchored on the entities imported in this run. Skips ratio / derived / cumulative metrics with structured reasons. Off by default to preserve backwards-compatible behaviour from earlier releases; on by default in a future release. |

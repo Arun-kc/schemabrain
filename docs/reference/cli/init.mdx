@@ -53,7 +53,7 @@ Turn individual wizard stages on or off:
 | Flag | Default | Purpose |
 |---|---|---|
 | `--host {claude-desktop,claude-code,cursor,windsurf,manual}` | `claude-desktop` | Which host to wire. `manual` prints the snippet without writing anywhere. |
-| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--store-path PATH` | `./schemabrain.db` | Path to the local SQLite store. |
 | `--env-var VARNAME` | `SCHEMABRAIN_DATABASE_URL` | Env var the host sets to the DB URL in its config. |
 
 ## Cost
@@ -70,7 +70,7 @@ Turn individual wizard stages on or off:
 | `--yes`, `-y` | Accept every prompt. Implies `--skip-llm-confirm` plus the host-overwrite confirmation. Use in CI. |
 | `--skip-llm-confirm` | Skip the Enter-to-continue pause before LLM stages. Auto-on in non-TTY environments. |
 | `--print-only` | Alias for `--host manual`. Prints the snippet, writes nothing. |
-| `--pii-block CSV` | Comma-separated `PIICategory` list written into the host snippet as `serve --pii-block ...`. Omitted defaults to `credential,payment_card,government_id` under `--yes` (with a stderr confirmation) or to an interactive prompt otherwise. Pass `''` to explicitly disable enforcement. |
+| `--pii-block CSV` | Comma-separated `PIICategory` list written into the host snippet as `serve --pii-block ...`. Omitted defaults to `credential,payment_card,government_id` under `--yes` (with a stderr confirmation) or to an interactive prompt otherwise. Pass `''` to clear the operator policy; the always-on catastrophic-leak floor still refuses at every read gate and cannot be disabled. |
 | `--emit-yaml-dir PATH` | After the wizard completes, write one YAML per applied entity / metric / canonical join into `PATH/entities/`, `PATH/metrics/`, `PATH/joins/`. Gives the operator on-disk definitions to edit and re-apply alongside the SQLite store. Refuses if any target file already exists. |
 
 ---

@@ -28,7 +28,7 @@ schemabrain audit list --status refused --limit 50
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--store-path PATH` | `./schemabrain.db` | Path to the local SQLite store. |
 | `--since DURATION_OR_TIMESTAMP` | (all) | Show rows newer than this point. Accepts compact duration (`30s`, `5m`, `2h`, `1d`) or ISO 8601 timestamp with timezone. |
 | `--status {success,empty,partial,degraded,error,refused}` | (no filter) | Filter by Charter envelope status. |
 | `--tool NAME` | (no filter) | Filter by `tool_name` (exact match, e.g. `describe_table`). |
@@ -63,7 +63,7 @@ schemabrain audit verify
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--store-path PATH` | `./schemabrain.db` | Path to the local SQLite store. |
 | `--full` | (off — stops at first mismatch) | Walk every row and report all mismatches. Use for forensic walks. |
 | `--since CURSOR` | (walk from genesis) | Anchor the walk to a known-good cursor row. Accepts: a leading hex prefix (≥8 chars) of a previously-archived `chain_hash`, a compact duration (`7d`, `2h`), or an ISO 8601 timestamp with timezone. The cursor row's own integrity is NOT re-verified — only rows after it are. |
 

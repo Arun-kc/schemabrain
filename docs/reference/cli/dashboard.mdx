@@ -29,7 +29,7 @@ See [Dashboard overview](/dashboard/overview) for what the surfaces look like an
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. The sidecar auto-resolves the canonical `source_id` from the store. |
+| `--store-path PATH` | `./schemabrain.db` | Path to the local SQLite store. The sidecar auto-resolves the canonical `source_id` from the store. |
 | `--port N` | `7878` | Port to bind on `127.0.0.1`. Must be in the user-port range (1024-65535). |
 | `--no-open` | (off — auto-opens) | Skip auto-opening the default browser. CI / headless setups should pass this. |
 

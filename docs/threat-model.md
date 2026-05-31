@@ -33,7 +33,7 @@ and the audit log that records every call.
 
 - Connection URL (with embedded password)
 - Source-database schema introspection results
-- Indexed store contents (`~/.schemabrain/store.db`)
+- Indexed store contents (`./schemabrain.db`)
 - Audit log integrity (`mcp_audit` table)
 
 **Threats**

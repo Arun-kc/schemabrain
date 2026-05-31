@@ -144,7 +144,7 @@ A working entry looks like this:
       "args": [
         "serve",
         "--url-env", "DATABASE_URL",
-        "--store-path", "/Users/you/.schemabrain.db"
+        "--store-path", "/Users/you/schemabrain.db"
       ],
       "env": {
         "DATABASE_URL": "postgresql+psycopg://postgres:local@localhost:5432/postgres",

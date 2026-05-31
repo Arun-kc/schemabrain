@@ -35,7 +35,7 @@ The wizard then introspects the schema, classifies columns for PII, optionally c
         "schemabrain==0.4.0",
         "serve",
         "--url-env", "SCHEMABRAIN_DATABASE_URL",
-        "--store-path", "/Users/you/.schemabrain/store.db",
+        "--store-path", "/Users/you/schemabrain.db",
         "--pii-block", "credential,government_id,payment_card"
       ],
       "env": {

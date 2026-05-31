@@ -167,7 +167,7 @@ You've seen all four load-bearing mechanisms in ~10 minutes against a real datab
 
 ## Where to next
 
-- **Add your own metric.** Drop a YAML in `~/.schemabrain/metrics/` and run `schemabrain metrics apply`. Reference: [`docs/semantic-layer.md`](semantic-layer.md).
+- **Add your own metric.** Drop a YAML under `./schemabrain/metrics/` and run `schemabrain metrics apply ./schemabrain/metrics/ --url-env DATABASE_URL`. Reference: [`docs/semantic-layer.md`](semantic-layer.md).
 - **Stream the audit feed.** `schemabrain tail` shows every tool call live. Useful while you're tuning policy. Reference: [`docs/operations.md`](operations.md).
 - **Wire a second host.** Same `init`, different `--host` flag. Reference: [`docs/setup/cursor`](setup/cursor.md), [`docs/setup/windsurf`](setup/windsurf.md), [`docs/setup/claude-code`](setup/claude-code.md).
 - **Read the threat model.** If you're packaging SchemaBrain into a procurement review, [`docs/security.md`](security.md) is the summary; [`docs/threat-model.md`](threat-model.md) is the full walk-through.

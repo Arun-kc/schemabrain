@@ -9,6 +9,10 @@ The published Docker image bundles the runtime, all dependencies, and the local 
 
 The [activation wizard](/setup) is still the recommended path for most users — start there if you haven't yet. This page is for operators who prefer running SchemaBrain as a container.
 
+<Note>
+The published image is **headless**: it serves the MCP firewall (`index` / `serve`) and does not bundle the web dashboard. For the dashboard, install natively with `pip install schemabrain[ui]` and run `schemabrain dashboard` — it binds to `localhost` only and reads the same store.
+</Note>
+
 ## 1. Quick index against a Postgres source
 
 ```bash

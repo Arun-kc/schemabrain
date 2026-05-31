@@ -206,7 +206,7 @@ const STEP_TEXT = {
     "Cron 04:00 UTC · read-only connection opens to Postgres",
     "Regex-based profiler classifies columns by content shape",
     "fastembed BAAI/bge-small-en-v1.5 → 384-dim ONNX vectors",
-    "Write 142 table schemas to ~/.schemabrain.db",
+    "Write 142 table schemas to ./schemabrain.db",
     "Write 38 semantic entities + 26 metric definitions",
     "Write 4 612 vector embeddings · ready for cosine search",
     "Index complete · agent traffic resumes against fresh registry",
