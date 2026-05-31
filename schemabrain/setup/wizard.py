@@ -232,6 +232,13 @@ class WizardConfig:
     # default only governs programmatic callers constructing
     # `WizardConfig` directly.
     pii_block: tuple[str, ...] = ("credential", "government_id", "payment_card")
+    # Which bundled demo pack the demo path auto-applies (entities +
+    # metrics + joins). Resolved by
+    # `schemabrain.eval.bundled._get_pack`; "ecommerce" is the only
+    # registered pack today. Flip this default (or wire a selector at
+    # the `_cmd_init` construction site) when a second pack lands. Only
+    # governs the demo path — production sources never read it.
+    demo_pack: str = "ecommerce"
 
     def __post_init__(self) -> None:
         if self.host not in _VALID_HOSTS:
@@ -1688,24 +1695,34 @@ def _apply_bundled_demo_yamls(
     if kind == "entities":
         from schemabrain.entities.yaml_grammar import parse_entity_yaml_file as _parse
 
-        directory = bundled_entities_fixture_dir()
+        _dir_getter = bundled_entities_fixture_dir
 
         def _write(store: SQLiteStore, obj: object) -> None:
             store.write_entity(obj, source_connection_id=source_id)  # type: ignore[arg-type]
     elif kind == "metrics":
         from schemabrain.metrics.yaml_grammar import parse_metric_yaml_file as _parse
 
-        directory = bundled_metrics_fixture_dir()
+        _dir_getter = bundled_metrics_fixture_dir
 
         def _write(store: SQLiteStore, obj: object) -> None:
             store.write_metric(obj, source_connection_id=source_id)  # type: ignore[arg-type]
     else:
         from schemabrain.joins.yaml_grammar import parse_canonical_join_yaml_file as _parse
 
-        directory = bundled_joins_fixture_dir()
+        _dir_getter = bundled_joins_fixture_dir
 
         def _write(store: SQLiteStore, obj: object) -> None:
             store.write_canonical_join(obj, source_connection_id=source_id)  # type: ignore[arg-type]
+
+    # Resolve the selected pack's directory. An unknown demo pack raises
+    # ValueError from `_get_pack`; surface it as a partial-success
+    # failure (this helper's contract) instead of crashing the stage.
+    # Unreachable today (demo_pack is always the "ecommerce" default),
+    # but guards the seam before Phase 1 wires a pack selector.
+    try:
+        directory = _dir_getter(pack=cfg.demo_pack)
+    except ValueError as exc:
+        return 0, [f"unknown demo pack {cfg.demo_pack!r}: {exc}"]
 
     applied = 0
     failures: list[str] = []
