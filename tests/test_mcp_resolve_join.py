@@ -405,3 +405,163 @@ class TestSqlSkeleton:
         assert " AND " in info.sql_skeleton
         assert '"order"."org_id" = "customer"."org_id"' in info.sql_skeleton
         assert '"order"."user_id" = "customer"."id"' in info.sql_skeleton
+
+
+# ----- PII redaction --------------------------------------------------------
+
+
+class TestResolveJoinPiiRedaction:
+    """The `on[*].source_column` / `target_column` and the
+    `sql_skeleton` string must both be scrubbed against
+    `pii_block | CATASTROPHIC_LEAK_CATEGORIES` — same posture
+    `describe_table` already applies to its FK list. Without this,
+    `resolve_join`'s paste-ready SQL is the bypass: it interpolates
+    raw column names a determined agent can lift verbatim.
+    """
+
+    def test_source_column_catastrophic_tag_masks_pair_and_skeleton(self, tmp_path: Path) -> None:
+        # Tag the source column (orders.user_id) as credential. Both
+        # the `on[*].source_column` pair AND the sql_skeleton must
+        # carry `<redacted_column>`.
+        store = _seed_orders_customer(tmp_path)
+        _write_customer_orders_join(store)
+        store.write_column_pii_tags(
+            source_connection_id=SOURCE_A,
+            qualified_table="public.orders",
+            tags={"user_id": ("pii", frozenset({"credential"}))},
+        )
+        info = resolve_join_impl(
+            store=store,
+            source_connection_id=SOURCE_A,
+            entity_a="order",
+            entity_b="customer",
+        )
+        store.close()
+        # Pair list masked on the source side; target side passes through.
+        assert info.on[0].source_column == "<redacted_column>"
+        assert info.on[0].target_column == "id"
+        # The sql_skeleton must NOT contain the raw column name anywhere.
+        assert "user_id" not in info.sql_skeleton
+        assert "<redacted_column>" in info.sql_skeleton
+
+    def test_target_column_catastrophic_tag_masks_pair_and_skeleton(self, tmp_path: Path) -> None:
+        # Tag the target column (users.id) as government_id. Both the
+        # `on[*].target_column` pair AND the sql_skeleton mask.
+        store = _seed_orders_customer(tmp_path)
+        _write_customer_orders_join(store)
+        store.write_column_pii_tags(
+            source_connection_id=SOURCE_A,
+            qualified_table="public.users",
+            tags={"id": ("pii", frozenset({"government_id"}))},
+        )
+        info = resolve_join_impl(
+            store=store,
+            source_connection_id=SOURCE_A,
+            entity_a="order",
+            entity_b="customer",
+        )
+        store.close()
+        assert info.on[0].source_column == "user_id"
+        assert info.on[0].target_column == "<redacted_column>"
+        # users.id in the skeleton would be the `"customer"."id"` predicate.
+        # After redaction it reads `"customer"."<redacted_column>"`.
+        assert '"customer"."id"' not in info.sql_skeleton
+        assert '"customer"."<redacted_column>"' in info.sql_skeleton
+
+    def test_composite_join_partial_redaction_preserves_positional_order(
+        self, tmp_path: Path
+    ) -> None:
+        # Composite key (org_id, user_id) → (org_id, id) where users.id
+        # is tagged government_id. The redaction must mask the second
+        # target column only; positional order in both pair list AND
+        # sql_skeleton predicates must be preserved.
+        store = _seed_orders_customer(tmp_path)
+        store.write_canonical_join(
+            CanonicalJoin(
+                name="composite_join",
+                description="",
+                source_entity="order",
+                target_entity="customer",
+                on=(
+                    JoinColumnPair(source_column="org_id", target_column="org_id"),
+                    JoinColumnPair(source_column="user_id", target_column="id"),
+                ),
+            ),
+            source_connection_id=SOURCE_A,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=SOURCE_A,
+            qualified_table="public.users",
+            tags={"id": ("pii", frozenset({"government_id"}))},
+        )
+        info = resolve_join_impl(
+            store=store,
+            source_connection_id=SOURCE_A,
+            entity_a="order",
+            entity_b="customer",
+        )
+        store.close()
+        # Pair order preserved: org_id first, then the redacted slot.
+        assert info.on[0].source_column == "org_id"
+        assert info.on[0].target_column == "org_id"
+        assert info.on[1].source_column == "user_id"
+        assert info.on[1].target_column == "<redacted_column>"
+        # Composite predicates must render in the same order.
+        assert " AND " in info.sql_skeleton
+        first_pred_idx = info.sql_skeleton.find('"order"."org_id"')
+        second_pred_idx = info.sql_skeleton.find('"order"."user_id"')
+        assert 0 < first_pred_idx < second_pred_idx, (
+            f"composite predicate order broken in sql_skeleton: {info.sql_skeleton!r}"
+        )
+        # No raw users.id leak.
+        assert '"customer"."id"' not in info.sql_skeleton
+
+    def test_default_pii_block_still_floors_catastrophic(self, tmp_path: Path) -> None:
+        # No pii_block kwarg — the catastrophic floor must still apply.
+        store = _seed_orders_customer(tmp_path)
+        _write_customer_orders_join(store)
+        store.write_column_pii_tags(
+            source_connection_id=SOURCE_A,
+            qualified_table="public.orders",
+            tags={"user_id": ("pii", frozenset({"payment_card"}))},
+        )
+        info = resolve_join_impl(
+            store=store,
+            source_connection_id=SOURCE_A,
+            entity_a="order",
+            entity_b="customer",
+            # pii_block intentionally omitted.
+        )
+        store.close()
+        assert info.on[0].source_column == "<redacted_column>"
+        assert "user_id" not in info.sql_skeleton
+
+    def test_non_floor_category_only_redacted_when_caller_opts_in(self, tmp_path: Path) -> None:
+        store = _seed_orders_customer(tmp_path)
+        _write_customer_orders_join(store)
+        store.write_column_pii_tags(
+            source_connection_id=SOURCE_A,
+            qualified_table="public.orders",
+            tags={"user_id": ("pii", frozenset({"contact"}))},
+        )
+        # Default: contact is NOT in the floor, so user_id passes through.
+        info_default = resolve_join_impl(
+            store=store,
+            source_connection_id=SOURCE_A,
+            entity_a="order",
+            entity_b="customer",
+        )
+        assert info_default.on[0].source_column == "user_id"
+        assert "user_id" in info_default.sql_skeleton
+
+        # Opt-in: caller includes contact in pii_block.
+        info_opt_in = resolve_join_impl(
+            store=store,
+            source_connection_id=SOURCE_A,
+            entity_a="order",
+            entity_b="customer",
+            pii_block=frozenset({"contact"}),
+        )
+        store.close()
+        assert info_opt_in.on[0].source_column == "<redacted_column>"
+        assert "user_id" not in info_opt_in.sql_skeleton

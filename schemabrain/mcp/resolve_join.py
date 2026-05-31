@@ -33,6 +33,7 @@ from schemabrain.core.entity import Entity
 from schemabrain.core.join import CanonicalJoin
 from schemabrain.core.store_protocol import Store
 from schemabrain.mcp._helpers import _validate_ident, _with_token_estimate
+from schemabrain.mcp._redaction import redact_blocked_fk_columns
 from schemabrain.mcp.shapes import (
     AmbiguousJoinError,
     CanonicalJoinInfo,
@@ -42,6 +43,7 @@ from schemabrain.mcp.shapes import (
     NoCanonicalJoinError,
     UnknownJoinNameError,
 )
+from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES, PIICategory
 
 # Postgres unquoted identifier shape — matches the entity / column
 # alphabet. Reused for sanitising entity names into SQL aliases.
@@ -55,8 +57,16 @@ def resolve_join_impl(
     entity_a: str,
     entity_b: str,
     name: str | None = None,
+    pii_block: frozenset[PIICategory] = frozenset(),
 ) -> CanonicalJoinInfo:
     """Return the canonical join between `entity_a` and `entity_b`.
+
+    The returned `CanonicalJoinInfo` has its `on[*].source_column` /
+    `target_column` pair lists AND the `sql_skeleton` string scrubbed
+    against `pii_block | CATASTROPHIC_LEAK_CATEGORIES` — same posture
+    `describe_table` already applies to its FK column list. Without
+    this, the SQL skeleton leaks catastrophic-leak column names that
+    `describe_table` carefully masks.
 
     Raises:
       `ValueError`: either entity name is malformed
@@ -105,6 +115,9 @@ def resolve_join_impl(
         selected,
         source_entity=_lookup_entity(store, selected.source_entity, source_connection_id),
         target_entity=_lookup_entity(store, selected.target_entity, source_connection_id),
+        store=store,
+        source_connection_id=source_connection_id,
+        pii_block=pii_block,
     )
 
 
@@ -185,6 +198,9 @@ def _render_join_info(
     *,
     source_entity: Entity,
     target_entity: Entity,
+    store: Store,
+    source_connection_id: str,
+    pii_block: frozenset[PIICategory],
 ) -> CanonicalJoinInfo:
     """Build the `CanonicalJoinInfo` envelope including a paste-ready
     SQL JOIN skeleton.
@@ -195,12 +211,42 @@ def _render_join_info(
     a user pastes the skeleton into a query.
 
     Composite-key joins render with `AND`-joined predicates.
+
+    Per-pair PII redaction: ``source_column`` and ``target_column`` are
+    scrubbed against ``pii_block | CATASTROPHIC_LEAK_CATEGORIES`` —
+    each side using ITS table's qualified name for the PII lookup.
+    The ``sql_skeleton`` is built AFTER redaction so its predicates
+    reference the redacted placeholders rather than the raw names.
     """
+    effective_block: frozenset[PIICategory] = pii_block | CATASTROPHIC_LEAK_CATEGORIES
+    source_columns = [pair.source_column for pair in join.on]
+    target_columns = [pair.target_column for pair in join.on]
+    redacted_source = redact_blocked_fk_columns(
+        source_columns,
+        qualified_table=source_entity.qualified_table,
+        store=store,
+        source_connection_id=source_connection_id,
+        effective_block=effective_block,
+    )
+    redacted_target = redact_blocked_fk_columns(
+        target_columns,
+        qualified_table=target_entity.qualified_table,
+        store=store,
+        source_connection_id=source_connection_id,
+        effective_block=effective_block,
+    )
+    redacted_pairs = [
+        JoinColumnPairInfo(source_column=s, target_column=t)
+        for s, t in zip(redacted_source, redacted_target, strict=True)
+    ]
+
     source_alias = _safe_alias(source_entity.name)
     target_alias = _safe_alias(target_entity.name)
+    # Build predicates FROM redacted pairs — without this, sql_skeleton
+    # would interpolate the raw column names and turn into the bypass.
     predicates = " AND ".join(
         f'"{source_alias}"."{pair.source_column}" = "{target_alias}"."{pair.target_column}"'
-        for pair in join.on
+        for pair in redacted_pairs
     )
     target_schema, target_table = target_entity.qualified_table.split(".", 1)
     sql_skeleton = f'JOIN "{target_schema}"."{target_table}" AS "{target_alias}" ON {predicates}'
@@ -210,13 +256,7 @@ def _render_join_info(
         description=join.description,
         source_entity=join.source_entity,
         target_entity=join.target_entity,
-        on=[
-            JoinColumnPairInfo(
-                source_column=pair.source_column,
-                target_column=pair.target_column,
-            )
-            for pair in join.on
-        ],
+        on=redacted_pairs,
         sql_skeleton=sql_skeleton,
         token_estimate=0,  # placeholder; `_with_token_estimate` rebuilds
         inference_method=join.inference_method,

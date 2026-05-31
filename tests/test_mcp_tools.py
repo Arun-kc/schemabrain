@@ -1690,6 +1690,190 @@ class TestSuggestJoinsImpl:
         store.close()
 
 
+class TestSuggestJoinsPiiRedaction:
+    """The FK column names in `JoinEdge.left_columns` /
+    `right_columns` must be scrubbed against `pii_block |
+    CATASTROPHIC_LEAK_CATEGORIES` — same posture `describe_table`
+    already applies to its FK list. Without this, suggest_joins is
+    the easier discovery path for catastrophic-leak column names
+    that describe_table carefully masks.
+    """
+
+    def test_forward_traversal_masks_catastrophic_fk_column(
+        self, fk_graph_store: SQLiteStore
+    ) -> None:
+        # Tag the FK column on the owner side as credential. The single
+        # orders->users edge has left=orders (owner side) so
+        # left_columns=[user_id] is the redaction target.
+        fk_graph_store.write_column_pii_tags(
+            source_connection_id=SOURCE_ID,
+            qualified_table="public.orders",
+            tags={"user_id": ("pii", frozenset({"credential"}))},
+        )
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.orders", "public.users"],
+        )
+        assert len(result.paths) == 1
+        edge = result.paths[0].edges[0]
+        assert edge.left_qualified_name == "public.orders"
+        assert edge.left_columns == ["<redacted_column>"]
+        # The other side (users.id, not tagged) passes through unchanged.
+        assert edge.right_columns == ["id"]
+
+    def test_reverse_traversal_masks_catastrophic_fk_column(
+        self, fk_graph_store: SQLiteStore
+    ) -> None:
+        # Same FK column tagged, but input order swapped so BFS picks
+        # the reverse traversal branch — owner is now on the right side.
+        fk_graph_store.write_column_pii_tags(
+            source_connection_id=SOURCE_ID,
+            qualified_table="public.orders",
+            tags={"user_id": ("pii", frozenset({"credential"}))},
+        )
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.users", "public.orders"],
+        )
+        assert len(result.paths) == 1
+        edge = result.paths[0].edges[0]
+        # Path orientation is input-faithful: start=users, end=orders.
+        assert edge.left_qualified_name == "public.users"
+        assert edge.right_qualified_name == "public.orders"
+        # users.id is the referenced column on the left; orders.user_id
+        # is the owner column on the right — the redaction target now
+        # sits in right_columns.
+        assert edge.left_columns == ["id"]
+        assert edge.right_columns == ["<redacted_column>"]
+
+    def test_target_side_catastrophic_column_masked(self, fk_graph_store: SQLiteStore) -> None:
+        # Tag users.id (the FK target) as government_id — every FK
+        # pointing AT this column must have target_columns masked.
+        fk_graph_store.write_column_pii_tags(
+            source_connection_id=SOURCE_ID,
+            qualified_table="public.users",
+            tags={"id": ("pii", frozenset({"government_id"}))},
+        )
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.orders", "public.users"],
+        )
+        edge = result.paths[0].edges[0]
+        # orders.user_id is unrelated to users.id's tag — passes through.
+        assert edge.left_columns == ["user_id"]
+        # The target column (users.id) is masked.
+        assert edge.right_columns == ["<redacted_column>"]
+
+    def test_multi_hop_path_redacts_every_edge(self, fk_graph_store: SQLiteStore) -> None:
+        # 2-hop path: users -> orders -> products
+        # Tag orders.product_id (the FK to products) as payment_card.
+        # The second edge (orders->products) must mask its FK column.
+        fk_graph_store.write_column_pii_tags(
+            source_connection_id=SOURCE_ID,
+            qualified_table="public.orders",
+            tags={"product_id": ("pii", frozenset({"payment_card"}))},
+        )
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.users", "public.products"],
+        )
+        path = result.paths[0]
+        assert path.hops == 2
+        # No edge anywhere in the path may carry the raw FK column name.
+        for edge in path.edges:
+            assert "product_id" not in edge.left_columns
+            assert "product_id" not in edge.right_columns
+
+    def test_default_pii_block_still_floors_catastrophic(self, fk_graph_store: SQLiteStore) -> None:
+        # No pii_block kwarg passed at all — the catastrophic floor
+        # must still apply. Mirrors the same posture as describe_table.
+        fk_graph_store.write_column_pii_tags(
+            source_connection_id=SOURCE_ID,
+            qualified_table="public.orders",
+            tags={"user_id": ("pii", frozenset({"credential"}))},
+        )
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.orders", "public.users"],
+            # pii_block intentionally omitted to exercise the default.
+        )
+        edge = result.paths[0].edges[0]
+        assert edge.left_columns == ["<redacted_column>"]
+
+    def test_non_floor_category_only_redacted_when_caller_opts_in(
+        self, fk_graph_store: SQLiteStore
+    ) -> None:
+        # `contact` is NOT in the catastrophic floor — the default
+        # (no pii_block kwarg) must let it through, and an explicit
+        # pii_block={'contact'} must mask it.
+        fk_graph_store.write_column_pii_tags(
+            source_connection_id=SOURCE_ID,
+            qualified_table="public.orders",
+            tags={"user_id": ("pii", frozenset({"contact"}))},
+        )
+        result_default = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.orders", "public.users"],
+        )
+        # Default: contact is NOT in the floor, so user_id passes through.
+        assert result_default.paths[0].edges[0].left_columns == ["user_id"]
+
+        result_opt_in = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.orders", "public.users"],
+            pii_block=frozenset({"contact"}),
+        )
+        # Opt-in: contact is in the active block, so user_id is masked.
+        assert result_opt_in.paths[0].edges[0].left_columns == ["<redacted_column>"]
+
+    def test_composite_fk_partial_redaction_preserves_order(self, tmp_path: Path) -> None:
+        # Build a composite-FK fixture: orders(a, b) -> users(x, y).
+        # Tag users.y as credential. The target_columns list must show
+        # [x, <redacted_column>] — positional order preserved so the
+        # paste-ready JOIN ON shape stays correct after masking.
+        store = SQLiteStore(tmp_path / "composite.db")
+        sid = "src1"
+        users = _bare_table("users", ("id", "x", "y"))
+        orders = _bare_table(
+            "orders",
+            ("id", "a", "b"),
+            fks=(
+                ForeignKey(
+                    name="orders_xy_fkey",
+                    source_columns=("a", "b"),
+                    target_schema="public",
+                    target_table="users",
+                    target_columns=("x", "y"),
+                ),
+            ),
+        )
+        for t in (users, orders):
+            store.write_table(t, source_connection_id=sid)
+        store.write_column_pii_tags(
+            source_connection_id=sid,
+            qualified_table="public.users",
+            tags={"y": ("pii", frozenset({"credential"}))},
+        )
+        result = suggest_joins_impl(
+            store=store,
+            source_connection_id=sid,
+            tables=["public.orders", "public.users"],
+        )
+        edge = result.paths[0].edges[0]
+        # orders side is untagged — both source columns pass through.
+        assert edge.left_columns == ["a", "b"]
+        # users side: x passes through, y is masked. Order preserved.
+        assert edge.right_columns == ["x", "<redacted_column>"]
+        store.close()
+
+
 class TestJoinPathInvariants:
     """The `JoinPath` model is part of the public MCP contract. The
     `hops == len(edges)` validator is the only piece of construction-

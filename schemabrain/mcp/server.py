@@ -964,6 +964,7 @@ def build_server(
                 source_connection_id=source_connection_id,
                 tables=tables,
                 max_hops=max_hops,
+                pii_block=pii_block,
             )
         except ValueError as exc:
             return _malformed_name_response(
@@ -1264,6 +1265,7 @@ def build_server(
                 entity_a=entity_a,
                 entity_b=entity_b,
                 name=name,
+                pii_block=pii_block,
             )
         except ValueError as exc:
             return _malformed_name_response(exc, suggested_tool="list_entities")
