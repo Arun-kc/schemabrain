@@ -247,8 +247,10 @@ schemabrain serve --pii-block contact,health \
 ```
 
 The policy is *additive* (refuse calls touching these categories);
-omitting `--pii-block` disables enforcement and tags still flow
-through to `mcp_audit.pii_categories`. Unknown category names abort
+omitting `--pii-block` applies the always-on catastrophic-leak floor
+(`credential`, `payment_card`, `government_id`) — enforcement is on by
+default; pass `--pii-block <csv>` to widen it. Tags flow through to
+`mcp_audit.pii_categories` regardless. Unknown category names abort
 startup with a clear error listing the 12 valid values — typos in
 the operator config never silently fall through to "no PII
 protection".

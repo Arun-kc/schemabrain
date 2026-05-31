@@ -119,7 +119,7 @@ Every MCP tool call writes exactly one row, regardless of outcome. The 14 fields
 - **It is not append-only against the OS.** `chmod 0600` keeps the file out of other users' reach but not out of root's. Full-disk encryption is the right layer for that defense.
 - **It is not a network-tamper detector.** SchemaBrain runs locally; there is no remote audit sink. The chain is local-file integrity, not network-transport integrity.
 - **It does not (yet) carry the full `attempted` PII set.** The audit row's `pii_categories` matches the envelope (blocked only). Forensic analysis of "what categories did the agent's `group_by` actually touch on this refusal?" requires reading `PiiBlockedError.attempted_categories` from the event bus rather than the audit row. A separate operator-visible field carrying the attempted set is on the backlog.
-- **It is not yet anchored externally.** Operators wanting external anchoring can cron `schemabrain audit verify --full && sqlite3 ~/.schemabrain/store.db "SELECT chain_hash FROM mcp_audit ORDER BY id DESC LIMIT 1;"` and store the result. A first-class `audit checkpoint` subcommand is not currently scheduled.
+- **It is not yet anchored externally.** Operators wanting external anchoring can cron `schemabrain audit verify --full && sqlite3 ./schemabrain.db "SELECT chain_hash FROM mcp_audit ORDER BY id DESC LIMIT 1;"` and store the result. A first-class `audit checkpoint` subcommand is not currently scheduled.
 
 ---
 
@@ -132,7 +132,7 @@ schemabrain audit verify
 # exit 0
 
 # Tamper with the chain manually (requires DROP TRIGGER first)
-sqlite3 ~/.schemabrain/store.db << 'SQL'
+sqlite3 ./schemabrain.db << 'SQL'
 DROP TRIGGER mcp_audit_no_update;
 UPDATE mcp_audit SET tool_name = 'list_entities' WHERE id = 1;
 SQL

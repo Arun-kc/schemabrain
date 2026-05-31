@@ -61,7 +61,7 @@ The default browser opens automatically. Pass `--no-open` in CI or on headless m
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--store-path PATH` | `~/.schemabrain/store.db` | SQLite store written by `schemabrain index`. The sidecar auto-resolves the canonical `source_id` from this store. |
+| `--store-path PATH` | `./schemabrain.db` | SQLite store written by `schemabrain index`. The sidecar auto-resolves the canonical `source_id` from this store. |
 | `--port N` | `7878` | TCP port to bind on `127.0.0.1`. Must be in the user-port range (1024-65535). |
 | `--no-open` | (off — auto-opens) | Skip launching the default browser. Use in CI / headless environments. |
 

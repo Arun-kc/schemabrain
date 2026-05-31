@@ -47,7 +47,7 @@ If Claude calls `list_entities` and reports the entities curated during init, yo
 claude mcp add \
   -e SCHEMABRAIN_DATABASE_URL=postgresql+psycopg://user:pass@host:5432/db \
   schemabrain -- \
-  uvx schemabrain==0.4.0 serve --url-env SCHEMABRAIN_DATABASE_URL --store-path ~/.schemabrain/store.db
+  uvx schemabrain==0.4.0 serve --url-env SCHEMABRAIN_DATABASE_URL --store-path ./schemabrain.db
 ```
 
 The `--` separator is load-bearing — without it, Claude Code's parser would try to interpret `--url-env` as one of its own flags. The `SCHEMABRAIN_DATABASE_URL` env-var name is the wizard's default — it's prefixed to avoid colliding with any app-level `DATABASE_URL` you already have in the host's environment.

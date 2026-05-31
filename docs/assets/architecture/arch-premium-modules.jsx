@@ -303,7 +303,7 @@ function RegistryModule({ mode, beat }) {
           <span className={`idot ${mode === "indexing" ? "cyan" : ""}`}></span>
           Local Registry Store
         </span>
-        <span className="badge">sqlite · ~/.schemabrain.db</span>
+        <span className="badge">sqlite · ./schemabrain.db</span>
       </div>
       <div className="module-body" style={{ paddingTop: 8 }}>
         <div className="registry-list">

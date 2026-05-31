@@ -6,9 +6,14 @@ checked into git (only `.gitkeep` + this README live here).
 
 ## At release time
 
-`hatch build` runs `pnpm --dir web build && pnpm --dir web exec next export`
-(via the CI `web-build` job) and copies the resulting `web/out/` into this
-directory. The wheel then ships the static bytes; end users running
+The release workflow (`.github/workflows/publish.yml`, the `build` job)
+runs `pnpm run export` from `web/` — which is `next build` followed by a
+copy of `web/out/` into this directory — BEFORE building the wheel with
+`uv build --wheel`. (Next.js dropped the standalone `next export`
+command, so the copy is wired into the `export` script in
+`web/package.json`. Hatchling is the build backend, configured via the
+`artifacts` glob in `pyproject.toml`; there is no `hatch build` hook.)
+The wheel then ships the static bytes; end users running
 `pip install schemabrain[ui]` get them automatically.
 
 ## At contributor dev time
@@ -22,4 +27,5 @@ to the sidecar; the static directory stays empty.
 End users never need Node. The wheel ships the built bytes; the sidecar
 mounts this directory at `/` when it exists and has content.
 
-See `docs/internal/v0.4_ui_rfc.md` §2.3 for the full build pipeline.
+See `.github/workflows/publish.yml` (the `build` job) for the full
+release build pipeline.

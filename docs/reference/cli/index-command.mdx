@@ -31,7 +31,7 @@ The URL **must** use the `postgresql+psycopg://` scheme.
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--store-path PATH` | `./schemabrain.db` | Path to the local SQLite store. |
 | `--no-embed` | (off — embeddings enabled) | Skip generating local sentence embeddings. Saves ~10ms per column at index time, but `find_relevant_entities` falls back to keyword/substring matching. Implied when `--no-enrich` is set. |
 
 ## Enrichment

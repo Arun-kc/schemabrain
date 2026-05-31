@@ -165,7 +165,7 @@ from schemabrain.core.store import SQLiteStore
 from schemabrain.mcp.describe_entity import describe_entity_impl
 import json
 
-with SQLiteStore("~/.schemabrain/store.db") as store:
+with SQLiteStore("./schemabrain.db") as store:
     resp = describe_entity_impl(
         store=store,
         source_connection_id="<your-source-id>",

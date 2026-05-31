@@ -84,10 +84,16 @@ returns a `pii_blocked` refusal instead of executing the query. The
 (`credential`, `payment_card`, `government_id`) regardless of `block`
 — that's the minimum-decency line, not a policy setting.
 
-`block: []` (an explicit empty list) **disables `get_metric` PII
-enforcement entirely**. PII tags still flow into the audit row so
-forensics is unaffected. Use this when you've classified your data
-and confirmed analytics-only access is appropriate for every column.
+`block: []` (an explicit empty list) **reduces the operator policy to
+the always-on catastrophic-leak floor** (`credential`, `payment_card`,
+`government_id`) — it does **not** disable enforcement. `get_metric` and
+every `describe_*` gate union that floor into the effective block
+regardless of `block`, so a tagged credential / payment-card /
+government-id column is still refused; you cannot drop below the floor
+via YAML. An empty `block` simply means "add nothing beyond the floor".
+PII tags still flow into the audit row either way. Use it once you've
+classified your data and confirmed analytics-only access is appropriate
+for every **non-floor** category.
 
 ### `column_overrides`
 
@@ -231,7 +237,9 @@ Explicit `--pii-block` always wins:
 ```bash
 # Override the YAML for a one-off test run.
 schemabrain serve --url-env DATABASE_URL --pii-block ''
-# warning: --pii-block '' (explicit empty) disables refusal enforcement.
+# --pii-block '' clears the OPERATOR policy for this run; the always-on
+# catastrophic-leak floor (credential / payment_card / government_id)
+# still refuses at every read gate — it cannot be disabled.
 ```
 
 `--policy-path PATH` lets you point at a different file (e.g. a
@@ -270,15 +278,22 @@ column_overrides:
       - credential
 ```
 
-### Disabling enforcement entirely
+### Dev databases with synthetic data
 
-For dev databases where every column is synthetic, an empty `block`
-is the cleanest signal. Per-column tags still flow into audit rows
-so you can still see what was touched.
+There is no switch that turns enforcement off entirely: the
+catastrophic-leak floor (`credential`, `payment_card`,
+`government_id`) is always-on by contract, even with `block: []`. An
+empty `block` only means "add no operator-policy categories beyond the
+floor" — a floor-tagged column is still refused, and per-column tags
+still flow into audit rows so you can see what was touched.
+
+If a specific column is genuinely synthetic and you want it queryable,
+reclassify just that column with a [`column_overrides`](#column_overrides)
+entry rather than expecting an empty `block` to expose it.
 
 ```yaml
 version: 1
-description: Dev database — all data is synthetic, no enforcement.
+description: Dev database — synthetic data; operator block empty (floor still applies).
 block: []
 ```
 

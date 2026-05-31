@@ -28,7 +28,7 @@ One of these is required:
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--store-path PATH` | `./schemabrain.db` | Path to the local SQLite store. |
 
 ## Events
 
@@ -47,7 +47,7 @@ One of these is required:
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--pii-block CSV` | `credential,payment_card,government_id` | Comma-separated `PIICategory` list. When a compiled `get_metric` plan touches one of these, the call returns `refused` with `refusal_reason='pii_blocked'`. Unknown category names abort startup with an error listing the 12 valid values. Pass `''` (empty) to explicitly disable enforcement (PII tags still flow to the audit row). |
+| `--pii-block CSV` | `credential,payment_card,government_id` | Comma-separated `PIICategory` list. When a compiled `get_metric` plan touches one of these, the call returns `refused` with `refusal_reason='pii_blocked'`. Unknown category names abort startup with an error listing the 12 valid values. Pass `''` (empty) to clear the operator policy for this run; the always-on catastrophic-leak floor (`credential` / `payment_card` / `government_id`) still refuses at every read gate and cannot be disabled. PII tags still flow to the audit row. |
 
 The default — three catastrophic-leak categories — is the floor every production deployment should keep. Broaden it (`contact,health,financial,...`) for stricter postures. See [PII taxonomy](/mechanism/pii-taxonomy) for the full category list.
 
@@ -125,14 +125,17 @@ schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db \
     --max-rows-per-result 1000
 ```
 
-### Disable enforcement for a debug session
+### Clear the operator policy for a debug session
 
 ```bash
 schemabrain serve --url-env DATABASE_URL --store-path ./schemabrain.db \
     --pii-block ''
 ```
 
-Tags still flow into audit rows; the policy just stops acting on them.
+This clears any operator-added categories (e.g. `contact`, `health`) so
+those columns are queryable again. The always-on catastrophic-leak floor
+(`credential` / `payment_card` / `government_id`) still refuses and
+cannot be turned off; tags still flow into audit rows regardless.
 
 ### CI smoke
 

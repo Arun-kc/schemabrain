@@ -22,7 +22,7 @@ schemabrain doctor --host claude-desktop --store-path ./schemabrain.db
 |---|---|---|
 | `--source URL` | (none — source checks skipped) | Source URL to probe (SELECT 1 + read-only session check). Deprecated when the URL contains a password. |
 | `--url-env VARNAME` | (none) | Env var holding the source URL. Preferred over `--source`. |
-| `--store-path PATH` | `~/.schemabrain/store.db` | Path to the local SQLite store. |
+| `--store-path PATH` | `./schemabrain.db` | Path to the local SQLite store. |
 | `--host {claude-desktop,claude-code,cursor,windsurf,manual}` | `claude-desktop` | Which host config to check. `manual` skips host-config checks. |
 | `--json` | (off) | Emit machine-readable JSON to stdout instead of the human-readable report to stderr. Useful for CI / monitoring. |
 | `--verify` | (off) | Run the mock-agent smoke instead of the config-health report. |
