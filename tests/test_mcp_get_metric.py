@@ -391,11 +391,19 @@ def store_with_fan_out(tmp_path: Path) -> SQLiteStore:
 
 
 def _build(store: SQLiteStore, executor: MetricExecutor):
+    # These envelope-mapping / filter tests exercise get_metric mechanics
+    # against an UN-tagged seed; they are not about PII enforcement. Opt
+    # out of enforcement explicitly with `pii_block=frozenset()` so the
+    # fail-closed-on-untagged gate (active whenever pii_block is non-empty)
+    # doesn't refuse before execution. build_server now defaults pii_block
+    # to the catastrophic-leak floor (SF-005), which would otherwise make
+    # this fail closed on a store with no PII tags.
     return build_server(
         store=store,
         source_connection_id=SOURCE,
         embedder=_FakeEmbedder(),  # type: ignore[arg-type]
         metric_executor=executor,
+        pii_block=frozenset(),
     )
 
 

@@ -1,11 +1,12 @@
-"""SF-005 — ``build_server(pii_block=frozenset())`` is
-default-allow at the library API.
+"""SF-005 — ``build_server(pii_block=frozenset())`` WAS default-allow
+at the library API (now fixed — see below).
 
-Background:
+Background (the finding, since resolved):
 
-    ``schemabrain/mcp/server.py:422,1946`` — ``build_server(pii_block=
-    frozenset())`` is the default. Any library consumer that doesn't
-    pass ``pii_block`` gets zero PII enforcement.
+    ``schemabrain/mcp/server.py`` — ``build_server(pii_block=
+    frozenset())`` WAS the default. A library consumer that didn't pass
+    ``pii_block`` inherited an empty operator policy (the catastrophic
+    floor still applied via the per-tool union, so not a full bypass).
 
 Expected SECURE behaviour:
 
@@ -20,11 +21,15 @@ Expected SECURE behaviour:
     ``build_server`` and forgets to pass ``pii_block`` inherits the
     weakest possible policy. Defaults should match the CLI: safe.
 
-This is the most ambiguous of the four pure-unit tests. The
-assertion below documents the current behaviour rather than asserting
-secure behaviour, so the test FAILS loudly today; flip the assertion
-when ``build_server``'s default becomes ``CATASTROPHIC_LEAK_CATEGORIES``
-(or whatever ``schemabrain serve`` defaults to).
+The assertion below asserts the SECURE behaviour: the default must be
+the catastrophic-leak set (or a superset). The fix landed in the v0.5.0
+pre-publish hardening — ``build_server`` / ``run_stdio`` now default
+``pii_block`` to ``CATASTROPHIC_LEAK_CATEGORIES``, matching
+``schemabrain serve`` — so this corpus repro now passes. Because the
+``firewall_bypass`` corpus is opt-in (excluded from the default pytest
+selection and not run by any CI job), the load-bearing CI regression pin
+lives in ``tests/test_mcp_secure_defaults.py``; this copy is the
+historical audit record.
 """
 
 from __future__ import annotations
