@@ -1436,12 +1436,11 @@ def build_server(
         limit: Annotated[
             int,
             Field(
-                ge=1,
-                le=10_000,
                 description=(
-                    "Max rows returned. Defaults 1000, hard cap 10000. "
-                    "The compiler always emits LIMIT regardless of "
-                    "group_by complexity."
+                    "Max rows returned. Defaults 1000, valid range 1-10000. "
+                    "Out-of-range values refuse with a typed `malformed_name` "
+                    "envelope (not a transport error). The compiler always "
+                    "emits LIMIT regardless of group_by complexity."
                 ),
             ),
         ] = 1000,

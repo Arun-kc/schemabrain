@@ -75,6 +75,14 @@ _empty_tag_table_warned: set[str] = set()
 _FINGERPRINT_UNSET = "fp-unset"
 
 
+# Inclusive bounds for the get_metric `limit` arg. Enforced in-body
+# (not via a Pydantic Field ge/le) so an out-of-range value returns a
+# typed `malformed_name` envelope instead of a raw FastMCP transport
+# error — FZ-GM-007/008.
+_MIN_LIMIT = 1
+_MAX_LIMIT = 10_000
+
+
 def get_metric_impl(
     *,
     store: Store,
@@ -122,6 +130,17 @@ def get_metric_impl(
     in `pii_block`. Empty `pii_block` disables enforcement (tags
     still flow through to `MetricResult.pii_categories` for audit).
     """
+    # FZ-GM-007/008: validate `limit` in-body so an out-of-range value
+    # returns a typed `malformed_name` envelope (the server wrapper maps
+    # MalformedColumnError → malformed_name) instead of a raw FastMCP
+    # transport error. The `limit` Field intentionally carries no ge/le
+    # bound for this reason — this is the single enforcement point,
+    # mirroring suggest_joins(max_hops <= 0).
+    if not _MIN_LIMIT <= limit <= _MAX_LIMIT:
+        raise MalformedColumnError(
+            f"limit must be between {_MIN_LIMIT} and {_MAX_LIMIT}, got {limit}"
+        )
+
     narrowed_grain: TimeGrain | None = None
     if time_grain is not None:
         if time_grain not in _VALID_GRAINS:
@@ -174,6 +193,15 @@ def get_metric_impl(
     sql_text, sql_params = emit_sql(plan)
     rows = executor.execute(sql_text, sql_params)
 
+    # SF-003: flag when the row count hit an applied cap — either the
+    # `limit` arg (SQL LIMIT) or the executor's `--max-rows-per-result`
+    # payload guard — so the agent knows the view may be incomplete and
+    # can re-query with a higher `limit` or a narrower filter. `getattr`
+    # keeps stub / minimal executors (no cap attribute) unbounded.
+    executor_max_rows = getattr(executor, "max_rows", None)
+    row_cap = limit if executor_max_rows is None else min(limit, executor_max_rows)
+    truncated = len(rows) >= row_cap
+
     metric_method = plan.metric.inference_method
     metric_state = plan.metric.validation_state
     aggregate_method, aggregate_state = _aggregate_metric_plan_signal(
@@ -187,6 +215,7 @@ def get_metric_impl(
     partial = MetricResult(
         rows=rows,
         row_count=len(rows),
+        truncated=truncated,
         sql_skeleton=sql_text,
         sql_params=_serialise_params(sql_params),
         fingerprint=_FINGERPRINT_UNSET,
