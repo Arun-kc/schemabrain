@@ -234,11 +234,12 @@ class WizardConfig:
     pii_block: tuple[str, ...] = ("credential", "government_id", "payment_card")
     # Which bundled demo pack the demo path auto-applies (entities +
     # metrics + joins). Resolved by
-    # `schemabrain.eval.bundled._get_pack`; "ecommerce" is the only
-    # registered pack today. Flip this default (or wire a selector at
-    # the `_cmd_init` construction site) when a second pack lands. Only
-    # governs the demo path — production sources never read it.
-    demo_pack: str = "ecommerce"
+    # `schemabrain.eval.bundled._get_pack`. "saas" is the v0.5.0 default
+    # (exercises all three catastrophic-leak legs); "ecommerce" stays
+    # registered as the fallback. Kept in sync with
+    # `schemabrain.eval.bundled.DEFAULT_PACK`. Only governs the demo
+    # path — production sources never read it.
+    demo_pack: str = "saas"
 
     def __post_init__(self) -> None:
         if self.host not in _VALID_HOSTS:
@@ -1040,7 +1041,7 @@ def _stage_entities(ctx: WizardContext) -> StageOutcome:
             name="entities",
             status="done",
             message=f"applied {applied} bundled entit{'y' if applied == 1 else 'ies'}"
-            f" from the ecommerce demo pack{suffix}",
+            f" from the {cfg.demo_pack} demo pack{suffix}",
             next_step="ask the agent: `find_relevant_entities(query='users')`",
         )
 
@@ -1884,7 +1885,7 @@ def _stage_metrics(ctx: WizardContext) -> StageOutcome:
             name="metrics",
             status="done",
             message=f"applied {applied} bundled metric{'' if applied == 1 else 's'}"
-            f" from the ecommerce demo pack{suffix}",
+            f" from the {cfg.demo_pack} demo pack{suffix}",
             next_step="ask the agent: `get_metric(name='total_revenue', time_grain='month')`",
         )
 
@@ -2483,7 +2484,7 @@ def _stage_joins(ctx: WizardContext) -> StageOutcome:
             name="joins",
             status="done",
             message=f"applied {applied} bundled canonical join{'' if applied == 1 else 's'}"
-            f" from the ecommerce demo pack{suffix}",
+            f" from the {cfg.demo_pack} demo pack{suffix}",
             next_step="ask the agent: `find_relevant_entities(query='customer payment methods')`",
         )
 

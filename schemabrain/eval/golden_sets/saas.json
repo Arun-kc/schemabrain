@@ -1,0 +1,78 @@
+{
+  "version": "1",
+  "schema_description": "ONE example domain \u2014 synthetic B2B SaaS control plane (twelve tables under `public`: workspaces, plans, users, subscriptions, subscription_items, payment_methods, invoices, api_keys, sessions, usage_events, support_tickets, billing_profiles) defined in `schemabrain/eval/fixtures/saas.sql`. SaaS was chosen because its tables are universally legible AND exercise all three catastrophic-leak PII legs, NOT because SchemaBrain is SaaS-specific. SchemaBrain is a generic semantic layer for ANY production database; author your own `golden_sets/<your-schema>.json` and pass it via `schemabrain eval --golden`.",
+  "questions": [
+    {
+      "id": "q001",
+      "question": "Where do we store user login credentials like password hashes?",
+      "expected_tables": [
+        "public.users"
+      ]
+    },
+    {
+      "id": "q002",
+      "question": "Which table holds the cards on file for an account?",
+      "expected_tables": [
+        "public.payment_methods"
+      ]
+    },
+    {
+      "id": "q003",
+      "question": "How do I compute total revenue from invoices over time?",
+      "expected_tables": [
+        "public.invoices"
+      ]
+    },
+    {
+      "id": "q004",
+      "question": "Where are the subscription plans and their pricing defined?",
+      "expected_tables": [
+        "public.plans"
+      ]
+    },
+    {
+      "id": "q005",
+      "question": "How many active subscriptions does each workspace have?",
+      "expected_tables": [
+        "public.subscriptions",
+        "public.workspaces"
+      ]
+    },
+    {
+      "id": "q006",
+      "question": "Where is metered API usage telemetry recorded?",
+      "expected_tables": [
+        "public.usage_events"
+      ]
+    },
+    {
+      "id": "q007",
+      "question": "Where do we store programmatic API keys?",
+      "expected_tables": [
+        "public.api_keys"
+      ]
+    },
+    {
+      "id": "q008",
+      "question": "Which table has the tax identifiers used for billing?",
+      "expected_tables": [
+        "public.billing_profiles"
+      ]
+    },
+    {
+      "id": "q009",
+      "question": "How do I find which payment methods belong to a workspace?",
+      "expected_tables": [
+        "public.workspaces",
+        "public.payment_methods"
+      ]
+    },
+    {
+      "id": "q010",
+      "question": "Where are customer support tickets stored?",
+      "expected_tables": [
+        "public.support_tickets"
+      ]
+    }
+  ]
+}

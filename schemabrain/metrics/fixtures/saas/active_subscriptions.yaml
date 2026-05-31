@@ -1,0 +1,9 @@
+version: 1
+name: active_subscriptions
+description: Number of subscriptions per requested grain.
+entity: subscription
+measure:
+  agg: count
+  column: id
+time_dimension: subscription.started_at
+time_grains: [day, week, month]

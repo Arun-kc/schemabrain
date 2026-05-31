@@ -1,0 +1,9 @@
+version: 1
+name: total_revenue
+description: Sum of invoice totals (cents). One row per requested grain.
+entity: invoice
+measure:
+  agg: sum
+  column: invoice_total_cents
+time_dimension: invoice.issued_at
+time_grains: [day, week, month]

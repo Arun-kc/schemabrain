@@ -1,0 +1,9 @@
+version: 1
+name: workspace_subscriptions
+description: Links each subscription to its workspace.
+source_entity: subscription
+target_entity: workspace
+"on":
+  - source: workspace_id
+    target: id
+cardinality: many_to_one

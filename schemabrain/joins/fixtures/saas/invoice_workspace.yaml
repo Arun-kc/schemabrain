@@ -1,0 +1,9 @@
+version: 1
+name: invoice_workspace
+description: Links each invoice to the workspace it bills.
+source_entity: invoice
+target_entity: workspace
+"on":
+  - source: workspace_id
+    target: id
+cardinality: many_to_one

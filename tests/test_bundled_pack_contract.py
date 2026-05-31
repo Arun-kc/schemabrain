@@ -40,7 +40,7 @@ from schemabrain.metrics.yaml_grammar import parse_metric_yaml_file
 #   entities: stem -> (qualified_table, identity)
 #   joins:    stem -> (source_entity, target_entity)
 #   metrics:  stem -> anchor entity
-_ENTITY_PINS: dict[str, tuple[str, str]] = {
+_ECOMMERCE_ENTITY_PINS: dict[str, tuple[str, str]] = {
     "address": ("public.addresses", "id"),
     "category": ("public.categories", "id"),
     "customer": ("public.users", "id"),
@@ -52,7 +52,7 @@ _ENTITY_PINS: dict[str, tuple[str, str]] = {
     # product_id, NOT id — a real asymmetry worth pinning.
     "product_category": ("public.product_categories", "product_id"),
 }
-_JOIN_PINS: dict[str, tuple[str, str]] = {
+_ECOMMERCE_JOIN_PINS: dict[str, tuple[str, str]] = {
     "customer_orders": ("order", "customer"),
     "customer_payment_methods": ("payment_method", "customer"),
     # order <-> address is joined by TWO canonical joins (billing +
@@ -65,7 +65,7 @@ _JOIN_PINS: dict[str, tuple[str, str]] = {
     # join links the junction entity to its category.
     "product_category": ("product_category", "category"),
 }
-_METRIC_PINS: dict[str, str] = {
+_ECOMMERCE_METRIC_PINS: dict[str, str] = {
     "customer_count": "order",
     "order_count": "order",
     "total_revenue": "order",
@@ -74,52 +74,120 @@ _METRIC_PINS: dict[str, str] = {
     "total_revenue_real": "order_item",
 }
 
+# The v0.5.0 DEFAULT pack: a B2B SaaS control plane (12 entities / 8
+# joins / 5 metrics). FROZEN per
+# docs/internal/v0.5.0_saas_demo_db_design_spec.md (operator-signed).
+_SAAS_ENTITY_PINS: dict[str, tuple[str, str]] = {
+    "workspace": ("public.workspaces", "id"),
+    "plan": ("public.plans", "id"),
+    "user": ("public.users", "id"),
+    "subscription": ("public.subscriptions", "id"),
+    "subscription_item": ("public.subscription_items", "id"),
+    "payment_method": ("public.payment_methods", "id"),
+    "invoice": ("public.invoices", "id"),
+    "api_key": ("public.api_keys", "id"),
+    "session": ("public.sessions", "id"),
+    "usage_event": ("public.usage_events", "id"),
+    "support_ticket": ("public.support_tickets", "id"),
+    "billing_profile": ("public.billing_profiles", "id"),
+}
+_SAAS_JOIN_PINS: dict[str, tuple[str, str]] = {
+    "workspace_users": ("user", "workspace"),
+    "workspace_subscriptions": ("subscription", "workspace"),
+    "subscription_plan": ("subscription", "plan"),
+    "subscription_items_subscription": ("subscription_item", "subscription"),
+    "invoice_workspace": ("invoice", "workspace"),
+    "invoice_subscription": ("invoice", "subscription"),
+    # Catastrophic-propagation joins: the JOIN result inherits the
+    # payment_card / credential tag from the source table.
+    "workspace_payment_methods": ("payment_method", "workspace"),
+    "user_sessions": ("session", "user"),
+}
+_SAAS_METRIC_PINS: dict[str, str] = {
+    "total_revenue": "invoice",
+    # total_revenue_real anchors on subscription_item (line-level
+    # revenue, unit_price_cents * seats) — the composite-expression metric.
+    "total_revenue_real": "subscription_item",
+    "active_subscriptions": "subscription",
+    "user_count": "user",
+    "usage_volume": "usage_event",
+}
+
+# pack name -> (entity pins, join pins, metric pins). Both registered
+# packs are pinned so neither's named surface can drift silently.
+_PACK_PINS: dict[
+    str, tuple[dict[str, tuple[str, str]], dict[str, tuple[str, str]], dict[str, str]]
+] = {
+    "ecommerce": (_ECOMMERCE_ENTITY_PINS, _ECOMMERCE_JOIN_PINS, _ECOMMERCE_METRIC_PINS),
+    "saas": (_SAAS_ENTITY_PINS, _SAAS_JOIN_PINS, _SAAS_METRIC_PINS),
+}
+
 
 def _stems(directory: Path) -> set[str]:
     return {path.stem for path in directory.glob("*.yaml")}
 
 
+@pytest.mark.parametrize("pack", sorted(_PACK_PINS))
 class TestPackExactSets:
-    """The pack is exactly these files — no silent drop or add."""
+    """Each pack is exactly its pinned files — no silent drop or add."""
 
-    def test_entity_pack_is_exactly_eight_named_files(self) -> None:
-        assert _stems(bundled_entities_fixture_dir()) == set(_ENTITY_PINS)
+    def test_entity_pack_is_exactly_its_named_files(self, pack: str) -> None:
+        assert _stems(bundled_entities_fixture_dir(pack=pack)) == set(_PACK_PINS[pack][0])
 
-    def test_join_pack_is_exactly_seven_named_files(self) -> None:
-        assert _stems(bundled_joins_fixture_dir()) == set(_JOIN_PINS)
+    def test_join_pack_is_exactly_its_named_files(self, pack: str) -> None:
+        assert _stems(bundled_joins_fixture_dir(pack=pack)) == set(_PACK_PINS[pack][1])
 
-    def test_metric_pack_is_exactly_four_named_files(self) -> None:
-        assert _stems(bundled_metrics_fixture_dir()) == set(_METRIC_PINS)
+    def test_metric_pack_is_exactly_its_named_files(self, pack: str) -> None:
+        assert _stems(bundled_metrics_fixture_dir(pack=pack)) == set(_PACK_PINS[pack][2])
 
 
 @pytest.mark.parametrize(
-    "stem,qualified_table,identity",
-    [(stem, t, i) for stem, (t, i) in sorted(_ENTITY_PINS.items())],
+    "pack,stem,qualified_table,identity",
+    [
+        (pack, stem, t, i)
+        for pack, (ents, _j, _m) in sorted(_PACK_PINS.items())
+        for stem, (t, i) in sorted(ents.items())
+    ],
 )
-def test_entity_name_table_identity(stem: str, qualified_table: str, identity: str) -> None:
+def test_entity_name_table_identity(
+    pack: str, stem: str, qualified_table: str, identity: str
+) -> None:
     """Each bundled entity pins its name, bound table, and identity column."""
-    entity = parse_entity_yaml_file(bundled_entities_fixture_dir() / f"{stem}.yaml")
+    entity = parse_entity_yaml_file(bundled_entities_fixture_dir(pack=pack) / f"{stem}.yaml")
     assert entity.name == stem
     assert entity.qualified_table == qualified_table
     assert entity.identity == identity
 
 
 @pytest.mark.parametrize(
-    "stem,source_entity,target_entity",
-    [(stem, s, t) for stem, (s, t) in sorted(_JOIN_PINS.items())],
+    "pack,stem,source_entity,target_entity",
+    [
+        (pack, stem, s, t)
+        for pack, (_e, joins, _m) in sorted(_PACK_PINS.items())
+        for stem, (s, t) in sorted(joins.items())
+    ],
 )
-def test_join_name_source_target(stem: str, source_entity: str, target_entity: str) -> None:
+def test_join_name_source_target(
+    pack: str, stem: str, source_entity: str, target_entity: str
+) -> None:
     """Each bundled join pins its name and source/target entities."""
-    join = parse_canonical_join_yaml_file(bundled_joins_fixture_dir() / f"{stem}.yaml")
+    join = parse_canonical_join_yaml_file(bundled_joins_fixture_dir(pack=pack) / f"{stem}.yaml")
     assert join.name == stem
     assert join.source_entity == source_entity
     assert join.target_entity == target_entity
 
 
-@pytest.mark.parametrize("stem,anchor", sorted(_METRIC_PINS.items()))
-def test_metric_name_anchor_entity(stem: str, anchor: str) -> None:
+@pytest.mark.parametrize(
+    "pack,stem,anchor",
+    [
+        (pack, stem, anchor)
+        for pack, (_e, _j, metrics) in sorted(_PACK_PINS.items())
+        for stem, anchor in sorted(metrics.items())
+    ],
+)
+def test_metric_name_anchor_entity(pack: str, stem: str, anchor: str) -> None:
     """Each bundled metric pins its name and anchor entity."""
-    metric = parse_metric_yaml_file(bundled_metrics_fixture_dir() / f"{stem}.yaml")
+    metric = parse_metric_yaml_file(bundled_metrics_fixture_dir(pack=pack) / f"{stem}.yaml")
     assert metric.name == stem
     assert metric.entity == anchor
 
@@ -144,9 +212,13 @@ def _minimal_demo_cfg(store_path: Path):  # type: ignore[no-untyped-def]
     )
 
 
-def test_wizard_config_default_demo_pack_is_ecommerce(tmp_path: Path) -> None:
-    """The dataclass default keeps today's single-pack behavior."""
-    assert _minimal_demo_cfg(tmp_path / "store.db").demo_pack == "ecommerce"
+def test_wizard_config_default_demo_pack_is_saas(tmp_path: Path) -> None:
+    """The dataclass default is the v0.5.0 saas pack (kept in sync with
+    bundled.DEFAULT_PACK)."""
+    from schemabrain.eval.bundled import DEFAULT_PACK
+
+    assert _minimal_demo_cfg(tmp_path / "store.db").demo_pack == "saas"
+    assert _minimal_demo_cfg(tmp_path / "store.db").demo_pack == DEFAULT_PACK
 
 
 @pytest.mark.parametrize(
@@ -185,7 +257,8 @@ def test_apply_bundled_demo_yamls_forwards_demo_pack(
     cfg = _minimal_demo_cfg(tmp_path / "store.db")
     applied, failures = _apply_bundled_demo_yamls(kind=kind, cfg=cfg, source_id="src-1")
 
-    assert recorded["pack"] == "ecommerce"
+    # The default demo_pack is now "saas"; the helper forwards it verbatim.
+    assert recorded["pack"] == "saas"
     assert applied == 0
     assert failures == []
 
@@ -194,18 +267,18 @@ def test_apply_bundled_demo_yamls_unknown_pack_returns_partial_failure(tmp_path:
     """An unregistered demo pack surfaces as a (0, [msg]) partial failure.
 
     The helper's contract is partial-success — it must not crash the
-    wizard stage with an uncaught ValueError. Not reachable via the CLI
-    today (demo_pack is always "ecommerce"), but pins the guard that
-    makes the Phase-1 pack-selector wiring safe.
+    wizard stage with an uncaught ValueError. `saas` and `ecommerce` are
+    both registered now, so the sentinel is a name that is NOT a
+    registered pack.
     """
     from dataclasses import replace
 
     from schemabrain.setup.wizard import _apply_bundled_demo_yamls
 
-    cfg = replace(_minimal_demo_cfg(tmp_path / "store.db"), demo_pack="saas")
+    cfg = replace(_minimal_demo_cfg(tmp_path / "store.db"), demo_pack="nonexistent")
     applied, failures = _apply_bundled_demo_yamls(kind="entities", cfg=cfg, source_id="src-1")
 
     assert applied == 0
     assert len(failures) == 1
     assert "unknown demo pack" in failures[0]
-    assert "saas" in failures[0]
+    assert "nonexistent" in failures[0]

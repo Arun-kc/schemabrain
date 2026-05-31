@@ -1,0 +1,9 @@
+version: 1
+name: usage_volume
+description: Sum of usage-event quantity per requested grain.
+entity: usage_event
+measure:
+  agg: sum
+  column: quantity
+time_dimension: usage_event.occurred_at
+time_grains: [day, week, month]

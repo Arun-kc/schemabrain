@@ -1,0 +1,9 @@
+version: 1
+name: subscription_plan
+description: Links each subscription to the plan it is on (leaderboard dimension).
+source_entity: subscription
+target_entity: plan
+"on":
+  - source: plan_id
+    target: id
+cardinality: many_to_one

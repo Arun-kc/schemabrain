@@ -42,51 +42,66 @@ _CREATE_TABLE_RE = re.compile(
 )
 
 
-def _ecommerce_table_names() -> frozenset[str]:
-    sql = Path(resolve_bundled_path("ecommerce.sql")).read_text(encoding="utf-8")
+# Both registered packs ship a SQL seed + a YAML pack; each YAML pack
+# must resolve against ITS OWN seed, independent of which pack is the
+# default. (Zero-arg getters follow DEFAULT_PACK, so these checks pass
+# the pack explicitly.)
+_PACK_SQL: dict[str, str] = {"ecommerce": "ecommerce.sql", "saas": "saas.sql"}
+
+
+def _pack_table_names(sql_basename: str) -> frozenset[str]:
+    sql = Path(resolve_bundled_path(sql_basename)).read_text(encoding="utf-8")
     return frozenset(_CREATE_TABLE_RE.findall(sql))
 
 
-def _bundled_entity_names() -> dict[str, Path]:
-    return {path.stem: path for path in sorted(bundled_entities_fixture_dir().glob("*.yaml"))}
+def _ecommerce_table_names() -> frozenset[str]:
+    return _pack_table_names("ecommerce.sql")
 
 
-def test_every_bundled_entity_binds_to_an_ecommerce_table() -> None:
-    tables = _ecommerce_table_names()
+def _bundled_entity_names(pack: str) -> dict[str, Path]:
+    return {
+        path.stem: path for path in sorted(bundled_entities_fixture_dir(pack=pack).glob("*.yaml"))
+    }
+
+
+@pytest.mark.parametrize("pack", sorted(_PACK_SQL))
+def test_every_bundled_entity_binds_to_a_pack_table(pack: str) -> None:
+    tables = _pack_table_names(_PACK_SQL[pack])
     failures: list[str] = []
-    for yaml_path in sorted(bundled_entities_fixture_dir().glob("*.yaml")):
+    for yaml_path in sorted(bundled_entities_fixture_dir(pack=pack).glob("*.yaml")):
         entity = parse_entity_yaml_file(yaml_path)
         table = entity.qualified_table.replace("public.", "")
         if table not in tables:
-            failures.append(f"{yaml_path.name}: binds to public.{table} (not in ecommerce.sql)")
+            failures.append(f"{yaml_path.name}: binds to public.{table} (not in {_PACK_SQL[pack]})")
     assert not failures, "\n".join(failures)
 
 
-def test_every_bundled_metric_references_an_entity_in_the_pack() -> None:
-    entity_names = set(_bundled_entity_names())
+@pytest.mark.parametrize("pack", sorted(_PACK_SQL))
+def test_every_bundled_metric_references_an_entity_in_the_pack(pack: str) -> None:
+    entity_names = set(_bundled_entity_names(pack))
     failures: list[str] = []
-    for yaml_path in sorted(bundled_metrics_fixture_dir().glob("*.yaml")):
+    for yaml_path in sorted(bundled_metrics_fixture_dir(pack=pack).glob("*.yaml")):
         metric = parse_metric_yaml_file(yaml_path)
         if metric.entity not in entity_names:
             failures.append(
-                f"{yaml_path.name}: anchors on entity {metric.entity!r} "
-                f"(not in bundled entity pack)"
+                f"{yaml_path.name}: anchors on entity {metric.entity!r} (not in {pack} entity pack)"
             )
     assert not failures, "\n".join(failures)
 
 
-def test_every_bundled_join_references_entities_in_the_pack() -> None:
-    entity_names = set(_bundled_entity_names())
+@pytest.mark.parametrize("pack", sorted(_PACK_SQL))
+def test_every_bundled_join_references_entities_in_the_pack(pack: str) -> None:
+    entity_names = set(_bundled_entity_names(pack))
     failures: list[str] = []
-    for yaml_path in sorted(bundled_joins_fixture_dir().glob("*.yaml")):
+    for yaml_path in sorted(bundled_joins_fixture_dir(pack=pack).glob("*.yaml")):
         join = parse_canonical_join_yaml_file(yaml_path)
         if join.source_entity not in entity_names:
             failures.append(
-                f"{yaml_path.name}: source_entity {join.source_entity!r} not in bundled entity pack"
+                f"{yaml_path.name}: source_entity {join.source_entity!r} not in {pack} entity pack"
             )
         if join.target_entity not in entity_names:
             failures.append(
-                f"{yaml_path.name}: target_entity {join.target_entity!r} not in bundled entity pack"
+                f"{yaml_path.name}: target_entity {join.target_entity!r} not in {pack} entity pack"
             )
     assert not failures, "\n".join(failures)
 
@@ -161,18 +176,80 @@ def test_payment_methods_table_present_for_pii_demo() -> None:
     )
 
 
+def test_saas_fixture_present_with_all_three_catastrophic_legs() -> None:
+    """The v0.5.0 default (saas) seed must ship all three catastrophic legs."""
+    sql = Path(resolve_bundled_path("saas.sql")).read_text(encoding="utf-8")
+    for marker in (
+        "password_hash",  # credential
+        "api_key_hash",  # credential
+        "session_token",  # credential
+        "card_number_last4",  # payment_card
+        "tax_id",  # government_id
+        "national_id",  # government_id
+    ):
+        assert marker in sql, f"saas.sql missing catastrophic column {marker!r}"
+    # The S7 free-text injection vectors ship in the schema...
+    assert "bio" in sql and "support_tickets" in sql
+    # ...but NO cvv/cvc column anywhere (PCI-correct, locked decision #3).
+    # Check the DDL column definitions only: strip SQL comment lines
+    # (the header documents the no-cvv choice) and the INSERT VALUES
+    # (bcrypt-hash noise can contain 'cvv'/'cvc' by chance).
+    ddl_body = sql.split("INSERT INTO", 1)[0]
+    ddl = "\n".join(
+        line for line in ddl_body.splitlines() if not line.strip().startswith("--")
+    ).lower()
+    assert "cvv" not in ddl, "saas.sql DDL must not define a cvv column (locked #3)"
+    assert "cvc" not in ddl, "saas.sql DDL must not define a cvc column (locked #3)"
+
+
+def test_saas_fixture_table_count_locks_in_product_string() -> None:
+    """The saas load banner's table count must match saas.sql.
+
+    Surfaces the same class of bug as the ecommerce lock: the wizard
+    prints '(N tables, ...)' while the indexer reports the real count
+    on the next line. saas.sql defines 12 tables; the setup_stage load
+    banner must say so.
+    """
+    from schemabrain.setup import setup_stage
+
+    tables = _pack_table_names("saas.sql")
+    assert len(tables) == 12, (
+        f"saas.sql now defines {len(tables)} tables; the setup_stage load "
+        f"banner '12 tables' must follow. tables={sorted(tables)}"
+    )
+    source = Path(setup_stage.__file__).read_text(encoding="utf-8")
+    assert "12 tables" in source, "setup_stage load banner must read '12 tables' for the saas demo"
+
+
 # ----- End-to-end smoke: the wizard's apply-bundled helper against a real store ----
+
+# Every public table the DEFAULT (saas) entity pack binds to. Seeded so
+# the FK guards in `Store.write_entity` pass when applying the pack.
+_SAAS_DEMO_TABLES: tuple[str, ...] = (
+    "workspaces",
+    "plans",
+    "users",
+    "subscriptions",
+    "subscription_items",
+    "payment_methods",
+    "invoices",
+    "api_keys",
+    "sessions",
+    "usage_events",
+    "support_tickets",
+    "billing_profiles",
+)
 
 
 def test_apply_bundled_demo_yamls_lands_full_pack(tmp_path: Path) -> None:
     """End-to-end: the wizard's demo branch applies entities + joins + metrics.
 
     Mirrors the wizard's stage 3/4/5 demo path against a temp SQLite
-    store seeded with the ecommerce tables. Verifies the helper writes
-    every bundled YAML successfully, with no per-file failures, and
-    that the resulting store reflects the canonical-join PII-
-    propagation surface (customer + payment_method present, with a
-    join connecting them).
+    store seeded with the DEFAULT (saas) tables. Verifies the helper
+    writes every bundled YAML successfully, with no per-file failures,
+    and that the resulting store reflects a catastrophic-propagation
+    join surface (workspace + payment_method present, with a join
+    connecting them).
     """
     from dataclasses import replace
 
@@ -196,21 +273,10 @@ def test_apply_bundled_demo_yamls_lands_full_pack(tmp_path: Path) -> None:
             is_primary_key=True,
         )
 
-    # Seed every table referenced by the bundled entity pack so the
-    # FK guards in `Store.write_entity` pass. Mirror of the helper in
-    # `tests/test_joins_e2e.py` but locally scoped to keep the smoke
-    # standalone.
+    # Seed every table referenced by the bundled (saas) entity pack so
+    # the FK guards in `Store.write_entity` pass.
     with SQLiteStore(store_path) as store:
-        for table_name in (
-            "users",
-            "orders",
-            "order_items",
-            "products",
-            "categories",
-            "addresses",
-            "product_categories",
-            "payment_methods",
-        ):
+        for table_name in _SAAS_DEMO_TABLES:
             store.write_table(
                 Table(name=table_name, schema_name="public", columns=(_pk("id", table_name),)),
                 source_connection_id=source_id,
@@ -227,37 +293,36 @@ def test_apply_bundled_demo_yamls_lands_full_pack(tmp_path: Path) -> None:
         entities_max_cost_usd=None,
         assume_yes=True,
     )
-    # Stage 3 — entities first (joins + metrics depend on them).
+    # demo_pack defaults to "saas"; apply in stage order (entities first).
     cfg_with_path = replace(cfg, store_path=store_path)
     applied_e, failed_e = _apply_bundled_demo_yamls(
         kind="entities", cfg=cfg_with_path, source_id=source_id
     )
     assert failed_e == [], f"entity apply had per-file failures: {failed_e}"
-    assert applied_e >= 8, f"expected >=8 bundled entities, applied {applied_e}"
+    assert applied_e >= 12, f"expected >=12 bundled entities, applied {applied_e}"
 
-    # Stage 5 — joins next (order matters: customer_payment_methods
-    # references both customer and payment_method).
+    # Stage 5 — joins next (order matters: workspace_payment_methods
+    # references both workspace and payment_method).
     applied_j, failed_j = _apply_bundled_demo_yamls(
         kind="joins", cfg=cfg_with_path, source_id=source_id
     )
     assert failed_j == [], f"join apply had per-file failures: {failed_j}"
-    assert applied_j >= 7, f"expected >=7 bundled joins, applied {applied_j}"
+    assert applied_j >= 8, f"expected >=8 bundled joins, applied {applied_j}"
 
     # Stage 4 — metrics last.
     applied_m, failed_m = _apply_bundled_demo_yamls(
         kind="metrics", cfg=cfg_with_path, source_id=source_id
     )
     assert failed_m == [], f"metric apply had per-file failures: {failed_m}"
-    assert applied_m >= 3, f"expected >=3 bundled metrics, applied {applied_m}"
+    assert applied_m >= 5, f"expected >=5 bundled metrics, applied {applied_m}"
 
-    # The canonical-PII-propagation surface: customer + payment_method
-    # entities + a join connecting them must all be present in the
-    # store so the firewall has something to propagate PII tags
-    # across at query time.
+    # The catastrophic-propagation surface: workspace + payment_method
+    # entities + a join connecting them must all be present so the
+    # firewall has something to propagate the payment_card tag across.
     with SQLiteStore(store_path) as store:
         joins = store.list_canonical_joins(source_connection_id=source_id)
         join_names = {j.name for j in joins}
-    assert "customer_payment_methods" in join_names
+    assert "workspace_payment_methods" in join_names
 
 
 # ----- Stage 3/4/5 demo-branch coverage --------------------------------------
@@ -286,16 +351,7 @@ def _seed_demo_tables(store_path: Path, source_id: str) -> None:
         )
 
     with SQLiteStore(store_path) as store:
-        for table_name in (
-            "users",
-            "orders",
-            "order_items",
-            "products",
-            "categories",
-            "addresses",
-            "product_categories",
-            "payment_methods",
-        ):
+        for table_name in _SAAS_DEMO_TABLES:
             store.write_table(
                 Table(name=table_name, schema_name="public", columns=(_pk("id", table_name),)),
                 source_connection_id=source_id,
@@ -333,7 +389,7 @@ def test_stage_entities_demo_branch_emits_done_outcome(tmp_path: Path) -> None:
     outcome = _stage_entities(WizardContext(config=_demo_wizard_config(store_path)))
     assert outcome.status == "done"
     assert outcome.stage == 3
-    assert "ecommerce demo pack" in outcome.message
+    assert "saas demo pack" in outcome.message
 
 
 def test_stage_metrics_demo_branch_emits_done_outcome(tmp_path: Path) -> None:
@@ -357,7 +413,7 @@ def test_stage_metrics_demo_branch_emits_done_outcome(tmp_path: Path) -> None:
     outcome = _stage_metrics(WizardContext(config=_demo_wizard_config(store_path)))
     assert outcome.status == "done"
     assert outcome.stage == 4
-    assert "ecommerce demo pack" in outcome.message
+    assert "saas demo pack" in outcome.message
 
 
 def test_stage_joins_demo_branch_emits_done_outcome(tmp_path: Path) -> None:
@@ -380,7 +436,7 @@ def test_stage_joins_demo_branch_emits_done_outcome(tmp_path: Path) -> None:
     outcome = _stage_joins(WizardContext(config=_demo_wizard_config(store_path)))
     assert outcome.status == "done"
     assert outcome.stage == 5
-    assert "ecommerce demo pack" in outcome.message
+    assert "saas demo pack" in outcome.message
 
 
 def test_apply_bundled_demo_yamls_collects_per_file_failures(tmp_path: Path) -> None:
@@ -449,10 +505,10 @@ def test_detect_stale_demo_fixture_returns_false_on_connection_failure() -> None
     assert _detect_stale_demo_fixture(url=unreachable) is False
 
 
-def test_detect_stale_demo_fixture_returns_false_for_v2_schema(
+def test_detect_stale_demo_fixture_returns_false_when_workspaces_present(
     monkeypatch: pytest.MonkeyPatch,  # type: ignore[name-defined]
 ) -> None:
-    """Container with password_hash column → returns False (already v2)."""
+    """Container with the saas `workspaces` table → False (saas loaded)."""
     from schemabrain.setup import setup_stage
 
     class _FakeResult:
@@ -487,10 +543,10 @@ def test_detect_stale_demo_fixture_returns_false_for_v2_schema(
     assert setup_stage._detect_stale_demo_fixture(url=setup_stage.DEMO_DATABASE_URL) is False
 
 
-def test_detect_stale_demo_fixture_returns_true_when_password_hash_missing(
+def test_detect_stale_demo_fixture_returns_true_when_non_saas_fixture(
     monkeypatch: pytest.MonkeyPatch,  # type: ignore[name-defined]
 ) -> None:
-    """v1 container (users exists, password_hash absent) → True."""
+    """Older fixture loaded (public tables exist, but no `workspaces`) → True."""
     from schemabrain.setup import setup_stage
 
     call_count = {"n": 0}
@@ -505,9 +561,10 @@ def test_detect_stale_demo_fixture_returns_true_when_password_hash_missing(
     class _FakeConn:
         def execute(self, *_args: object) -> _FakeResult:
             call_count["n"] += 1
-            # First call: users table check → exists.
-            # Second call: password_hash column check → missing.
-            return _FakeResult((1,)) if call_count["n"] == 1 else _FakeResult(None)
+            # First call: `workspaces` table check → absent (non-saas).
+            # Second call: any-public-table check → present (e.g. an
+            # older e-commerce fixture is loaded).
+            return _FakeResult(None) if call_count["n"] == 1 else _FakeResult((1,))
 
         def __enter__(self) -> _FakeConn:
             return self

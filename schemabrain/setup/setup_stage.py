@@ -87,7 +87,7 @@ DEMO_CONTAINER_NAME = "sb-demo-pg"
 # relative path joined against `Path.cwd()` breaks for every
 # `pip install schemabrain` user because the fixture lives inside
 # the wheel, not at `$(pwd)/schemabrain/...`.
-DEMO_FIXTURE_BUNDLED_NAME = "ecommerce.sql"
+DEMO_FIXTURE_BUNDLED_NAME = "saas.sql"
 
 
 # The demo URL the wizard returns when the user picks the demo path.
@@ -478,7 +478,7 @@ def _docker_load_fixture(*, console: Console) -> bool:
         # flags on extracted wheel files). Both surface to the user with
         # the same recovery — the underlying message tells them which.
         console.print(
-            f"  [yellow]{GLYPH_WARN} Couldn't resolve bundled ecommerce "
+            f"  [yellow]{GLYPH_WARN} Couldn't resolve bundled saas "
             f"fixture: {exc}. The installed wheel may be incomplete or "
             "unreadable — re-run "
             "[cyan]pip install --force-reinstall schemabrain[/].[/]"
@@ -486,7 +486,7 @@ def _docker_load_fixture(*, console: Console) -> bool:
         return False
 
     console.print(
-        f"  [bright_black]{GLYPH_PENDING} Loading ecommerce fixture (8 tables, ~1.2k rows)...[/]"
+        f"  [bright_black]{GLYPH_PENDING} Loading saas fixture (12 tables, ~830 rows)...[/]"
     )
     result = _safe_subprocess(
         [
@@ -517,7 +517,7 @@ def _docker_load_fixture(*, console: Console) -> bool:
     if result is not None and result.returncode == 0:
         console.print(f"  [bright_black]{GLYPH_OK} Fixture loaded[/]")
         return True
-    _print_docker_failure(console, "couldn't load the ecommerce fixture", result)
+    _print_docker_failure(console, "couldn't load the saas fixture", result)
     return False
 
 
@@ -578,19 +578,22 @@ def _print_docker_failure(
 
 
 def _detect_stale_demo_fixture(*, url: str) -> bool:
-    """Return True iff the running demo container has a pre-v2 fixture.
+    """Return True iff the running demo container holds a non-saas fixture.
 
-    v2 added `users.password_hash` and the `payment_methods` table —
-    the catastrophic-leak columns that make the firewall demo fire.
-    A container seeded against the v1 fixture has `public.users` but
-    no `password_hash` column; this check reads `information_schema`
-    and returns True for that shape (so the caller can prompt to
-    recreate).
+    The v0.5.0 default demo pack is `saas`, whose tenant-root table is
+    `public.workspaces`. A container seeded against an OLDER fixture
+    (e.g. the e-commerce demo, which has `public.users` but no
+    `workspaces`) would silently fail to bind the saas entity YAMLs.
+    `users.password_hash` can't distinguish the two — both the saas and
+    the e-commerce fixtures define it — so the probe keys on the saas-
+    specific `workspaces` table instead.
 
-    Returns False on any of: fresh container (no `users` table yet —
-    fixture will load cleanly), already on v2 (column present), or
-    connection / query failure (degrade silently rather than blocking
-    the demo path on a diagnostic that's only a polish concern).
+    Logic (reads `information_schema`):
+      - `workspaces` present  -> saas already loaded            -> False
+      - any `public` table present but no `workspaces` -> stale  -> True
+      - fresh / empty container (no public tables yet)          -> False
+      - connection / query failure -> False (degrade silently rather
+        than blocking the demo path on a polish-only diagnostic).
     """
     from urllib.parse import urlparse
 
@@ -604,22 +607,22 @@ def _detect_stale_demo_fixture(*, url: str) -> bool:
         engine = create_engine(rewritten_url, connect_args={"connect_timeout": 2})
         try:
             with engine.connect() as conn:
-                users_exists = conn.execute(
+                workspaces_exists = conn.execute(
                     text(
                         "SELECT 1 FROM information_schema.tables "
-                        "WHERE table_schema='public' AND table_name='users'"
+                        "WHERE table_schema='public' AND table_name='workspaces'"
                     )
                 ).first()
-                if users_exists is None:
+                if workspaces_exists is not None:
                     return False
-                pwd_col = conn.execute(
+                any_public_table = conn.execute(
                     text(
-                        "SELECT 1 FROM information_schema.columns "
-                        "WHERE table_schema='public' AND table_name='users' "
-                        "AND column_name='password_hash'"
+                        "SELECT 1 FROM information_schema.tables "
+                        "WHERE table_schema='public' AND table_type='BASE TABLE' "
+                        "LIMIT 1"
                     )
                 ).first()
-                return pwd_col is None
+                return any_public_table is not None
         finally:
             engine.dispose()
     except SQLAlchemyError:
@@ -640,18 +643,18 @@ def _try_auto_docker_demo(*, console: Console) -> bool:
     if not _wait_for_postgres_ready(url=DEMO_DATABASE_URL, console=console):
         return False
     if _detect_stale_demo_fixture(url=DEMO_DATABASE_URL):
-        # Older container missing password_hash + payment_methods.
-        # The new fixture's ALTER TABLE IF NOT EXISTS would patch the
-        # users column on top, but ON CONFLICT DO NOTHING leaves
-        # existing rows with a placeholder hash — the demo would look
-        # half-cooked. Surface this loudly + offer the clean fix.
+        # Container holds a non-saas fixture (e.g. an older e-commerce
+        # demo): the saas entity YAMLs bind to `workspaces`/`subscriptions`/
+        # etc. that the old container lacks, so the demo would surface
+        # confusing "failed to apply" errors. Surface this loudly + offer
+        # the clean fix (recreate against the saas fixture).
         from rich.prompt import Prompt
 
         console.print()
         console.print(
             f"  [yellow]{GLYPH_WARN} Existing [cyan]{DEMO_CONTAINER_NAME}[/] "
-            "predates the v2 demo fixture (missing PII columns the firewall "
-            "demo needs).[/]"
+            "holds an older demo fixture (not the v0.5.0 saas tables the "
+            "firewall demo needs).[/]"
         )
         console.print(
             "  [bright_black]Recreating the container gives the cleanest "
@@ -726,9 +729,7 @@ def _handle_demo_path(*, console: Console) -> str | None:
     console.print(f"  [bold]{GLYPH_PENDING} Start Postgres:[/]")
     console.print(f"    [cyan]{DEMO_DOCKER_RUN_COMMAND}[/]")
     console.print()
-    console.print(
-        f"  [bold]{GLYPH_PENDING} Then load the ecommerce sample (8 tables, ~1.2k rows):[/]"
-    )
+    console.print(f"  [bold]{GLYPH_PENDING} Then load the saas sample (12 tables, ~830 rows):[/]")
     console.print(f"    [cyan]{DEMO_FIXTURE_LOAD_COMMAND}[/]")
     console.print()
     console.print(

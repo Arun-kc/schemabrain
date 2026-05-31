@@ -1,0 +1,6 @@
+version: 1
+name: user
+description: A workspace member account (login credential + contact details).
+binding:
+  single_table: public.users
+identity: id

@@ -1,0 +1,6 @@
+version: 1
+name: api_key
+description: A programmatic API credential issued to a workspace.
+binding:
+  single_table: public.api_keys
+identity: id

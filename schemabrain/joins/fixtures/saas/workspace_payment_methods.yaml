@@ -1,0 +1,12 @@
+version: 1
+name: workspace_payment_methods
+description: Links each payment method on file to its workspace.
+source_entity: payment_method
+target_entity: workspace
+"on":
+  - source: workspace_id
+    target: id
+cardinality: many_to_one
+# Catastrophic-propagation join: the JOIN result inherits the
+# `payment_card` tag from payment_methods.card_number_last4, so
+# "show workspaces with their cards" trips the firewall.

@@ -1,0 +1,6 @@
+version: 1
+name: subscription
+description: A workspace's binding to a plan, with its lifecycle timestamps.
+binding:
+  single_table: public.subscriptions
+identity: id

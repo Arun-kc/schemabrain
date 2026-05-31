@@ -1,0 +1,6 @@
+version: 1
+name: workspace
+description: A tenant account — the org boundary that owns users, subscriptions, and billing.
+binding:
+  single_table: public.workspaces
+identity: id

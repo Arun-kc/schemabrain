@@ -1,0 +1,11 @@
+version: 1
+name: total_revenue_real
+description: |
+  SUM of line-item subscription revenue (unit_price_cents x seats, in cents).
+  Computed per subscription_item, so multi-line subscriptions roll up
+  correctly. Use instead of `total_revenue` for per-plan/per-seat rollups
+  via `group_by`.
+entity: subscription_item
+measure:
+  agg: sum
+  expression: unit_price_cents * seats
