@@ -1,16 +1,20 @@
-"""FZ-GM-007 — get_metric `limit=0` bypasses the ToolResponse envelope.
+"""FZ-GM-007/008 — get_metric out-of-range `limit` returns a typed envelope.
 
-Fuzz-discovered finding on the MCP tool surface.
+Fuzz-discovered finding on the MCP tool surface — now FIXED; this is the
+end-to-end regression pin.
 
-## Summary
+## Summary (resolved)
 
-`get_metric` declares `limit: Annotated[int, Field(ge=1, le=10_000)] = 1000`.
-When an agent (or adversarial caller) passes `limit=0`, FastMCP's
-auto-generated Pydantic argument model raises *before* the tool body
-runs. The exception surfaces to the MCP client as a raw
-`FastMCPToolError` (`isError: true`) carrying the Pydantic
-`greater_than_equal` validation message — **not** a Charter-compliant
-`ToolResponse` envelope with `status="error"` + a typed `Recovery`.
+`get_metric` previously declared `limit: Annotated[int, Field(ge=1,
+le=10_000)] = 1000`. When a caller passed `limit=0` (or `limit>10000`),
+FastMCP's auto-generated Pydantic argument model raised *before* the
+tool body ran, surfacing a raw `FastMCPToolError` (`isError: true`)
+carrying the Pydantic validation message — **not** a Charter-compliant
+`ToolResponse` envelope with `status="error"` + a typed `Recovery`. The
+fix drops the ge/le bound and validates in-body (raising
+`MalformedColumnError`), so the server wrapper now returns
+`status="error"`, `kind="malformed_name"` with a `Recovery` — matching
+the sibling tools below.
 
 This is an asymmetric break of Charter Principle 1 ("loud, not silent
 — but typed"): sibling tools handle equivalent boundary-violation cases
@@ -36,20 +40,15 @@ business-logic refusal.
 
 See test below — single-line in-process call against an indexed store.
 
-## Recommended fix
+## Resolution
 
-Two options:
-
-1. Drop the Pydantic `Field(ge=1, le=10_000)` constraint from the
-   `limit` parameter and validate inside the tool body, returning a
-   structured `malformed_name` ToolResponse via the existing
-   `_malformed_name_response` helper.
-2. Keep the constraint but install a FastMCP-level argument-validation
-   catch that converts the Pydantic ValidationError into the same
-   structured envelope (similar to the existing `_StrictArgsFastMCP`
-   strict-args path).
-
-Option 1 matches what `suggest_joins(max_hops <= 0)` already does.
+Option 1 was implemented: the `Field(ge=1, le=10_000)` bound was dropped
+and `get_metric_impl` validates `limit` in-body (raising
+`MalformedColumnError`), matching what `suggest_joins(max_hops <= 0)`
+already does. The load-bearing CI pin lives in
+`tests/test_mcp_get_metric.py::TestLimitBounds` (default suite, no DB);
+this integration corpus test confirms the same contract end-to-end
+against a real store.
 """
 
 from __future__ import annotations
@@ -58,7 +57,6 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError as FastMCPToolError
 from sqlalchemy import create_engine
 
 from schemabrain.core.store import SQLiteStore
@@ -86,30 +84,35 @@ def _build_app():
 
 @pytest.mark.integration
 @pytest.mark.firewall_bypass
-class TestFZGM007GetMetricLimitZeroBypassesEnvelope:
-    """`get_metric` raises FastMCPToolError on `limit=0` / `limit>10000`
-    instead of returning the typed ToolResponse envelope.
+class TestFZGM007GetMetricLimitOutOfRangeReturnsEnvelope:
+    """`get_metric` returns a typed `malformed_name` envelope on
+    `limit=0` / `limit>10000` — not a raw FastMCPToolError.
     """
 
-    def test_limit_zero_raises_instead_of_envelope(self) -> None:
+    def test_limit_zero_returns_malformed_name_envelope(self) -> None:
         app, store = _build_app()
         try:
-            with pytest.raises(FastMCPToolError) as excinfo:
-                asyncio.run(app.call_tool("get_metric", {"name": "any_metric", "limit": 0}))
-            # The raised error carries Pydantic's raw message rather
-            # than a Charter ErrorKind + Recovery. This is the bug.
-            assert "greater_than_equal" in str(excinfo.value)
-            assert "limit" in str(excinfo.value)
+            # limit=0 is rejected by the in-body guard BEFORE metric
+            # resolution, so the (nonexistent) metric name is irrelevant.
+            _content, payload = asyncio.run(
+                app.call_tool("get_metric", {"name": "any_metric", "limit": 0})
+            )
+            assert payload["status"] == "error"
+            assert payload["error"]["kind"] == "malformed_name"
+            assert "limit" in payload["error"]["message"]
+            assert payload["error"]["recovery"]["suggested_tool"] == "describe_entity"
         finally:
             store.close()
 
-    def test_limit_above_cap_raises_instead_of_envelope(self) -> None:
+    def test_limit_above_cap_returns_malformed_name_envelope(self) -> None:
         app, store = _build_app()
         try:
-            with pytest.raises(FastMCPToolError) as excinfo:
-                asyncio.run(app.call_tool("get_metric", {"name": "any_metric", "limit": 100_000}))
-            assert "less_than_equal" in str(excinfo.value)
-            assert "limit" in str(excinfo.value)
+            _content, payload = asyncio.run(
+                app.call_tool("get_metric", {"name": "any_metric", "limit": 100_000})
+            )
+            assert payload["status"] == "error"
+            assert payload["error"]["kind"] == "malformed_name"
+            assert "limit" in payload["error"]["message"]
         finally:
             store.close()
 

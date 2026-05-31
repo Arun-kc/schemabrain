@@ -44,9 +44,19 @@ class _StubExecutor:
     """Canned-row stub. Records the (sql, params) it was called with
     so tests can assert the compiler hooked up properly."""
 
-    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        rows: list[dict[str, Any]] | None = None,
+        *,
+        max_rows: int | None = None,
+    ) -> None:
         self.rows = rows or []
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        # Mirrors EngineMetricExecutor.max_rows so get_metric's SF-003
+        # truncation check (read via getattr) can be exercised with a
+        # stub. Defaults None = unbounded, so existing callers are
+        # unaffected.
+        self.max_rows = max_rows
 
     def execute(self, sql_text: str, params: dict[str, Any]) -> list[dict[str, Any]]:
         self.calls.append((sql_text, params))
@@ -411,6 +421,67 @@ def _call(app: Any, args: dict[str, Any]) -> Any:
     """Run `app.call_tool` synchronously, returning the structured
     result. FastMCP's call_tool returns (content, structured)."""
     return asyncio.run(app.call_tool("get_metric", args))
+
+
+class TestLimitBounds:
+    """FZ-GM-007/008: an out-of-range `limit` returns a typed
+    `malformed_name` envelope, not a raw FastMCP transport error.
+
+    The Pydantic Field carries no ge/le bound; `get_metric_impl`
+    validates in-body and raises `MalformedColumnError`, which the
+    server wrapper maps to `malformed_name` — the same graceful shape
+    `suggest_joins(max_hops <= 0)` already emits.
+    """
+
+    def test_limit_zero_maps_to_malformed_name(self, store_with_seed: SQLiteStore) -> None:
+        app = _build(store_with_seed, _StubExecutor(rows=[{"total_revenue": 1}]))
+        _content, structured = _call(app, {"name": "total_revenue", "limit": 0})
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "malformed_name"
+        assert "limit" in structured["error"]["message"]
+
+    def test_limit_above_cap_maps_to_malformed_name(self, store_with_seed: SQLiteStore) -> None:
+        app = _build(store_with_seed, _StubExecutor(rows=[{"total_revenue": 1}]))
+        _content, structured = _call(app, {"name": "total_revenue", "limit": 100_000})
+        assert structured["status"] == "error"
+        assert structured["error"]["kind"] == "malformed_name"
+        assert "limit" in structured["error"]["message"]
+
+    def test_limit_at_lower_and_upper_bounds_succeed(self, store_with_seed: SQLiteStore) -> None:
+        app = _build(store_with_seed, _StubExecutor(rows=[{"total_revenue": 1}]))
+        for lim in (1, 10_000):
+            _content, structured = _call(app, {"name": "total_revenue", "limit": lim})
+            assert structured["status"] == "success", f"limit={lim} is in range, should succeed"
+
+
+class TestTruncatedFlag:
+    """SF-003: `MetricResult.truncated` flags a result whose row count
+    hit an applied cap (the `limit` arg or the executor's max_rows), so
+    the agent knows the view may be incomplete.
+    """
+
+    def test_truncated_true_when_executor_cap_hit(self, store_with_seed: SQLiteStore) -> None:
+        rows = [{"total_revenue": i} for i in range(10)]
+        app = _build(store_with_seed, _StubExecutor(rows=rows, max_rows=10))
+        _content, structured = _call(app, {"name": "total_revenue"})
+        assert structured["status"] == "success"
+        assert structured["data"]["truncated"] is True
+
+    def test_truncated_false_when_under_every_cap(self, store_with_seed: SQLiteStore) -> None:
+        rows = [{"total_revenue": i} for i in range(3)]
+        app = _build(store_with_seed, _StubExecutor(rows=rows, max_rows=10))
+        _content, structured = _call(app, {"name": "total_revenue"})
+        assert structured["status"] == "success"
+        assert structured["data"]["truncated"] is False
+
+    def test_truncated_true_when_limit_arg_hit(self, store_with_seed: SQLiteStore) -> None:
+        # No executor cap; the returned row count equals the requested
+        # `limit`, so there may be more rows beyond it.
+        rows = [{"total_revenue": i} for i in range(5)]
+        app = _build(store_with_seed, _StubExecutor(rows=rows))
+        _content, structured = _call(app, {"name": "total_revenue", "limit": 5})
+        assert structured["status"] == "success"
+        assert structured["data"]["truncated"] is True
 
 
 class TestEnvelopeMapping:

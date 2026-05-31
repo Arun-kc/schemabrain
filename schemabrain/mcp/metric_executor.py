@@ -80,6 +80,17 @@ class EngineMetricExecutor:
         self._engine = engine
         self._max_rows = max_rows
 
+    @property
+    def max_rows(self) -> int | None:
+        """The payload-size cap (rows), or None for unbounded.
+
+        Read by `get_metric` to set `MetricResult.truncated` when the
+        returned row count reaches an applied cap. The executor still
+        clips internally; this property only exposes the cap so the
+        envelope-level "result may be incomplete" signal can be set.
+        """
+        return self._max_rows
+
     def execute(
         self,
         sql_text: str,
@@ -109,9 +120,10 @@ class EngineMetricExecutor:
             # Clip the payload but log the truncation so the operator
             # can see in the events stream that the cap fired (vs.
             # the agent silently getting fewer rows than the SQL
-            # would have produced). The agent itself sees only the
-            # truncated list — no envelope-level "truncated" flag
-            # today; that's a v0.5 surface decision.
+            # would have produced). The agent-facing "truncated" signal
+            # is surfaced at the get_metric envelope layer
+            # (`MetricResult.truncated`), computed from `max_rows`; the
+            # executor return stays a bare list by design.
             _logger.warning(
                 "metric executor truncated result: %d rows -> %d (--max-rows-per-result)",
                 len(rows),
