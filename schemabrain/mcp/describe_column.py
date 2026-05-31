@@ -16,6 +16,8 @@ refuse cleanly rather than leak more shape.
 
 from __future__ import annotations
 
+import difflib
+
 from schemabrain.core.store_protocol import Store
 from schemabrain.mcp._helpers import _parse_column_qualified_name, _with_token_estimate
 from schemabrain.mcp._redaction import redact_blocked_fk_columns
@@ -62,25 +64,44 @@ def describe_column_impl(
             f"source database first."
         )
 
+    # Effective block is shared between the column-not-found candidate
+    # filter and the per-column refusal check below. Lifted to the top
+    # so the not-found branch can filter out catastrophic-leak columns
+    # from the typo-recovery suggestion (otherwise a "Did you mean
+    # 'password_hash'?" hint would leak the column name the firewall
+    # is trying to hide). Bulk-fetched once for every column on the
+    # table so both branches share one store call.
+    qualified_table = f"{schema}.{table_name}"
+    effective_block: frozenset[PIICategory] = pii_block | CATASTROPHIC_LEAK_CATEGORIES
+    all_pii_tags = store.get_column_pii_tags(
+        source_connection_id=source_connection_id,
+        qualified_table=qualified_table,
+        columns=[c.name for c in table.columns],
+    )
+
     column = table.get_column(column_name)
     if column is None:
+        # Suggest at most one closest non-blocked column name. Catastrophic
+        # columns are filtered OUT of the candidate pool — never suggested,
+        # never named in the error. When no safe match meets the cutoff,
+        # the suggestion is omitted entirely (no "N similar columns hidden"
+        # probe oracle — silent omission is the contract).
+        safe_candidates = [
+            c.name
+            for c in table.columns
+            if not (all_pii_tags.get(c.name, ("public", frozenset()))[1] & effective_block)
+        ]
+        matches = difflib.get_close_matches(column_name, safe_candidates, n=1, cutoff=0.6)
+        suggestion = f" Did you mean {matches[0]!r}?" if matches else ""
         raise ColumnNotFoundError(
-            f"{qualified_name} does not exist on {schema}.{table_name}. "
-            f"Existing columns: {sorted(c.name for c in table.columns)}"
+            f"{qualified_name} does not exist on {schema}.{table_name}.{suggestion}"
         )
 
     # refuse before returning anything if the column's tags
     # intersect the effective firewall block set. The check happens
     # BEFORE we read the description / FK graph so a refusal never
     # carries semantic context that could leak the column's role.
-    qualified_table = f"{schema}.{table_name}"
-    pii_tags = store.get_column_pii_tags(
-        source_connection_id=source_connection_id,
-        qualified_table=qualified_table,
-        columns=[column_name],
-    )
-    _, categories = pii_tags.get(column_name, ("public", frozenset()))
-    effective_block: frozenset[PIICategory] = pii_block | CATASTROPHIC_LEAK_CATEGORIES
+    _, categories = all_pii_tags.get(column_name, ("public", frozenset()))
     blocked = categories & effective_block
     if blocked:
         # ``attempted`` is the full propagated category set the agent

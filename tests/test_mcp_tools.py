@@ -927,6 +927,194 @@ class TestDescribeColumnImpl:
                 qualified_name="public.users.email",
             )
 
+    def test_column_not_found_does_not_leak_full_roster(self, tmp_path: Path) -> None:
+        """ColumnNotFoundError message must NOT enumerate the table's
+        column names — that would hand an agent the full roster
+        including catastrophic-leak columns the firewall otherwise
+        masks. The new contract: at most one closest-match suggestion,
+        and only when the suggestion is itself safe to surface."""
+        store = SQLiteStore(tmp_path / "s.db")
+        sid = "src1"
+        store.write_table(
+            Table(
+                name="users",
+                schema_name="public",
+                columns=(
+                    _column(
+                        "id",
+                        table_name="users",
+                        data_type="BIGINT",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                    _column(
+                        "password_hash",
+                        table_name="users",
+                        data_type="TEXT",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                ),
+            ),
+            source_connection_id=sid,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=sid,
+            qualified_table="public.users",
+            tags={"password_hash": ("pii", frozenset({"credential"}))},
+        )
+        with pytest.raises(ColumnNotFoundError) as excinfo:
+            describe_column_impl(
+                store=store,
+                source_connection_id=sid,
+                qualified_name="public.users.passwrd_hash",
+            )
+        msg = str(excinfo.value)
+        # The catastrophic column name MUST NOT appear in the message.
+        assert "password_hash" not in msg
+        # The old roster-leak phrasing MUST NOT appear.
+        assert "Existing columns" not in msg
+        # The roster-enumeration list bracket MUST NOT appear.
+        assert "[" not in msg
+        # The qualified-name prefix is preserved for caller routing.
+        assert "public.users.passwrd_hash does not exist on public.users." in msg
+        store.close()
+
+    def test_column_not_found_suggests_safe_close_match(self, populated_store: SQLiteStore) -> None:
+        """When the typo is close to a non-catastrophic column, surface
+        a single 'Did you mean' suggestion. populated_store's users
+        table has no PII tags by default, so email is a safe candidate."""
+        with pytest.raises(ColumnNotFoundError) as excinfo:
+            describe_column_impl(
+                store=populated_store,
+                source_connection_id=SOURCE_ID,
+                qualified_name="public.users.emial",
+            )
+        msg = str(excinfo.value)
+        assert "Did you mean 'email'?" in msg
+        # No roster leak even on the happy-suggestion path.
+        assert "Existing columns" not in msg
+        assert "[" not in msg
+
+    def test_column_not_found_omits_catastrophic_match_silently(self, tmp_path: Path) -> None:
+        """When the closest match is a catastrophic-tagged column, the
+        suggestion is silently omitted — no 'N similar columns hidden'
+        probe oracle, just a clean 'does not exist' message. The agent's
+        recovery path routes through describe_table where the redaction
+        layer kicks in."""
+        store = SQLiteStore(tmp_path / "s.db")
+        sid = "src1"
+        store.write_table(
+            Table(
+                name="users",
+                schema_name="public",
+                columns=(
+                    _column(
+                        "id",
+                        table_name="users",
+                        data_type="BIGINT",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                    _column(
+                        "password_hash",
+                        table_name="users",
+                        data_type="TEXT",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                ),
+            ),
+            source_connection_id=sid,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=sid,
+            qualified_table="public.users",
+            tags={"password_hash": ("pii", frozenset({"credential"}))},
+        )
+        with pytest.raises(ColumnNotFoundError) as excinfo:
+            describe_column_impl(
+                store=store,
+                source_connection_id=sid,
+                qualified_name="public.users.passwrd_hash",
+            )
+        msg = str(excinfo.value)
+        # No suggestion clause at all when the only close match is
+        # catastrophic.
+        assert "Did you mean" not in msg
+        # And the catastrophic name is still nowhere in the message.
+        assert "password_hash" not in msg
+        store.close()
+
+    def test_column_not_found_no_match_no_suggestion(self, populated_store: SQLiteStore) -> None:
+        """A name with no close match anywhere on the table yields a
+        clean message with no suggestion clause."""
+        with pytest.raises(ColumnNotFoundError) as excinfo:
+            describe_column_impl(
+                store=populated_store,
+                source_connection_id=SOURCE_ID,
+                qualified_name="public.users.xyzqwerty",
+            )
+        msg = str(excinfo.value)
+        assert "Did you mean" not in msg
+        assert "Existing columns" not in msg
+        assert "[" not in msg
+        # Trailing period after the table name, then end-of-string.
+        assert msg.endswith("public.users.xyzqwerty does not exist on public.users.")
+
+    def test_column_not_found_respects_caller_pii_block(self, tmp_path: Path) -> None:
+        """When the caller passes a `pii_block` that includes a
+        non-floor category, columns tagged with that category also
+        drop out of the suggestion pool. Floor categories are filtered
+        unconditionally (pii_block=frozenset() default already covers
+        the floor via the union)."""
+        store = SQLiteStore(tmp_path / "s.db")
+        sid = "src1"
+        store.write_table(
+            Table(
+                name="users",
+                schema_name="public",
+                columns=(
+                    _column(
+                        "id",
+                        table_name="users",
+                        data_type="BIGINT",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                    _column(
+                        "email_address",
+                        table_name="users",
+                        data_type="TEXT",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                ),
+            ),
+            source_connection_id=sid,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=sid,
+            qualified_table="public.users",
+            tags={"email_address": ("pii", frozenset({"contact"}))},
+        )
+        # With pii_block including 'contact', email_address is filtered
+        # out of the candidate pool — even on a close typo.
+        with pytest.raises(ColumnNotFoundError) as excinfo:
+            describe_column_impl(
+                store=store,
+                source_connection_id=sid,
+                qualified_name="public.users.email_addres",
+                pii_block=frozenset({"contact"}),
+            )
+        msg = str(excinfo.value)
+        assert "email_address" not in msg
+        assert "Did you mean" not in msg
+        store.close()
+
     def test_column_with_no_description_returns_empty_string(self, tmp_path: Path) -> None:
         # --no-enrich path: column row exists but no description was
         # generated. Tool must not crash.
