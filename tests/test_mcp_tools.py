@@ -927,6 +927,194 @@ class TestDescribeColumnImpl:
                 qualified_name="public.users.email",
             )
 
+    def test_column_not_found_does_not_leak_full_roster(self, tmp_path: Path) -> None:
+        """ColumnNotFoundError message must NOT enumerate the table's
+        column names — that would hand an agent the full roster
+        including catastrophic-leak columns the firewall otherwise
+        masks. The new contract: at most one closest-match suggestion,
+        and only when the suggestion is itself safe to surface."""
+        store = SQLiteStore(tmp_path / "s.db")
+        sid = "src1"
+        store.write_table(
+            Table(
+                name="users",
+                schema_name="public",
+                columns=(
+                    _column(
+                        "id",
+                        table_name="users",
+                        data_type="BIGINT",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                    _column(
+                        "password_hash",
+                        table_name="users",
+                        data_type="TEXT",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                ),
+            ),
+            source_connection_id=sid,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=sid,
+            qualified_table="public.users",
+            tags={"password_hash": ("pii", frozenset({"credential"}))},
+        )
+        with pytest.raises(ColumnNotFoundError) as excinfo:
+            describe_column_impl(
+                store=store,
+                source_connection_id=sid,
+                qualified_name="public.users.passwrd_hash",
+            )
+        msg = str(excinfo.value)
+        # The catastrophic column name MUST NOT appear in the message.
+        assert "password_hash" not in msg
+        # The old roster-leak phrasing MUST NOT appear.
+        assert "Existing columns" not in msg
+        # The roster-enumeration list bracket MUST NOT appear.
+        assert "[" not in msg
+        # The qualified-name prefix is preserved for caller routing.
+        assert "public.users.passwrd_hash does not exist on public.users." in msg
+        store.close()
+
+    def test_column_not_found_suggests_safe_close_match(self, populated_store: SQLiteStore) -> None:
+        """When the typo is close to a non-catastrophic column, surface
+        a single 'Did you mean' suggestion. populated_store's users
+        table has no PII tags by default, so email is a safe candidate."""
+        with pytest.raises(ColumnNotFoundError) as excinfo:
+            describe_column_impl(
+                store=populated_store,
+                source_connection_id=SOURCE_ID,
+                qualified_name="public.users.emial",
+            )
+        msg = str(excinfo.value)
+        assert "Did you mean 'email'?" in msg
+        # No roster leak even on the happy-suggestion path.
+        assert "Existing columns" not in msg
+        assert "[" not in msg
+
+    def test_column_not_found_omits_catastrophic_match_silently(self, tmp_path: Path) -> None:
+        """When the closest match is a catastrophic-tagged column, the
+        suggestion is silently omitted — no 'N similar columns hidden'
+        probe oracle, just a clean 'does not exist' message. The agent's
+        recovery path routes through describe_table where the redaction
+        layer kicks in."""
+        store = SQLiteStore(tmp_path / "s.db")
+        sid = "src1"
+        store.write_table(
+            Table(
+                name="users",
+                schema_name="public",
+                columns=(
+                    _column(
+                        "id",
+                        table_name="users",
+                        data_type="BIGINT",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                    _column(
+                        "password_hash",
+                        table_name="users",
+                        data_type="TEXT",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                ),
+            ),
+            source_connection_id=sid,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=sid,
+            qualified_table="public.users",
+            tags={"password_hash": ("pii", frozenset({"credential"}))},
+        )
+        with pytest.raises(ColumnNotFoundError) as excinfo:
+            describe_column_impl(
+                store=store,
+                source_connection_id=sid,
+                qualified_name="public.users.passwrd_hash",
+            )
+        msg = str(excinfo.value)
+        # No suggestion clause at all when the only close match is
+        # catastrophic.
+        assert "Did you mean" not in msg
+        # And the catastrophic name is still nowhere in the message.
+        assert "password_hash" not in msg
+        store.close()
+
+    def test_column_not_found_no_match_no_suggestion(self, populated_store: SQLiteStore) -> None:
+        """A name with no close match anywhere on the table yields a
+        clean message with no suggestion clause."""
+        with pytest.raises(ColumnNotFoundError) as excinfo:
+            describe_column_impl(
+                store=populated_store,
+                source_connection_id=SOURCE_ID,
+                qualified_name="public.users.xyzqwerty",
+            )
+        msg = str(excinfo.value)
+        assert "Did you mean" not in msg
+        assert "Existing columns" not in msg
+        assert "[" not in msg
+        # Trailing period after the table name, then end-of-string.
+        assert msg.endswith("public.users.xyzqwerty does not exist on public.users.")
+
+    def test_column_not_found_respects_caller_pii_block(self, tmp_path: Path) -> None:
+        """When the caller passes a `pii_block` that includes a
+        non-floor category, columns tagged with that category also
+        drop out of the suggestion pool. Floor categories are filtered
+        unconditionally (pii_block=frozenset() default already covers
+        the floor via the union)."""
+        store = SQLiteStore(tmp_path / "s.db")
+        sid = "src1"
+        store.write_table(
+            Table(
+                name="users",
+                schema_name="public",
+                columns=(
+                    _column(
+                        "id",
+                        table_name="users",
+                        data_type="BIGINT",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                    _column(
+                        "email_address",
+                        table_name="users",
+                        data_type="TEXT",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                ),
+            ),
+            source_connection_id=sid,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=sid,
+            qualified_table="public.users",
+            tags={"email_address": ("pii", frozenset({"contact"}))},
+        )
+        # With pii_block including 'contact', email_address is filtered
+        # out of the candidate pool — even on a close typo.
+        with pytest.raises(ColumnNotFoundError) as excinfo:
+            describe_column_impl(
+                store=store,
+                source_connection_id=sid,
+                qualified_name="public.users.email_addres",
+                pii_block=frozenset({"contact"}),
+            )
+        msg = str(excinfo.value)
+        assert "email_address" not in msg
+        assert "Did you mean" not in msg
+        store.close()
+
     def test_column_with_no_description_returns_empty_string(self, tmp_path: Path) -> None:
         # --no-enrich path: column row exists but no description was
         # generated. Tool must not crash.
@@ -1499,6 +1687,190 @@ class TestSuggestJoinsImpl:
         assert path.hops == 1
         assert path.edges[0].fk_name == "tasks_owner_id_fkey"
         assert result.unreachable_pairs == []
+        store.close()
+
+
+class TestSuggestJoinsPiiRedaction:
+    """The FK column names in `JoinEdge.left_columns` /
+    `right_columns` must be scrubbed against `pii_block |
+    CATASTROPHIC_LEAK_CATEGORIES` — same posture `describe_table`
+    already applies to its FK list. Without this, suggest_joins is
+    the easier discovery path for catastrophic-leak column names
+    that describe_table carefully masks.
+    """
+
+    def test_forward_traversal_masks_catastrophic_fk_column(
+        self, fk_graph_store: SQLiteStore
+    ) -> None:
+        # Tag the FK column on the owner side as credential. The single
+        # orders->users edge has left=orders (owner side) so
+        # left_columns=[user_id] is the redaction target.
+        fk_graph_store.write_column_pii_tags(
+            source_connection_id=SOURCE_ID,
+            qualified_table="public.orders",
+            tags={"user_id": ("pii", frozenset({"credential"}))},
+        )
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.orders", "public.users"],
+        )
+        assert len(result.paths) == 1
+        edge = result.paths[0].edges[0]
+        assert edge.left_qualified_name == "public.orders"
+        assert edge.left_columns == ["<redacted_column>"]
+        # The other side (users.id, not tagged) passes through unchanged.
+        assert edge.right_columns == ["id"]
+
+    def test_reverse_traversal_masks_catastrophic_fk_column(
+        self, fk_graph_store: SQLiteStore
+    ) -> None:
+        # Same FK column tagged, but input order swapped so BFS picks
+        # the reverse traversal branch — owner is now on the right side.
+        fk_graph_store.write_column_pii_tags(
+            source_connection_id=SOURCE_ID,
+            qualified_table="public.orders",
+            tags={"user_id": ("pii", frozenset({"credential"}))},
+        )
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.users", "public.orders"],
+        )
+        assert len(result.paths) == 1
+        edge = result.paths[0].edges[0]
+        # Path orientation is input-faithful: start=users, end=orders.
+        assert edge.left_qualified_name == "public.users"
+        assert edge.right_qualified_name == "public.orders"
+        # users.id is the referenced column on the left; orders.user_id
+        # is the owner column on the right — the redaction target now
+        # sits in right_columns.
+        assert edge.left_columns == ["id"]
+        assert edge.right_columns == ["<redacted_column>"]
+
+    def test_target_side_catastrophic_column_masked(self, fk_graph_store: SQLiteStore) -> None:
+        # Tag users.id (the FK target) as government_id — every FK
+        # pointing AT this column must have target_columns masked.
+        fk_graph_store.write_column_pii_tags(
+            source_connection_id=SOURCE_ID,
+            qualified_table="public.users",
+            tags={"id": ("pii", frozenset({"government_id"}))},
+        )
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.orders", "public.users"],
+        )
+        edge = result.paths[0].edges[0]
+        # orders.user_id is unrelated to users.id's tag — passes through.
+        assert edge.left_columns == ["user_id"]
+        # The target column (users.id) is masked.
+        assert edge.right_columns == ["<redacted_column>"]
+
+    def test_multi_hop_path_redacts_every_edge(self, fk_graph_store: SQLiteStore) -> None:
+        # 2-hop path: users -> orders -> products
+        # Tag orders.product_id (the FK to products) as payment_card.
+        # The second edge (orders->products) must mask its FK column.
+        fk_graph_store.write_column_pii_tags(
+            source_connection_id=SOURCE_ID,
+            qualified_table="public.orders",
+            tags={"product_id": ("pii", frozenset({"payment_card"}))},
+        )
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.users", "public.products"],
+        )
+        path = result.paths[0]
+        assert path.hops == 2
+        # No edge anywhere in the path may carry the raw FK column name.
+        for edge in path.edges:
+            assert "product_id" not in edge.left_columns
+            assert "product_id" not in edge.right_columns
+
+    def test_default_pii_block_still_floors_catastrophic(self, fk_graph_store: SQLiteStore) -> None:
+        # No pii_block kwarg passed at all — the catastrophic floor
+        # must still apply. Mirrors the same posture as describe_table.
+        fk_graph_store.write_column_pii_tags(
+            source_connection_id=SOURCE_ID,
+            qualified_table="public.orders",
+            tags={"user_id": ("pii", frozenset({"credential"}))},
+        )
+        result = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.orders", "public.users"],
+            # pii_block intentionally omitted to exercise the default.
+        )
+        edge = result.paths[0].edges[0]
+        assert edge.left_columns == ["<redacted_column>"]
+
+    def test_non_floor_category_only_redacted_when_caller_opts_in(
+        self, fk_graph_store: SQLiteStore
+    ) -> None:
+        # `contact` is NOT in the catastrophic floor — the default
+        # (no pii_block kwarg) must let it through, and an explicit
+        # pii_block={'contact'} must mask it.
+        fk_graph_store.write_column_pii_tags(
+            source_connection_id=SOURCE_ID,
+            qualified_table="public.orders",
+            tags={"user_id": ("pii", frozenset({"contact"}))},
+        )
+        result_default = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.orders", "public.users"],
+        )
+        # Default: contact is NOT in the floor, so user_id passes through.
+        assert result_default.paths[0].edges[0].left_columns == ["user_id"]
+
+        result_opt_in = suggest_joins_impl(
+            store=fk_graph_store,
+            source_connection_id=SOURCE_ID,
+            tables=["public.orders", "public.users"],
+            pii_block=frozenset({"contact"}),
+        )
+        # Opt-in: contact is in the active block, so user_id is masked.
+        assert result_opt_in.paths[0].edges[0].left_columns == ["<redacted_column>"]
+
+    def test_composite_fk_partial_redaction_preserves_order(self, tmp_path: Path) -> None:
+        # Build a composite-FK fixture: orders(a, b) -> users(x, y).
+        # Tag users.y as credential. The target_columns list must show
+        # [x, <redacted_column>] — positional order preserved so the
+        # paste-ready JOIN ON shape stays correct after masking.
+        store = SQLiteStore(tmp_path / "composite.db")
+        sid = "src1"
+        users = _bare_table("users", ("id", "x", "y"))
+        orders = _bare_table(
+            "orders",
+            ("id", "a", "b"),
+            fks=(
+                ForeignKey(
+                    name="orders_xy_fkey",
+                    source_columns=("a", "b"),
+                    target_schema="public",
+                    target_table="users",
+                    target_columns=("x", "y"),
+                ),
+            ),
+        )
+        for t in (users, orders):
+            store.write_table(t, source_connection_id=sid)
+        store.write_column_pii_tags(
+            source_connection_id=sid,
+            qualified_table="public.users",
+            tags={"y": ("pii", frozenset({"credential"}))},
+        )
+        result = suggest_joins_impl(
+            store=store,
+            source_connection_id=sid,
+            tables=["public.orders", "public.users"],
+        )
+        edge = result.paths[0].edges[0]
+        # orders side is untagged — both source columns pass through.
+        assert edge.left_columns == ["a", "b"]
+        # users side: x passes through, y is masked. Order preserved.
+        assert edge.right_columns == ["x", "<redacted_column>"]
         store.close()
 
 

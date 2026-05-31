@@ -63,6 +63,16 @@ CHARTER_VERSION_HEADER: str = "X-Schemabrain-Charter-Version"
 # (deferred-items log). Real-time push is a v0.5 V5-2 item.
 SSE_TICK_SECONDS: float = 2.0
 
+# Drift sentinel file path — single source of truth shared with
+# ``schemabrain/cli.py`` (the writer) and ``tests/test_cli_serve_sentinel.py``.
+# CWD-relative on purpose: both ``schemabrain serve`` (writer) and the
+# dashboard sidecar (reader) must resolve against the same working
+# directory — the directory the operator invoked them from. Do NOT
+# convert to an absolute path here; the path-match check in
+# ``_compute_policy_drift`` already uses ``.resolve()`` for the
+# equality test against the sentinel's recorded absolute path.
+SERVE_POLICY_MTIME_SENTINEL_PATH: Path = Path("./schemabrain/.serve_policy_mtime")
+
 
 def is_ui_available() -> bool:
     """``True`` if the ``[ui]`` extra is importable.
@@ -624,6 +634,157 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
     )
 
     _POLICY_YAML_PATH = Path("./schemabrain/pii_policy.yaml")
+    _SENTINEL_PATH = SERVE_POLICY_MTIME_SENTINEL_PATH
+
+    def _compute_policy_drift(yaml_path: Path) -> dict[str, Any]:
+        """Compare ``schemabrain serve``'s recorded YAML mtime against
+        the current on-disk YAML mtime.
+
+        Returns a dict with stable keys:
+
+            {
+                "detected": bool,
+                "recorded_at": iso8601 | None,
+                "current_mtime": iso8601 | None,
+            }
+
+        ``detected`` fires when:
+          - sentinel records ``yaml_existed_at_boot=True`` AND the
+            current YAML is missing (operator removed the file),
+          - sentinel mtime differs from the current YAML mtime by
+            more than 1ms (operator edited the file),
+          - sentinel records ``yaml_existed_at_boot=False`` AND a
+            YAML appears now (operator created the file).
+
+        Returns ``detected=False`` when:
+          - no sentinel exists (no serve running OR serve used
+            ``--pii-block`` CLI override),
+          - sentinel's recorded ``policy_path`` does not resolve to
+            ``yaml_path`` (serve was watching a different file),
+          - any stat/parse error (fail-closed: better silent than
+            misleading).
+        """
+        import json
+        from datetime import UTC, datetime
+
+        def _iso_from_mtime(mtime: float) -> str:
+            return datetime.fromtimestamp(mtime, tz=UTC).isoformat(timespec="seconds")
+
+        def _current_mtime_iso() -> str | None:
+            try:
+                return _iso_from_mtime(yaml_path.stat().st_mtime)
+            except OSError:
+                return None
+
+        # Collapse the exists-check + read into one open to eliminate
+        # the TOCTOU window between them. FileNotFoundError is the
+        # "no sentinel" steady state; any other OSError + malformed
+        # JSON is fail-closed.
+        try:
+            sentinel_text = _SENTINEL_PATH.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {
+                "detected": False,
+                "recorded_at": None,
+                "current_mtime": _current_mtime_iso(),
+            }
+        except OSError:
+            return {
+                "detected": False,
+                "recorded_at": None,
+                "current_mtime": _current_mtime_iso(),
+            }
+
+        try:
+            payload = json.loads(sentinel_text)
+        except json.JSONDecodeError:
+            return {
+                "detected": False,
+                "recorded_at": None,
+                "current_mtime": _current_mtime_iso(),
+            }
+
+        # Type-narrow every field read from the JSON payload. The
+        # sentinel writer is well-behaved, but a corrupt or hand-edited
+        # file can carry any JSON type for any key — and an unguarded
+        # float() on a string crashes the whole /api/pii/policy route.
+        raw_recorded_iso = payload.get("recorded_at_iso") if isinstance(payload, dict) else None
+        recorded_iso = raw_recorded_iso if isinstance(raw_recorded_iso, str) else None
+        recorded_mtime = payload.get("recorded_at_mtime") if isinstance(payload, dict) else None
+        sentinel_path = payload.get("policy_path") if isinstance(payload, dict) else None
+        yaml_existed = bool(
+            payload.get("yaml_existed_at_boot") if isinstance(payload, dict) else False
+        )
+
+        try:
+            resolved_yaml = str(yaml_path.expanduser().resolve())
+        except OSError:
+            return {
+                "detected": False,
+                "recorded_at": recorded_iso,
+                "current_mtime": None,
+            }
+
+        # Sentinel watched a different file — drift signal isn't meaningful.
+        if sentinel_path != resolved_yaml:
+            return {
+                "detected": False,
+                "recorded_at": recorded_iso,
+                "current_mtime": _current_mtime_iso(),
+            }
+
+        # Collapse exists/stat into a single stat that surfaces
+        # FileNotFoundError separately from other OSError so the
+        # deletion-drift branch preserves the yaml_existed context
+        # even if the file disappears in a TOCTOU race.
+        try:
+            current_mtime_float = yaml_path.stat().st_mtime
+        except FileNotFoundError:
+            return {
+                "detected": yaml_existed,
+                "recorded_at": recorded_iso,
+                "current_mtime": None,
+            }
+        except OSError:  # pragma: no cover — defensive; same fail-closed posture as the read_text / resolve OSError branches above which ARE pinned
+            return {
+                "detected": False,
+                "recorded_at": recorded_iso,
+                "current_mtime": None,
+            }
+
+        current_iso = _iso_from_mtime(current_mtime_float)
+        if recorded_mtime is None:
+            # Serve booted with no YAML; a YAML appeared since — but
+            # only honour that interpretation when the sentinel agrees
+            # yaml DID NOT exist at boot. A sentinel claiming
+            # yaml_existed_at_boot=True with recorded_mtime=None is
+            # internally inconsistent (the writer cannot produce it);
+            # treat that as fail-closed rather than false-positive drift.
+            return {
+                "detected": not yaml_existed,
+                "recorded_at": recorded_iso,
+                "current_mtime": current_iso,
+            }
+
+        # 1ms epsilon to avoid float precision false positives. The
+        # float() coercion can raise ValueError (string like "abc") or
+        # TypeError (list/dict) on a corrupt sentinel — fail-closed so
+        # the /api/pii/policy route stays available even if the sentinel
+        # is mangled.
+        try:
+            recorded_mtime_float = float(recorded_mtime)
+        except (TypeError, ValueError):
+            return {
+                "detected": False,
+                "recorded_at": recorded_iso,
+                "current_mtime": current_iso,
+            }
+        drifted = abs(current_mtime_float - recorded_mtime_float) > 0.001
+        return {
+            "detected": drifted,
+            "recorded_at": recorded_iso,
+            "current_mtime": current_iso,
+        }
 
     def _load_active_block() -> tuple[frozenset[PIICategory], str, str | None]:
         """(active_block, source_label, error_message)."""
@@ -638,6 +799,12 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
     @app.get("/api/pii/policy")
     def policy_route(source_connection_id: str | None = None) -> dict[str, Any]:
         active_block, block_source, yaml_error = _load_active_block()
+        # Floor union is UNCONDITIONAL — even when active_block is the
+        # empty frozenset (operator wrote `block: []` to suppress an
+        # over-eager block), describe-side enforcement must still floor
+        # on the catastrophic-leak triple. Do NOT introduce an
+        # `if not active_block` short-circuit here — pinned by
+        # `test_policy_route_floor_holds_when_yaml_block_is_empty`.
         effective_block = active_block | CATASTROPHIC_LEAK_CATEGORIES
 
         with SQLiteStore(config.store_path) as store:
@@ -724,6 +891,7 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
             "per_column": per_column,
             "diff_preview": diff_preview,
             "yaml_parse_error": yaml_error,
+            "policy_drift": _compute_policy_drift(_POLICY_YAML_PATH),
         }
 
 

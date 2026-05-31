@@ -9,7 +9,9 @@ from pydantic import BaseModel, ConfigDict
 from schemabrain.core.models import ForeignKey
 from schemabrain.core.store_protocol import Store
 from schemabrain.mcp._helpers import _parse_qualified_name, _with_token_estimate
+from schemabrain.mcp._redaction import redact_blocked_fk_columns
 from schemabrain.mcp.shapes import JoinEdge, JoinPath, SuggestJoinsResult, TableNotFoundError
+from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES, PIICategory
 
 # Confidence floor for declared FKs. Query-log-inferred edges (post-Week-8)
 # will land below 1.0; keeping the constant lets the formula compose cleanly.
@@ -156,12 +158,44 @@ def _bfs_shortest_path(
     return None
 
 
+def _redact_edge(
+    edge: JoinEdge,
+    *,
+    store: Store,
+    source_connection_id: str,
+    effective_block: frozenset[PIICategory],
+) -> JoinEdge:
+    """Return a copy of ``edge`` with catastrophic-leak column names
+    masked on BOTH sides. Each side reads PII tags from its own
+    qualified table — left_columns belong to left_qualified_name,
+    right_columns to right_qualified_name. Symmetric with the FK
+    metadata redaction ``describe_column`` and ``describe_table``
+    already apply.
+    """
+    left = redact_blocked_fk_columns(
+        list(edge.left_columns),
+        qualified_table=edge.left_qualified_name,
+        store=store,
+        source_connection_id=source_connection_id,
+        effective_block=effective_block,
+    )
+    right = redact_blocked_fk_columns(
+        list(edge.right_columns),
+        qualified_table=edge.right_qualified_name,
+        store=store,
+        source_connection_id=source_connection_id,
+        effective_block=effective_block,
+    )
+    return edge.model_copy(update={"left_columns": left, "right_columns": right})
+
+
 def suggest_joins_impl(
     *,
     store: Store,
     source_connection_id: str,
     tables: list[str],
     max_hops: int = _DEFAULT_MAX_HOPS,
+    pii_block: frozenset[PIICategory] = frozenset(),
 ) -> SuggestJoinsResult:
     """Find shortest FK-graph join paths between every pair of input tables.
 
@@ -173,6 +207,13 @@ def suggest_joins_impl(
          alphabetical neighbor order.
       4. Pairs with no path within the bound land in `unreachable_pairs`.
       5. Sort `paths` by `(hops, start_qualified_name, end_qualified_name)`.
+
+    Per-edge FK column name redaction: every emitted ``JoinEdge`` has
+    its ``left_columns`` and ``right_columns`` lists scrubbed against
+    ``pii_block | CATASTROPHIC_LEAK_CATEGORIES``. Same posture
+    ``describe_table`` already applies to its FK list — without this,
+    an agent that hits ``suggest_joins`` can read raw catastrophic-leak
+    column names that ``describe_table`` carefully masks.
 
     Confidence is `1.0` for every FK at v0 (declared constraints are
     deterministic). Once query-log mining ships, inferred edges will
@@ -187,6 +228,8 @@ def suggest_joins_impl(
     """
     if max_hops <= 0:
         raise ValueError(f"max_hops must be positive, got {max_hops}")
+
+    effective_block: frozenset[PIICategory] = pii_block | CATASTROPHIC_LEAK_CATEGORIES
 
     # Normalize input: dedupe while preserving first-seen ordering. The
     # set walk below is order-insensitive but a deterministic dedupe
@@ -242,14 +285,33 @@ def suggest_joins_impl(
                 lo, hi = sorted([start, end])
                 unreachable.append([lo, hi])
                 continue
+            # Confidence is a routing-quality signal computed from the
+            # FK confidence each BFS edge carries. Source it from the
+            # ORIGINAL edges, not the redacted copies — redaction is
+            # presentation-only and a future refactor that drops the
+            # confidence field from the redacted view should not be
+            # able to silently zero out the path's confidence score.
             # BFS only returns a non-None list with at least one edge,
             # so `min` always sees at least one value here.
             confidence = min(e.confidence for e in edges)
+            # Per-edge PII redaction BEFORE token-estimate. Token count
+            # then reflects the bytes the agent actually receives over
+            # the wire (placeholder `<redacted_column>` instead of the
+            # raw column name).
+            redacted_edges = [
+                _redact_edge(
+                    e,
+                    store=store,
+                    source_connection_id=source_connection_id,
+                    effective_block=effective_block,
+                )
+                for e in edges
+            ]
             partial_path = JoinPath(
                 start_qualified_name=start,
                 end_qualified_name=end,
-                hops=len(edges),
-                edges=edges,
+                hops=len(redacted_edges),
+                edges=redacted_edges,
                 confidence=confidence,
                 token_estimate=0,  # placeholder; rebuilt below
             )

@@ -75,6 +75,39 @@
   color: var(--text-secondary);
 }
 
+/* ---------- Policy drift alert (operator edited YAML mid-serve) ---------- */
+
+.driftBanner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.06);
+  border-left: 3px solid var(--color-signal-amber);
+}
+
+[data-theme="dark"] .driftBanner {
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.driftBannerLabel {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-signal-amber);
+}
+
+.driftBannerBody {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
 /* ---------- Posture grid (active block + diff preview) ---------- */
 
 .posture {
