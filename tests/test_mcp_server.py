@@ -1005,8 +1005,8 @@ class TestDescribeTableCatastrophicRedaction:
         store.close()
 
     def test_credential_column_name_redacted_in_describe_table(self, server_with_pii_table) -> None:
-        """With default ``pii_block=frozenset()``, the catastrophic
-        floor still forces redaction. ``password_hash`` must come back
+        """With the default policy, the catastrophic floor still forces
+        redaction. ``password_hash`` must come back
         as ``<redacted_credential_column_N>``; the real name must NOT
         appear in any agent-visible column field.
         """
@@ -1027,8 +1027,8 @@ class TestDescribeTableCatastrophicRedaction:
 
     def test_contact_column_visible_with_default_policy(self, server_with_pii_table) -> None:
         """Non-catastrophic categories (``contact``, etc.) are not in
-        the catastrophic floor — with default empty ``pii_block``,
-        ``email`` (contact) remains visible.
+        the catastrophic floor — with the default policy (the
+        catastrophic floor only), ``email`` (contact) remains visible.
         """
         _content, structured = asyncio.run(
             server_with_pii_table.call_tool("describe_table", {"qualified_name": "public.users"})

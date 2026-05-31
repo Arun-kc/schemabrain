@@ -419,9 +419,12 @@ def _resolve_pii_categories(
     # against `pii_block | CATASTROPHIC_LEAK_CATEGORIES`; this gate must
     # match. Without the union, an operator policy that omits a floor
     # category — a `pii_policy.yaml` `block: [contact]` that strips the
-    # floor, or the `build_server(pii_block=frozenset())` library
-    # default — would let a tagged credential/PAN/SSN column flow
-    # through aggregates (group_by labels are row-level disclosure). The
+    # floor, or an explicit `build_server(pii_block=frozenset())` from a
+    # caller that opts out of the operator policy — would let a tagged
+    # credential/PAN/SSN column flow through aggregates (group_by labels
+    # are row-level disclosure). (The library default is now the
+    # catastrophic floor, not `frozenset()` — SF-005 — but the union is
+    # the defense regardless of what the caller passes.) The
     # floor is always-on by contract; `--pii-block` only widens it, so
     # `--pii-block ''` cannot disable it here (matching `describe_*`).
     effective_block = pii_block | CATASTROPHIC_LEAK_CATEGORIES
