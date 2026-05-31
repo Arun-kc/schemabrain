@@ -101,7 +101,7 @@ async def _run_agent_loop(
     """Drive a tool-use conversation between Haiku and SchemaBrain MCP.
 
     Returns the process exit code (0 on success, 1 on max-turns trip,
-    2 on a tool failure).
+    2 on a tool failure or an Anthropic API failure).
 
     ``url_env`` is the name of the environment variable that holds the
     database URL — matches the rest of the CLI surface (`schemabrain
@@ -135,13 +135,26 @@ async def _run_agent_loop(
         print(f"[user] {question}\n")
 
         for turn in range(1, max_turns + 1):
-            resp = client.messages.create(
-                model=_HAIKU_MODEL,
-                max_tokens=_MAX_OUTPUT_TOKENS,
-                system=_SYSTEM_PROMPT,
-                tools=anthropic_tools,
-                messages=messages,
-            )
+            try:
+                resp = client.messages.create(
+                    model=_HAIKU_MODEL,
+                    max_tokens=_MAX_OUTPUT_TOKENS,
+                    system=_SYSTEM_PROMPT,
+                    tools=anthropic_tools,
+                    messages=messages,
+                )
+            except anthropic.APIError as exc:
+                # Clean abort on any Anthropic API failure (timeout, auth,
+                # rate-limit, overloaded — all APIError subclasses) rather
+                # than letting a raw traceback escape. Exit code 2 matches
+                # the existing tool-failure / config-failure convention, so
+                # the module docstring's "aborts cleanly" promise now holds
+                # for the API path too (not just the max-turns cap).
+                print(
+                    f"[abort] Anthropic API error ({type(exc).__name__}): {exc}",
+                    file=sys.stderr,
+                )
+                return 2
 
             # Append assistant turn to conversation.
             messages.append({"role": "assistant", "content": resp.content})

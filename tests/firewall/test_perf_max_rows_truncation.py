@@ -82,13 +82,16 @@ def test_max_rows_no_cap_returns_full_result() -> None:
 
 @pytest.mark.integration
 def test_truncation_is_silent_no_envelope_signal() -> None:
-    """SF-003: the truncated list is RETURNED with no marker.
+    """SF-003: the EXECUTOR return stays a bare list by design.
 
-    `execute()` returns `list[dict[str, Any]]` — there is no wrapper,
-    no `truncated` flag, no sentinel row. The agent cannot tell from
-    the return value whether the cap fired. This test pins the gap:
-    when the contract changes (envelope flag, wrapper type, etc.),
-    update or delete this test.
+    `execute()` returns `list[dict[str, Any]]` — no wrapper, no
+    per-row `truncated` flag, no sentinel row. This is intentional:
+    SF-003 was resolved by surfacing the signal one layer up, on
+    `MetricResult.truncated` (computed in `get_metric_impl` from the
+    executor's `max_rows` property + the `limit` arg), NOT by changing
+    the executor's return type. This test pins that the executor row
+    shape is unchanged; the envelope-level signal is pinned by
+    `tests/test_mcp_get_metric.py::TestTruncatedFlag`.
     """
     executor = _make_executor(max_rows=10)
     rows = executor.execute("SELECT id FROM firewall_perf.bigtab", {})

@@ -814,3 +814,9 @@ class MetricResult(BaseModel):
     time_dimension_resolution: Literal["local", "inherited", "unavailable"] = "local"
     inherited_time_dimension: str | None = None
     time_dimension_inherited_via: tuple[str, ...] = ()
+    # SF-003: True when the row count hit an applied cap — the
+    # get_metric `limit` arg or the server's `--max-rows-per-result`
+    # payload guard — so the result may be incomplete. Re-query with a
+    # higher `limit` or a narrower filter. False when the full result
+    # fit under every cap.
+    truncated: bool = False
