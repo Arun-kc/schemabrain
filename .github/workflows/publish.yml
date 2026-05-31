@@ -41,7 +41,7 @@ permissions:
 
 jobs:
   build:
-    name: Build sdist + wheel
+    name: Build wheel
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -55,8 +55,74 @@ jobs:
       - name: Set up Python 3.11
         run: uv python install 3.11
 
-      - name: Build distributions
-        run: uv build
+      # The dashboard's Next.js static export lives under
+      # `schemabrain/dashboard/static/`, which is gitignored — built at
+      # release time, never committed. The wheel target's `artifacts`
+      # glob (pyproject.toml) bundles whatever is on disk at build time,
+      # so this export MUST run before `uv build` or the wheel ships an
+      # empty dashboard (the 0.4.0 break). Mirrors the ci.yml dashboard
+      # build, minus the paths-filter guards — a release always rebuilds
+      # the export unconditionally.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install web dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Build dashboard static export
+        working-directory: web
+        run: pnpm run export
+
+      # `uv build --wheel`, NOT bare `uv build`. Default `uv build` builds
+      # the wheel FROM the sdist, and the sdist phase walks the VCS tree
+      # and honours .gitignore — which strips the freshly-built (gitignored)
+      # static export, producing an empty-dashboard wheel even though the
+      # files exist on disk. `--wheel` builds directly from the working
+      # tree and honours the wheel target's `artifacts` directive. PyPI
+      # installs resolve the py3-none-any wheel, so a source dist is not
+      # required for launch.
+      - name: Build wheel
+        run: uv build --wheel
+
+      # Fail the release loudly if the wheel shipped without the dashboard
+      # export. The `artifacts` glob does NOT force inclusion when files
+      # are absent — it only protects against an exclude shadowing them —
+      # so an empty/sentinel-only ship would otherwise pass silently (this
+      # is exactly how 0.4.0 went out broken).
+      - name: Verify wheel bundles the dashboard static export
+        run: |
+          set -euo pipefail
+          # Exactly one wheel must exist (single-package build). Guard
+          # against a stray/second wheel silently shadowing the check.
+          wheel_count=$(ls -1 dist/*.whl 2>/dev/null | wc -l | tr -d ' ')
+          [ "$wheel_count" = "1" ] \
+            || { echo "BLOCKED: expected exactly one wheel in dist/, found $wheel_count"; exit 1; }
+          wheel=$(ls dist/*.whl)
+          echo "Inspecting $wheel"
+          listing=$(unzip -l "$wheel")
+          # index.html + the _next bundle = the SPA shell loads at all.
+          echo "$listing" | grep -q "schemabrain/dashboard/static/index.html" \
+            || { echo "BLOCKED: wheel ships no dashboard/static/index.html (empty dashboard)"; exit 1; }
+          next_count=$(echo "$listing" | grep -c "/dashboard/static/_next/" || true)
+          [ "$next_count" -gt 0 ] \
+            || { echo "BLOCKED: wheel ships no dashboard/static/_next/* assets"; exit 1; }
+          # Per-route sentinels — a PARTIAL export (index.html present but a
+          # surface route missing) would otherwise pass the index-only check.
+          for route in pii audit refusals; do
+            echo "$listing" | grep -q "schemabrain/dashboard/static/$route.html" \
+              || { echo "BLOCKED: wheel missing dashboard surface route '$route.html' (partial export)"; exit 1; }
+          done
+          echo "OK: dashboard bundled — index.html + pii/audit/refusals routes + $next_count _next assets"
 
       - name: Show built artifacts
         run: ls -la dist/
