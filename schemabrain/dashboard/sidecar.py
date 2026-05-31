@@ -638,6 +638,12 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
     @app.get("/api/pii/policy")
     def policy_route(source_connection_id: str | None = None) -> dict[str, Any]:
         active_block, block_source, yaml_error = _load_active_block()
+        # Floor union is UNCONDITIONAL — even when active_block is the
+        # empty frozenset (operator wrote `block: []` to suppress an
+        # over-eager block), describe-side enforcement must still floor
+        # on the catastrophic-leak triple. Do NOT introduce an
+        # `if not active_block` short-circuit here — pinned by
+        # `test_policy_route_floor_holds_when_yaml_block_is_empty`.
         effective_block = active_block | CATASTROPHIC_LEAK_CATEGORIES
 
         with SQLiteStore(config.store_path) as store:

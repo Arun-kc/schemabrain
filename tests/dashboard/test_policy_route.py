@@ -172,6 +172,161 @@ def test_policy_route_describe_blocked_when_only_floor_intersects(
     assert token_entry["effective_enforcement"] == "describe_blocked"
 
 
+def test_policy_route_floor_holds_when_yaml_block_is_empty(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pin the most direct circumvention attempt: operator writes a
+    YAML with `block: []` to suppress an over-eager block, expecting
+    enforcement to be off. The catastrophic floor MUST still gate the
+    describe-side verdict for any column tagged with credential /
+    payment_card / government_id — otherwise an empty block would
+    silently re-expose every secret column the heuristic classifier
+    already tagged.
+
+    Without this pin, a future refactor that introduces an
+    `if not active_block: effective_block = active_block`
+    short-circuit at sidecar.py:641 would regress to verdict='allowed'
+    for credential columns and the rest of the suite would still pass.
+    """
+    monkeypatch.chdir(tmp_path)
+    store = SQLiteStore(store_path)
+    try:
+        store.write_table(
+            Table(
+                name="sessions",
+                schema_name="public",
+                columns=(
+                    Column(
+                        name="id",
+                        table_name="sessions",
+                        schema_name="public",
+                        data_type="BIGINT",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                    Column(
+                        name="token",
+                        table_name="sessions",
+                        schema_name="public",
+                        data_type="TEXT",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                ),
+            ),
+            source_connection_id=SRC,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=SRC,
+            qualified_table="public.sessions",
+            tags={"token": ("pii", frozenset({"credential"}))},
+        )
+    finally:
+        store.close()
+    yaml_dir = tmp_path / "schemabrain"
+    yaml_dir.mkdir()
+    (yaml_dir / "pii_policy.yaml").write_text(
+        "version: 1\nblock: []\n",
+        encoding="utf-8",
+    )
+
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # YAML was loaded successfully (parse error path NOT taken).
+    assert body["block_source"] == "yaml"
+    assert body["yaml_parse_error"] is None
+    # Active block is empty — operator's intent honoured at the
+    # metric-aggregate layer.
+    assert body["active_block"] == []
+    # But the describe-side effective block STILL surfaces the floor.
+    assert set(body["effective_block_for_describe"]) == {
+        "credential",
+        "payment_card",
+        "government_id",
+    }
+    # And the per-column verdict for the credential token row is
+    # describe_blocked — NOT allowed. This is the load-bearing assertion.
+    token_entry = next(e for e in body["per_column"] if e["column_name"] == "token")
+    assert token_entry["effective_enforcement"] == "describe_blocked"
+    # Belt-and-suspenders: no per_column row whose categories intersect
+    # the floor may ever report 'allowed' regardless of YAML state.
+    floor = {"credential", "payment_card", "government_id"}
+    for entry in body["per_column"]:
+        if set(entry["categories"]) & floor:
+            assert entry["effective_enforcement"] != "allowed", (
+                f"floor regression: {entry['qualified_column']} "
+                f"categories={entry['categories']} reported as 'allowed'"
+            )
+
+
+def test_policy_route_diff_preview_floor_holds_when_yaml_block_is_empty(
+    client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Companion pin for the diff_preview branch under the same
+    empty-block scenario. `current_blocked` reflects the metric-block
+    posture (empty → 0), but `if_catastrophic_only` must still count
+    every column tagged with a floor category."""
+    monkeypatch.chdir(tmp_path)
+    store = SQLiteStore(store_path)
+    try:
+        store.write_table(
+            Table(
+                name="sessions",
+                schema_name="public",
+                columns=(
+                    Column(
+                        name="id",
+                        table_name="sessions",
+                        schema_name="public",
+                        data_type="BIGINT",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                    Column(
+                        name="token",
+                        table_name="sessions",
+                        schema_name="public",
+                        data_type="TEXT",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                ),
+            ),
+            source_connection_id=SRC,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=SRC,
+            qualified_table="public.sessions",
+            tags={"token": ("pii", frozenset({"credential"}))},
+        )
+    finally:
+        store.close()
+    yaml_dir = tmp_path / "schemabrain"
+    yaml_dir.mkdir()
+    (yaml_dir / "pii_policy.yaml").write_text(
+        "version: 1\nblock: []\n",
+        encoding="utf-8",
+    )
+
+    resp = client.get("/api/pii/policy", params={"source_connection_id": SRC})
+    body = resp.json()
+    diff = body["diff_preview"]
+    # Operator's metric-block posture is empty.
+    assert diff["current_blocked"] == 0
+    # But the catastrophic-only preview still shows the token row.
+    assert diff["if_catastrophic_only"] == 1
+    # Effective describe-side block is still the floor.
+    assert set(body["effective_block_for_describe"]) == {
+        "credential",
+        "payment_card",
+        "government_id",
+    }
+
+
 def test_policy_route_category_rollup_counts(
     client: TestClient, store_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
