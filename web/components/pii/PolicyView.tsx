@@ -324,12 +324,22 @@ function EnforcementChip({
   blockedByFloor: boolean;
 }) {
   if (blockedByActive) {
-    return <span className={cn(styles.miniChip, styles.miniChipBlocked)}>blocked</span>;
+    return (
+      <span
+        className={cn(styles.miniChip, styles.miniChipBlocked)}
+        title="Blocked by your active policy — editable in pii_policy.yaml."
+      >
+        blocked
+      </span>
+    );
   }
   if (blockedByFloor) {
     return (
-      <span className={cn(styles.miniChip, styles.miniChipDescribeBlocked)}>
-        describe-only
+      <span
+        className={cn(styles.miniChip, styles.miniChipFloorBlocked)}
+        title="Blocked by the always-on catastrophic-leak floor — enforced at every read gate (describe_* and get_metric) and can't be disabled."
+      >
+        floor
       </span>
     );
   }
@@ -340,7 +350,7 @@ function EnforcementChip({
 
 const VERDICT_OPTIONS: readonly EffectiveEnforcement[] = [
   "allowed",
-  "describe_blocked",
+  "floor_blocked",
   "blocked",
 ];
 const ORIGIN_OPTIONS: readonly PolicyOrigin[] = ["heuristic", "operator"];
@@ -489,12 +499,22 @@ function OriginBadge({ origin }: { origin: PolicyOrigin }) {
 
 function VerdictBadge({ verdict }: { verdict: EffectiveEnforcement }) {
   if (verdict === "blocked") {
-    return <span className={cn(styles.miniChip, styles.miniChipBlocked)}>blocked</span>;
-  }
-  if (verdict === "describe_blocked") {
     return (
-      <span className={cn(styles.miniChip, styles.miniChipDescribeBlocked)}>
-        describe-only
+      <span
+        className={cn(styles.miniChip, styles.miniChipBlocked)}
+        title="Blocked by your active policy — editable in pii_policy.yaml."
+      >
+        blocked
+      </span>
+    );
+  }
+  if (verdict === "floor_blocked") {
+    return (
+      <span
+        className={cn(styles.miniChip, styles.miniChipFloorBlocked)}
+        title="Blocked by the always-on catastrophic-leak floor — enforced at every read gate (describe_* and get_metric) and can't be disabled."
+      >
+        floor
       </span>
     );
   }

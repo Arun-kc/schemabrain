@@ -78,7 +78,7 @@ export interface ColumnPiiTag {
 
 export type PolicyOrigin = "heuristic" | "operator";
 
-export type EffectiveEnforcement = "allowed" | "describe_blocked" | "blocked";
+export type EffectiveEnforcement = "allowed" | "floor_blocked" | "blocked";
 
 export type PolicyBlockSource = "yaml" | "default";
 

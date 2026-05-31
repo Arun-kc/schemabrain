@@ -539,13 +539,13 @@
   border-color: rgba(239, 68, 68, 0.36);
 }
 
-.miniChipDescribeBlocked {
+.miniChipFloorBlocked {
   background: rgba(245, 158, 11, 0.08);
   border: 1px solid rgba(245, 158, 11, 0.25);
   color: var(--color-signal-amber);
 }
 
-[data-theme="dark"] .miniChipDescribeBlocked {
+[data-theme="dark"] .miniChipFloorBlocked {
   background: rgba(245, 158, 11, 0.16);
   border-color: rgba(245, 158, 11, 0.36);
 }

@@ -152,13 +152,15 @@ schemabrain policy show
 #       phone                          pii           contact                        heuristic allowed
 #       password_hash                  pii           credential                     heuristic blocked
 #
-# legend: `*` = operator override · verdict columns are advisory
+# legend: `*` = operator override · `blocked` = your active policy · `floor-blocked` = always-on catastrophic floor (can't be disabled) · verdicts are advisory
 ```
 
 The `*` marker flags operator-asserted overrides. The verdict column
-distinguishes `allowed` (not blocked), `describe_blocked` (refused by
-`describe_*` via the catastrophic floor but allowed by `get_metric`),
-and `blocked` (refused by both).
+distinguishes `allowed` (neither your policy nor the floor blocks it),
+`floor-blocked` (not in your active policy, but blocked by the always-on
+catastrophic floor — enforced at every read gate, `describe_*` **and**
+`get_metric`, so it can't be disabled), and `blocked` (the category is in
+your active policy block).
 
 ### `schemabrain policy apply <yaml>`
 

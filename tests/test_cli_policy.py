@@ -561,7 +561,7 @@ class TestPolicyTagList:
 # The handlers each have a `_resolve_single_source_id` gate up front;
 # the no-source branch is shared. One test per handler exercises that
 # return path so the branch is observably covered for each surface.
-# Smaller error-path branches (describe-blocked verdict, operator
+# Smaller error-path branches (floor-blocked verdict, operator
 # marker, sensitivity validation, origin-filter empty result, apply's
 # overrides-trailer print) are covered here too.
 
@@ -574,7 +574,7 @@ def _seed_empty_store(path: Path) -> None:
 
 def _seed_store_with_credential_tag(path: Path) -> None:
     """Seed a column tagged with `credential` (catastrophic floor) so
-    the show-verdict path can return `describe-blocked` when the active
+    the show-verdict path can return `floor-blocked` when the active
     block is something OTHER than credential."""
     store = SQLiteStore(path)
     try:
@@ -691,15 +691,16 @@ class TestPolicyHandlerNoSource:
 
 
 class TestPolicyShowVerdicts:
-    def test_describe_blocked_when_only_floor_intersects(
+    def test_floor_blocked_when_only_floor_intersects(
         self,
         tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Column tagged with `credential` (in catastrophic floor) but
-        the active block YAML restricts to `contact` only. get_metric
-        would allow it; describe_entity would refuse. Verdict surfaces
-        as `describe-blocked`."""
+        the active block YAML restricts to `contact` only. The always-on
+        floor blocks it at every read gate (describe_* AND get_metric),
+        so the verdict surfaces as `floor-blocked` — attributing the
+        refusal to the floor, not the operator's policy."""
         store_path = tmp_path / "sb.db"
         _seed_store_with_credential_tag(store_path)
         policy_path = tmp_path / "pii_policy.yaml"
@@ -712,7 +713,7 @@ class TestPolicyShowVerdicts:
         )
         assert rc == 0
         out = capsys.readouterr().out
-        assert "describe-blocked" in out
+        assert "floor-blocked" in out
 
     def test_operator_marker_renders_for_overrides(
         self,
