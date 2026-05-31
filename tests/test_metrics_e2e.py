@@ -54,11 +54,11 @@ _NON_ORDER_ANCHORED_METRICS: dict[str, str] = {
 
 class TestBundledMetricFixtures:
     def test_fixture_dir_exists(self) -> None:
-        path = bundled_metrics_fixture_dir()
+        path = bundled_metrics_fixture_dir(pack="ecommerce")
         assert path.is_dir()
 
     def test_all_three_metric_yamls_present_and_parse(self) -> None:
-        path = bundled_metrics_fixture_dir()
+        path = bundled_metrics_fixture_dir(pack="ecommerce")
         yaml_files = sorted(p for p in path.iterdir() if p.suffix == ".yaml")
         names = {parse_metric_yaml_file(p).name for p in yaml_files}
         assert names == _EXPECTED_METRIC_NAMES
@@ -68,7 +68,7 @@ class TestBundledMetricFixtures:
         # (composite expression over line-item columns) anchors on
         # `order_item`. The demo narrative stays tight: one parent entity
         # with three plain measures + one composite measure on its child.
-        path = bundled_metrics_fixture_dir()
+        path = bundled_metrics_fixture_dir(pack="ecommerce")
         for yaml_file in path.iterdir():
             if yaml_file.suffix != ".yaml":
                 continue  # pragma: no cover — only YAMLs in fixture dir
@@ -82,7 +82,7 @@ class TestBundledMetricFixtures:
         # Lock the measure column to the schema in ecommerce.sql —
         # if someone renames `total_cents` upstream, this test catches
         # the drift.
-        path = bundled_metrics_fixture_dir()
+        path = bundled_metrics_fixture_dir(pack="ecommerce")
         metric = parse_metric_yaml_file(path / "total_revenue.yaml")
         assert metric.measure.agg == "sum"
         assert metric.measure.column == "total_cents"
@@ -90,14 +90,14 @@ class TestBundledMetricFixtures:
     def test_metrics_use_placed_at_time_dimension(self) -> None:
         # Same column-name lock as above: `placed_at` is the orders
         # table's actual timestamp column.
-        path = bundled_metrics_fixture_dir()
+        path = bundled_metrics_fixture_dir(pack="ecommerce")
         for name in ("total_revenue", "order_count"):
             metric = parse_metric_yaml_file(path / f"{name}.yaml")
             assert metric.time_dimension == "order.placed_at"
             assert "day" in metric.time_grains
 
     def test_customer_count_uses_distinct_user_id(self) -> None:
-        path = bundled_metrics_fixture_dir()
+        path = bundled_metrics_fixture_dir(pack="ecommerce")
         metric = parse_metric_yaml_file(path / "customer_count.yaml")
         assert metric.measure.agg == "count_distinct"
         assert metric.measure.column == "user_id"
@@ -107,7 +107,7 @@ class TestBundledMetricFixtures:
         # SUM over `unit_price_cents * quantity` on the line items.
         # Lock the field shape (bare-column is None, expression is set)
         # so the YAML can't accidentally regress to the v1 shape.
-        path = bundled_metrics_fixture_dir()
+        path = bundled_metrics_fixture_dir(pack="ecommerce")
         metric = parse_metric_yaml_file(path / "total_revenue_real.yaml")
         assert metric.entity == "order_item"
         assert metric.measure.agg == "sum"
@@ -267,7 +267,7 @@ class TestCliRoundTrip:
         store_path = tmp_path / "store.db"
         source_id = _seed_order_entity_for_url(store_path)
         monkeypatch.setenv("DBURL", _URL)
-        fixture_dir = bundled_metrics_fixture_dir()
+        fixture_dir = bundled_metrics_fixture_dir(pack="ecommerce")
 
         exit_code = main(
             [
@@ -293,7 +293,7 @@ class TestCliRoundTrip:
         store_path = tmp_path / "store.db"
         source_id = _seed_order_entity_for_url(store_path)
         monkeypatch.setenv("DBURL", _URL)
-        fixture_dir = bundled_metrics_fixture_dir()
+        fixture_dir = bundled_metrics_fixture_dir(pack="ecommerce")
 
         main(
             [
@@ -341,7 +341,7 @@ class TestCliRoundTrip:
         store_path = tmp_path / "store.db"
         _seed_order_entity_for_url(store_path)
         monkeypatch.setenv("DBURL", _URL)
-        fixture_dir = bundled_metrics_fixture_dir()
+        fixture_dir = bundled_metrics_fixture_dir(pack="ecommerce")
 
         main(
             [
@@ -434,7 +434,7 @@ class TestAmbiguityRefusalE2E:
                     source_connection_id=source_id,
                 )
             # Apply the bundled total_revenue metric.
-            fixture_dir = bundled_metrics_fixture_dir()
+            fixture_dir = bundled_metrics_fixture_dir(pack="ecommerce")
             metric = parse_metric_yaml_file(fixture_dir / "total_revenue.yaml")
             store.write_metric(metric, source_connection_id=source_id)
 

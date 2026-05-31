@@ -54,11 +54,11 @@ _EXPECTED_FIXTURE_NAMES = frozenset(
 
 class TestBundledFixtureShape:
     def test_fixture_dir_exists(self) -> None:
-        path = bundled_joins_fixture_dir()
+        path = bundled_joins_fixture_dir(pack="ecommerce")
         assert path.is_dir()
 
     def test_all_seven_yaml_files_present_and_parse(self) -> None:
-        path = bundled_joins_fixture_dir()
+        path = bundled_joins_fixture_dir(pack="ecommerce")
         yaml_files = sorted(p for p in path.iterdir() if p.suffix == ".yaml")
         # Drop any non-YAML files that might land here by mistake.
         names = {parse_canonical_join_yaml_file(p).name for p in yaml_files}
@@ -68,7 +68,7 @@ class TestBundledFixtureShape:
         # The the multi-canonical-per-pair design choice rides on
         # these two YAMLs binding to DIFFERENT FK columns on `orders`.
         # Same entity pair, distinct on-columns, distinct names.
-        path = bundled_joins_fixture_dir()
+        path = bundled_joins_fixture_dir(pack="ecommerce")
         billing = parse_canonical_join_yaml_file(path / "order_billing_address.yaml")
         shipping = parse_canonical_join_yaml_file(path / "order_shipping_address.yaml")
         assert billing.source_entity == shipping.source_entity == "order"
@@ -152,7 +152,7 @@ class TestEndToEnd:
             [
                 "joins",
                 "apply",
-                str(bundled_joins_fixture_dir()),
+                str(bundled_joins_fixture_dir(pack="ecommerce")),
                 "--source",
                 _URL,
                 "--store-path",
@@ -177,7 +177,7 @@ class TestEndToEnd:
             [
                 "joins",
                 "apply",
-                str(bundled_joins_fixture_dir()),
+                str(bundled_joins_fixture_dir(pack="ecommerce")),
                 "--source",
                 _URL,
                 "--store-path",
@@ -208,7 +208,7 @@ class TestEndToEnd:
             [
                 "joins",
                 "apply",
-                str(bundled_joins_fixture_dir()),
+                str(bundled_joins_fixture_dir(pack="ecommerce")),
                 "--source",
                 _URL,
                 "--store-path",
@@ -236,7 +236,7 @@ class TestEndToEnd:
             [
                 "joins",
                 "apply",
-                str(bundled_joins_fixture_dir()),
+                str(bundled_joins_fixture_dir(pack="ecommerce")),
                 "--source",
                 _URL,
                 "--store-path",

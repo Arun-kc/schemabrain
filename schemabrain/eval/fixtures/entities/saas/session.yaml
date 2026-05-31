@@ -1,0 +1,6 @@
+version: 1
+name: session
+description: An authenticated login session for a user.
+binding:
+  single_table: public.sessions
+identity: id

@@ -1,0 +1,6 @@
+version: 1
+name: support_ticket
+description: A customer-filed support request (free-text body).
+binding:
+  single_table: public.support_tickets
+identity: id

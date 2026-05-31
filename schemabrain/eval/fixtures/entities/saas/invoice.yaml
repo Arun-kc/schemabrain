@@ -1,0 +1,6 @@
+version: 1
+name: invoice
+description: A billing document issued to a workspace.
+binding:
+  single_table: public.invoices
+identity: id

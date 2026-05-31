@@ -1,0 +1,9 @@
+version: 1
+name: subscription_items_subscription
+description: Links each subscription line item to its parent subscription.
+source_entity: subscription_item
+target_entity: subscription
+"on":
+  - source: subscription_id
+    target: id
+cardinality: many_to_one

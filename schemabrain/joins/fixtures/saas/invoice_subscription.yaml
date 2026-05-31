@@ -1,0 +1,9 @@
+version: 1
+name: invoice_subscription
+description: Links each invoice to the subscription it covers.
+source_entity: invoice
+target_entity: subscription
+"on":
+  - source: subscription_id
+    target: id
+cardinality: many_to_one

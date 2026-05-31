@@ -1,0 +1,12 @@
+version: 1
+name: user_sessions
+description: Links each login session to its user.
+source_entity: session
+target_entity: user
+"on":
+  - source: user_id
+    target: id
+cardinality: many_to_one
+# Catastrophic-propagation join: inherits `credential` from
+# sessions.session_token, AND sessions.user_id is the canonical
+# incoming-FK-to-catastrophic case (parent users holds password_hash).

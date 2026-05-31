@@ -1,0 +1,10 @@
+version: 1
+name: user_count
+description: |
+  Number of user accounts. The pure-firewall demo metric: a
+  group_by on `user.password_hash` (credential) is refused, while
+  group_by on `user.role` is allowed.
+entity: user
+measure:
+  agg: count
+  column: id

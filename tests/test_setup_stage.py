@@ -255,8 +255,8 @@ class TestDemoCommandsConsistency:
         # container's POSTGRES_PASSWORD.
         assert "5433" in DEMO_FIXTURE_LOAD_COMMAND
         assert "PGPASSWORD=local" in DEMO_FIXTURE_LOAD_COMMAND
-        # Must reference the bundled fixture path.
-        assert "ecommerce.sql" in DEMO_FIXTURE_LOAD_COMMAND
+        # Must reference the bundled fixture path (saas is the v0.5.0 default).
+        assert "saas.sql" in DEMO_FIXTURE_LOAD_COMMAND
 
 
 class TestAutoDockerDemoPath:
@@ -713,7 +713,7 @@ class TestDockerLoadFixture:
             is False
         )
         output = buf.getvalue()
-        assert "Couldn't resolve bundled ecommerce fixture" in output
+        assert "Couldn't resolve bundled saas fixture" in output
         assert "force-reinstall" in output
 
     def test_returns_true_when_psql_subprocess_exits_zero(
@@ -728,8 +728,8 @@ class TestDockerLoadFixture:
         # the pre-PR-6h `Path.cwd()`-based implementation that had
         # zero effect on the new code path (resolve_bundled_path
         # uses `.is_file()`, not `.exists()`). Test then passed only
-        # because the real wheel happens to contain ecommerce.sql.
-        fake_fixture = tmp_path / "ecommerce.sql"
+        # because the real wheel happens to contain saas.sql.
+        fake_fixture = tmp_path / "saas.sql"
         fake_fixture.write_text("-- stub\n")
         monkeypatch.setattr(setup_stage, "resolve_bundled_path", lambda name: fake_fixture)
         argv_log: list[list[str]] = []
@@ -754,7 +754,7 @@ class TestDockerLoadFixture:
         assert "-f" in argv
         assert "/f.sql" in argv
         # The /v mount references the absolute fixture path.
-        assert any("ecommerce.sql" in a for a in argv)
+        assert any("saas.sql" in a for a in argv)
 
     def test_returns_false_when_psql_subprocess_exits_non_zero(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
@@ -767,7 +767,7 @@ class TestDockerLoadFixture:
 
         # Same fix as the sibling success test — patch the resolver,
         # not `Path.exists` which the new code path never calls.
-        fake_fixture = tmp_path / "ecommerce.sql"
+        fake_fixture = tmp_path / "saas.sql"
         fake_fixture.write_text("-- stub\n")
         monkeypatch.setattr(setup_stage, "resolve_bundled_path", lambda name: fake_fixture)
         monkeypatch.setattr(
@@ -789,7 +789,7 @@ class TestDockerLoadFixture:
             is False
         )
         out = buf.getvalue()
-        assert "couldn't load the ecommerce fixture" in out
+        assert "couldn't load the saas fixture" in out
         assert "connection to server" in out
 
 

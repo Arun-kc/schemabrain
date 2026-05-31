@@ -1,0 +1,9 @@
+version: 1
+name: workspace_users
+description: Links each user to the workspace they belong to.
+source_entity: user
+target_entity: workspace
+"on":
+  - source: workspace_id
+    target: id
+cardinality: many_to_one

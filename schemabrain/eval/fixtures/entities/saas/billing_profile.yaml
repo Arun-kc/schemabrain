@@ -1,0 +1,6 @@
+version: 1
+name: billing_profile
+description: A workspace's legal / tax identity used for invoicing.
+binding:
+  single_table: public.billing_profiles
+identity: id

@@ -47,7 +47,7 @@ _IMPORTS_FIXTURES_DIR: Path = _PACKAGE_ROOT.parent / "imports" / "fixtures"
 # search roots: `_BUNDLED_DIRS` (below) embeds the default pack's dirs,
 # so a Phase-1 flip to "saas" changes what the `fixture-path` CLI
 # resolves, not just the wizard demo. Intended, but flip deliberately.
-DEFAULT_PACK = "ecommerce"
+DEFAULT_PACK = "saas"
 
 
 @dataclass(frozen=True)
@@ -75,7 +75,10 @@ def _make_pack(name: str) -> Pack:
     )
 
 
-_PACKS: dict[str, Pack] = {"ecommerce": _make_pack("ecommerce")}
+_PACKS: dict[str, Pack] = {
+    "ecommerce": _make_pack("ecommerce"),
+    "saas": _make_pack("saas"),
+}
 
 
 def _get_pack(pack: str | None = None) -> Pack:

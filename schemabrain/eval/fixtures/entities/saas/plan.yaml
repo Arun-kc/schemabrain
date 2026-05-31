@@ -1,0 +1,6 @@
+version: 1
+name: plan
+description: A subscription plan in the catalog (tier, price, included seats, SLA).
+binding:
+  single_table: public.plans
+identity: id
