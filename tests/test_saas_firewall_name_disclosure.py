@@ -266,3 +266,38 @@ class TestDemoMetricDescriptionsNameNoCatastrophicColumn:
             "bundled SaaS metric description names a catastrophic column "
             f"(list_metrics would surface it to the agent): {offenders}"
         )
+
+
+# ---- visible_allowed_columns helper: direct unit coverage -------------------
+
+
+class TestVisibleAllowedColumnsHelper:
+    def test_empty_input_short_circuits_without_store_access(self) -> None:
+        # The hint can be empty (an entity with no columns the agent may
+        # reference); return early before any store lookup. store=None
+        # proves no store access happens on this path.
+        from schemabrain.mcp._redaction import visible_allowed_columns
+
+        out = visible_allowed_columns(
+            (),
+            entity_name="user",
+            store=None,  # type: ignore[arg-type]
+            source_connection_id=SRC,
+            effective_block=frozenset({"credential"}),
+        )
+        assert out == ()
+
+    def test_drops_blocked_keeps_benign(self, tmp_path: Path) -> None:
+        from schemabrain.mcp._redaction import visible_allowed_columns
+
+        with SQLiteStore(tmp_path / "s.db") as store:
+            _seed(store)
+            out = visible_allowed_columns(
+                ("id", "email", "role", "password_hash"),
+                entity_name="user",
+                store=store,
+                source_connection_id=SRC,
+                effective_block=frozenset({"credential"}),
+            )
+        assert "password_hash" not in out
+        assert {"id", "email", "role"} <= set(out)
