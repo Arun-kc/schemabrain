@@ -9,6 +9,10 @@ description: "A visual walk through the hash-chained audit log. Every tool call 
 **Route:** `/audit` on the dashboard. **Backed by:** `GET /api/audit/rows`, `GET /api/audit/rows/{id}`, `GET /api/audit/verify`. **Live updates via:** `GET /api/audit/stream` (Server-Sent Events).
 </Note>
 
+<Frame caption="Audit Viewer — the hash-chained ledger after a server-side Verify: 'Ledger Chain Intact', with each row's previous → current chain-hash linkage in the drawer.">
+  <img src="/assets/dashboard-audit-viewer.png" alt="Audit Viewer dashboard surface — hash-chained ledger verified intact, with row detail drawer" />
+</Frame>
+
 The Audit Viewer is the visual face of the [tamper-evident audit chain](/mechanism/audit-chain). Every MCP tool call writes exactly one row, regardless of outcome — success, empty, partial, degraded, error, or refused. Each row carries a 32-byte `chain_hash` computed as `sha256(prev_chain_hash || canonical(row))`. The viewer renders that chain as a list, lets you drill into any row, and exposes a **Verify ledger** button that re-walks the chain server-side and confirms the invariant holds.
 
 ---

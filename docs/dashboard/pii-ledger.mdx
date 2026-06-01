@@ -9,6 +9,10 @@ description: "An entity-by-category matrix that shows which database entities ca
 **Route:** `/pii` on the dashboard. **Backed by:** `GET /api/entities/pii-matrix`.
 </Note>
 
+<Frame caption="The PII Ledger — one row per entity, one column per PII category; entities carrying a catastrophic-leak category are flagged, with the active block policy below.">
+  <img src="/assets/dashboard-pii-ledger.png" alt="PII Ledger dashboard surface — catastrophic-exposure counter and an entity by PII-category heatmap" />
+</Frame>
+
 The PII Ledger renders one row per confirmed semantic entity, one column per category in the [PII taxonomy](/mechanism/pii-taxonomy), with a cell count of "how many columns inside this entity carry that category." Entities with at least one column tagged in a catastrophic-leak category (`credential`, `payment_card`, `government_id`) get a visual marker in the row gutter.
 
 This is the surface to open before you trust an agent against a new schema. It answers, at a glance:

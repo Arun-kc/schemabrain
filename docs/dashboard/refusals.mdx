@@ -9,6 +9,10 @@ description: "A live feed of refused tool calls — what the agent asked for, wh
 **Route:** `/refusals` on the dashboard. **Backed by:** `GET /api/audit/refusals` (list) and `GET /api/audit/refusals/{id}` (detail).
 </Note>
 
+<Frame caption="Refusals — a chronological list of refused calls on the left, the full envelope on the right: the reason that fired, the blocked category set, and the recovery hint the agent received.">
+  <img src="/assets/dashboard-refusals.png" alt="Refusals dashboard surface — incident timeline with the full refusal envelope detail" />
+</Frame>
+
 Every tool call that ended with `status='refused'` lands on this surface. The page renders a two-pane layout: a chronological list of incidents on the left, the full envelope detail (what the agent saw, what reason fired, which categories the policy intersected) on the right.
 
 This is the surface for two distinct workflows:
