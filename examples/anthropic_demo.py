@@ -16,7 +16,7 @@ Usage:
     python examples/anthropic_demo.py \\
         --url-env DATABASE_URL \\
         --store-path /path/to/schemabrain.db \\
-        --question "Where do we store customer order totals?"
+        --question "How much revenue did we invoice each month?"
 
 Cost: ~$0.005-0.02 per run on Haiku 4.5 depending on how many tool
 turns the agent takes. Bounded by --max-turns (default 8). Aborts

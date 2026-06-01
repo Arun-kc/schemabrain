@@ -14,12 +14,12 @@
 #
 # Prerequisites for re-recording — see CONTRIBUTING.md, section
 # "Recording the demo asset", for the full setup script:
-#   - A running Postgres at localhost:5432 with the bundled ecommerce
-#     fixture applied.
+#   - A running Postgres at localhost:5432 with the bundled SaaS
+#     fixture applied (12 tables, 84 columns).
 #   - ANTHROPIC_API_KEY exported in the recording shell so stages 3
 #     (entities, LLM) and 4 (metrics, LLM) of init do NOT skip — a
 #     skipped stage 3 means no entities are applied, so Act 2's
-#     `inspect customer` drill exits 1 with a guided error and Act 3's
+#     `inspect user` drill exits 1 with a guided error and Act 3's
 #     get_metric call has nothing to resolve. Stage 5 (joins) is
 #     deterministic and runs regardless of the API key.
 #   - --skip-llm-confirm passed to init so the recording doesn't hang
@@ -71,7 +71,7 @@ Enter
 Type "schemabrain inspect --store-path ./demo.db"
 Enter
 Sleep 3s
-Type "schemabrain inspect customer --store-path ./demo.db"
+Type "schemabrain inspect user --store-path ./demo.db"
 Enter
 Sleep 3s
 
@@ -89,7 +89,7 @@ Type "    --source \"$DATABASE_URL\" \\"
 Enter
 Type "    --store-path ./demo.db \\"
 Enter
-Type "    --question 'What was revenue by month last quarter?'"
+Type "    --question 'How much revenue did we invoice each month?'"
 Enter
 # Haiku tool-use loops typically run 8–20s depending on how many
 # turns Claude takes (max 8 per the demo's cap). 18s leaves headroom
