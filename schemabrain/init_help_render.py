@@ -60,7 +60,8 @@ _RULE_INDENT = 2
 # level constant so a reviewer searching for "0.07" or "45s" can
 # find and update it in one place when model pricing, token
 # counts, or the wizard's typical workload shifts. Measured
-# against the bundled ecommerce fixture (8 tables / 39 cols).
+# against the e-commerce sample (8 tables / 39 cols); re-baseline if
+# the default demo schema's typical keyed workload shifts.
 _RUNTIME_SUMMARY = "~45s · ~$0.07 · 2 LLM calls (Sonnet) · 1 optional (Haiku, with --enrich)"
 
 

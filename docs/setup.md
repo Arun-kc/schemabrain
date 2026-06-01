@@ -32,7 +32,7 @@ How would you like to start?
 Choice [2]:
 ```
 
-- **Option 2** (default — press Enter) — spins up a local demo Postgres container (`sb-demo-pg` on port 5433) with the bundled e-commerce fixture. Idempotent on re-runs. Requires Docker.
+- **Option 2** (default — press Enter) — spins up a local demo Postgres container (`sb-demo-pg` on port 5433) with the bundled SaaS fixture. Idempotent on re-runs. Requires Docker.
 - **Option 1** — prompts for a `postgresql+psycopg://user:pass@host:5432/dbname` connection string (password-masked paste).
 
 On the **demo path**, entities + metrics + joins are pre-applied from a bundled YAML pack — the semantic layer works zero-config, no `ANTHROPIC_API_KEY` required.
@@ -45,10 +45,10 @@ After URL resolution, the wizard shows a host-selection menu listing all 4 suppo
 SchemaBrain init — activation wizard
 
   [1/7] Source check       ✓ source reachable + read-only
-  [2/7] Index schema       ✓ 8 tables, 39 columns indexed
-  [3/7] Curate entities    ✓ 6 entities applied (bundled demo pack)
-  [4/7] Curate metrics     ✓ 10 metrics applied (bundled demo pack)
-  [5/7] Curate joins       ✓ 7 canonical joins applied (bundled demo pack)
+  [2/7] Index schema       ✓ 12 tables, 84 columns indexed
+  [3/7] Curate entities    ✓ 12 entities applied (bundled demo pack)
+  [4/7] Curate metrics     ✓ 5 metrics applied (bundled demo pack)
+  [5/7] Curate joins       ✓ 8 canonical joins applied (bundled demo pack)
   [6/7] Wire host          ✓ wrote schemabrain entry to claude_desktop_config.json
   [7/7] Next               ✓ restart your MCP host, then ask: "list the entities SchemaBrain knows about"
 ```
@@ -133,6 +133,6 @@ Per-host setup pages (~60-second wiring each):
 ## What's next
 
 - [First 5 queries](/first-5-queries) — exercises each load-bearing firewall property in ~10 minutes.
-- `schemabrain eval` — score retrieval quality against the bundled e-commerce golden set (or your own).
+- `schemabrain eval` — score retrieval quality against the bundled SaaS golden set (or your own).
 - Re-run `schemabrain index` whenever your schema changes — it's idempotent and cache-aware.
 - For schemas with cryptic column names (`acct_dim_v3`, `pmt_fct_h`), pass `--enable-sonnet` at index time to route those to Claude Sonnet 4.6 for better decoding (~5x cost per affected column).

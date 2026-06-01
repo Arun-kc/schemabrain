@@ -43,12 +43,12 @@ Sample dry-run output:
 
 ```
 # confidence: high
-# rationale: users has id PK, NOT NULL email, referenced by orders.user_id
+# rationale: users has id PK, NOT NULL email, referenced by sessions.user_id
 # pii_hints:
 #   email: pii
 version: 1
-name: customer
-description: A registered customer
+name: user
+description: A workspace member account
 binding:
   single_table: public.users
 identity: id

@@ -18,7 +18,7 @@ pip install schemabrain
 schemabrain init --host windsurf
 ```
 
-The wizard prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 7-table e-commerce fixture spins up in Docker; ~$0.03 to index). Press Enter to take the default (`2`).
+The wizard prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 12-table SaaS fixture spins up in Docker; ~$0.03 to index). Press Enter to take the default (`2`).
 
 The wizard then introspects the schema, classifies columns for PII, optionally calls Anthropic to suggest entities/metrics/joins, then writes the MCP entry to `~/.codeium/windsurf/mcp_config.json` (Windsurf's global MCP config — the Codeium namespace persists from before Windsurf split out as a standalone IDE).
 
@@ -69,9 +69,9 @@ If Cascade calls `list_entities` and reports the entities curated during init, y
 
 ## Sample interaction
 
-> **You:** What categories do our top 5 products by revenue belong to?
+> **You:** What's our total invoiced revenue per workspace?
 >
-> **Cascade:** *(calls `find_relevant_entities("product revenue")` → `resolve_join` finds the canonical join path → `get_metric` returns the answer)*
+> **Cascade:** *(calls `find_relevant_entities("invoiced revenue per workspace")` → `resolve_join` finds the canonical join path → `get_metric` returns the answer)*
 
 When two parallel joins exist between the same pair of entities, the response disambiguates with a structured choice:
 
@@ -83,9 +83,9 @@ When two parallel joins exist between the same pair of entities, the response di
     "recovery": {
       "suggested_tool": "resolve_join",
       "suggested_args": {
-        "entity_a": "order",
-        "entity_b": "user",
-        "name": "order_buyer"
+        "entity_a": "invoice",
+        "entity_b": "workspace",
+        "name": "invoice_workspace"
       }
     }
   }

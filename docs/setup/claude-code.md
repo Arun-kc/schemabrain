@@ -18,7 +18,7 @@ pip install schemabrain
 schemabrain init --host claude-code
 ```
 
-The wizard prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 7-table e-commerce fixture spins up in Docker; ~$0.03 to index). Press Enter to take the default (`2`).
+The wizard prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 12-table SaaS fixture spins up in Docker; ~$0.03 to index). Press Enter to take the default (`2`).
 
 The wizard then introspects the schema, classifies columns for PII, optionally calls Anthropic to suggest entities/metrics/joins, then **shells out to `claude mcp add`** to register the server. We use the CLI rather than editing `~/.claude.json` directly because Anthropic's supported registration path validates the entry and is robust against schema changes.
 
@@ -63,11 +63,11 @@ The `--` separator is load-bearing — without it, Claude Code's parser would tr
 
 ## Sample interaction
 
-> **You:** Using SchemaBrain, what's our top customer by total spend?
+> **You:** Using SchemaBrain, which plan tier drives the most revenue?
 >
-> **Claude:** *(calls `find_relevant_entities("customer")` → picks `user` → `resolve_join(user, order)` → `resolve_join(order, order_item)` → `get_metric(name="customer_spend_total")`)*
+> **Claude:** *(calls `find_relevant_entities("revenue by plan")` → picks `subscription_item` → `resolve_join(subscription_item, subscription)` → `resolve_join(subscription, plan)` → `get_metric(name="total_revenue_real", group_by=["plan.title"])`)*
 >
-> Top customer: Alice (`user.id=42`) with $4,219.50 across 18 orders. Path was fully resolved via FK constraints (`confidence: HIGH`).
+> Enterprise leads with $379,620 in contracted revenue, ahead of Pro ($539) and Free ($54). Path fully resolved via FK constraints (`confidence: HIGH`).
 
 The trust signal comes from the v1.2 envelope — see [`/mechanism/trust-signal`](../mechanism/trust-signal.md) for how Claude knows whether to qualify its answer.
 

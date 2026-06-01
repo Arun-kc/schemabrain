@@ -7,7 +7,7 @@ description: "Five queries against your fresh SchemaBrain install that exercise 
 
 > You've run `schemabrain init` and restarted your MCP host. This is what to actually *do* with it for the next 10 minutes. Five queries that exercise each of the four load-bearing mechanisms — read-only tools, PII-aware refusal, audit chain, structured recovery — plus a closing CLI step that proves what happened.
 
-Run these in order against the bundled e-commerce fixture (the default if you pressed Enter at the wizard's URL prompt). They work identically against your own Postgres — only the entity names change.
+Run these in order against the bundled SaaS fixture (the default if you pressed Enter at the wizard's URL prompt). They work identically against your own Postgres — only the entity names change.
 
 ---
 
@@ -29,14 +29,18 @@ If any of those is uncertain, run `schemabrain doctor --verify` first — it smo
 
 | name | bound table | one-line description |
 |---|---|---|
-| `customer` | `public.users` | a registered shopper account |
-| `order` | `public.orders` | one placed order, tied to a customer |
-| `order_item` | `public.order_items` | a single line item on an order |
-| `product` | `public.products` | a purchasable product with SKU and price |
-| `payment_method` | `public.payment_methods` | a card on file for a customer |
-| `address` | `public.addresses` | a street address used for billing or shipping |
-| `category` | `public.categories` | a product category (may nest) |
-| `product_category` | `public.product_categories` | junction linking products to categories |
+| `workspace` | `public.workspaces` | a tenant account — owns users, subscriptions, and billing |
+| `user` | `public.users` | a workspace member account (login credential + contact details) |
+| `plan` | `public.plans` | a subscription plan in the catalog (tier, price, seats, SLA) |
+| `subscription` | `public.subscriptions` | a workspace's binding to a plan, with lifecycle timestamps |
+| `subscription_item` | `public.subscription_items` | a per-seat line item on a subscription |
+| `invoice` | `public.invoices` | a billing document issued to a workspace |
+| `payment_method` | `public.payment_methods` | a card on file for a workspace (tokenized last-4, brand, expiry) |
+| `billing_profile` | `public.billing_profiles` | a workspace's legal / tax identity used for invoicing |
+| `api_key` | `public.api_keys` | a programmatic API credential issued to a workspace |
+| `session` | `public.sessions` | an authenticated login session for a user |
+| `usage_event` | `public.usage_events` | a metered telemetry event (api_call / login / export) |
+| `support_ticket` | `public.support_tickets` | a customer-filed support request (free-text body) |
 
 Against your own Postgres (not the demo), Stage 3 of `init` runs the LLM-driven entity suggester instead of the bundled pack — names + descriptions will vary, but the shape stays the same: one `EntitySummary` per inferred entity, each bound to a physical table.
 
@@ -46,23 +50,25 @@ Against your own Postgres (not the demo), Stage 3 of `init` runs the LLM-driven 
 
 ## Query 2 — see the semantic layer with PII tags
 
-> **Ask Claude:** describe the customer entity
+> **Ask Claude:** describe the user entity
 
-**What happens.** Claude calls [`describe_entity(name="customer")`](/reference/mcp-tools/describe_entity). The response lists every column on the bound physical table with its PII classification:
+**What happens.** Claude calls [`describe_entity(name="user")`](/reference/mcp-tools/describe_entity). The response lists every column on the bound physical table with its PII classification:
 
 ```json
 {
-  "name": "customer",
+  "name": "user",
   "qualified_table": "public.users",
   "identity": "id",
   "columns": [
     {"name": "id", "data_type": "bigint", "pii_categories": []},
+    {"name": "workspace_id", "data_type": "bigint", "pii_categories": []},
     {"name": "email", "data_type": "text",
      "pii_categories": ["contact"], "redacted": false},
     {"name": "full_name", "data_type": "text",
      "pii_categories": ["contact"], "redacted": false},
     {"name": "password_hash", "data_type": "text",
      "pii_categories": ["credential"], "redacted": true},
+    {"name": "role", "data_type": "text", "pii_categories": []},
     {"name": "created_at", "data_type": "timestamptz", "pii_categories": []}
   ]
 }
@@ -76,13 +82,13 @@ Against your own Postgres (not the demo), Stage 3 of `init` runs the LLM-driven 
 
 ## Query 3 — run a metric (happy path)
 
-> **Ask Claude:** what's the count of unique customers per month for the last 6 months?
+> **Ask Claude:** what's our total revenue per month?
 
-**What happens.** Claude calls [`list_metrics`](/reference/mcp-tools/list_metrics) to discover the vocabulary, finds `customer_count` (entity `order`, `count_distinct` of `user_id`, time-dimension `order.placed_at`), then calls [`get_metric`](/reference/mcp-tools/get_metric):
+**What happens.** Claude calls [`list_metrics`](/reference/mcp-tools/list_metrics) to discover the vocabulary, finds `total_revenue` (entity `invoice`, `sum` of `invoice_total_cents`, time-dimension `invoice.issued_at`), then calls [`get_metric`](/reference/mcp-tools/get_metric):
 
 ```json
 {
-  "name": "customer_count",
+  "name": "total_revenue",
   "time_grain": "month"
 }
 ```
@@ -90,13 +96,13 @@ Against your own Postgres (not the demo), Stage 3 of `init` runs the LLM-driven 
 The metric compiler emits SQL of roughly this shape (identifiers fully double-quoted, no ORDER BY unless the metric defines one):
 
 ```sql
-SELECT date_trunc('month', "order"."placed_at") AS time_bucket,
-       count(DISTINCT "order"."user_id")        AS "customer_count"
-FROM   "public"."orders" AS "order"
+SELECT date_trunc('month', "invoice"."issued_at") AS time_bucket,
+       sum("invoice"."invoice_total_cents")        AS "total_revenue"
+FROM   "public"."invoices" AS "invoice"
 GROUP BY time_bucket
 ```
 
-…executes against the source DB under `default_transaction_read_only=on`, and returns rows. WHERE-clause values (`filter_predicates`) bind through SQLAlchemy parameters — the only operator-controlled string baked into the SQL is the validated metric / column / entity identifier set.
+…executes against the source DB under `default_transaction_read_only=on`, and returns one row per month (totals in integer cents — a `total_revenue` of `613634` is `$6,136.34`). WHERE-clause values (`filter_predicates`) bind through SQLAlchemy parameters — the only operator-controlled string baked into the SQL is the validated metric / column / entity identifier set.
 
 **What it proves.** The semantic-layer substrate works end-to-end. The agent didn't author SQL — it composed a structured tool call against an operator-defined metric. The compiled SQL is read-only at the session level, runs through a `NullPool` connection (no session-state leakage between calls), and any operator filter values flow through bound parameters. See [`/mechanism/read-only`](mechanism/read-only.md).
 
@@ -104,30 +110,30 @@ GROUP BY time_bucket
 
 ## Query 4 — see the firewall refuse (zero config)
 
-> **Ask Claude:** show me each customer's payment methods on file
+> **Ask Claude:** break our revenue down by the card number on file for each workspace
 
-**What happens.** Claude calls `find_relevant_entities` (finds `customer` + `payment_method`), then attempts the natural join via the bundled canonical join `customer_payment_methods`. The join would surface `payment_methods.card_number_last4` — a column tagged `payment_card` at index time. The metric compiler / row reader propagates PII tags through the join, sees `payment_card` in the default blocked set, and refuses *before* the database is queried. The response is a structured envelope, not prose:
+**What happens.** Claude finds `total_revenue` (anchored on `invoice`) and tries to group it by `payment_method.card_number_last4`, reached via the bundled canonical join chain `invoice → workspace → payment_method` (`invoice_workspace` + `workspace_payment_methods`). That group-by column is tagged `payment_card` at index time. The metric compiler propagates PII tags through the joins, sees `payment_card` in the default blocked set, and refuses *before* the database is queried. The response is a structured envelope, not prose:
 
 ```json
 {
   "status": "refused",
   "error": {
     "kind": "pii_blocked",
-    "message": "execute_query refused: result touches PII categories ['payment_card'] that this server policy blocks",
+    "message": "get_metric refused: metric touches PII categories ['payment_card'] that this server policy blocks",
     "recovery": {
       "suggested_tool": "describe_entity",
-      "suggested_args": {"name": "payment_method"}
+      "suggested_args": {"name": "invoice"}
     },
     "pii_categories": ["payment_card"]
   }
 }
 ```
 
-`suggested_args.name` points Claude at the entity that owns the offending column. Claude calls `describe_entity(name="payment_method")`, sees that `card_number_last4` is `redacted: true`, and either (a) drops it from the projection and retries against `card_brand` + `card_exp_*` only, or (b) reports back that the agent shouldn't expose card data and asks the operator to confirm intent. Either pivot is programmatic — **no human round-trip** to debug.
+`suggested_args.name` points Claude back at the metric's anchor to re-inspect the join path. Claude calls `describe_entity(name="payment_method")`, sees that `card_number_last4` is `redacted: true`, and either (a) drops the card grouping and retries against `card_brand` + `card_exp_*` only, or (b) reports back that the agent shouldn't expose card data and asks the operator to confirm intent. Either pivot is programmatic — **no human round-trip** to debug.
 
-**What it proves.** This is the canonical-PII-propagation demo: PII tags **cross JOIN boundaries**. Even though the agent's query started from a non-PII column (`customers.full_name`), the compiler refused the *joined result* because `payment_methods.card_number_last4` is tagged. The database never saw the query. The refusal is a typed contract (one of [26 ErrorKind values](mechanism/structured-recovery.md)) with a `recovery.suggested_tool` the agent can branch on programmatically. See [`/mechanism/pii-taxonomy`](mechanism/pii-taxonomy.md) and [`/mechanism/structured-recovery`](mechanism/structured-recovery.md).
+**What it proves.** This is the canonical-PII-propagation demo: PII tags **cross JOIN boundaries**. Even though the metric anchors on a non-PII table (`invoices.invoice_total_cents`), the compiler refused the *joined result* because the grouping reached `payment_methods.card_number_last4` two joins away. The database never saw the query. The refusal is a typed contract (one of [26 ErrorKind values](mechanism/structured-recovery.md)) with a `recovery.suggested_tool` the agent can branch on programmatically. See [`/mechanism/pii-taxonomy`](mechanism/pii-taxonomy.md) and [`/mechanism/structured-recovery`](mechanism/structured-recovery.md).
 
-> **Try the credential variant too.** `Ask Claude: list every user in the database`. The bundled `users.password_hash` column is tagged `credential`, so the result-side projection refuses for the same reason — different category, same shape.
+> **Try the credential variant too.** `Ask Claude: count users grouped by their password hash`. The bundled `users.password_hash` column is tagged `credential`, so `get_metric` refuses for the same reason — different category, same shape.
 
 ---
 

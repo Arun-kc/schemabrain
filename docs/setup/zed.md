@@ -18,7 +18,7 @@ pip install schemabrain
 schemabrain init --host manual
 ```
 
-The wizard prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 7-table e-commerce fixture spins up in Docker; ~$0.03 to index). Press Enter to take the default (`2`).
+The wizard prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 12-table SaaS fixture spins up in Docker; ~$0.03 to index). Press Enter to take the default (`2`).
 
 It then introspects the schema, classifies columns for PII, optionally calls Anthropic to suggest entities/metrics/joins, and prints a ready-to-paste JSON entry to stdout instead of writing into a host config. The block looks like:
 
