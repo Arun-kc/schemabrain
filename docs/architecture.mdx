@@ -43,7 +43,7 @@ The diagram has three load-bearing pieces. **On the left**, the MCP client host 
 
 **In the middle**, SchemaBrain resolves each tool call against the local SQLite store (cached schema + entities + metrics + joins), compiles strictly-parameterized read-only SQL, and writes a hash-chained audit row before the query leaves the boundary. The four mechanisms that make this a firewall — [read-only by architecture](mechanism/read-only), [PII taxonomy with compile-time propagation](mechanism/pii-taxonomy), [tamper-evident audit chain](mechanism/audit-chain), and [structured recovery envelopes](mechanism/structured-recovery) — all live inside this box. None of them can be flipped by a prompt.
 
-**On the right**, the agent's effective surface on your Postgres is the parameterized SQL SchemaBrain emits. The session is opened with `default_transaction_read_only=on` and a `NullPool` connection pool, so no session-level flag survives long enough to be exploited and no two tool calls share a connection. The same architecture works against any SQLAlchemy-compatible source; the v0.4 release targets Postgres because that's where the operator demand is.
+**On the right**, the agent's effective surface on your Postgres is the parameterized SQL SchemaBrain emits. The session is opened with `default_transaction_read_only=on` and a `NullPool` connection pool, so no session-level flag survives long enough to be exploited and no two tool calls share a connection. The same architecture works against any SQLAlchemy-compatible source; the v0.5 release targets Postgres because that's where the operator demand is.
 
 <div
   id="arch-modal"
@@ -1048,7 +1048,7 @@ The diagram has three load-bearing pieces. **On the left**, the MCP client host 
         <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8ZGVmcz4KICAgIDxjbGlwUGF0aCBpZD0iYnJhaW4iPjxwYXRoIGQ9Ik0yMiAxMiBDIDIyIDgsIDMwIDYsIDMyIDEwIEMgMzYgNiwgNDQgOCwgNDQgMTQgQyA1MCAxMiwgNTYgMTgsIDUyIDI0IEMgNTggMjgsIDU2IDM2LCA1MCAzOCBDIDU0IDQ0LCA0OCA1MiwgNDAgNTAgQyAzOCA1NiwgMjggNTYsIDI2IDUyIEMgMTggNTQsIDEyIDQ4LCAxNCA0MiBDIDggNDAsIDYgMzIsIDEyIDMwIEMgOCAyNCwgMTIgMTYsIDE4IDE4IEMgMTggMTQsIDIwIDEyLCAyMiAxMiBaIj48L3BhdGg+PC9jbGlwUGF0aD4KICA8L2RlZnM+CiAgPGcgY2xpcC1wYXRoPSJ1cmwoI2JyYWluKSI+CiAgICA8cmVjdCB4PSIzMiIgeT0iMCIgd2lkdGg9IjMyIiBoZWlnaHQ9IjY0IiBmaWxsPSIjM0VDRjhFIj48L3JlY3Q+CiAgPC9nPgogIDxwYXRoIGQ9Ik0yMiAxMiBDIDIyIDgsIDMwIDYsIDMyIDEwIEMgMzYgNiwgNDQgOCwgNDQgMTQgQyA1MCAxMiwgNTYgMTgsIDUyIDI0IEMgNTggMjgsIDU2IDM2LCA1MCAzOCBDIDU0IDQ0LCA0OCA1MiwgNDAgNTAgQyAzOCA1NiwgMjggNTYsIDI2IDUyIEMgMTggNTQsIDEyIDQ4LCAxNCA0MiBDIDggNDAsIDYgMzIsIDEyIDMwIEMgOCAyNCwgMTIgMTYsIDE4IDE4IEMgMTggMTQsIDIwIDEyLCAyMiAxMiBaIiBzdHJva2U9IiNGQUZBRjciIHN0cm9rZS13aWR0aD0iMi4yIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBmaWxsPSJub25lIj48L3BhdGg+CiAgPGxpbmUgeDE9IjMyIiB5MT0iMTAiIHgyPSIzMiIgeTI9IjUyIiBzdHJva2U9IiNGQUZBRjciIHN0cm9rZS13aWR0aD0iMS42IiBzdHJva2UtbGluZWNhcD0icm91bmQiPjwvbGluZT4KICA8cGF0aCBkPSJNMTQgMjIgQyAyMCAxOSwgMjYgMjIsIDMwIDIxIiBzdHJva2U9IiNGQUZBRjciIHN0cm9rZS13aWR0aD0iMS40IiBzdHJva2UtbGluZWNhcD0icm91bmQiIGZpbGw9Im5vbmUiPjwvcGF0aD4KICA8cGF0aCBkPSJNMTIgMzIgQyAxOCAyOCwgMjYgMzMsIDMwIDMxIiBzdHJva2U9IiNGQUZBRjciIHN0cm9rZS13aWR0aD0iMS40IiBzdHJva2UtbGluZWNhcD0icm91bmQiIGZpbGw9Im5vbmUiPjwvcGF0aD4KICA8cGF0aCBkPSJNMTQgNDIgQyAyMCAzOSwgMjYgNDMsIDMwIDQxIiBzdHJva2U9IiNGQUZBRjciIHN0cm9rZS13aWR0aD0iMS40IiBzdHJva2UtbGluZWNhcD0icm91bmQiIGZpbGw9Im5vbmUiPjwvcGF0aD4KICA8ZyBjbGlwLXBhdGg9InVybCgjYnJhaW4pIj4KICAgIDxjaXJjbGUgY3g9IjM2IiBjeT0iMjIiIHI9IjEuNCIgZmlsbD0iIzBCMEYxNCI+PC9jaXJjbGU+CiAgICA8bGluZSB4MT0iMzguNSIgeTE9IjIyIiB4Mj0iNTAiIHkyPSIyMiIgc3Ryb2tlPSIjMEIwRjE0IiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIj48L2xpbmU+CiAgICA8Y2lyY2xlIGN4PSIzNiIgY3k9IjMyIiByPSIxLjQiIGZpbGw9IiMwQjBGMTQiPjwvY2lyY2xlPgogICAgPGxpbmUgeDE9IjM4LjUiIHkxPSIzMiIgeDI9IjUyIiB5Mj0iMzIiIHN0cm9rZT0iIzBCMEYxNCIgc3Ryb2tlLXdpZHRoPSIxLjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCI+PC9saW5lPgogICAgPGNpcmNsZSBjeD0iMzYiIGN5PSI0MiIgcj0iMS40IiBmaWxsPSIjMEIwRjE0Ij48L2NpcmNsZT4KICAgIDxsaW5lIHgxPSIzOC41IiB5MT0iNDIiIHgyPSI1MCIgeTI9IjQyIiBzdHJva2U9IiMwQjBGMTQiIHN0cm9rZS13aWR0aD0iMS42IiBzdHJva2UtbGluZWNhcD0icm91bmQiPjwvbGluZT4KICA8L2c+Cjwvc3ZnPg==" alt="schemabrain"/>
         <div class="brand-text">
           <span class="name">schemabrain</span>
-          <span class="tag">SQL Firewall · v0.4</span>
+          <span class="tag">SQL Firewall · v0.5</span>
         </div>
       </div>
       <div class="header-title">
@@ -2115,17 +2115,22 @@ schemabrain eval \
 ```
 
 The eval harness is generic — it scores any `Retriever` Protocol
-implementation against any golden set. Bundled with one e-commerce example;
-bring your own `golden_sets/<your-schema>.json` for your real schema. The
+implementation against any golden set. Bundled with two examples
+(`golden_sets/ecommerce.json` — the `--golden` default — and
+`golden_sets/saas.json`); bring your own `golden_sets/<your-schema>.json`
+for your real schema. The
 BIRD Mini-Dev automated benchmark is on the v0 roadmap for cross-comparable
 text-to-SQL execution accuracy.
 
 ## What's validated
 
-As of v0.4.0 (2026-05-23), against two anchors: the bundled e-commerce
+As of v0.5.0 (2026-06-01), against two reference anchors — the e-commerce
 fixture (8 tables / 39 columns) and the Pagila DVD-rental sample
 (15 tables / 87 columns after declarative-partition deduplication;
-22 / 129 raw):
+22 / 129 raw). v0.5.0 also ships a SaaS demo pack (12 tables / 84 columns)
+as the default bundled fixture, exercised by the pre-publish smoke — PII
+refusal, audit-chain integrity, and refuse-then-pivot recovery over the
+headless Anthropic SDK:
 
 - ✅ Indexes Postgres 16 schema with FK-aware introspection (both anchors)
 - ✅ Partitioned tables are deduplicated; only the parent is enriched
@@ -2152,7 +2157,7 @@ fixture (8 tables / 39 columns) and the Pagila DVD-rental sample
 - ✅ Cache-aware re-index ($0 on unchanged schemas)
 - ✅ Fresh-machine quickstart works from a stripped shell
 - ✅ Continuous integration (lint + unit + integration with 99% coverage
-  gate; 4557 tests on `main` at the v0.4.0 cut)
+  gate; 5275 tests on `main` at the v0.5.0 cut)
 
 <Warning>
 **Not yet validated:**
@@ -2229,9 +2234,9 @@ swap path and we should expect to do that work.
 The detailed ceiling analysis — triggers, swap plan, risk discussion —
 lives in an internal memo that is not part of the OSS distribution.
 
-## What's coming after v0.4
+## What's coming after v0.5
 
-The v0.4 release ships the four load-bearing safety mechanisms — [read-only by
+The v0.5 release ships the four load-bearing safety mechanisms — [read-only by
 architecture](/mechanism/read-only), the [12-category PII taxonomy](/mechanism/pii-taxonomy),
 the [hash-chained audit log](/mechanism/audit-chain), and the
 [structured recovery envelope](/mechanism/structured-recovery). The roadmap from
