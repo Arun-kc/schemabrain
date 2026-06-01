@@ -163,6 +163,36 @@ def test_fixture_counts_lock_for_in_product_strings() -> None:
     assert not failures, "regression — fix the listed strings:\n  " + "\n  ".join(failures)
 
 
+def test_saas_fixture_counts_lock_for_in_product_strings() -> None:
+    """The v0.5.0 default demo pack is ``saas``. The wizard's
+    fixture-load banner names the table count (``12 tables, ~830 rows``)
+    and the indexer reports ``12 tables, 84 columns`` on the next line —
+    both must agree with ``saas.sql``. A future SaaS schema edit that
+    changes the table count trips this, forcing the in-product copy in
+    ``setup_stage.py`` to follow (the e-commerce sibling above guards
+    the fallback pack the same way; the column count is locked
+    indirectly via the per-table column checks).
+    """
+    tables = _pack_table_names("saas.sql")
+    assert len(tables) == 12, (
+        f"saas.sql now defines {len(tables)} tables; the in-product "
+        f"'12 tables' strings in setup_stage.py must follow. "
+        f"tables={sorted(tables)}"
+    )
+
+    from schemabrain.setup import setup_stage
+
+    src = Path(setup_stage.__file__).read_text(encoding="utf-8")
+    assert "12 tables" in src, (
+        "setup_stage.py no longer says '12 tables' — the SaaS demo "
+        "fixture-load banner must name the current saas.sql table count"
+    )
+    assert "8 tables" not in src, (
+        "setup_stage.py contains '8 tables' — a stale e-commerce count "
+        "leaked into the SaaS-default wizard copy"
+    )
+
+
 def test_payment_methods_table_present_for_pii_demo() -> None:
     """The PII-firewall demo needs both v2 surfaces to be wheel-shipped."""
     sql = Path(resolve_bundled_path("ecommerce.sql")).read_text(encoding="utf-8")

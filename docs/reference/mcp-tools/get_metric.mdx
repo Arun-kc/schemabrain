@@ -16,21 +16,23 @@ parameter-binds.
 ```json
 {
   "rows": [
-    {"period": "2026-01", "category_name": "Electronics", "total_revenue": 1832145.50}
+    {"group_col_0": "Enterprise", "active_subscriptions": 4},
+    {"group_col_0": "Free", "active_subscriptions": 8},
+    {"group_col_0": "Pro", "active_subscriptions": 2}
   ],
-  "row_count": 12,
-  "sql_skeleton": "SELECT date_trunc('month', o.created_at) AS period, c.name AS category_name, SUM(oi.quantity * oi.unit_price_cents) / 100.0 AS total_revenue FROM ... WHERE ... GROUP BY 1, 2 LIMIT :p_limit",
+  "row_count": 3,
+  "sql_skeleton": "SELECT \"plan\".\"title\" AS group_col_0, count(\"subscription\".\"id\") AS active_subscriptions FROM \"public\".\"subscriptions\" AS \"subscription\" JOIN \"public\".\"plans\" AS \"plan\" ON \"subscription\".\"plan_id\" = \"plan\".\"id\" GROUP BY group_col_0 ORDER BY group_col_0 ASC LIMIT :p_limit",
   "sql_params": {"p_limit": 1000},
   "fingerprint": "f3a1c89e...",
-  "required_joins": ["customer_orders", "order_items_to_orders"],
+  "required_joins": ["subscription_plan"],
   "fan_out_join_names": [],
   "pii_categories": [],
-  "token_estimate": 312
+  "token_estimate": 239
 }
 ```
 
-- `group_by` and `filters` use `entity.column` form (e.g. `customer.id`,
-  `order.created_at`) — never physical `schema.table.column`.
+- `group_by` and `filters` use `entity.column` form (e.g. `plan.title`,
+  `invoice.issued_at`) — never physical `schema.table.column`.
 - `filters` is `(column, op, value)` with closed-set ops: `eq`, `ne`, `lt`,
   `lte`, `gt`, `gte`, `in`, `not_in`, `is_null`, `not_null`.
 - Values bind as parameters — never inlined into SQL.

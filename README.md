@@ -95,17 +95,17 @@ schemabrain init
 
 `init` is a seven-stage wizard that takes you from "I have a Postgres database" to "Claude Desktop can answer questions about it" in one command. On first run it prompts for what it needs:
 
-- **A Postgres URL** — paste your own connection string, or press **Enter** to spin up a local demo Postgres container with the bundled e-commerce fixture (Docker is invoked automatically; idempotent on re-runs).
+- **A Postgres URL** — paste your own connection string, or press **Enter** to spin up a local demo Postgres container with the bundled SaaS fixture (Docker is invoked automatically; idempotent on re-runs).
 - **An `ANTHROPIC_API_KEY`** — optional. Skip and the wizard still wires Claude Desktop. On the **demo path**, entities + metrics + joins are pre-curated from a bundled YAML pack — the semantic layer works zero-config. On **your own database**, entity curation can run later via `schemabrain entities suggest --apply` once you have a key.
 
 ```
 SchemaBrain init — activation wizard
 
   [1/7] Source check       ✓ source reachable + read-only
-  [2/7] Index schema       ✓ 8 tables, 39 columns indexed
-  [3/7] Curate entities    ✓ 6 entities suggested + applied (cost: $0.01)
-  [4/7] Curate metrics     ✓ 10 metrics suggested + applied (cost: $0.03)
-  [5/7] Curate joins       ✓ 5 canonical joins created (FK-mined, no LLM)
+  [2/7] Index schema       ✓ 12 tables, 84 columns indexed
+  [3/7] Curate entities    ✓ 12 entities applied (bundled demo pack)
+  [4/7] Curate metrics     ✓ 5 metrics applied (bundled demo pack)
+  [5/7] Curate joins       ✓ 8 canonical joins applied (bundled demo pack)
   [6/7] Wire host          ✓ wrote schemabrain entry to claude_desktop_config.json
                            (default; switch with --host claude-code|cursor|windsurf|manual)
   [7/7] Next               ✓ restart your MCP host, then ask: "list the entities SchemaBrain knows about"
@@ -309,48 +309,54 @@ If you need ChatGPT support today, a community stdio→HTTPS bridge (`mcp-remote
 
 ## Sample session
 
-Real Claude Desktop session against the bundled e-commerce fixture (8 tables, 39 columns, 6 entities curated for **~$0.03**):
+Real Claude Desktop session against the bundled SaaS fixture (12 tables, 84 columns, 12 entities):
 
-> **You:** Using SchemaBrain, write me a SQL query to compute each customer's total spend by product category.
+> **You:** Using SchemaBrain, compute our usage volume broken down by plan tier.
 >
-> **Claude:** *(calls `describe_entity` for `order_item`, then chains `resolve_join` along `user → order → order_item → product`. Each FK-derived hop returns `inference_method: fk_constraint` / `confidence: HIGH`. The last hop — `resolve_join(product, category)` — refuses:)*
+> **Claude:** *(calls `get_metric(name="usage_volume", group_by=["plan.title"])`. The metric anchors on `usage_event`; reaching `plan` would need a join that isn't in the schema, so it refuses:)*
 >
 > ```json
 > { "status": "error",
 >   "error": {
->     "kind": "no_canonical_join",
->     "message": "No canonical join exists between 'product' and 'category'...",
->     "recovery": { "suggested_tool": "suggest_joins", ... } } }
+>     "kind": "unreachable_entity",
+>     "message": "entity 'plan' is not reachable from metric anchor 'usage_event'; no canonical join exists. Run `schemabrain joins suggest` to surface candidate joins.",
+>     "recovery": { "suggested_tool": "resolve_join",
+>                   "suggested_args": { "entity_a": "usage_event", "entity_b": "plan" } } } }
 > ```
 >
-> *(Claude verifies at the physical layer — `describe_table(public.products)` returns zero foreign keys; `describe_table(public.categories)` has only `id, name, parent_id` self-ref; `find_relevant_tables` for "junction" returns empty.)*
+> *(Claude confirms at the join layer — `resolve_join("usage_event", "plan")` returns `kind: no_canonical_join`. `usage_events` carries only `workspace_id`, never a `plan_id`, and no table bridges the two.)*
 >
-> Verdict up front: I can't write that query correctly, and you shouldn't want me to — the data model can't answer it as it stands. `product` has no `category_id` and no junction table exists. So there is no relationship anywhere in the schema between a product and a category. "Total spend by category" is unanswerable until that link exists — and I'm not going to invent it.
+> Verdict up front: I can't compute usage-by-plan, and you shouldn't want me to fake it — there is no modeled relationship between usage events and plans in this schema. `usage_events` records a `workspace_id`, not a plan, and nothing joins the two. "Usage volume by plan tier" is unanswerable until that link exists — and I'm not going to invent it.
 >
-> What I **can** give you — total spend per customer (this path is fully resolved: `user → order → order_item`, all `fk_constraint` joins, `confidence: HIGH`):
+> What I **can** give you — contracted revenue by plan tier (this path fully resolves: `subscription_item → subscription → plan`, both `fk_constraint` joins, `confidence: HIGH`):
 >
 > ```sql
-> SELECT u.id                                            AS user_id,
->        u.full_name                                     AS customer,     -- ⚠ pii / contact / redacted: true in the semantic layer
->        SUM(oi.quantity * oi.unit_price_cents) / 100.0  AS total_spend   -- prices stored in integer cents
-> FROM   public.order_items oi
-> JOIN   public.orders      o ON oi.order_id = o.id
-> JOIN   public.users       u ON o.user_id   = u.id
-> GROUP BY u.id, u.full_name
-> ORDER BY total_spend DESC;
+> SELECT p.title                                     AS plan_tier,
+>        SUM(si.unit_price_cents * si.seats) / 100.0  AS revenue   -- prices stored in integer cents
+> FROM   public.subscription_items si
+> JOIN   public.subscriptions      s ON si.subscription_id = s.id
+> JOIN   public.plans              p ON s.plan_id          = p.id
+> GROUP BY p.title
+> ORDER BY revenue DESC;
 > ```
 >
+> | plan_tier  | revenue     |
+> |------------|-------------|
+> | Enterprise | $379,620.00 |
+> | Pro        | $539.00     |
+> | Free       | $54.00      |
+>
 > Two honest caveats:
-> - **Status filter omitted.** `orders.status` is free TEXT and I haven't inspected its values; this counts every order. If you only want paid/fulfilled spend, add `WHERE o.status = …` once you confirm the allowed values.
-> - **PII flag.** `full_name` is `pii_sensitivity: pii / categories: [contact] / redacted: true` in the semantic layer. Fine if you're running this yourself; not fine if it's flowing into an agent context.
+> - **Contracted, not collected.** This is subscription line-item revenue (`seats × unit_price_cents`), not paid invoices. For billed totals, the `total_revenue` metric anchors on `invoices` instead.
+> - **Integer cents.** `unit_price_cents` is stored as an integer; the `/ 100.0` converts to currency.
 
-The differentiator is what *didn't* happen: most LLM-over-database tools, asked this exact question, would confidently emit `JOIN categories c ON p.category_id = c.id` and produce SQL that errors against a column that isn't there. SchemaBrain refused — `resolve_join` returned `kind: no_canonical_join` with `recovery.suggested_tool: suggest_joins`, not prose. The agent **acted on the structured recovery contract programmatically** instead of fabricating a join. Refusal-not-fabrication is the safety mechanism, demonstrated live.
+The differentiator is what *didn't* happen: most LLM-over-database tools, asked for usage-by-plan, would confidently emit `JOIN plans p ON usage_events.plan_id = p.id` against a `plan_id` column that doesn't exist. SchemaBrain refused — `get_metric` returned `kind: unreachable_entity` with `recovery.suggested_tool: resolve_join`, not prose. The agent **acted on the structured recovery contract programmatically** instead of fabricating a join. Refusal-not-fabrication is the safety mechanism, demonstrated live.
 
-**Cost.** ~$0.001/column with Claude Haiku 4.5 + Sonnet 4.6 (Sonnet for the structured curation prompt). The bundled 8-table fixture (39 columns, 6 entities + 10 metrics + 5 joins) indexes + curates for **~$0.03 in ~85s**. The Pagila DVD-rental sample (87 columns after partition deduplication) runs for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
+**Cost.** ~$0.001/column with Claude Haiku 4.5 + Sonnet 4.6 (Sonnet for the structured curation prompt). The bundled 12-table fixture (84 columns, 12 entities + 5 metrics + 8 joins) ships pre-curated, so the demo path applies it for **$0** — no API key. Indexing those 84 columns with LLM column descriptions measured **~$0.034**. The Pagila DVD-rental sample (87 columns after partition deduplication) runs for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
 
 To verify Claude's SQL is mechanically correct (and that flagged caveats are the actual data behavior), see [Validating SQL Claude generates](docs/setup/manual.md#6-validating-sql-claude-generates).
 
-**Run this exact session yourself:** `schemabrain init` walks you to a wired Claude Desktop in one command; then ask Claude *"Using SchemaBrain, write me a SQL query to compute each customer's total spend by product category."* and watch the refuse-then-pivot live.
+**Run this exact session yourself:** `schemabrain init` walks you to a wired Claude Desktop in one command; then ask Claude *"Using SchemaBrain, compute our usage volume broken down by plan tier."* and watch the refuse-then-pivot live.
 
 ---
 

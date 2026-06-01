@@ -21,24 +21,30 @@ schemabrain inspect
 
 ```
 ◆ store · ./schemabrain.db
-8 tables · 39 columns · 6 entities · 10 metrics · 5 joins
+12 tables · 84 columns · 12 entities · 5 metrics · 8 joins
 
 Definitions
-├── Entities (6)
-│   ├── address
-│   ├── category
-│   ├── order
-│   ├── order_item
-│   ├── product
-│   └── user
-├── Metrics (10)
+├── Entities (12)
+│   ├── api_key
+│   ├── billing_profile
+│   ├── invoice
+│   ├── payment_method
+│   ├── plan
+│   ├── session
+│   ├── subscription
+│   ├── subscription_item
+│   ├── support_ticket
+│   ├── usage_event
+│   ├── user
+│   └── workspace
+├── Metrics (5)
 │   ├── total_revenue
-│   ├── order_count
-│   └── … (8 more)
-└── Joins (5)
-    ├── orders_user_id
-    ├── order_items_order_id
-    └── … (3 more)
+│   ├── active_subscriptions
+│   └── … (3 more)
+└── Joins (8)
+    ├── workspace_users
+    ├── subscription_plan
+    └── … (6 more)
 
 Drill into one: `schemabrain inspect <name>`
 ```
@@ -52,17 +58,22 @@ schemabrain inspect user
 ```
 ◆ public.users · entity:user · binding id
 
-Description:  A registered user who can place orders.
+Description:  A workspace member account (login credential + contact details).
 
 Columns:
-  id          bigint       not null  pk identity  public
-  email       text         not null              pii (contact)
-  full_name   text         not null              pii (contact)
-  created_at  timestamptz  not null              public
+  id             bigint       not null  pk identity  public
+  workspace_id   bigint       not null              public
+  email          text         not null              pii (contact)
+  full_name      text         not null              pii (contact)
+  password_hash  text         not null              pii (credential)   ← catastrophic; never reaches the agent
+  role           text         not null              public
+  created_at     timestamptz  not null              public
 
 Related entities:
-  order  outgoing  one_to_many  via `orders_user_id`
-      user.id = order.user_id
+  session    incoming  many_to_one  via `user_sessions`
+      user.id = session.user_id
+  workspace  outgoing  many_to_one  via `workspace_users`
+      user.workspace_id = workspace.id
 ```
 
 This is the operator's counterpart to the agent-facing MCP tools — anything `describe_entity` returns to Claude, `inspect` shows you locally.

@@ -4,7 +4,7 @@ This module owns the "stage 0" UX the day-one overhaul adds in front
 of the existing 7-stage wizard. It runs in ``_cmd_init`` BEFORE the
 wizard is constructed, so it can resolve the connection URL
 interactively (own-DB) or by walking the user through bringing up a
-local Postgres + loading the bundled ecommerce fixture (demo).
+local Postgres + loading the bundled SaaS fixture (demo).
 
 Why a separate module rather than inlining in ``cli.py`` or
 ``wizard.py``:
@@ -28,14 +28,14 @@ What stage 0 does (post-PR-#79 D2):
   manual path is never replaced, only augmented.
 * Polls Postgres readiness via ``_wait_for_postgres_ready`` (30s
   timeout, 1s interval).
-* Auto-loads the ecommerce fixture via ``docker run --rm psql``
+* Auto-loads the SaaS fixture via ``docker run --rm psql``
   (matches the PR-1 recipe shape). PR-3 will replace the second
   ``docker run`` with an in-process SQLAlchemy load to eliminate
   the Docker dependency for fixture-loading.
 
 What stage 0 does NOT do (deliberate scope discipline):
 
-* It does NOT load the ecommerce fixture in-process via SQLAlchemy
+* It does NOT load the SaaS fixture in-process via SQLAlchemy
   (PR-3 — pairs with making fixture-loading runnable on hosts
   without Docker).
 * It does NOT mutate ``WizardConfig``. The caller (``_cmd_init``)
@@ -81,7 +81,7 @@ __all__ = [
 # duplicating the literal.
 DEMO_CONTAINER_NAME = "sb-demo-pg"
 
-# Bundled basename for the ecommerce fixture. Resolved to an absolute
+# Bundled basename for the SaaS demo fixture. Resolved to an absolute
 # path at call time via `schemabrain.eval.bundled.resolve_bundled_path`
 # — the same helper that backs `schemabrain fixture-path`. A repo-
 # relative path joined against `Path.cwd()` breaks for every
@@ -452,7 +452,7 @@ def _wait_for_postgres_ready(
 
 
 def _docker_load_fixture(*, console: Console) -> bool:
-    """Load the ecommerce fixture via ``docker run --rm psql``.
+    """Load the SaaS fixture via ``docker run --rm psql``.
 
     Mirrors the shape of the pre-D2 manual command (uses
     ``--network host`` to reach 127.0.0.1:5433 from inside the

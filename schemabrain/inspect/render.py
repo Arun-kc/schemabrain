@@ -66,23 +66,23 @@ def render_summary(
 
     Shape:
 
-        ◆ store · ~/.schemabrain/acme/store.db
-        8 tables · 39 columns · 3 entities · 1 metric · 1 join
+        ◆ store · ./schemabrain.db
+        3 tables · 14 columns · 3 entities · 1 metric · 1 join
 
         Definitions
         ├── Entities (3)
-        │   ├── customer
-        │   ├── order
-        │   └── product
+        │   ├── invoice
+        │   ├── subscription
+        │   └── workspace
         ├── Metrics (1)
         │   └── total_revenue
         └── Joins (1)
-            └── customer_orders
+            └── invoice_workspace
 
         ╭ entities · 3 ╮  ╭ metrics · 1 ╮  ╭ joins · 1 ╮
-        │ customer ·   │  │ total_       │  │ customer_  │
-        │ order ·      │  │ revenue      │  │ orders     │
-        │ product      │  │              │  │            │
+        │ invoice ·    │  │ total_       │  │ invoice_   │
+        │ subscription │  │ revenue      │  │ workspace  │
+        │ workspace    │  │              │  │            │
         ╰──────────────╯  ╰──────────────╯  ╰────────────╯
 
         Drill into one: schemabrain inspect <name>

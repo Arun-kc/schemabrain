@@ -288,5 +288,5 @@ For NULL handling, deprecated rows, and weird data shapes that only appear in pr
 ## What's next
 
 - [First 5 queries](/first-5-queries) — exercises each load-bearing firewall property in ~10 minutes.
-- `schemabrain eval` — score retrieval quality against the bundled e-commerce golden set.
+- `schemabrain eval` — score retrieval quality against the bundled SaaS golden set.
 - Re-run `schemabrain index` whenever your schema changes — it's idempotent and cache-aware.
