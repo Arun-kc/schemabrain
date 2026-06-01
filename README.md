@@ -43,7 +43,7 @@ schemabrain init
 
 **Cost:** ~$0.03 to index the bundled demo · **$0** to re-index unchanged schemas. Detail in [Sample session](#sample-session).
 
-**Status: 0.4.0 (alpha).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap.
+**Status: 0.5.0 (alpha).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap.
 
 ---
 
@@ -296,7 +296,7 @@ We don't ship per-framework adapters; the framework's standard MCP client is suf
 
 ### Not yet supported (cloud / HTTPS hosts)
 
-SchemaBrain v0.4 ships stdio only — no HTTPS / SSE transport. Clients that require a cloud HTTPS endpoint do **not** work today:
+SchemaBrain v0.5 ships stdio only — no HTTPS / SSE transport. Clients that require a cloud HTTPS endpoint do **not** work today:
 
 - **ChatGPT Connectors** — see the [honest gap page](docs/setup/chatgpt.md) for workarounds and the v0.5+ roadmap
 - **Hosted MCP gateways** — by design (local-first wedge; see [vs Querybear](docs/compare/querybear.mdx))

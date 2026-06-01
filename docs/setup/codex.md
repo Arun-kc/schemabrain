@@ -29,7 +29,7 @@ It then introspects the schema, classifies columns for PII, optionally calls Ant
   "schemabrain": {
     "command": "uvx",
     "args": [
-      "schemabrain==0.4.0",
+      "schemabrain==0.5.0",
       "serve",
       "--url-env", "SCHEMABRAIN_DATABASE_URL",
       "--store-path", "/ABSOLUTE/PATH/TO/schemabrain.db"

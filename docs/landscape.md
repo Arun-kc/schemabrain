@@ -24,7 +24,7 @@ The OSS landscape thinned in 2026: Vanna's public repo was frozen as the project
 
 | Project | License | First-party MCP | Status |
 |---|---|---|---|
-| **SchemaBrain** | MIT | ✅ | Active — 0.4.0 |
+| **SchemaBrain** | MIT | ✅ | Active — 0.5.0 |
 | [Vanna AI](https://github.com/vanna-ai/vanna) | MIT (repo frozen) | ❌ | OSS archived 2026-03; project moved commercial |
 | [Reference Postgres MCP](https://github.com/modelcontextprotocol/servers-archived) | MIT | ✅ | Archived 2025-05; no first-party successor named |
 | [Atlan](https://atlan.com) | Closed-source | ✅ | SaaS-only, enterprise pricing |
