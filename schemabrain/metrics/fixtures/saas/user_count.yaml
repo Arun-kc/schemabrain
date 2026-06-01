@@ -1,9 +1,9 @@
 version: 1
 name: user_count
 description: |
-  Number of user accounts. The pure-firewall demo metric: a
-  group_by on `user.password_hash` (credential) is refused, while
-  group_by on `user.role` is allowed.
+  Number of user accounts. The pure-firewall demo metric: a group_by
+  on a credential column is refused at the firewall, while a group_by
+  on a public column like `role` is allowed.
 entity: user
 measure:
   agg: count

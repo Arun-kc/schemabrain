@@ -25,6 +25,7 @@ stdio (the transport Claude Desktop and most local-MCP clients use).
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import uuid
 from collections.abc import Callable, Sequence
@@ -41,6 +42,7 @@ from schemabrain.core.metric import MalformedMetricRowError
 from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder, EmbeddingUnavailableError
 from schemabrain.mcp._helpers import _MAX_IDENT_LEN
+from schemabrain.mcp._redaction import visible_allowed_columns
 from schemabrain.mcp.describe_column import describe_column_impl
 from schemabrain.mcp.describe_entity import describe_entity_impl
 from schemabrain.mcp.describe_table import describe_table_impl
@@ -1500,6 +1502,27 @@ def build_server(
                     recovery=Recovery(suggested_tool="list_entities"),
                 ),
             )
+
+        def _scrub_allowed(
+            exc: UnknownGroupByColumnError | UnknownFilterColumnError | UnknownMeasureColumnError,
+        ) -> UnknownGroupByColumnError | UnknownFilterColumnError | UnknownMeasureColumnError:
+            # Drop PII-blocked columns from the error's "Allowed columns"
+            # hint before it reaches the agent. A blocked column is not a
+            # referenceable retry target, and naming it here re-discloses
+            # exactly what describe_* hides behind a placeholder. Rebuilding
+            # the frozen dataclass re-renders both the message string and
+            # recovery.allowed_columns from the scrubbed set in one place.
+            return dataclasses.replace(
+                exc,
+                allowed_columns=visible_allowed_columns(
+                    exc.allowed_columns,
+                    entity_name=exc.entity,
+                    store=store,
+                    source_connection_id=source_connection_id,
+                    effective_block=pii_block | CATASTROPHIC_LEAK_CATEGORIES,
+                ),
+            )
+
         try:
             result = get_metric_impl(
                 store=store,
@@ -1659,6 +1682,7 @@ def build_server(
                 ),
             )
         except UnknownGroupByColumnError as exc:
+            exc = _scrub_allowed(exc)
             return ToolResponse(
                 status="error",
                 error=ToolError(
@@ -1679,6 +1703,7 @@ def build_server(
                 ),
             )
         except UnknownFilterColumnError as exc:
+            exc = _scrub_allowed(exc)
             return ToolResponse(
                 status="error",
                 error=ToolError(
@@ -1694,6 +1719,7 @@ def build_server(
                 ),
             )
         except UnknownMeasureColumnError as exc:
+            exc = _scrub_allowed(exc)
             return ToolResponse(
                 status="error",
                 error=ToolError(

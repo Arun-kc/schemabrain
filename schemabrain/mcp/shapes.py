@@ -227,14 +227,15 @@ class TableDescription(BaseModel):
     understand the table at a single look — structure, semantics, and
     join targets — without making a second round-trip.
 
-    ``redacted_columns`` lists the REAL names of columns whose
-    PII categories intersect the effective firewall block set. The
-    columns appear in the ``columns`` list under
-    ``<redacted_<category>_column_N>`` placeholders; the real names live
-    here as an audit-trail surface for operators (and for the dashboard
-    when it cross-references against the store). Agents should treat
-    this as "these column kinds exist but you can't reference them" —
-    never as a list to feed into SQL.
+    ``redacted_columns`` lists the ``<redacted_<category>_column_N>``
+    PLACEHOLDER labels (NOT the real names) of columns whose PII
+    categories intersect the effective firewall block set. Those columns
+    appear under the same placeholders in the ``columns`` list. The field
+    is a glance-able "these column kinds exist but you can't reference
+    them" signal; the real names are deliberately withheld so this
+    summary can't re-disclose what the placeholders hide. Operators who
+    need the real names read them from the store/dashboard directly, not
+    through this agent-facing envelope.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -248,9 +249,10 @@ class TableDescription(BaseModel):
     redacted_columns: tuple[str, ...] = Field(
         default=(),
         description=(
-            "Real names of columns hidden behind placeholders in "
-            "``columns``. Operator-side audit signal; agents should not "
-            "echo these names in SQL."
+            "Placeholder labels (``<redacted_<category>_column_N>``) of "
+            "columns hidden behind placeholders in ``columns``. Signals "
+            "that redactions happened and of which kind; the real names "
+            "are withheld so this field can't re-disclose them."
         ),
     )
 
@@ -475,13 +477,14 @@ class EntityDetail(BaseModel):
     same 2D trust signal at the data layer as well as the
     envelope-level `confidence`.
 
-    Charter v1.2 column-granular firewall: `redacted_columns` is the
-    sorted tuple of column names whose `pii_categories` intersect the
-    server's `--pii-block` set. Each such column's
-    `EntityColumn.redacted` field is also True and its description
-    is cleared. An agent reading `redacted_columns` knows which
-    columns are policy-blocked at a glance without scanning every
-    column entry.
+    Charter v1.2 column-granular firewall: `redacted_columns` lists the
+    `<redacted_<category>_column_N>` PLACEHOLDER labels (NOT the real
+    names) of columns whose `pii_categories` intersect the server's
+    `--pii-block` set. Each such column also appears under its placeholder
+    in `columns` with `EntityColumn.redacted` True and description cleared.
+    An agent reading `redacted_columns` knows how many columns are
+    policy-blocked and of which kind, at a glance — without learning the
+    real names the placeholders are there to hide.
     """
 
     model_config = ConfigDict(frozen=True)

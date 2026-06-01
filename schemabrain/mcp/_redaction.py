@@ -52,3 +52,44 @@ def redact_blocked_fk_columns(
         else:
             result.append(col)
     return result
+
+
+def visible_allowed_columns(
+    allowed_columns: tuple[str, ...],
+    *,
+    entity_name: str,
+    store: Store,
+    source_connection_id: str,
+    effective_block: frozenset[PIICategory],
+) -> tuple[str, ...]:
+    """Drop columns whose PII categories intersect ``effective_block``.
+
+    The ``Allowed columns: [...]`` hint on an unknown-column error
+    (``unknown_group_by_column`` / ``unknown_filter_column`` /
+    ``unknown_measure_column``) tells the agent which columns it MAY
+    reference on retry. A blocked column is NOT a referenceable target —
+    a group_by / filter / measure on it refuses with ``pii_blocked`` — and
+    naming it here re-discloses exactly the name ``describe_*`` hides
+    behind a ``<redacted_*>`` placeholder. So blocked names are dropped
+    entirely: the hint lists only columns the agent can actually use.
+
+    Resolves ``entity_name`` to its bound table to look up PII tags. The
+    entity is always resolvable on these error paths (the metric compiled
+    against it); if it somehow isn't, fails closed — drops every name
+    rather than risk leaking one.
+    """
+    if not allowed_columns:
+        return allowed_columns
+    entity = store.get_entity(entity_name, source_connection_id=source_connection_id)
+    if entity is None:  # pragma: no cover — entity is resolved upstream on this path
+        return ()
+    tags = store.get_column_pii_tags(
+        source_connection_id=source_connection_id,
+        qualified_table=entity.qualified_table,
+        columns=list(allowed_columns),
+    )
+    return tuple(
+        col
+        for col in allowed_columns
+        if not (tags.get(col, ("public", frozenset()))[1] & effective_block)
+    )

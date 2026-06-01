@@ -1022,8 +1022,13 @@ class TestDescribeTableCatastrophicRedaction:
         assert any(n.startswith("<redacted_credential_column_") for n in names), (
             f"expected redacted placeholder for credential column; got {sorted(names)}"
         )
-        # Real name lives in the operator-side audit field.
-        assert "password_hash" in structured["data"]["redacted_columns"]
+        # `redacted_columns` carries the placeholder, never the real name —
+        # listing the real name there re-disclosed what the placeholder hid.
+        assert "password_hash" not in structured["data"]["redacted_columns"]
+        assert any(
+            rc.startswith("<redacted_credential_column_")
+            for rc in structured["data"]["redacted_columns"]
+        )
 
     def test_contact_column_visible_with_default_policy(self, server_with_pii_table) -> None:
         """Non-catastrophic categories (``contact``, etc.) are not in
