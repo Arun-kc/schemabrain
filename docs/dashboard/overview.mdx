@@ -15,6 +15,18 @@ The dashboard answers three operator questions that the MCP envelope alone does 
 2. **What did SchemaBrain refuse, and what envelope did the agent receive?** — see [Refusals](/dashboard/refusals).
 3. **Is the hash-chained audit log still intact?** — see [Audit Viewer](/dashboard/audit-viewer).
 
+<Frame caption="PII Ledger — which entities carry catastrophic PII, and what the default policy blocks.">
+  <img src="/assets/dashboard-pii-ledger.png" alt="PII Ledger dashboard surface" />
+</Frame>
+
+<Frame caption="Refusals — every blocked call, the reason that fired, and the recovery hint the agent received.">
+  <img src="/assets/dashboard-refusals.png" alt="Refusals dashboard surface" />
+</Frame>
+
+<Frame caption="Audit Viewer — the tamper-evident chain, re-walked and verified server-side down to each row's hash linkage.">
+  <img src="/assets/dashboard-audit-viewer.png" alt="Audit Viewer dashboard surface" />
+</Frame>
+
 It is intentionally a viewer, not a console. No settings, no entity editor, no SQL pad. Configuration still lives in the CLI; YAML still lives on disk.
 
 ---
