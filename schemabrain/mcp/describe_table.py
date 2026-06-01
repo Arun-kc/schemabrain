@@ -70,7 +70,12 @@ def describe_table_impl(
     # `Table.columns` already comes back ordered by ordinal_position
     # from the store; preserve that.
     columns: list[ColumnInfo] = []
-    redacted_real_names: list[str] = []
+    # Holds the PLACEHOLDER labels (not the real names) of redacted
+    # columns. Surfacing the real name here re-disclosed it to the agent
+    # even though the `columns` list placeholders it — defeating the
+    # whole point of the placeholder. See the firewall name-disclosure
+    # regression in `tests/test_saas_firewall_name_disclosure.py`.
+    redacted_placeholders: list[str] = []
     # Per-category counter for deterministic placeholder naming. Sorted
     # category iteration so the placeholder index is stable across
     # process restarts (frozenset iteration would vary with
@@ -80,7 +85,6 @@ def describe_table_impl(
         _, categories = pii_tags.get(c.name, ("public", frozenset()))
         blocked = categories & effective_block
         if blocked:
-            redacted_real_names.append(c.name)
             # Pick the alphabetically-first matching category for the
             # placeholder so a multi-category column has a deterministic
             # label (`<redacted_credential_column_1>` rather than the
@@ -88,6 +92,7 @@ def describe_table_impl(
             cat = sorted(blocked)[0]
             category_counters[cat] = category_counters.get(cat, 0) + 1
             placeholder = f"<redacted_{cat}_column_{category_counters[cat]}>"
+            redacted_placeholders.append(placeholder)
             columns.append(
                 ColumnInfo(
                     name=placeholder,
@@ -151,6 +156,6 @@ def describe_table_impl(
         columns=columns,
         foreign_keys=foreign_keys,
         token_estimate=0,  # placeholder; rebuilt by _with_token_estimate
-        redacted_columns=tuple(redacted_real_names),
+        redacted_columns=tuple(redacted_placeholders),
     )
     return _with_token_estimate(partial)

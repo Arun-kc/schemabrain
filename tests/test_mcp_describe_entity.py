@@ -446,8 +446,9 @@ class TestPiiBlockColumnRedaction:
         is replaced by a ``<redacted_<category>_column_N>`` placeholder,
         and its description is cleared. The non-PII column is untouched.
 
-        the real name is no longer exposed in ``columns[*].name`` —
-        only in ``redacted_columns`` (operator-side audit signal).
+        The real name is no longer exposed anywhere agent-facing — not in
+        ``columns[*].name`` and not in ``redacted_columns``, which carries
+        the same placeholder (listing the real name there re-disclosed it).
         """
         server, store = self._build_with_pii_block(tmp_path, frozenset({"contact"}))
         try:
@@ -469,8 +470,8 @@ class TestPiiBlockColumnRedaction:
         assert redacted_cols[0]["description"] == ""
         # The non-PII column is untouched.
         assert cols_by_name["id"]["redacted"] is False
-        # Real name lives in the operator-side audit field.
-        assert envelope.data["redacted_columns"] == ["email"]
+        # `redacted_columns` carries the placeholder, never the real name.
+        assert envelope.data["redacted_columns"] == ["<redacted_contact_column_1>"]
 
     def test_unrelated_pii_block_no_redaction(self, tmp_path: Path) -> None:
         """A `pii_block` set that doesn't intersect any column's tags
@@ -528,8 +529,8 @@ class TestPiiBlockColumnRedaction:
         email_col = next(c for c in detail.columns if c.redacted)
         assert email_col.redacted is True
         assert email_col.name.startswith("<redacted_contact_column_")
-        # Real name preserved on the operator-side audit field.
-        assert detail.redacted_columns == ("email",)
+        # `redacted_columns` carries the placeholder, never the real name.
+        assert detail.redacted_columns == ("<redacted_contact_column_1>",)
 
 
 class TestCatastrophicCategoriesAlwaysRedact:
@@ -626,7 +627,9 @@ class TestCatastrophicCategoriesAlwaysRedact:
         assert hashed.redacted is True
         assert hashed.name == f"<redacted_{category}_column_1>"
         assert hashed.description == ""
-        assert "password_hash" in detail.redacted_columns
+        # `redacted_columns` carries the placeholder, never the real name.
+        assert detail.redacted_columns == (f"<redacted_{category}_column_1>",)
+        assert "password_hash" not in detail.redacted_columns
 
     def test_non_catastrophic_contact_category_not_force_redacted(self, tmp_path: Path) -> None:
         # `contact` is NOT in the catastrophic-leak floor — with an
@@ -673,7 +676,8 @@ class TestCatastrophicCategoriesAlwaysRedact:
         # When the operator's `--pii-block` set includes its own
         # categories, the effective block set is the UNION with the
         # catastrophic floor — both contact AND credential columns
-        # land in `redacted_columns`.
+        # land in `redacted_columns` (as category placeholders, not
+        # their real names).
         with SQLiteStore(tmp_path / "s.db") as store:
             store.write_table(self._users_table_with_credential(), source_connection_id="sid")
             store.write_entity(_customer_entity(), source_connection_id="sid")
@@ -692,4 +696,6 @@ class TestCatastrophicCategoriesAlwaysRedact:
                 pii_block=frozenset({"contact"}),
             )
         redacted = set(detail.redacted_columns)
-        assert redacted == {"email", "password_hash"}
+        assert redacted == {"<redacted_contact_column_1>", "<redacted_credential_column_1>"}
+        # The real names never appear in the agent-facing audit field.
+        assert "email" not in redacted and "password_hash" not in redacted

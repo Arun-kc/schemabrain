@@ -130,7 +130,6 @@ def describe_entity_impl(
         blocked = categories & effective_block
         is_redacted = bool(blocked)
         if is_redacted:
-            redacted_names.append(col.name)
             # hide the real name behind a placeholder. The
             # end-to-end smoke run caught Claude reading
             # ``card_number_last4`` from describe_entity (with
@@ -141,6 +140,12 @@ def describe_entity_impl(
             cat = sorted(blocked)[0]
             category_counters[cat] = category_counters.get(cat, 0) + 1
             display_name = f"<redacted_{cat}_column_{category_counters[cat]}>"
+            # Record the PLACEHOLDER, never the real name — the
+            # ``redacted_columns`` summary field below is agent-facing,
+            # and listing the real name re-discloses exactly what the
+            # placeholder just hid. See the firewall name-disclosure
+            # regression in tests/test_saas_firewall_name_disclosure.py.
+            redacted_names.append(display_name)
         else:
             display_name = col.name
         description = (
