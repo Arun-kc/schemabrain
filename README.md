@@ -33,6 +33,16 @@ Three guarantees that close the trust gap between AI agents and your database:
 - **[PII refusal at retrieval](#2-pii-aware-refusal-at-the-get_metric-tool-boundary)** — PII tags propagate from the physical schema through joins and metrics. If a query touches a blocked category, SchemaBrain refuses *before* the database is queried.
 - **[Cryptographic audit chain](#3-tamper-evident-audit-log)** — every call, refusal, and recovery lands in a SHA256-hashed append-only log. `audit verify` exits non-zero if any past row was rewritten.
 
+**See it in action** — ask for something the schema can't answer, and it refuses instead of fabricating a join:
+
+> **You:** *compute usage volume by plan tier*
+>
+> **SchemaBrain → agent:** `{ "kind": "unreachable_entity", "recovery": { "suggested_tool": "resolve_join" } }` — there's no `plan_id` on usage events, so it won't invent one.
+>
+> **Claude:** I can't fake that join — here's **contracted revenue by plan tier** instead, which actually resolves. ✓
+
+→ [Full session, with the SQL and results](#sample-session)
+
 ---
 
 ```bash
@@ -41,22 +51,13 @@ schemabrain init
 # then: Cmd+Q Claude Desktop, relaunch, and ask: "list the entities SchemaBrain knows about"
 ```
 
-**Cost:** ~$0.03 to index the bundled demo · **$0** to re-index unchanged schemas. Detail in [Sample session](#sample-session).
+**Cost:** **$0** to run the bundled demo (pre-curated pack, no API key) · ~$0.03 to LLM-index a fresh 84-column schema · **$0** to re-index unchanged schemas. Detail in [Sample session](#sample-session).
 
 **Status: 0.5.0 (alpha).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap.
 
 ---
 
 ## Contents
-
-- [Quickstart](#quickstart) — 3 steps from `pip install` to a working agent
-- [The firewall](#the-firewall) — what SchemaBrain enforces at the SQL boundary
-- [Observability dashboard](#observability-dashboard) — read-only UI for PII, refusals, audit
-- [Sample session](#sample-session) — real Claude Desktop interaction against the bundled fixture
-- [Where it's going](#where-its-going) — honest disclaimer about what's not built yet
-- [Roadmap](#roadmap) — shipped + in progress + planned
-- [Troubleshooting](#troubleshooting) — the five most common first-run failures
-- [Documentation](#documentation) — deeper guides
 
 **Read next based on what you need:**
 
@@ -132,111 +133,55 @@ After the wizard, `schemabrain inspect` shows what the agent has and `schemabrai
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-architecture-compact-dark.svg">
-    <img src="docs/assets/readme-architecture-compact-light.svg" alt="SchemaBrain architecture: agent talks to SchemaBrain over MCP stdio (12 read-only tools); SchemaBrain emits parameterized SQL to Postgres; the SchemaBrain boundary is the trust boundary; audit log is tamper-evident." width="900">
+    <img src="docs/assets/readme-architecture-compact-light.svg" alt="SchemaBrain architecture: agent talks to SchemaBrain over MCP stdio (12 read-only tools); SchemaBrain emits parameterized SQL to Postgres; the SchemaBrain boundary is the trust boundary; audit log is tamper-evident." width="100%">
   </picture>
 </p>
 
 Six properties SchemaBrain enforces at the SQL boundary today:
 
-<table>
-<tr>
-<td width="50%" valign="top">
-
 ### 1. Read-only by architecture, not configuration
 
-The MCP surface exposes twelve tools — **none of which can write**. There is no `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database, regardless of session state. The read-only guarantee is structural, not a session flag the agent can flip. `schemabrain serve` additionally pins `default_transaction_read_only=on` on the connection as belt-and-suspenders against a misconfigured downstream.
-
-[Read-only by architecture →](docs/mechanism/read-only.mdx)
-
-</td>
-<td width="50%" valign="top">
+The MCP surface exposes twelve tools — **none of which can write**. No `execute()`, no `query()`, no path from agent prompt to a write at your database, regardless of session state — the guarantee is structural, not a flag the agent can flip. `schemabrain serve` also pins `default_transaction_read_only=on` as belt-and-suspenders. [Read-only by architecture →](docs/mechanism/read-only.mdx)
 
 ### 2. PII-aware refusal at the `get_metric` tool boundary
 
-Any `get_metric` touching a blocked PII category returns a `refused` envelope; the compiled SQL never runs and the refusal lands in `mcp_audit` as `status='refused'`, `refusal_reason='pii_blocked'`. `describe_entity` enforces the same policy at the column level — the agent still sees the entity and its non-PII columns, but blocked columns ship with `redacted=True` and the LLM-enriched description cleared. `schemabrain init` writes `--pii-block credential,payment_card,government_id` into the Claude Desktop snippet by default — the catastrophic-leak categories where no plausible aggregate-analytics use case exists. `--pii-block` **replaces** the set rather than extending it, so widen by listing the full target set (don't drop the catastrophic-leak defaults by accident):
-
-```bash
-schemabrain serve --pii-block credential,payment_card,government_id,contact,health
-```
-
-Twelve categories from GDPR, CCPA/CPRA, HIPAA, PCI DSS, ISO 27018 — tagged per-column at index time. Detection is column-name patterns + redacted-sample inspection — see [`schemabrain/pii/classifier.py`](schemabrain/pii/classifier.py) for the full rule set.
-
-**Enforcement scope:** binding is at the `get_metric` compile path today. Lower-level tools (`describe_entity`, `resolve_join`, `describe_table`) surface the `redacted=True` flag + `pii_categories` as advisory metadata so the agent can self-regulate, but they don't refuse. Uniform SQL-layer enforcement against agent-emitted SQL ships in v2 — see [Where it's going](#where-its-going).
-
-[PII taxonomy & propagation →](docs/mechanism/pii-taxonomy.mdx) · [Operations view →](docs/observability.md#pii-classification-alpha)
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
+Any `get_metric` touching a blocked PII category returns a `refused` envelope — the compiled SQL never runs and the refusal lands in `mcp_audit`. `describe_entity` enforces the same at the column level (blocked columns ship `redacted=True`). `init` blocks the catastrophic-leak set by default (`credential,payment_card,government_id`); `--pii-block` **replaces** the set, so widen by listing the full target. Detection is column-name pattern matching across twelve GDPR / CCPA / HIPAA / PCI categories; content-aware classification is on the roadmap. [PII taxonomy & propagation →](docs/mechanism/pii-taxonomy.mdx)
 
 ### 3. Tamper-evident audit log
 
-Every tool call under `schemabrain serve` writes one row to an append-only `mcp_audit` table — PII categories per row, content-addressable fingerprints, sha256 hash chain. `audit verify` re-walks the chain and exits non-zero if any past row was rewritten. Detects post-hoc tampering by any process without write access to the audit table; streaming the chain to an external immutable store is on the v3 roadmap (`mcp_audit` is local SQLite today).
+Every tool call writes one row to an append-only `mcp_audit` table — PII categories, content-addressable fingerprints, sha256 hash chain. `audit verify` re-walks the chain and exits non-zero if any past row was rewritten.
 
 ```bash
 schemabrain audit verify   # exit 0 = chain clean
 ```
 
-[Tamper-evident audit chain →](docs/mechanism/audit-chain.mdx) · [Operations view →](docs/observability.md#audit-log-alpha)
-
-</td>
-<td width="50%" valign="top">
+[Tamper-evident audit chain →](docs/mechanism/audit-chain.mdx)
 
 ### 4. Failure is a contract, not a string
 
-Refused and degraded calls return a structured `recovery.suggested_args` block — not a message agents have to parse. PII blocks ship the entity name to retry; ambiguous time dimensions ship the candidate to pick; unknown joins ship the next tool to call. Agents act on the contract programmatically.
+Refused and degraded calls return a structured `recovery.suggested_args` block — not a message to parse. PII blocks ship the entity to retry; ambiguous dimensions ship the candidate to pick; unknown joins ship the next tool to call.
 
 ```json
-{
-  "status": "refused",
-  "kind": "ambiguous_time_dimension",
-  "recovery": {
-    "suggested_tool": "get_metric",
-    "suggested_args": {"time_dimension": "order.placed_at"}
-  }
-}
+{ "status": "refused", "kind": "ambiguous_time_dimension",
+  "recovery": { "suggested_tool": "get_metric",
+                "suggested_args": {"time_dimension": "order.placed_at"} } }
 ```
 
-[Structured recovery →](docs/mechanism/structured-recovery.mdx) · [Trust signal →](docs/mechanism/trust-signal.mdx) · [Charter v1.2 reference →](docs/agent-ux-charter.md#3-errors-are-prompts-for-the-next-tool-call)
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
+[Structured recovery →](docs/mechanism/structured-recovery.mdx)
 
 ### 5. Compile path: definitions → parameterized SQL
 
-Entities, metrics, and canonical joins compile to parameterized SQL SchemaBrain runs on its side. The agent sees rows + the SQL that was run — never arbitrary statements at your database. LLM-suggested definitions during `init` are reviewed and applied explicitly; nothing reaches the runtime store until you accept it.
-
-[Build your semantic layer →](docs/semantic-layer.md)
-
-</td>
-<td width="50%" valign="top">
+Entities, metrics, and canonical joins compile to parameterized SQL SchemaBrain runs on its side. The agent sees rows + the SQL that ran — never arbitrary statements at your database. LLM-suggested definitions during `init` are reviewed and applied explicitly. [Build your semantic layer →](docs/semantic-layer.md)
 
 ### 6. Pluggable into any agent loop
 
-The same MCP stdio surface Claude Desktop sees is exposed to any host that speaks MCP — your own Anthropic, OpenAI, or LangGraph loop included. [`examples/anthropic_demo.py`](examples/anthropic_demo.py) is a ~250-LOC drop-in that wires Claude Haiku 4.5 to `schemabrain serve` and prints exactly which tools the agent chose to call.
-
-```bash
-python examples/anthropic_demo.py \
-    --url-env DATABASE_URL \
-    --question "..."
-```
-
-~$0.005–0.02 per run on Haiku 4.5, bounded by `--max-turns`.
-
-[Anthropic SDK walkthrough →](docs/setup/manual.md#3-wire-your-own-agent-anthropic-sdk)
-
-</td>
-</tr>
-</table>
+The same MCP stdio surface Claude Desktop sees is exposed to any MCP host — your own Anthropic, OpenAI, or LangGraph loop included. [`examples/anthropic_demo.py`](examples/anthropic_demo.py) is a ~260-LOC drop-in that wires Claude Haiku 4.5 to `schemabrain serve` and prints exactly which tools the agent chose. [Anthropic SDK walkthrough →](docs/setup/manual.md#3-wire-your-own-agent-anthropic-sdk)
 
 ---
 
 ## Observability dashboard
 
-SchemaBrain ships an opt-in read-only dashboard for the same audit + PII + refusal data the firewall is already writing.
+SchemaBrain ships an opt-in, read-only dashboard over the same audit + PII + refusal data the MCP server is already writing. `schemabrain dashboard` boots a local FastAPI sidecar serving a pre-built static UI — no Node runtime, no network exposure, no write paths.
 
 ```bash
 pip install "schemabrain[ui]"
@@ -244,11 +189,31 @@ schemabrain dashboard
 # → http://127.0.0.1:7878
 ```
 
-Three surfaces:
+It's a viewer, not a console — no settings, no entity editor, no SQL pad. Three surfaces, each answering an operator question the MCP envelope alone never surfaces visually:
 
-- **PII Ledger** — entity-by-category matrix; catastrophic-leak markers identify which entities will trip the default `--pii-block` policy.
-- **Refusals** — every `refused` envelope with its recovery hint, so you can see exactly what the agent was blocked from doing.
-- **Audit Viewer** — append-only `mcp_audit` chain with hash-verify cursor; click any row to see the compiled SQL, parameters, and PII categories.
+- **PII Ledger** (`/pii`) — *which entities carry sensitive data?* A heatmap with one row per confirmed entity and one column per PII category, each cell counting how many columns inside that entity carry that category. Entities holding a catastrophic-leak category (`credential`, `payment_card`, `government_id`) get a gutter marker — so you can see at a glance which entities will trip the default `--pii-block` policy, and catch a `payment_card` column hiding inside `users` before you point an agent at a new schema. Each row also carries the entity's origin, inference method, and validation state for triaging mis-tags.
+- **Refusals** (`/refusals`) — *what did SchemaBrain block, and what did the agent see?* A two-pane timeline: refused incidents on the left, the full envelope on the right — the reason that fired (`pii_blocked`, `allowlist_violation`, `fragment_unsafe`, `cost_cap_exceeded`, `ambiguous_resolution`, `schema_drift`), the exact category set that intersected the policy, and the `follow_up_hints` the agent got back to recover. Use it to triage "the agent says it can't access that" and to review whether those hints actually helped.
+- **Audit Viewer** (`/audit`) — *is the audit chain still intact?* The visual face of the tamper-evident log: every tool call writes exactly one row — whatever the outcome — anchored by `chain_hash = sha256(prev_hash || canonical(row))`. A ribbon shows **Chain Intact** / **Mismatch**, the **Verify ledger** button re-walks the chain server-side, and selecting a row opens the full body (tool, status, cost class, PII categories, fingerprint, and the prev → row → next hash linkage). Live calls stream in over SSE.
+
+<p align="center">
+  <img src="docs/assets/dashboard-pii-ledger.png" alt="PII Ledger — catastrophic-exposure counter and an entity × PII-category heatmap" width="100%"><br>
+  <em>PII Ledger — which entities carry catastrophic PII, and what the default policy blocks.</em>
+</p>
+
+<details>
+<summary><strong>More dashboard views</strong> — Refusals &amp; Audit Viewer</summary>
+
+<p align="center">
+  <img src="docs/assets/dashboard-refusals.png" alt="Refusals — incident timeline with the full refusal envelope on the right" width="100%"><br>
+  <em>Refusals — every blocked call, the reason that fired, and the recovery hint the agent received.</em>
+</p>
+
+<p align="center">
+  <img src="docs/assets/dashboard-audit-viewer.png" alt="Audit Viewer — hash-chained ledger, re-walked and verified intact" width="100%"><br>
+  <em>Audit Viewer — the tamper-evident chain, verified server-side down to each row's hash linkage.</em>
+</p>
+
+</details>
 
 The dashboard binds **`127.0.0.1` only** — there is no `--host` flag, by design. It's read-only and reads the same SQLite store `serve` writes to. No agent talks to it.
 
@@ -362,11 +327,11 @@ To verify Claude's SQL is mechanically correct (and that flagged caveats are the
 
 ## Where it's going
 
-SchemaBrain is being built as the **SQL-boundary safety layer for AI agents** — the layer that parses what your agent is about to ask the database and refuses (or rewrites) before it runs.
+SchemaBrain is evolving into a **trust and intelligence layer between AI agents and your database** — it gives the agent a semantic map of your schema, compiles answers from definitions you control, and keeps every call PII-aware and audited. SQL-boundary safety is one proof-point of that layer, not the whole identity.
 
-That layer needs a semantic substrate underneath it. You can't refuse "this query touches PII" without knowing which columns are PII. You can't rewrite "join through this junction" without canonical-join definitions. You can't validate a metric without knowing its grain.
+That posture rests on a semantic substrate. You can't refuse "this query touches PII" without knowing which columns are PII. You can't answer "join through this junction" without canonical-join definitions. You can't serve a metric without knowing its grain.
 
-So the engineering order is **schema intelligence → semantic substrate → safety primitives.** The first two are shipped (v0.5 + v1); the third — `validate_query` for agent-emitted SQL and `execute` with hard caps — is the next major milestone. Today the product gives you PII-aware refusal at the `get_metric` boundary, structured recovery on every refused or degraded call, and tamper-evident audit — all running against parameterized SQL the agent never sees. If you need parse-before-execute over arbitrary agent-emitted SQL, track the roadmap.
+So the engineering order is **schema intelligence → semantic substrate → trust primitives.** Today the agent never writes raw SQL: it calls `get_metric` and the semantic-layer tools, SchemaBrain compiles parameterized SQL the agent never sees, and you get PII-aware refusal, structured recovery on every refused or degraded call, read-only execution with statement timeouts and row caps, and a tamper-evident audit chain. That def-driven, compiled-SQL posture is the default and the recommended one. Inspecting arbitrary agent-emitted SQL (`validate_query` / `execute`) is a later, optional opt-in lane — not the direction we're pivoting to. See the [Roadmap](#roadmap).
 
 ---
 
@@ -374,36 +339,46 @@ So the engineering order is **schema intelligence → semantic substrate → saf
 
 > The `v0.5` / `v1` / `v2` / `v3` labels are **roadmap milestone names**, not package versions. The package follows strict semver — `1.0.0` is reserved for an API that's been battle-tested by external users without a forced break. See [ADR-0003](docs/adr/0003-versioning-policy.md).
 
-**v0.5 — schema intelligence (shipped):**
-- Agent-UX charter v1.0 retrofit on existing tools + CI enforcement ✓
-- Dev-UX foundations: rich progress UI, guided errors, `--dry-run` ✓
-- Query log mining via `pg_stat_statements` (`schemabrain mine-queries`) ✓
-- 5 physical-schema MCP tools including `get_example_queries` ✓
+### Now — shipping today (v0.5.x on PyPI)
 
-**v1 — semantic substrate (shipped):**
-- Entities, metrics, canonical joins as first-class persisted definitions ✓
-- LLM-suggested entity / metric / join definitions from FK graph + column descriptions ✓
-- 5 semantic-layer MCP tools (`find_relevant_entities`, `list_entities`, `describe_entity`, `resolve_join`, `get_metric`) ✓
-- Composite-expression measures — `SUM(unit_price * quantity)` over the same anchor table ✓
-- Multi-hop canonical-join chains — BFS over the join graph with `via=` disambiguation ✓
-- Drift detection (`schemabrain check`) ✓
-- PII-aware refusal at the `get_metric` boundary ✓
-- Tamper-evident audit log with sha256 chain ✓
+What you get from `pip install schemabrain` right now:
 
-**v1.x — engine breadth (in progress):**
-- One additional engine: Snowflake / BigQuery / MySQL
-- BIRD Mini-Dev automated eval harness
-- Pre-built multi-platform Docker image on a public registry
+- **MCP server, 12 read-only tools** — `find_relevant_tables`, `find_relevant_entities`, `describe_table`, `describe_column`, `describe_entity`, `list_entities`, `list_metrics`, `list_joins`, `suggest_joins`, `resolve_join`, `get_example_queries`, `get_metric`.
+- **Def-driven compilation** — the agent never writes raw SQL; answers compile from definitions you control, with read-only execution enforced at the database layer plus statement timeouts and row caps.
+- **Schema-intelligence engine** — index Postgres into a local SQLite store; cost-capped LLM semantic enrichment; on-device embeddings (BAAI/bge-small ONNX); entity identification with rationale + confidence; declared-FK and query-log join mining; a canonical join graph with multi-hop BFS; and a metrics layer.
+- **Trust & safety** — PII classification (60 rules across 12 categories), tag propagation, a catastrophic-leak floor, an editable policy (block / redact / allow plus per-column overrides), and a tamper-evident sha256 hash-chained audit log with `audit verify`.
+- **Dashboard, 3 surfaces** — the PII Ledger (with a read-only policy view), Refusals, and an Audit Viewer.
+- **CLI** — `init`, `index`, `inspect`, `diff`, `check`, `policy {show, apply, tag}`, `dashboard`, `doctor`, `serve`. Distributed on PyPI (MIT-licensed today) and as a headless Docker image.
 
-**v2 — SQL-boundary safety wedge:**
-- `validate_query` — agent-emitted SQL parsed and judged against policy before execution
-- `execute` with hard caps — read-only role enforced at the database layer, statement timeouts, row caps, per-call cost guards
-- Sub-query refusal with recovery — parse the SQL, identify the unsafe fragment, refuse just that fragment with a suggested rewrite
+### At the launch — next (not yet shipped)
 
-**v3 — multi-engine + control plane (commercial, gated on hosted demand):**
-- Remaining engines (BigQuery / Snowflake / Redshift breadth)
-- Learning loop from telemetry and reformulation patterns
-- Hosted control plane with fleet-wide adversarial-signature aggregation
+The vision-launch feature set. These are in active development and **not** on PyPI yet:
+
+- **Repositioning** — from "SQL firewall" to a **trust and intelligence layer between AI agents and your database**, with the firewall demoted to one proof-point of six.
+- **Graph-first dashboard, 9 surfaces, dual-theme reskin** — an interactive Knowledge Graph (the signature surface), Entities index, Entity drilldown with a semantic pane, Data dictionary with Export-to-Markdown, plus the existing PII matrix, Refusals, Audit, an editable Policy editor, and Drift intelligence.
+- **New capabilities** — a persisted knowledge graph behind `/api/graph`; a `schemabrain docs` CLI that emits a Markdown/HTML data dictionary; per-column PII confidence; RFC-6962 Merkle-root audit proofs; hybrid retrieval (bge query-prefix + BM25 via RRF); two-tier model routing.
+- **Openness** — Apache-2.0 relicense and a Beta maturity label; a documented top-of-funnel `uvx` / `pipx` install command (the generated agent host-snippet already runs via `uvx` today — this is about the human-facing install instructions leading with it); a published `ROADMAP`, Code of Conduct, good-first-issues, and GitHub Discussions.
+
+### Later — roadmap (deferred; future direction only)
+
+**Phase 2 — differentiators**
+
+- Query cost estimation (`EXPLAIN` of the compiled SQL)
+- Tenant-isolation detection — missing-filter and cross-tenant-join checks
+- Impact analysis across definitions
+- Usage intelligence — hotspots and dead-table detection
+- A general policy-rule grammar
+- Implicit-FK discovery without query logs
+- Context budgeting for tool responses
+
+**Phase 3 — exploratory**
+
+- Persistent agent memory
+- Multi-agent coordination
+- Remote MCP transport plus a thin client SDK
+- An **optional, opt-in agent-authored-SQL lane** (`validate_query` / `execute`) behind an explicit flag. Def-driven compiled SQL stays the **default and recommended** posture; this lane is for teams that want parse-before-execute over arbitrary agent-emitted SQL, should it land. It is not shipped, and it is not a planned pivot away from the def-driven default.
+
+Everything on this roadmap is open source.
 
 ---
 
@@ -411,11 +386,12 @@ So the engineering order is **schema intelligence → semantic substrate → saf
 
 The five most common first-run failures. Full troubleshooter in [`docs/setup/manual.md`](docs/setup/manual.md#5-troubleshooting).
 
-- **`pip install schemabrain` gave me an older version.** Check `schemabrain --version`. If it doesn't match the [latest release](https://pypi.org/project/schemabrain/) your pip cache is stale — run `pip install --upgrade schemabrain`. `schemabrain init` writes the same version into the Claude Desktop snippet (`uvx schemabrain==<pin>`) so it stays reproducible across restarts; bump the pin in the snippet manually after upgrading via pip.
+- **`pip install schemabrain` gave me an older version.** Check `schemabrain --version`. If it doesn't match the [latest release](https://pypi.org/project/schemabrain/) your pip cache is stale — run `pip install --upgrade schemabrain`. `schemabrain init` writes the same version into the Claude Desktop snippet so it stays reproducible across restarts. When `uv` is on your PATH the snippet runs `uvx schemabrain==<pin>` (bump the pin manually after a pip upgrade); otherwise it pins the installed `schemabrain` entry point directly, which tracks pip upgrades automatically.
 - **`init` reports `source unreachable`.** Postgres may not be ready on first run — wait a few seconds and re-run. For your own database, verify host, port, and credentials. Connection URLs in any form are accepted (`postgresql://`, `postgres://`, `postgresql+psycopg://`).
 - **The first `init` or `schemabrain index` hangs for ~60 seconds.** Normal. The first index downloads the ONNX embedding model (~67 MB) and makes one LLM call per column. Subsequent runs are fast.
 - **`init` fails at stage 6 "wire host".** Claude Desktop must be installed first — SchemaBrain writes into its config file, which doesn't exist until Claude Desktop has launched at least once.
 - **Claude Desktop doesn't show SchemaBrain after restart.** Cmd+Q is required (close-window doesn't trigger a re-read of MCP config). Run `schemabrain doctor` to verify the config landed. If `doctor` says everything's good but Claude Desktop still doesn't see the tool, check `~/Library/Logs/Claude/mcp*.log`.
+- **Apple Silicon + Python 3.12.** `fastembed`'s `onnxruntime` dependency ships no arm64 wheel for Python 3.12+, so embeddings can't build. `init` catches this at preflight and tells you to either use Python 3.11 (e.g. `pyenv local 3.11.10`) or re-run with `--no-embed` (keyword search instead of semantic — everything else works).
 
 ---
 
@@ -430,7 +406,7 @@ The five most common first-run failures. Full troubleshooter in [`docs/setup/man
 | [`docs/semantic-layer.md`](docs/semantic-layer.md) | Building entities, metrics (incl. composite expressions), canonical joins (incl. multi-hop), dbt import |
 | [`docs/operations.md`](docs/operations.md) | `inspect`, `check` (drift), `index --dry-run`, Docker compose |
 | [`docs/observability.md`](docs/observability.md) | `tail`, audit log, OTel export, PII classification |
-| [`docs/reference/mcp-tools/`](docs/reference/mcp-tools/) | Full reference for all 12 MCP tools (overview + 12 per-tool pages) |
+| [`docs/reference/mcp-tools/overview.mdx`](docs/reference/mcp-tools/overview.mdx) | Full reference for all 12 MCP tools (overview + 12 per-tool pages) |
 | [`docs/architecture.mdx`](docs/architecture.mdx) | Pipeline, retrieval contract, cache logic, cost model, eval |
 | [`docs/dashboard/overview.mdx`](docs/dashboard/overview.mdx) | Read-only observability dashboard — PII ledger, refusals, audit viewer |
 | [`docs/landscape.md`](docs/landscape.md) | Comparison vs Vanna / Atlan / dbt-mcp / WrenAI; "is this a semantic layer?" |
