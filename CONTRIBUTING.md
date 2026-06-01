@@ -172,7 +172,7 @@ To re-render after a user-visible CLI change:
 # Prerequisites
 brew install vhs                                      # macOS; see vhs README for Linux
 docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=local --name sb-pg postgres:16-alpine
-docker exec -i sb-pg psql -U postgres -d postgres < $(uv run schemabrain fixture-path ecommerce.sql)
+docker exec -i sb-pg psql -U postgres -d postgres < $(uv run schemabrain fixture-path saas.sql)
 export DATABASE_URL='postgresql+psycopg://postgres:local@localhost:5432/postgres'
 export ANTHROPIC_API_KEY=sk-ant-...                   # stage 3 of init needs this; otherwise skip
 
