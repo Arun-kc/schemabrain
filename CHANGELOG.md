@@ -7,25 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-01
+
+**Highlights** — the launch release: a read-only **dashboard** (`[ui]` extra), an **editable PII enforcement policy**, a substantially **hardened SQL firewall**, a zero-config **SaaS demo pack**, and a full **Mintlify docs site**. The publish pipeline is fixed so the wheel actually ships the dashboard.
+
+> **Upgrade note** — no store migration (`SCHEMA_VERSION` stays `14`). Install the dashboard with `pip install schemabrain[ui]`; `schemabrain dashboard` binds to `127.0.0.1` only.
+
 ### Added
-- Store ↔ YAML round-trip workflow. Three new CLI surfaces let operators export the curated semantic layer to disk, edit it as YAML, and re-apply or diff against the store — the dbt-shaped authoring loop:
-  - `entities export <name>` / `metrics export <name>` / `joins export <name>` — render one row from the store as apply-ready YAML on stdout (or `--out PATH`). Cross-source posture matches `metrics show`: without `--source`/`--url-env`, walks every source the store knows about and errors with a disambiguation hint when the same name lives in more than one.
-  - `entities export-all --dir PATH` (and metric / join mirrors) — bulk export, one YAML per row. Refuses to overwrite existing files (preserves hand-edits) and refuses on cross-source name collisions when no `--source` is passed.
-  - `schemabrain apply [PROJECT_DIR]` — walk a project tree (`entities/`, `metrics/`, `joins/` subdirs) and apply each YAML. Directory order is deliberate (entities first, then metrics + joins which reference entities); missing subdirs skip cleanly. Default `PROJECT_DIR` is `./schemabrain`.
-  - `schemabrain diff [PROJECT_DIR]` — drift check. Reports only-on-disk / only-in-store / value-mismatch per resource type by round-tripping both sides through the YAML serialiser. CI-friendly exit codes: 0 in-sync, 1 drift, 2 operational error.
-- `schemabrain init --emit-yaml-dir PATH` — after the wizard completes, write one YAML per applied entity / metric / canonical join into `PATH/entities/`, `PATH/metrics/`, `PATH/joins/`. Gives operators on-disk definitions to edit and re-apply alongside the SQLite store on day one.
-- Public YAML serialisers in each `yaml_grammar.py` module: `entities.yaml_grammar.entity_to_yaml`, `metrics.yaml_grammar.metric_to_yaml`, `joins.yaml_grammar.canonical_join_to_yaml`. Inverse of the existing `parse_*` functions; trust-signal fields (`inference_method`, `validation_state`) are deliberately NOT carried through the YAML grammar — they reset to defaults on every round-trip because the operator authored the edit.
-- `schemabrain audit verify --since <spec>` — anchor the chain walk to a known-good cursor row instead of walking from genesis. Three spec forms: leading hex prefix (≥8 chars, git-like) of a previously-archived `chain_hash`; compact duration (`7d`, `2h`, `30s`, `5m`); ISO 8601 with timezone. The cursor row's own integrity is NOT re-verified — operator must archive a trusted copy externally — but rows after it are verified using the cursor's stored hash as the trusted baseline. Ambiguous hex prefixes raise a disambiguation error; non-matching specs return exit 2 with a clear message.
-- `schemabrain audit list` renders a status + cost-class summary footer under the table (omitted in `--json` mode and on empty results). Aggregates over the rendered rows (limit-bounded) so the footer mirrors what the operator sees, not an all-time count. Status counts follow the Charter envelope sequence (`success → empty → partial → degraded → error → refused`); cost-class counts follow `small → medium → large → refused`. **Trust-signal counts deliberately omitted**: `mcp_audit` has no `confidence` column at the v14 schema; a per-call trust footer would require a schema migration. Tracked for v0.5.
+- **Read-only dashboard** (`[ui]` extra) — local FastAPI sidecar + static Next.js UI via `schemabrain dashboard` (`127.0.0.1` only): schema/entity browser, PII Ledger, Refusal UI, Audit Viewer, Boardroom Brief; entity drilldown shows metrics + canonical joins. ([#125], [#126], [#127], [#129], [#130], [#132])
+- **Editable PII policy** — `schemabrain policy {show, apply, tag}` + a `pii_policy.yaml` overlay + a read-only dashboard view; the catastrophic-leak floor is always-on and can't be overridden away. ([#155])
+- **SaaS demo pack** (new bundled default) — 12 tables / 84 columns / 12 entities / 5 metrics / 8 joins covering all three catastrophic-PII legs; `init` applies it for $0 with no API key. Bundled packs are now a named registry (e-commerce stays as fallback). ([#143], [#164], [#167])
+- `schemabrain doctor --verify` — no-API-key mock-agent MCP smoke + environment preflight. ([#116])
+- `schemabrain init` host selection (Claude Desktop / Code / Cursor / Windsurf) with detection; `--host manual` / `--print-only` prints the snippet without writing. ([#115], [#146])
+- `serve` query guardrails — `--statement-timeout-ms` (30s) and `--max-rows-per-result` (10000); `0` opts out. ([#116], [#151])
+- Store ↔ YAML round-trip — `entities`/`metrics`/`joins` `export[-all]`, `schemabrain apply`, `schemabrain diff` (CI exit codes), `init --emit-yaml-dir`, and public `*_to_yaml` serialisers. ([#113])
+- `audit verify --since <spec>` (hex-prefix / duration / ISO cursor) and an `audit list` status + cost-class footer. ([#112])
+- `doctor` probes `pg_stat_statements` (advisory). ([#145])
+
+### Changed
+- Agent steering moved into the MCP `initialize` `instructions` field (no user-pasted snippet); interactive `--pii-block` default aligned with `--yes` + docs. ([#142])
+- `get_metric` validates `limit` in-body (typed `malformed_name` envelope) and reports a `truncated` flag; the metric executor uses a `NullPool` engine. ([#117], [#165])
 
 ### Security
-- `schemabrain serve` defaults `--pii-block` to `{credential, payment_card, government_id}` when the flag is absent (previously empty frozenset — no enforcement). Surfaces a one-line stderr confirmation so the choice is visible. Pass `--pii-block ''` to explicitly disable enforcement (an explicit-empty branch with its own warning). ([#110])
-- `schemabrain init` gains `--pii-block` flag mirroring `serve`. Under `--yes` / non-TTY, the prior silent fall-through to `("contact",)` is replaced with the catastrophic-leak default plus stderr confirmation. Explicit `--pii-block ''` writes no flag into the host snippet (operator opt-out). The interactive-TTY prompt is unchanged.
-- `WizardConfig.pii_block` default changed from `("contact",)` to `("credential", "government_id", "payment_card")` for defense-in-depth — programmatic callers constructing `WizardConfig` directly now also get safe-by-default enforcement.
+- Catastrophic-leak floor (`credential`, `payment_card`, `government_id`) enforced at every read path including the `get_metric` aggregate path; operator overrides can't strip it. ([#154], [#156], [#157], [#162])
+- Catastrophic column **names** no longer disclosed via `redacted_columns` or the unknown-column hint. ([#174])
+- PII classifier hardened — auth-secret + internationalised + concatenated/abbreviated shapes; `RULE_COUNT` 46 → 60. ([#152], [#158], [#161])
+- `serve` rejects control chars in quoted identifiers, refuses `MIN`/`MAX` over PII, fails closed on untagged columns; redaction centralised. ([#150], [#153], [#154])
+- Safe-by-default `--pii-block` across `serve` / `init` / `build_server` / `WizardConfig` (catastrophic-leak set; explicit `''` to disable). ([#110], [#162])
+- Pinned the Hugging Face Hub model revision (B615 / CWE-494); added a 19-file firewall-bypass regression corpus. ([#147], [#149])
 
 ### Fixed
-- `get_metric` refusal envelope no longer leaks `attempted_categories` (probe oracle) — surfaces only `blocked_categories` (the policy intersection that triggered refusal). The full `attempted` set stays in the audit row via the `PiiBlockedError` exception fields for operator forensics. The refusal message text is updated to the same subset. ([#110])
-- `describe_entity` always redacts column descriptions whose tagged categories include `credential`, `payment_card`, or `government_id` — even when the operator passed an empty `--pii-block`. Column metadata (name, type, nullable) still surfaces so the agent knows the column exists; only the LLM-enriched semantic description is scrubbed. ([#110])
+- `get_metric` refusal envelope surfaces only `blocked_categories` (no probe oracle); `describe_entity` always redacts catastrophic column descriptions. ([#110])
+- PII verdicts labelled by attribution (`floor_blocked` vs operator policy). ([#160])
+- Publish pipeline builds the dashboard export with `uv build --wheel`, so the wheel ships it and advertises `[ui]`. ([#163])
+- Deterministic dashboard PII-category ordering; closed 7 launch-blockers via firewall hardening + `fastembed` reliability. ([#132], [#147])
+
+### Documentation
+- Full **Mintlify site** — mechanism explainers, per-client setup (Claude Desktop / Code / Cursor / Windsurf / Zed / Codex), comparisons, Works-with + security posture, threat model, First 5 Queries, dashboard guide, CLI reference. ([#118], [#120], [#121], [#122], [#123], [#124], [#133], [#135], [#136], [#140], [#144], [#145])
+- Docs recast onto the SaaS demo; store-path default corrected to `./schemabrain.db`; README + substrate fact-check and link repair. ([#137], [#138], [#141], [#166], [#172], [#173])
+
+### Internal
+- Bundled-pack registry refactor; stale-comment / attribution hygiene; dependency bumps (`dorny/paths-filter` 3 → 4, `opentelemetry-sdk`). ([#104], [#106], [#111], [#119], [#148], [#164])
 
 ## [0.4.0] - 2026-05-23
 
@@ -1171,7 +1193,8 @@ First public preview. Live on PyPI as `schemabrain==0.1.0a1`.
 - MIT license; SSH-signed commits; CI on Python 3.11 + 3.12 (Linux
   unit) plus Docker Postgres integration with `--cov-fail-under=99`.
 
-[Unreleased]: https://github.com/Arun-kc/schemabrain/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Arun-kc/schemabrain/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Arun-kc/schemabrain/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Arun-kc/schemabrain/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Arun-kc/schemabrain/compare/v0.2.0a1...v0.3.0
 [0.2.0a1]: https://github.com/Arun-kc/schemabrain/releases/tag/v0.2.0a1
@@ -1189,4 +1212,60 @@ First public preview. Live on PyPI as `schemabrain==0.1.0a1`.
 [#100]: https://github.com/Arun-kc/schemabrain/pull/100
 [#101]: https://github.com/Arun-kc/schemabrain/pull/101
 [#102]: https://github.com/Arun-kc/schemabrain/pull/102
+[#104]: https://github.com/Arun-kc/schemabrain/pull/104
+[#106]: https://github.com/Arun-kc/schemabrain/pull/106
 [#110]: https://github.com/Arun-kc/schemabrain/pull/110
+[#111]: https://github.com/Arun-kc/schemabrain/pull/111
+[#112]: https://github.com/Arun-kc/schemabrain/pull/112
+[#113]: https://github.com/Arun-kc/schemabrain/pull/113
+[#115]: https://github.com/Arun-kc/schemabrain/pull/115
+[#116]: https://github.com/Arun-kc/schemabrain/pull/116
+[#117]: https://github.com/Arun-kc/schemabrain/pull/117
+[#118]: https://github.com/Arun-kc/schemabrain/pull/118
+[#119]: https://github.com/Arun-kc/schemabrain/pull/119
+[#120]: https://github.com/Arun-kc/schemabrain/pull/120
+[#121]: https://github.com/Arun-kc/schemabrain/pull/121
+[#122]: https://github.com/Arun-kc/schemabrain/pull/122
+[#123]: https://github.com/Arun-kc/schemabrain/pull/123
+[#124]: https://github.com/Arun-kc/schemabrain/pull/124
+[#125]: https://github.com/Arun-kc/schemabrain/pull/125
+[#126]: https://github.com/Arun-kc/schemabrain/pull/126
+[#127]: https://github.com/Arun-kc/schemabrain/pull/127
+[#129]: https://github.com/Arun-kc/schemabrain/pull/129
+[#130]: https://github.com/Arun-kc/schemabrain/pull/130
+[#132]: https://github.com/Arun-kc/schemabrain/pull/132
+[#133]: https://github.com/Arun-kc/schemabrain/pull/133
+[#135]: https://github.com/Arun-kc/schemabrain/pull/135
+[#136]: https://github.com/Arun-kc/schemabrain/pull/136
+[#137]: https://github.com/Arun-kc/schemabrain/pull/137
+[#138]: https://github.com/Arun-kc/schemabrain/pull/138
+[#140]: https://github.com/Arun-kc/schemabrain/pull/140
+[#141]: https://github.com/Arun-kc/schemabrain/pull/141
+[#142]: https://github.com/Arun-kc/schemabrain/pull/142
+[#143]: https://github.com/Arun-kc/schemabrain/pull/143
+[#144]: https://github.com/Arun-kc/schemabrain/pull/144
+[#145]: https://github.com/Arun-kc/schemabrain/pull/145
+[#146]: https://github.com/Arun-kc/schemabrain/pull/146
+[#147]: https://github.com/Arun-kc/schemabrain/pull/147
+[#148]: https://github.com/Arun-kc/schemabrain/pull/148
+[#149]: https://github.com/Arun-kc/schemabrain/pull/149
+[#150]: https://github.com/Arun-kc/schemabrain/pull/150
+[#151]: https://github.com/Arun-kc/schemabrain/pull/151
+[#152]: https://github.com/Arun-kc/schemabrain/pull/152
+[#153]: https://github.com/Arun-kc/schemabrain/pull/153
+[#154]: https://github.com/Arun-kc/schemabrain/pull/154
+[#155]: https://github.com/Arun-kc/schemabrain/pull/155
+[#156]: https://github.com/Arun-kc/schemabrain/pull/156
+[#157]: https://github.com/Arun-kc/schemabrain/pull/157
+[#158]: https://github.com/Arun-kc/schemabrain/pull/158
+[#160]: https://github.com/Arun-kc/schemabrain/pull/160
+[#161]: https://github.com/Arun-kc/schemabrain/pull/161
+[#162]: https://github.com/Arun-kc/schemabrain/pull/162
+[#163]: https://github.com/Arun-kc/schemabrain/pull/163
+[#164]: https://github.com/Arun-kc/schemabrain/pull/164
+[#165]: https://github.com/Arun-kc/schemabrain/pull/165
+[#166]: https://github.com/Arun-kc/schemabrain/pull/166
+[#167]: https://github.com/Arun-kc/schemabrain/pull/167
+[#172]: https://github.com/Arun-kc/schemabrain/pull/172
+[#173]: https://github.com/Arun-kc/schemabrain/pull/173
+[#174]: https://github.com/Arun-kc/schemabrain/pull/174

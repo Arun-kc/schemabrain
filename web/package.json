@@ -1,8 +1,8 @@
 {
   "name": "schemabrain-dashboard",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
-  "description": "SchemaBrain v0.4 read-only dashboard — PII Visualization, Refusal UI, Audit Viewer.",
+  "description": "SchemaBrain v0.5 read-only dashboard — PII Visualization, Refusal UI, Audit Viewer.",
   "scripts": {
     "dev": "next dev --port 3000",
     "build": "next build",
