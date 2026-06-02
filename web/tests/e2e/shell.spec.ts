@@ -57,9 +57,20 @@ test.describe("app shell", () => {
 
   test("command palette opens with ⌘K and closes with Escape", async ({ page }) => {
     await page.goto("/pii");
-    await page.keyboard.press("Meta+k");
     const palette = page.getByRole("dialog", { name: /command palette/i });
-    await expect(palette).toBeVisible();
+
+    // The ⌘K keydown listener is registered in AppShell's mount effect, so a
+    // keypress fired before hydration completes is a silent no-op — the source
+    // of this test's flakiness. Retry the open until it sticks, and only press
+    // while the palette is closed (the handler TOGGLES, so a blind re-press
+    // would close an already-open palette).
+    await expect(async () => {
+      if (!(await palette.isVisible())) {
+        await page.keyboard.press("Meta+k");
+      }
+      await expect(palette).toBeVisible({ timeout: 500 });
+    }).toPass({ timeout: 7000 });
+
     await page.keyboard.press("Escape");
     await expect(palette).toHaveCount(0);
   });
