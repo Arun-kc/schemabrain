@@ -49,14 +49,18 @@
 
 .hero {
   display: grid;
-  grid-template-columns: minmax(13rem, 22rem) 1fr;
+  /* minmax(0, 1fr) (not a bare 1fr = minmax(auto, 1fr)) lets the matrix
+     column shrink below the table's intrinsic width so .matrixWrap's
+     overflow-x:auto scrolls INSIDE the cell instead of expanding the
+     grid track past the viewport (the 375px horizontal-overflow bug). */
+  grid-template-columns: minmax(13rem, 22rem) minmax(0, 1fr);
   gap: 3rem;
   align-items: start;
 }
 
 @media (max-width: 960px) {
   .hero {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 2rem;
   }
 }
@@ -206,6 +210,9 @@
   /* Constrain matrix so it doesn't stretch to fill the whole right
      column — keeps cells tight, gives the surface composed feel. */
   max-width: 100%;
+  /* Scroll container in a grid cell — min-width:0 lets it shrink to the
+     track so the table scrolls internally rather than overflowing. */
+  min-width: 0;
   padding-top: 2rem;
   margin-top: -2rem;
 }
