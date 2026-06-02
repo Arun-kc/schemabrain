@@ -112,14 +112,16 @@ test.describe("dashboard E2E smoke", () => {
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });
 
-  test("source id auto-resolves in the header strip", async ({ page }) => {
-    // The /api/meta fix from PR #126 means the dashboard pages never
-    // hardcode a source_connection_id; they call /api/meta and read
-    // `default_source_connection_id`. The header strip surfaces the
-    // resolved id.
+  test("source id auto-resolves in the shell source selector", async ({ page }) => {
+    // The dashboard pages never hardcode a source_connection_id; they
+    // call /api/meta and read `default_source_connection_id`. With the
+    // app shell, the resolved id surfaces in the top-bar source selector
+    // (the per-surface HeaderStrip is retired) — its accessible name is
+    // `active source: <seeded 'demo-source' or hashed production id>`.
     await page.goto("/pii");
-    // The header strip's source-id pill displays either the seeded 'demo-source' or the hashed production ID.
-    await expect(page.getByText(/demo-source|[0-9a-f]{16}/i).first()).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /active source: (demo-source|[0-9a-f]{16})/i }),
+    ).toBeVisible();
   });
 });
 

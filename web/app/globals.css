@@ -2,6 +2,7 @@
 @import "./sb-theme.css";
 @import "./blueprint.css";
 @import "./kit.css";
+@import "./shell.css";
 
 /*
  * Design tokens for the SchemaBrain dashboard.

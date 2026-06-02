@@ -26,6 +26,7 @@ import sqlite3
 import struct
 import time
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -209,6 +210,27 @@ _MICROS_PER_USD = 1_000_000
 # float32 = 4 bytes per dim. BLOBs are little-endian packed via struct.
 _FLOAT32_FORMAT = "<f"
 _FLOAT32_BYTES = 4
+
+
+@dataclass(frozen=True)
+class SourceSummary:
+    """Per-source rollup for the dashboard source selector.
+
+    Counts are best-effort scalars read off the store, never a
+    guarantee of completeness. ``last_indexed_at`` is the most recent
+    ``tables.indexed_at`` (Unix epoch seconds) for the source, or
+    ``None`` when the source carries no physical tables — the sidecar
+    renders '—' rather than fabricating a timestamp. Engine + index
+    state are NOT stored here: the dialect is derived by the sidecar
+    from the boot connection URL (when known), and there is no
+    in-flight indexing registry, so a listed source is always treated
+    as indexed.
+    """
+
+    source_connection_id: str
+    table_count: int
+    entity_count: int
+    last_indexed_at: int | None
 
 
 class SchemaVersionMismatchError(RuntimeError):
@@ -2069,6 +2091,43 @@ class SQLiteStore:
             ") ORDER BY source_connection_id"
         ).fetchall()
         return [row["source_connection_id"] for row in rows]
+
+    def summarize_sources(self) -> list[SourceSummary]:
+        """Per-source rollup (table/entity counts + last index time).
+
+        One entry per distinct source, in the same sorted order as
+        ``list_distinct_source_connection_ids``. The dashboard source
+        selector consumes this to render the source list and each
+        source's freshness dot.
+
+        Read-only and per-source (one COUNT pair per source). The
+        source count is tiny in practice — typically one, occasionally
+        a handful — so the per-source round-trips are cheaper than a
+        join and keep every branch reachable: ``COUNT(*)`` is ``0`` and
+        ``MAX(indexed_at)`` is ``NULL`` (→ ``None``) for a source with
+        no physical tables, with no defensive default to leave untested.
+        """
+        conn = self._require_conn()
+        summaries: list[SourceSummary] = []
+        for sid in self.list_distinct_source_connection_ids():
+            table_row = conn.execute(
+                "SELECT COUNT(*) AS n, MAX(indexed_at) AS last "
+                "FROM tables WHERE source_connection_id = ?",
+                (sid,),
+            ).fetchone()
+            entity_row = conn.execute(
+                "SELECT COUNT(*) AS n FROM entities WHERE source_connection_id = ?",
+                (sid,),
+            ).fetchone()
+            summaries.append(
+                SourceSummary(
+                    source_connection_id=sid,
+                    table_count=int(table_row["n"]),
+                    entity_count=int(entity_row["n"]),
+                    last_indexed_at=table_row["last"],
+                )
+            )
+        return summaries
 
     # ----- Entities ------------------------------------------------
     #

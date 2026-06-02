@@ -7,6 +7,27 @@
 import type { InferenceMethod, ValidationState } from "./envelope";
 import type { ColumnPiiTag } from "./pii";
 
+/**
+ * Per-source index state. Only "indexed" is emitted today — a source
+ * appears once it has persisted artifacts, and there is no in-flight
+ * indexing registry behind "indexing"/"empty". The wider union is
+ * reserved so the shell's source dot + the (future) graph indexing
+ * overlay can light up without a wire-shape change.
+ */
+export type SourceState = "indexed" | "indexing" | "empty";
+
+/** One source in the /api/meta `sources` rollup — drives the source selector. */
+export interface SourceInfo {
+  source_id: string;
+  /** "postgres" for the configured connection; null when the dialect is unknown. */
+  engine: string | null;
+  state: SourceState;
+  /** Most recent index time (Unix epoch seconds); null when no physical tables. */
+  last_indexed_at: number | null;
+  tables: number;
+  entities: number;
+}
+
 /** GET /api/meta response. */
 export interface Meta {
   charter_version: string;
@@ -15,6 +36,7 @@ export interface Meta {
   store_path: string;
   default_source_connection_id: string | null;
   source_connection_ids: readonly string[];
+  sources: readonly SourceInfo[];
 }
 
 /** Origin tag carried by entity / metric / join writes. */
