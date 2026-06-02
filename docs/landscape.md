@@ -24,14 +24,14 @@ The OSS landscape thinned in 2026: Vanna's public repo was frozen as the project
 
 | Project | License | First-party MCP | Status |
 |---|---|---|---|
-| **SchemaBrain** | MIT | ✅ | Active — 0.5.0 |
+| **SchemaBrain** | Apache-2.0 | ✅ | Active — 0.5.0 |
 | [Vanna AI](https://github.com/vanna-ai/vanna) | MIT (repo frozen) | ❌ | OSS archived 2026-03; project moved commercial |
 | [Reference Postgres MCP](https://github.com/modelcontextprotocol/servers-archived) | MIT | ✅ | Archived 2025-05; no first-party successor named |
 | [Atlan](https://atlan.com) | Closed-source | ✅ | SaaS-only, enterprise pricing |
 | [dbt-mcp](https://github.com/dbt-labs/dbt-mcp) | Apache-2.0 | ✅ | Active — requires a dbt project |
 | [WrenAI](https://github.com/canner/WrenAI) | Apache-2.0 | ❌ (roadmap) | Active — uses MDL modeling layer |
 
-SchemaBrain sits where none of these cover cleanly: **OSS + MIT + first-party MCP + no modeling layer required + introspects a live Postgres in one Python process + mines `pg_stat_statements` to surface observed SQL as agent context**.
+SchemaBrain sits where none of these cover cleanly: **OSS + Apache-2.0 + first-party MCP + no modeling layer required + introspects a live Postgres in one Python process + mines `pg_stat_statements` to surface observed SQL as agent context**.
 
 ## Is this a semantic layer like Cube or dbt Semantic Layer?
 

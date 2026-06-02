@@ -12,7 +12,7 @@
   <a href="https://pypi.org/project/schemabrain/"><img src="https://img.shields.io/pypi/v/schemabrain?style=flat-square&label=pypi&labelColor=0A0A0A&color=3ECF8E" alt="PyPI version"></a>
   <a href="https://pypi.org/project/schemabrain/"><img src="https://img.shields.io/pypi/dm/schemabrain?style=flat-square&label=downloads&labelColor=0A0A0A&color=3ECF8E" alt="PyPI downloads"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%20%7C%203.12-0A0A0A?style=flat-square&labelColor=0A0A0A" alt="Python 3.11 | 3.12"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0A0A0A?style=flat-square&labelColor=0A0A0A" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-0A0A0A?style=flat-square&labelColor=0A0A0A" alt="License: Apache 2.0"></a>
   <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-compatible-3ECF8E?style=flat-square&labelColor=0A0A0A" alt="MCP compatible"></a>
 </p>
 
@@ -348,7 +348,7 @@ What you get from `pip install schemabrain` right now:
 - **Schema-intelligence engine** — index Postgres into a local SQLite store; cost-capped LLM semantic enrichment; on-device embeddings (BAAI/bge-small ONNX); entity identification with rationale + confidence; declared-FK and query-log join mining; a canonical join graph with multi-hop BFS; and a metrics layer.
 - **Trust & safety** — PII classification (60 rules across 12 categories), tag propagation, a catastrophic-leak floor, an editable policy (block / redact / allow plus per-column overrides), and a tamper-evident sha256 hash-chained audit log with `audit verify`.
 - **Dashboard, 3 surfaces** — the PII Ledger (with a read-only policy view), Refusals, and an Audit Viewer.
-- **CLI** — `init`, `index`, `inspect`, `diff`, `check`, `policy {show, apply, tag}`, `dashboard`, `doctor`, `serve`. Distributed on PyPI (MIT-licensed today) and as a headless Docker image.
+- **CLI** — `init`, `index`, `inspect`, `diff`, `check`, `policy {show, apply, tag}`, `dashboard`, `doctor`, `serve`. Distributed on PyPI (Apache-2.0 licensed) and as a headless Docker image.
 
 ### At the launch — next (not yet shipped)
 
@@ -448,4 +448,4 @@ PRs welcome. The bar is high — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for th
 
 Bugs and feature requests use the structured templates in `.github/ISSUE_TEMPLATE/`. Issues without a reproduction (bugs) or a clear underlying problem (features) get closed with a request to re-open with the right info.
 
-[MIT](LICENSE).
+[Apache 2.0](LICENSE).

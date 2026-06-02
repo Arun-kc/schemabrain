@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **License: MIT → Apache-2.0.** Added a `NOTICE` file and switched contribution sign-off to the [Developer Certificate of Origin](https://developercertificate.org/) (DCO; `git commit -s`). Apache-2.0 adds an explicit patent grant and patent-retaliation clause; the permissive terms users rely on are otherwise unchanged.
+
 ## [0.5.0] - 2026-06-01
 
 **Highlights** — the launch release: a read-only **dashboard** (`[ui]` extra), an **editable PII enforcement policy**, a substantially **hardened SQL firewall**, a zero-config **SaaS demo pack**, and a full **Mintlify docs site**. The publish pipeline is fixed so the wheel actually ships the dashboard.

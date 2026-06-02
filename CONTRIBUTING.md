@@ -196,9 +196,19 @@ trying to solve. Issues without these get closed with a request to
 re-open with the right info — not because we don't care, but because
 under-specified issues take more time to triage than they save.
 
-## License
+## License and Developer Certificate of Origin
 
-By contributing, you agree that your contributions will be licensed under
-the [MIT License](LICENSE) that covers the project. A CLA may be added
-later if the project commercializes; contributors who want to be excluded
-from any future relicense should say so on their PR.
+SchemaBrain is licensed under the [Apache License 2.0](LICENSE). By
+contributing, you agree that your contributions will be licensed under the
+same terms.
+
+We use the [Developer Certificate of Origin](https://developercertificate.org/)
+(DCO) instead of a CLA. The DCO is a one-line statement that you wrote the
+contribution, or otherwise have the right to submit it under the project's
+license. Certify it by signing off each commit:
+
+    git commit -s -m "your message"
+
+The `-s` flag appends a `Signed-off-by: Your Name <you@example.com>` trailer
+from your `git config` name and email — use a real name. Already-made commits
+can be amended with `git commit --amend -s`.
