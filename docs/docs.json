@@ -191,7 +191,8 @@
               "adr/0001-audit-row-and-pii-taxonomy",
               "adr/0002-store-protocol-seam",
               "adr/0003-versioning-policy",
-              "adr/0004-observability-event-bus"
+              "adr/0004-observability-event-bus",
+              "adr/0005-dashboard-routing-under-static-export"
             ]
           }
         ]
