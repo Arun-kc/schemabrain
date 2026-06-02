@@ -17,7 +17,7 @@ SchemaBrain is the SQL firewall between AI agents and your production Postgres d
 |---|---|
 | **Deployment model** | Local single-process MCP server. Runs on the operator's own machine. |
 | **Network egress** | None to SchemaBrain infrastructure (we do not run any). LLM enrichment during `index` calls Anthropic if the operator opts in. |
-| **Source code** | MIT, open source ([github.com/Arun-kc/schemabrain](https://github.com/Arun-kc/schemabrain)). Every claim on this page is verifiable from the code. |
+| **Source code** | Apache-2.0, open source ([github.com/Arun-kc/schemabrain](https://github.com/Arun-kc/schemabrain)). Every claim on this page is verifiable from the code. |
 | **Database credential exposure** | Env-var-only. Never logged, never returned in any envelope, filtered out of SQLAlchemy connection strings via [`safe_engine_url`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/connectors/_url.py). |
 | **Wire format** | MCP over stdio (no HTTPS / SSE transport today). |
 | **Multi-tenant** | No. Single-tenant by design. |

@@ -4,7 +4,7 @@ version = "0.5.0"
 description = "The SQL firewall between AI agents and your production database."
 readme = "README.md"
 requires-python = ">=3.11"
-license = "MIT"
+license = "Apache-2.0"
 authors = [
     { name = "Arun K C" },
 ]
