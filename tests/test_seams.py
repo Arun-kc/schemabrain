@@ -554,6 +554,15 @@ class TestStoreProtocolSeamUsable:
             ) -> dict[str, tuple[str, frozenset[str]]]:
                 return {}
 
+            def get_column_pii_confidence(
+                self,
+                *,
+                source_connection_id: str,
+                qualified_table: str,
+                columns: Iterable[str],
+            ) -> dict[str, tuple[str | None, float | None]]:
+                return {}
+
             def upsert_column_pii_tag_override(
                 self,
                 *,

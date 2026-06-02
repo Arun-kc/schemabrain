@@ -9,6 +9,8 @@ The grammar is a flat mapping with a small fixed schema:
       single_table: public.customers      # required; only single_table at v1
     identity: id                          # required, identifier-shaped
     origin: manual                        # optional, defaults "manual"
+    group: identity                       # optional, defaults "other";
+                                          # identity|billing|activity|other
 
 Parse errors raise `EntityParseError` (a `ValueError` subclass) with a
 message that names the offending field and shows the value when
@@ -28,8 +30,10 @@ from typing import Any
 import yaml
 
 from schemabrain.core.entity import (
+    _VALID_GROUPS,
     _VALID_ORIGINS,
     Entity,
+    Group,
     Origin,
     SingleTableBinding,
 )
@@ -38,7 +42,7 @@ from schemabrain.core.entity import (
 # schema/version bump silently changes the parser surface, so the
 # tuples are the single source of truth.
 _ALLOWED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
-    {"version", "name", "description", "binding", "identity", "origin"}
+    {"version", "name", "description", "binding", "identity", "origin", "group"}
 )
 _REQUIRED_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"version", "name", "binding", "identity"})
 
@@ -89,6 +93,7 @@ def parse_entity_yaml(text: str) -> Entity:
     binding = _parse_binding(data["binding"])
     identity = _require_str(data, "identity")
     origin = _parse_origin(data.get("origin", "manual"))
+    group = _parse_group(data.get("group", "other"))
 
     # Entity's __post_init__ runs identifier-shape + origin-enum checks.
     # Re-wrap any failure as EntityParseError so the CLI surface is
@@ -103,6 +108,7 @@ def parse_entity_yaml(text: str) -> Entity:
             binding=binding,
             identity=identity,
             origin=origin,
+            group=group,
         )
     except ValueError as exc:
         raise EntityParseError(f"entity validation failed: {exc}") from exc
@@ -145,6 +151,11 @@ def entity_to_yaml(entity: Entity) -> str:
     body["binding"] = {"single_table": entity.qualified_table}
     body["identity"] = entity.identity
     body["origin"] = entity.origin
+    # `group` is omitted when it's the "other" default so hand-edited
+    # YAML stays compact — the parser fills it back with "other". A
+    # non-default group round-trips explicitly.
+    if entity.group != "other":
+        body["group"] = entity.group
     return yaml.safe_dump(
         body,
         sort_keys=False,
@@ -287,4 +298,17 @@ def _parse_origin(raw: Any) -> Origin:
         raise EntityParseError(f"origin must be one of {sorted(_VALID_ORIGINS)} (got {raw!r})")
     # The Literal narrowing happens via the runtime check above; mypy
     # sees a `str`, but the value is provably one of the three.
+    return raw  # type: ignore[return-value]
+
+
+def _parse_group(raw: Any) -> Group:
+    # Sources from `_VALID_GROUPS` (set in `core.entity`) so the parser
+    # stays in lock-step with the `Group` Literal + the SQL CHECK on
+    # `entities."group"`. `group` is cosmetic (graph node colour), so
+    # an out-of-set value is a hard parse error rather than a silent
+    # downgrade to "other" — a typo'd `group: billing` should fail loud.
+    if not isinstance(raw, str):
+        raise EntityParseError(f"group must be a string (got {type(raw).__name__}: {raw!r})")
+    if raw not in _VALID_GROUPS:
+        raise EntityParseError(f"group must be one of {sorted(_VALID_GROUPS)} (got {raw!r})")
     return raw  # type: ignore[return-value]

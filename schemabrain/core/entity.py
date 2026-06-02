@@ -61,6 +61,20 @@ _VALID_INFERENCE_METHODS: frozenset[str] = frozenset(get_args(InferenceMethod))
 ValidationState = Literal["draft", "applied", "confirmed"]
 _VALID_VALIDATION_STATES: frozenset[str] = frozenset(get_args(ValidationState))
 
+# v15: coarse, operator-declarable grouping for the graph projection's
+# node colour / clustering. A purely cosmetic bucket — NOT a trust or
+# PII signal. YAML-declarable via the `group:` key; every entity that
+# doesn't opt in defaults to "other". This frozenset is the SOLE
+# authority for the valid set — `group` deliberately has NO SQL CHECK
+# (unlike `origin` / `inference_method` / `validation_state` below).
+# It's a cosmetic, growth-expected enum on a single-writer rebuildable
+# cache, so the domain is enforced here at the one write chokepoint
+# (`__post_init__`); a SQLite CHECK would force a table rebuild to widen
+# the enum (no ALTER-CONSTRAINT) for ~zero integrity gain. Adding a value
+# here is therefore a one-line change with no schema migration.
+Group = Literal["identity", "billing", "activity", "other"]
+_VALID_GROUPS: frozenset[str] = frozenset(get_args(Group))
+
 # Postgres unquoted identifier shape: letter/underscore lead,
 # letters/digits/underscores/`$` after. Matches the column-name regex
 # in `mcp/_helpers.py` so an entity whose `identity` column references
@@ -138,6 +152,10 @@ class Entity:
     # override these explicitly.
     inference_method: InferenceMethod = "manually_authored"
     validation_state: ValidationState = "applied"
+    # v15: coarse semantic grouping for the graph projection (node
+    # colour / clustering). Cosmetic, operator-declarable via YAML;
+    # defaults to "other". Not a trust or PII signal.
+    group: Group = "other"
 
     def __post_init__(self) -> None:
         if not _IDENT_RE.fullmatch(self.name):
@@ -161,6 +179,8 @@ class Entity:
                 f"validation_state must be one of "
                 f"{sorted(_VALID_VALIDATION_STATES)} (got {self.validation_state!r})"
             )
+        if self.group not in _VALID_GROUPS:
+            raise ValueError(f"group must be one of {sorted(_VALID_GROUPS)} (got {self.group!r})")
 
     @property
     def qualified_table(self) -> str:

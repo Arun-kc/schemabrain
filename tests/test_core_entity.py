@@ -155,6 +155,37 @@ class TestEntityOrigin:
             _make_entity(origin="auto_inferred")
 
 
+class TestEntityGroup:
+    """Group Literal closed enum, default 'other' (v15)."""
+
+    @pytest.mark.parametrize("group", ["identity", "billing", "activity", "other"])
+    def test_accepts_all_group_literals(self, group: str) -> None:
+        entity = _make_entity(group=group)
+        assert entity.group == group
+
+    def test_defaults_to_other(self) -> None:
+        assert _make_entity().group == "other"
+
+    def test_rejects_unknown_group(self) -> None:
+        with pytest.raises(ValueError, match="group"):
+            _make_entity(group="financial")
+
+
+class TestEntityTrustSignalGuards:
+    """The 2D trust-signal fields enforce their closed enums in
+    `__post_init__` so a direct (untyped) caller can't smuggle a bad
+    value past the store-side CHECK (v14).
+    """
+
+    def test_rejects_unknown_inference_method(self) -> None:
+        with pytest.raises(ValueError, match="inference_method"):
+            _make_entity(inference_method="psychic")
+
+    def test_rejects_unknown_validation_state(self) -> None:
+        with pytest.raises(ValueError, match="validation_state"):
+            _make_entity(validation_state="probably")
+
+
 class TestEntityEquality:
     def test_identical_entities_are_equal(self) -> None:
         a = _make_entity()

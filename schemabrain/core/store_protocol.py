@@ -567,6 +567,26 @@ class Store(Protocol):  # pragma: no cover
         """
         ...
 
+    def get_column_pii_confidence(
+        self,
+        *,
+        source_connection_id: str,
+        qualified_table: str,
+        columns: Iterable[str],
+    ) -> dict[str, tuple[str | None, float | None]]:
+        """Bulk-fetch the per-column PII confidence band + raw score.
+
+        Returns `column_name → (band, score)` ONLY for columns with a
+        stored row. `band` is the display bucket (`floor_locked` /
+        `high` / `medium` / `low`) or `None`; `score` is the index-time
+        raw number (the source of truth) or `None`. Both are NULL until
+        a re-index populates them — the score is computed on un-redacted
+        in-memory values at index time and cannot be recomputed from
+        store state, so a v14-migrated store and freshly-classified rows
+        both read `(None, None)` until the index-time writer lands.
+        """
+        ...
+
     def upsert_column_pii_tag_override(
         self,
         *,
