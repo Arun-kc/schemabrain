@@ -78,3 +78,4 @@ Five MCP-compatible hosts with first-class wiring. The activation wizard detects
 - [ADR 0002 — Store Protocol seam](https://github.com/Arun-kc/schemabrain/blob/main/docs/adr/0002-store-protocol-seam.md)
 - [ADR 0003 — Versioning policy](https://github.com/Arun-kc/schemabrain/blob/main/docs/adr/0003-versioning-policy.md)
 - [ADR 0004 — Observability event bus](https://github.com/Arun-kc/schemabrain/blob/main/docs/adr/0004-observability-event-bus.md)
+- [ADR 0005 — Dashboard routing under static export](https://github.com/Arun-kc/schemabrain/blob/main/docs/adr/0005-dashboard-routing-under-static-export.md)
