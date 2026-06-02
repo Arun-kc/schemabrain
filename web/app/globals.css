@@ -1,4 +1,7 @@
 @import "tailwindcss";
+@import "./sb-theme.css";
+@import "./blueprint.css";
+@import "./kit.css";
 
 /*
  * Design tokens for the SchemaBrain dashboard.
@@ -24,10 +27,16 @@
   --color-signal-amber: oklch(78% 0.16 75);
   --color-signal-red: oklch(62% 0.22 25);
 
-  /* Typography — `font-display`, `font-body`, `font-mono` */
-  --font-display: "Söhne", "Inter", system-ui, sans-serif;
-  --font-body: "Inter", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  /* Typography — `font-display`, `font-body`, `font-mono`.
+   * Repointed to the self-hosted faces loaded in app/fonts.ts (next/font/local
+   * sets --f-display/--f-mono/--f-body on <html>, each already carrying its own
+   * fallback chain). This is the only design-system scale promoted to @theme:
+   * the handoff's radii/spacing/motion live as `.sb-app`-scoped vars in
+   * sb-theme.css so they don't override the Tailwind defaults that existing
+   * surfaces depend on (rounded-lg ×6, ease-out ×27). */
+  --font-display: var(--f-display);
+  --font-body: var(--f-body);
+  --font-mono: var(--f-mono);
 
   /* Spacing rhythm — `gap-rhythm-tight`, `px-rhythm-base`, `py-section` */
   --spacing-rhythm-tight: 0.5rem;
