@@ -1,46 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
+import { useTheme } from "@/lib/useTheme";
 import styles from "./theme-toggle.module.css";
 
-type Theme = "light" | "dark";
-const STORAGE_KEY = "schemabrain.theme";
-
-function readPersistedTheme(): Theme {
-  if (typeof window === "undefined") return "light";
-  return window.localStorage.getItem(STORAGE_KEY) === "dark" ? "dark" : "light";
-}
-
-function applyTheme(theme: Theme): void {
-  if (typeof document === "undefined") return;
-  if (theme === "dark") {
-    document.documentElement.setAttribute("data-theme", "dark");
-  } else {
-    document.documentElement.removeAttribute("data-theme");
-  }
-}
-
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>("light");
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setTheme(readPersistedTheme());
-    setMounted(true);
-  }, []);
-
-  function pick(next: Theme) {
-    setTheme(next);
-    applyTheme(next);
-    try {
-      window.localStorage.setItem(STORAGE_KEY, next);
-    } catch {
-      /* private browsing — non-persistent toggle still works */
-    }
-  }
-
-  const displayTheme = mounted ? theme : "light";
+  // Theme read/apply/persist is owned by the shared useTheme hook (single
+  // source of truth, no key={theme} remount). This component is just the UI.
+  const { theme: displayTheme, setTheme: pick } = useTheme();
 
   return (
     <div role="group" aria-label="theme" className={styles.group}>

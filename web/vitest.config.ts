@@ -1,17 +1,41 @@
+import { fileURLToPath } from "node:url";
+import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
-// Vitest config kept intentionally tiny — its only job today is to
-// prevent vitest from picking up the Playwright spec under
-// `tests/e2e/`. Playwright's `test()` and vitest's `test()` are
-// different symbols; vitest would otherwise crash on the e2e file
-// with an import error.
+// Vitest config for the dashboard.
 //
-// Component-level unit tests (when we add them) live alongside the
-// components they cover (e.g. `web/components/.../Foo.test.tsx`) and
-// get picked up by vitest's default discovery.
-
+// Component unit tests live alongside the components they cover
+// (e.g. `components/kit/kit.test.tsx`) and run in jsdom with React
+// Testing Library. The Playwright spec under `tests/e2e/` is a
+// different `test()` symbol and is excluded so vitest never imports it.
+//
+// Coverage is scoped to the new design-system kit + the shared theme
+// hook. Scoping keeps the gate meaningful for the code this PR introduces
+// without demanding tests for the legacy surfaces (which are covered when
+// they are reskinned onto the kit).
 export default defineConfig({
+  plugins: [react()],
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./", import.meta.url)),
+    },
+  },
   test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./vitest.setup.ts"],
     exclude: ["**/node_modules/**", "tests/e2e/**", "playwright-report/**"],
+    coverage: {
+      provider: "v8",
+      include: ["components/kit/**/*.{ts,tsx}", "lib/useTheme.ts"],
+      exclude: ["**/index.ts"],
+      reporter: ["text", "html"],
+      thresholds: {
+        statements: 85,
+        branches: 85,
+        functions: 85,
+        lines: 85,
+      },
+    },
   },
 });

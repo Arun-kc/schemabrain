@@ -16,21 +16,13 @@
  */
 
 import { expect, test } from "@playwright/test";
+import { pinTheme, themeForProject } from "./theme";
 
-// Pin the dark theme via localStorage before the first Next.js hydration
-// runs. The dashboard reads `schemabrain.theme` on mount; without this
-// the spec would race between the system default and our intended
-// screenshot baseline.
-test.beforeEach(async ({ context }) => {
-  await context.addInitScript(() => {
-    try {
-      window.localStorage.setItem("schemabrain.theme", "dark");
-    } catch {
-      // localStorage can throw in private-mode-style sandboxes; the
-      // theme just falls back to the page default, which is fine for
-      // the assertions below.
-    }
-  });
+// Pin the theme via localStorage before the first Next.js hydration runs,
+// derived from the active project (chromium-dark / chromium-light) so the
+// same content assertions run under both themes without per-spec branching.
+test.beforeEach(async ({ context }, testInfo) => {
+  await pinTheme(context, themeForProject(testInfo));
 });
 
 test.describe("dashboard E2E smoke", () => {
