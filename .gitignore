@@ -121,6 +121,11 @@ logs/
 # Claude
 .claude/
 
+# Antigravity
+.antigravity/
+.antigravityignore
+.sb-fuzz-store.db
+
 # Agent review artifacts (PR-review rotation outputs)
 .review/
 
