@@ -25,7 +25,7 @@
   justify-content: space-between;
   gap: 1rem;
   padding-bottom: 1rem;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--hair-2);
   margin-bottom: 2.5rem;
 }
 
@@ -35,13 +35,13 @@
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--text-primary);
+  color: var(--ink);
 }
 
 .titleMeta {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  color: var(--text-muted);
+  color: var(--ink-3);
   letter-spacing: 0.02em;
 }
 
@@ -69,15 +69,6 @@
   position: relative;
 }
 
-.slabLabel {
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
 .slabNumberWrap {
   position: relative;
   margin-top: 0.75rem;
@@ -85,30 +76,26 @@
   display: flex;
   align-items: baseline;
   justify-content: center;
-  border: 1px solid var(--border-subtle);
-  background: linear-gradient(135deg, rgba(62, 207, 142, 0.06), rgba(5, 150, 105, 0.01));
-  border-radius: 8px;
-  box-shadow: inset 0 0 12px rgba(62, 207, 142, 0.04);
+  border: 1px solid color-mix(in oklch, var(--green) 24%, transparent);
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklch, var(--green) 10%, transparent),
+    color-mix(in oklch, var(--green) 2%, transparent)
+  );
+  border-radius: var(--r-lg);
+  box-shadow: inset 0 0 12px color-mix(in oklch, var(--green) 7%, transparent);
   overflow: hidden;
-  transition: all var(--duration-normal) var(--ease-out-expo);
+  transition: all var(--dur-3) var(--ease-out);
 }
 
 .slabNumberWrap[data-danger="true"] {
-  background: linear-gradient(135deg, rgba(239, 68, 68, 0.06), rgba(239, 68, 68, 0.01));
-  border-color: rgba(239, 68, 68, 0.18);
-  box-shadow: inset 0 0 12px rgba(239, 68, 68, 0.04);
-}
-
-[data-theme="dark"] .slabNumberWrap {
-  background: linear-gradient(135deg, rgba(62, 207, 142, 0.12), rgba(19, 25, 34, 0.4));
-  border-color: rgba(62, 207, 142, 0.2);
-  box-shadow: inset 0 0 20px rgba(62, 207, 142, 0.08);
-}
-
-[data-theme="dark"] .slabNumberWrap[data-danger="true"] {
-  background: linear-gradient(135deg, rgba(239, 68, 68, 0.12), rgba(19, 25, 34, 0.4));
-  border-color: rgba(239, 68, 68, 0.3);
-  box-shadow: inset 0 0 20px rgba(239, 68, 68, 0.08);
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklch, var(--alarm) 10%, transparent),
+    color-mix(in oklch, var(--alarm) 2%, transparent)
+  );
+  border-color: color-mix(in oklch, var(--alarm) 24%, transparent);
+  box-shadow: inset 0 0 12px color-mix(in oklch, var(--alarm) 7%, transparent);
 }
 
 .slabNumberWrap::before {
@@ -118,13 +105,13 @@
   left: 0;
   right: 0;
   height: 3px;
-  background: linear-gradient(90deg, var(--color-signal-green), #059669);
+  background: var(--green);
   opacity: 0.8;
-  transition: background var(--duration-normal) var(--ease-out-expo);
+  transition: background var(--dur-3) var(--ease-out);
 }
 
 .slabNumberWrap[data-danger="true"]::before {
-  background: linear-gradient(90deg, var(--color-signal-red), #dc2626);
+  background: var(--alarm);
 }
 
 .slabNumber {
@@ -138,21 +125,21 @@
   line-height: 0.9;
   letter-spacing: -0.04em;
   font-variant-numeric: tabular-nums;
-  color: var(--color-signal-green);
-  text-shadow: 0 2px 12px rgba(62, 207, 142, 0.15);
-  transition: all var(--duration-normal) var(--ease-out-expo);
+  color: var(--green);
+  text-shadow: 0 2px 12px color-mix(in oklch, var(--green) 18%, transparent);
+  transition: all var(--dur-3) var(--ease-out);
 }
 
 .slabNumber[data-danger="true"] {
-  color: var(--color-signal-red);
-  text-shadow: 0 2px 12px rgba(239, 68, 68, 0.2);
+  color: var(--alarm);
+  text-shadow: 0 2px 12px color-mix(in oklch, var(--alarm) 24%, transparent);
 }
 
 .slabSublabel {
   margin-top: 0.75rem;
   font-family: var(--font-mono);
   font-size: 0.75rem;
-  color: var(--text-secondary);
+  color: var(--ink-2);
   text-align: center;
   letter-spacing: 0.02em;
 }
@@ -171,7 +158,7 @@
   font-size: 0.6875rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--text-secondary);
+  color: var(--ink-2);
   display: flex;
   align-items: center;
 }
@@ -179,7 +166,7 @@
 .slabBreakdown {
   margin-top: 1.75rem;
   padding-top: 1rem;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--hair-2);
   display: grid;
   grid-template-columns: 3rem 1fr;
   row-gap: 0.4rem;
@@ -191,18 +178,18 @@
 
 .slabBreakdownNumber {
   text-align: right;
-  color: var(--text-primary);
+  color: var(--ink);
   font-weight: 500;
 }
 
 .slabBreakdownLabel {
-  color: var(--text-muted);
+  color: var(--ink-3);
 }
 
 .slabFooter {
   margin-top: 1rem;
   padding-top: 1rem;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--hair-2);
   display: grid;
   grid-template-columns: 3rem 1fr;
   row-gap: 0.4rem;
@@ -242,20 +229,20 @@
   font-weight: 500;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--ink-3);
   text-align: left;
   border-bottom: none;
 }
 
 .matrix thead tr.groupRow th.groupCatastrophic {
   padding-left: 1.5rem;
-  border-left: 1px solid var(--border-subtle);
-  color: var(--text-primary);
+  border-left: 1px solid var(--hair-2);
+  color: var(--ink);
 }
 
 .matrix thead tr.groupRow th.groupPii {
   padding-left: 1.5rem;
-  border-left: 1px solid var(--border-subtle);
+  border-left: 1px solid var(--hair-2);
 }
 
 /* Category header row */
@@ -267,8 +254,8 @@
   font-weight: 500;
   letter-spacing: 0.04em;
   text-transform: lowercase;
-  color: var(--text-muted);
-  border-bottom: 1px solid var(--border-subtle);
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--hair-2);
   white-space: nowrap;
   vertical-align: bottom;
 }
@@ -282,7 +269,7 @@
 }
 
 .matrix thead tr.headRow th.catastrophicHeader {
-  color: var(--text-primary);
+  color: var(--ink);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -290,7 +277,7 @@
 
 .matrix thead tr.headRow th.boundaryStart {
   padding-left: 1.5rem;
-  border-left: 1px solid var(--border-subtle);
+  border-left: 1px solid var(--hair-2);
 }
 
 .headerCell {
@@ -300,7 +287,7 @@
 
 .headerLabel {
   display: inline-block;
-  border-bottom: 1px dashed var(--color-ink-300);
+  border-bottom: 1px dashed var(--hair);
   padding-bottom: 1px;
 }
 
@@ -310,9 +297,9 @@
   bottom: 125%;
   left: 50%;
   transform: translateX(-50%);
-  background-color: var(--surface-overlay);
-  color: var(--text-primary);
-  border: 1px solid var(--border-emphasis);
+  background-color: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--hair);
   padding: 0.35rem 0.6rem;
   font-family: var(--font-mono);
   font-size: 0.6875rem;
@@ -321,9 +308,9 @@
   white-space: nowrap;
   z-index: 50;
   opacity: 0;
-  border-radius: 3px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-  transition: opacity var(--duration-fast) var(--ease-out-expo), transform var(--duration-fast) var(--ease-out-expo);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow);
+  transition: opacity var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
   pointer-events: none;
 }
 
@@ -339,9 +326,9 @@
   text-align: right;
   font-family: var(--font-mono);
   font-size: 0.875rem;
-  color: var(--text-primary);
-  border-bottom: 1px solid var(--border-subtle);
-  transition: background-color var(--duration-fast) var(--ease-out-expo), border-color var(--duration-fast) var(--ease-out-expo);
+  color: var(--ink);
+  border-bottom: 1px solid var(--hair-2);
+  transition: background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
   white-space: nowrap;
   min-width: 2.5rem;
 }
@@ -352,21 +339,21 @@
   padding-right: 1.5rem;
   font-family: var(--font-mono);
   font-size: 0.875rem;
-  color: var(--text-primary);
+  color: var(--ink);
   position: relative;
   font-weight: 500;
-  transition: all var(--duration-fast) var(--ease-out-expo);
+  transition: all var(--dur-1) var(--ease-out);
 }
 
 .matrix tbody td.entityCell .entityName {
   display: block;
-  color: var(--text-primary);
+  color: var(--ink);
 }
 
 .matrix tbody td.entityCell .entityTable {
   display: block;
   font-size: 0.6875rem;
-  color: var(--text-muted);
+  color: var(--ink-3);
   font-weight: 400;
   letter-spacing: 0.01em;
   margin-top: 0.15rem;
@@ -374,7 +361,7 @@
 
 .matrix tbody td.boundaryStart {
   padding-left: 1.5rem;
-  border-left: 1px solid var(--border-subtle);
+  border-left: 1px solid var(--hair-2);
 }
 
 .matrix tbody tr:last-child td {
@@ -383,29 +370,29 @@
 
 .matrix tbody tr {
   cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-out-expo);
+  transition: all var(--dur-1) var(--ease-out);
 }
 
 .matrix tbody tr:hover td {
-  background-color: var(--surface-raised);
+  background-color: var(--panel-2);
 }
 
 /* Selection is an interactive-state signal, not a semantic-status
-   signal. Use --text-primary (ink-900 in light, near-white in dark)
-   so the cue stays neutral/dominant in both themes regardless of
-   whether the surface is in red-danger context (catastrophic > 0). */
+   signal. Use --ink (dark in Atlas, near-white in Observatory) so the
+   cue stays neutral/dominant in both themes regardless of whether the
+   surface is in alarm-danger context (catastrophic > 0). */
 .matrix tbody tr.selected td {
-  background-color: var(--surface-raised);
-  border-bottom-color: var(--text-primary);
+  background-color: var(--panel-2);
+  border-bottom-color: var(--ink);
 }
 
 .matrix tbody tr.selected td.entityCell {
-  box-shadow: inset 4px 0 0 var(--text-primary);
+  box-shadow: inset 4px 0 0 var(--ink);
   padding-left: 1rem;
 }
 
 .matrix .zero {
-  color: var(--color-ink-500);
+  color: var(--ink-3);
   opacity: 0.55;
 }
 
@@ -414,67 +401,17 @@
   position: relative;
 }
 
+/* Catastrophic count chip — the kit `<PiiChip kind="auth">` provides the
+   alarm fill/border/colour + pill shape; this adds the bespoke
+   tabular-nums bold count + ◐-glyph baseline alignment + the matrix
+   hover-scale affordance the kit chip doesn't carry. */
 .catastrophicBadge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.125rem 0.5rem;
-  border-radius: 4px;
-  background: rgba(239, 68, 68, 0.06);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  box-shadow: 0 1px 2px rgba(239, 68, 68, 0.02);
-  transition: all var(--duration-fast) var(--ease-out-expo);
-}
-
-[data-theme="dark"] .catastrophicBadge {
-  background: rgba(239, 68, 68, 0.12);
-  border-color: rgba(239, 68, 68, 0.3);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  transition: transform var(--dur-1) var(--ease-out);
 }
 
 .catastrophicBadge:hover {
-  background: rgba(239, 68, 68, 0.12);
-  border-color: var(--color-signal-red);
-  transform: scale(1.05);
-}
-
-/* Catastrophic chip count: signal-red bold, matching the pill border
-   + tint. Single-tone treatment keeps the chip visually crisp instead
-   of mixing red icon with ink count. Pairs with the slab going
-   signal-red in the same danger context. */
-.catastrophicGlyph {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.35em;
-  font-family: var(--font-mono);
-  font-size: 0.8125rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--color-signal-red);
-  font-weight: 700;
-}
-
-/* Standard PII indicator badge */
-.piiBadge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.125rem 0.5rem;
-  border-radius: 4px;
-  background: rgba(245, 158, 11, 0.06);
-  border: 1px solid rgba(245, 158, 11, 0.15);
-  color: var(--color-signal-amber);
-  font-weight: 600;
-  font-size: 0.8125rem;
-  transition: all var(--duration-fast) var(--ease-out-expo);
-}
-
-[data-theme="dark"] .piiBadge {
-  background: rgba(245, 158, 11, 0.12);
-  border-color: rgba(245, 158, 11, 0.25);
-}
-
-.piiBadge:hover {
-  background: rgba(245, 158, 11, 0.12);
-  border-color: var(--color-signal-amber);
   transform: scale(1.05);
 }
 
@@ -483,19 +420,19 @@
   margin-top: 1rem;
   font-family: var(--font-mono);
   font-size: 0.6875rem;
-  color: var(--text-muted);
+  color: var(--ink-3);
   letter-spacing: 0.04em;
 }
 
 .matrixCaption .glyph {
-  color: var(--color-signal-red);
+  color: var(--alarm);
 }
 
 /* ---------- Drilldown card ---------- */
 
 .drilldown {
   margin-top: 3rem;
-  animation: slideUp var(--duration-normal) var(--ease-out-expo);
+  animation: slideUp var(--dur-3) var(--ease-out);
 }
 
 @keyframes slideUp {
@@ -515,35 +452,30 @@
   font-weight: 600;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--ink-3);
   margin-bottom: 0.5rem;
 }
 
 .drilldownLabel strong {
-  color: var(--text-primary);
+  color: var(--ink);
   font-weight: 700;
   margin-left: 0.5rem;
 }
 
+/* Drilldown card — the `.sb-card` solid-surface idiom (panel fill,
+   hairline border, design-system shadow + radius). The new --panel /
+   --shadow tokens auto-swap per theme, so the prior bespoke dark glass
+   override is no longer needed. */
 .drilldownCard {
-  border: 1px solid var(--border-emphasis);
-  background: var(--surface-overlay);
+  border: 1px solid var(--hair);
+  background: var(--panel);
   padding: 1.75rem 2.25rem;
-  box-shadow: 0 12px 48px -12px rgba(0, 0, 0, 0.06);
-  transition: all var(--duration-normal) var(--ease-out-expo);
+  box-shadow: var(--shadow);
+  transition: all var(--dur-3) var(--ease-out);
   position: relative;
   overflow: hidden;
-  border-radius: 8px;
+  border-radius: var(--r-lg);
 }
-
-[data-theme="dark"] .drilldownCard {
-  background: rgba(19, 25, 34, 0.65);
-  backdrop-filter: blur(16px) saturate(180%);
-  -webkit-backdrop-filter: blur(16px) saturate(180%);
-  border: 1px solid var(--border-emphasis);
-  box-shadow: 0 12px 48px -12px rgba(0, 0, 0, 0.4);
-}
-
 
 .drilldownHeader {
   display: flex;
@@ -551,7 +483,7 @@
   justify-content: space-between;
   gap: 1rem;
   padding-bottom: 1rem;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--hair-2);
   flex-wrap: wrap;
 }
 
@@ -564,7 +496,7 @@
 .drilldownHeaderMeta {
   font-family: var(--font-mono);
   font-size: 0.75rem;
-  color: var(--text-secondary);
+  color: var(--ink-2);
   letter-spacing: 0.01em;
 }
 
@@ -579,25 +511,25 @@
 }
 
 .columnList > .colName {
-  color: var(--text-primary);
+  color: var(--ink);
   font-weight: 600;
 }
 
 .columnList > .colType {
-  color: var(--text-secondary);
+  color: var(--ink-2);
   opacity: 0.8;
 }
 
 .columnList > .colClass {
-  color: var(--text-muted);
+  color: var(--ink-3);
 }
 
 .columnList > .colCategories {
-  color: var(--text-secondary);
+  color: var(--ink-2);
 }
 
 .colCategories .catastrophic {
-  color: var(--text-primary);
+  color: var(--ink);
   font-weight: 700;
 }
 
@@ -605,19 +537,20 @@
 
 .errorCard {
   margin-top: 2rem;
-  border: 1px solid var(--color-ink-700);
-  background: var(--surface-overlay);
+  border: 1px solid var(--hair);
+  background: var(--panel);
   padding: 2rem 2.5rem;
   display: grid;
   grid-template-columns: 1.5rem 1fr;
   column-gap: 1rem;
   max-width: 56rem;
+  border-radius: var(--r-lg);
 }
 
 .errorIcon {
   font-family: var(--font-mono);
   font-size: 1.25rem;
-  color: var(--text-secondary);
+  color: var(--ink-2);
   line-height: 1.2;
 }
 
@@ -625,7 +558,7 @@
   font-family: var(--font-display);
   font-size: 1.25rem;
   font-weight: 500;
-  color: var(--text-primary);
+  color: var(--ink);
   margin-bottom: 0.75rem;
   letter-spacing: 0.02em;
 }
@@ -633,7 +566,7 @@
 .errorBody p {
   font-family: var(--font-mono);
   font-size: 0.875rem;
-  color: var(--text-secondary);
+  color: var(--ink-2);
   line-height: 1.6;
   margin-bottom: 0.75rem;
 }
@@ -642,12 +575,13 @@
   display: block;
   font-family: var(--font-mono);
   font-size: 0.875rem;
-  color: var(--color-signal-green);
-  background: var(--surface-raised);
-  border: 1px solid var(--border-subtle);
+  color: var(--green);
+  background: var(--panel-2);
+  border: 1px solid var(--hair-2);
   padding: 0.5rem 0.75rem;
   margin-top: 0.25rem;
   margin-bottom: 0.25rem;
+  border-radius: var(--r-sm);
 }
 
 /* ---------- Skeleton ---------- */
@@ -658,7 +592,7 @@
   gap: 0.75rem;
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  color: var(--text-muted);
+  color: var(--ink-3);
   padding-block: 2rem;
 }
 
@@ -667,7 +601,7 @@
   width: 0.5rem;
   height: 0.5rem;
   border-radius: 50%;
-  background: var(--text-muted);
+  background: var(--ink-3);
   animation: pulse 1.4s ease-in-out infinite;
 }
 
@@ -712,8 +646,8 @@
   font-weight: 600;
   letter-spacing: 0.15em;
   text-transform: uppercase;
-  color: var(--text-muted);
-  border-bottom: 1px solid var(--border-subtle);
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--hair-2);
   padding-bottom: 0.5rem;
   margin-bottom: 1rem;
 }
@@ -725,27 +659,27 @@
 }
 
 .metricItem, .joinItem {
-  border-left: 2px solid var(--border-subtle);
+  border-left: 2px solid var(--hair-2);
   padding-left: 0.75rem;
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  transition: border-color var(--duration-fast);
+  transition: border-color var(--dur-1);
 }
 
 .metricItem:hover {
-  border-left-color: var(--color-signal-green);
+  border-left-color: var(--green);
 }
 
 .joinItem:hover {
-  border-left-color: #3b82f6;
+  border-left-color: var(--cyan);
 }
 
 .itemHeader {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--ink);
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -754,30 +688,34 @@
 .itemLabel {
   font-family: var(--font-mono);
   font-size: 0.75rem;
-  color: var(--text-secondary);
+  color: var(--ink-2);
   line-height: 1.4;
 }
 
+/* Metric / join pills — mirror the kit `.sb-chip.green` / `.sb-chip.cyan`
+   tints (12% fill, 40% border) so they read as the same chip language. */
 .badgePill {
   font-family: var(--font-mono);
   font-size: 0.625rem;
-  font-weight: 500;
-  padding: 0.05rem 0.35rem;
-  border-radius: 3px;
+  font-weight: 600;
+  /* Pill geometry matches the kit .sb-chip (r-pill, 3x9 padding) so the
+     metric/join labels read as system chips, not bespoke square badges. */
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
 .metricPill {
-  background: rgba(62, 207, 142, 0.08);
-  border: 1px solid rgba(62, 207, 142, 0.25);
-  color: var(--color-signal-green);
+  background: color-mix(in oklch, var(--green) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--green) 40%, transparent);
+  color: var(--green);
 }
 
 .joinPill {
-  background: rgba(59, 130, 246, 0.08);
-  border: 1px solid rgba(59, 130, 246, 0.25);
-  color: #3b82f6;
+  background: color-mix(in oklch, var(--cyan) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--cyan) 40%, transparent);
+  color: var(--cyan);
 }
 
 /* The right-hand semantic pane stacks Metrics + Joins sections. Gap
@@ -801,14 +739,14 @@
 .itemDetail {
   font-family: var(--font-mono);
   font-size: 0.625rem;
-  color: var(--text-muted);
+  color: var(--ink-3);
 }
 
 /* Empty-state copy when an entity has no metrics or no joins. */
 .paneEmpty {
   font-family: var(--font-mono);
   font-size: 0.75rem;
-  color: var(--text-muted);
+  color: var(--ink-3);
   font-style: italic;
 }
 
@@ -817,9 +755,9 @@
   display: block;
   font-family: var(--font-mono);
   font-size: 0.625rem;
-  background: var(--surface-raised);
-  color: var(--color-signal-green);
+  background: var(--panel-2);
+  color: var(--green);
   padding: 0.25rem;
-  border-radius: 3px;
+  border-radius: var(--r-sm);
   overflow-x: auto;
 }

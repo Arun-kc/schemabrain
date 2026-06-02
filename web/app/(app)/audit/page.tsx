@@ -1,10 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { HalfCircleIcon } from "@/components/icons/HalfCircleIcon";
+import { Button, Eyebrow, Icon, PiiChip } from "@/components/kit";
 import type { AuditRow } from "@/lib/types";
 import styles from "@/components/audit/ledger.module.css";
 
@@ -25,7 +25,7 @@ export default function AuditPage() {
     if (auditRowsQuery.isPending || auditVerifyQuery.isPending) {
       return (
         <div className={styles.shell}>
-          <p className="font-mono text-xs text-(--text-muted) animate-pulse">loading audit ledger substrate…</p>
+          <p className="font-mono text-xs text-(--ink-3) animate-pulse">loading audit ledger substrate…</p>
         </div>
       );
     }
@@ -33,7 +33,7 @@ export default function AuditPage() {
     if (auditRowsQuery.isError) {
       return (
         <div className={styles.shell}>
-          <div className={styles.ribbon} style={{ borderColor: "var(--color-signal-red)" }}>
+          <div className={styles.ribbon} style={{ borderColor: "var(--alarm)" }}>
             <div className={styles.ribbonText}>
               <h2>Failed to Load Cryptographic Ledger</h2>
               <p>{auditRowsQuery.error.message}</p>
@@ -65,7 +65,7 @@ export default function AuditPage() {
               {isIntact ? (
                 <>
                   <HalfCircleIcon
-                    className="text-(--color-signal-green) w-5 h-5"
+                    className="text-(--green) w-5 h-5"
                     aria-label="Ledger chain intact"
                   />
                   Ledger Chain Intact
@@ -73,7 +73,7 @@ export default function AuditPage() {
               ) : (
                 <>
                   <HalfCircleIcon
-                    className="text-(--color-signal-red) w-5 h-5"
+                    className="text-(--alarm) w-5 h-5"
                     aria-label="Ledger chain mismatch"
                   />
                   Ledger Chain Mismatch
@@ -86,27 +86,23 @@ export default function AuditPage() {
                 : "Chain verify detected a mismatch in block hashes. Re-run indexer or check sidecar logs."}
             </p>
           </div>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => {
-                auditVerifyQuery.refetch();
-                auditRowsQuery.refetch();
-              }}
-              className={styles.actionBtn}
-              aria-label="Verify chain"
-            >
-              Verify ledger
-            </button>
-            <Link href="/" className={styles.backBtn}>
-              ← dashboard
-            </Link>
-          </div>
+          <Button
+            variant="primary"
+            icon="shield-check"
+            onClick={() => {
+              auditVerifyQuery.refetch();
+              auditRowsQuery.refetch();
+            }}
+            aria-label="Verify chain"
+          >
+            Verify ledger
+          </Button>
         </div>
 
         {rows.length === 0 ? (
-          <div className="text-center py-20 border border-dashed border-(--border-subtle) rounded-lg">
-            <h3 className="font-display text-lg font-semibold text-(--text-primary) mb-2">No Transactions Audited</h3>
-            <p className="font-mono text-xs text-(--text-muted)">The active source database hasn’t processed any LLM tool requests yet.</p>
+          <div className="text-center py-20 border border-dashed border-(--hair) rounded-[13px]">
+            <h3 className="font-display text-lg font-semibold text-(--ink) mb-2">No Transactions Audited</h3>
+            <p className="font-mono text-xs text-(--ink-3)">The active source database hasn’t processed any LLM tool requests yet.</p>
           </div>
         ) : (
           <div className={styles.layout}>
@@ -144,18 +140,18 @@ export default function AuditPage() {
                       >
                         <td>#{row.id}</td>
                         <td>{dateStr}</td>
-                        <td className="font-semibold text-(--text-primary)">{row.tool_name}</td>
+                        <td className="font-semibold text-(--ink)">{row.tool_name}</td>
                         <td>
-                          <span
-                            className={
-                              row.status === "refused" ? styles.statusRefused : styles.statusSuccess
-                            }
-                          >
+                          <PiiChip kind={row.status === "refused" ? "auth" : "green"} dot>
                             {row.status}
+                          </PiiChip>
+                        </td>
+                        <td>
+                          <span className={styles.costChip} data-cost={row.cost_class}>
+                            {row.cost_class}
                           </span>
                         </td>
-                        <td>{row.cost_class}</td>
-                        <td className="text-(--text-muted)">{row.chain_hash_hex.substring(0, 12)}…</td>
+                        <td className="text-(--cyan)">{row.chain_hash_hex.substring(0, 12)}…</td>
                       </tr>
                     );
                   })}
@@ -175,9 +171,7 @@ export default function AuditPage() {
                   </header>
 
                   {/* Blockchain graphic links */}
-                  <h4 className="font-mono text-[10px] uppercase tracking-widest text-(--text-muted) mb-3">
-                    Cryptographic Integrity Linkage
-                  </h4>
+                  <Eyebrow className="mb-3">Cryptographic Integrity Linkage</Eyebrow>
                   <div className={styles.chainCard}>
                     <div className={styles.chainLink}>
                       <div className={styles.chainHashBox}>
@@ -187,28 +181,24 @@ export default function AuditPage() {
 
                       <div className={styles.chainConnectorLine}>
                         <div className={styles.chainIcon}>
-                          🔗
+                          <Icon name="link" size={14} label="chain link" />
                         </div>
                       </div>
 
                       <div className={styles.chainHashBox}>
                         <span className={styles.hashLabel}>current_chain_hash (this block)</span>
-                        <span className={styles.hashValue} style={{ borderColor: "var(--color-signal-green)" }}>
+                        <span className={styles.hashValue} style={{ borderColor: "var(--green)" }}>
                           {activeRow.chain_hash_hex.substring(0, 28)}…
                         </span>
                       </div>
                     </div>
                   </div>
 
-                  <h4 className="font-mono text-[10px] uppercase tracking-widest text-(--text-muted) mb-2">
-                    Immutable Block Payload
-                  </h4>
+                  <Eyebrow className="mb-2">Immutable Block Payload</Eyebrow>
                   <div className={styles.codePanel}>
                     <div className={styles.codeHeader}>
                       <span className={styles.codeTitle}>Audit Row Telemetry Context</span>
-                      <span className="font-mono text-[10px] text-emerald-500 uppercase tracking-widest">
-                        // Verified intact
-                      </span>
+                      <Eyebrow className="text-(--green)">// Verified intact</Eyebrow>
                     </div>
                     <pre className={styles.codeArea}>
                       {JSON.stringify(
@@ -233,7 +223,7 @@ export default function AuditPage() {
                 </div>
               ) : (
                 <div className={styles.detailCard}>
-                  <p className="font-mono text-xs text-(--text-muted) text-center">Select an audited block to view details.</p>
+                  <p className="font-mono text-xs text-(--ink-3) text-center">Select an audited block to view details.</p>
                 </div>
               )}
             </div>

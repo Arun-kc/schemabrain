@@ -6,6 +6,7 @@ import { cn } from "@/lib/cn";
 import type { PIICategory, Sensitivity } from "@/lib/types";
 import { TrustBadge } from "./TrustBadge";
 import { HalfCircleIcon } from "../icons/HalfCircleIcon";
+import { Eyebrow } from "@/components/kit";
 import styles from "./ledger.module.css";
 
 /**
@@ -33,9 +34,9 @@ export function Drilldown({
   if (entityName === null) return null;
   return (
     <section className={styles.drilldown} aria-live="polite">
-      <p className={styles.drilldownLabel}>
+      <Eyebrow className={styles.drilldownLabel}>
         selected <strong>{entityName}</strong>
-      </p>
+      </Eyebrow>
       <DrilldownCard
         entityName={entityName}
         sourceId={sourceId}
@@ -69,7 +70,7 @@ function DrilldownCard({
   if (query.isError) {
     return (
       <div className={styles.drilldownCard}>
-        <p className={styles.drilldownHeaderMeta} style={{ color: "var(--color-signal-red)" }}>
+        <p className={styles.drilldownHeaderMeta} style={{ color: "var(--alarm)" }}>
           {query.error.message}
         </p>
       </div>
@@ -211,7 +212,7 @@ function ColumnRow({
             <span key={cat}>
               <span className={cn(catastrophicSet.has(cat) && styles.catastrophic)}>
                 {catastrophicSet.has(cat) && (
-                  <HalfCircleIcon className="text-(--color-signal-red) w-3.5 h-3.5 mr-1 align-middle inline-block" />
+                  <HalfCircleIcon className="text-(--alarm) w-3.5 h-3.5 mr-1 align-middle inline-block" />
                 )}
                 {cat}
               </span>

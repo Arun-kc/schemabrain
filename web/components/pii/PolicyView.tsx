@@ -2,6 +2,7 @@
 
 import { Fragment, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Eyebrow, Icon, PiiChip } from "@/components/kit";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { useSourceId } from "@/lib/useSourceId";
@@ -26,10 +27,12 @@ import styles from "./policy.module.css";
  * verdict listing with operator-override provenance.
  *
  * Single-source-of-truth for visual language: matches Matrix's slab
- * + table composition, signal-red catastrophic chip, signal-amber
- * pii chip, signal-green safe chip. Verdict cells use the same
- * three-tone palette so colour means the same thing across both
- * surfaces.
+ * + table composition via the shared kit — PiiChip for catastrophic
+ * (alarm) / pii (amber) / safe (green) chips, Eyebrow for mono labels,
+ * .sb-card panels. Verdict cells use the same chip kinds so colour
+ * means the same thing across both surfaces. Floor (always-on
+ * catastrophic) chips and verdicts carry a lock affordance so
+ * "can't be disabled" is visually legible.
  */
 
 interface PolicyViewProps {
@@ -137,6 +140,7 @@ function DriftBanner({ drift }: { drift: PolicyDriftState }) {
   return (
     <div className={styles.driftBanner} role="alert">
       <span className={styles.driftBannerLabel}>
+        <Icon name="rotate-cw" size={12} strokeWidth={2.25} />
         pii_policy.yaml changed since serve started
       </span>
       <span className={styles.driftBannerBody}>
@@ -167,20 +171,23 @@ function ActiveBlockPanel({
   const extras = activeBlock.filter((c) => !floorSet.has(c));
   return (
     <div className={styles.panel}>
-      <p className={styles.panelLabel}>active block</p>
+      <Eyebrow className={styles.panelLabel}>active block</Eyebrow>
       <ul className={styles.chipList} aria-label="active block categories">
         {catastrophicFloor.map((cat) => (
-          <li key={cat} className={cn(styles.chip, styles.chipCatastrophic)}>
-            <span className={styles.chipGlyph} aria-hidden="true">
-              ◐
-            </span>
-            <span>{cat.replace(/_/g, " ")}</span>
-            <span className={styles.chipTag}>floor</span>
+          <li key={cat}>
+            <PiiChip kind="auth" className={styles.chipFloor}>
+              <span className={styles.chipGlyph} aria-hidden="true">
+                ◐
+              </span>
+              <Icon name="lock" size={10} className={styles.chipLock} label="locked floor" />
+              <span>{cat.replace(/_/g, " ")}</span>
+              <span className={styles.chipTag}>floor</span>
+            </PiiChip>
           </li>
         ))}
         {extras.map((cat) => (
-          <li key={cat} className={cn(styles.chip, styles.chipExtra)}>
-            <span>{cat.replace(/_/g, " ")}</span>
+          <li key={cat}>
+            <PiiChip kind="contact">{cat.replace(/_/g, " ")}</PiiChip>
           </li>
         ))}
       </ul>
@@ -219,7 +226,7 @@ function DiffPreviewPanel({
   ];
   return (
     <div className={styles.panel}>
-      <p className={styles.panelLabel}>posture preview</p>
+      <Eyebrow className={styles.panelLabel}>posture preview</Eyebrow>
       <table className={styles.diffTable} aria-label="diff preview across postures">
         <tbody>
           {rows.map((row) => (
@@ -287,9 +294,17 @@ function CategoryRollup({
             <tr key={row.category}>
               <th scope="row" className={styles.rollupCategory}>
                 {row.blocked_by_catastrophic_floor && (
-                  <span className={styles.rollupFloorGlyph} aria-hidden="true">
-                    ◐
-                  </span>
+                  <Fragment>
+                    <span className={styles.rollupFloorGlyph} aria-hidden="true">
+                      ◐
+                    </span>
+                    <Icon
+                      name="lock"
+                      size={11}
+                      className={styles.rollupFloorLock}
+                      label="locked floor"
+                    />
+                  </Fragment>
                 )}
                 {row.category.replace(/_/g, " ")}
               </th>
@@ -316,6 +331,26 @@ function CategoryRollup({
   );
 }
 
+/* Tooltip copy shared by the rollup + per-column verdict chips. */
+const BLOCKED_TITLE = "Blocked by your active policy — editable in pii_policy.yaml.";
+const FLOOR_TITLE =
+  "Blocked by the always-on catastrophic-leak floor — enforced at every read gate (describe_* and get_metric) and can't be disabled.";
+
+/** Always-on floor verdict: alarm chip + ◐ glyph + lock affordance. */
+function FloorBadge() {
+  return (
+    <span title={FLOOR_TITLE}>
+      <PiiChip kind="auth" className={styles.floorBadge}>
+        <span className={styles.floorBadgeGlyph} aria-hidden="true">
+          ◐
+        </span>
+        <Icon name="lock" size={10} label="locked floor" />
+        floor
+      </PiiChip>
+    </span>
+  );
+}
+
 function EnforcementChip({
   blockedByActive,
   blockedByFloor,
@@ -325,25 +360,15 @@ function EnforcementChip({
 }) {
   if (blockedByActive) {
     return (
-      <span
-        className={cn(styles.miniChip, styles.miniChipBlocked)}
-        title="Blocked by your active policy — editable in pii_policy.yaml."
-      >
-        blocked
+      <span title={BLOCKED_TITLE}>
+        <PiiChip kind="auth">blocked</PiiChip>
       </span>
     );
   }
   if (blockedByFloor) {
-    return (
-      <span
-        className={cn(styles.miniChip, styles.miniChipFloorBlocked)}
-        title="Blocked by the always-on catastrophic-leak floor — enforced at every read gate (describe_* and get_metric) and can't be disabled."
-      >
-        floor
-      </span>
-    );
+    return <FloorBadge />;
   }
-  return <span className={cn(styles.miniChip, styles.miniChipAllowed)}>allowed</span>;
+  return <PiiChip kind="green">allowed</PiiChip>;
 }
 
 /* ─────────── per-column table ─────────── */
@@ -485,40 +510,21 @@ function PerColumnRow({ row }: { row: PolicyColumnEntry }) {
 }
 
 function OriginBadge({ origin }: { origin: PolicyOrigin }) {
-  return (
-    <span
-      className={cn(
-        styles.miniChip,
-        origin === "operator" ? styles.miniChipOperator : styles.miniChipHeuristic,
-      )}
-    >
-      {origin}
-    </span>
-  );
+  return <PiiChip kind={origin === "operator" ? "green" : "neutral"}>{origin}</PiiChip>;
 }
 
 function VerdictBadge({ verdict }: { verdict: EffectiveEnforcement }) {
   if (verdict === "blocked") {
     return (
-      <span
-        className={cn(styles.miniChip, styles.miniChipBlocked)}
-        title="Blocked by your active policy — editable in pii_policy.yaml."
-      >
-        blocked
+      <span title={BLOCKED_TITLE}>
+        <PiiChip kind="auth">blocked</PiiChip>
       </span>
     );
   }
   if (verdict === "floor_blocked") {
-    return (
-      <span
-        className={cn(styles.miniChip, styles.miniChipFloorBlocked)}
-        title="Blocked by the always-on catastrophic-leak floor — enforced at every read gate (describe_* and get_metric) and can't be disabled."
-      >
-        floor
-      </span>
-    );
+    return <FloorBadge />;
   }
-  return <span className={cn(styles.miniChip, styles.miniChipAllowed)}>allowed</span>;
+  return <PiiChip kind="green">allowed</PiiChip>;
 }
 
 /* ─────────── error state ─────────── */

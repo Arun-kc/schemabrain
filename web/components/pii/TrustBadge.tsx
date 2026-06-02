@@ -18,17 +18,17 @@ import type { InferenceMethod, ValidationState } from "@/lib/types";
  */
 
 const INFERENCE_BG: Record<InferenceMethod, string> = {
-  manually_authored: "bg-(--color-ink-900)",
-  fk_constraint: "bg-(--color-signal-green)",
-  llm_suggested: "bg-(--color-signal-amber)",
-  dbt_import: "bg-(--color-ink-700)",
-  observed_in_query_log: "bg-(--color-ink-500)",
+  manually_authored: "bg-(--ink)",
+  fk_constraint: "bg-(--green)",
+  llm_suggested: "bg-(--amber)",
+  dbt_import: "bg-(--ink-2)",
+  observed_in_query_log: "bg-(--ink-3)",
 };
 
 const VALIDATION_RING: Record<ValidationState, string> = {
-  draft: "ring-1 ring-(--color-ink-300)",
-  applied: "ring-2 ring-(--color-ink-500)",
-  confirmed: "ring-[3px] ring-(--color-signal-green)",
+  draft: "ring-1 ring-(--hair)",
+  applied: "ring-2 ring-(--ink-3)",
+  confirmed: "ring-[3px] ring-(--green)",
 };
 
 const METHOD_TAG: Record<InferenceMethod, string> = {
@@ -83,7 +83,7 @@ export function TrustBadge({
         <span
           aria-hidden="true"
           className={cn(
-            "font-mono uppercase tracking-wider text-(--text-secondary)",
+            "font-mono uppercase tracking-wider text-(--ink-2)",
             tagSize,
           )}
         >
