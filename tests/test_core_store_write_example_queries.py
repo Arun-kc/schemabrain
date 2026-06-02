@@ -60,108 +60,143 @@ def _eq(
     )
 
 
-class TestSchemaVersionBumpToV14:
-    """v14 schema contract: fresh stores stamp `schema_version='14'`;
-    v13 stores migrate in-place via `_migrate_v13_to_v14`; pre-v13
-    stores still raise `SchemaVersionMismatchError` (pre-alpha
-    cliff — no migration path for v12-or-older). Per project
-    convention only the current N-1 version-bump test is retained.
+class TestSchemaVersionBumpToV15:
+    """v15 schema contract.
+
+    Fresh stores stamp `schema_version='15'`; v14 stores migrate
+    in-place via `_migrate_v14_to_v15`; v13 stores CHAIN 13→14→15
+    (Option B — `_migrate_v13_to_v14` then `_migrate_v14_to_v15` in a
+    single open, with `existing_version` reassigned between them);
+    pre-v13 stores still raise `SchemaVersionMismatchError` — the
+    pre-alpha cliff does NOT move under chaining. The v13→v14 in-place
+    behaviour is subsumed by the chaining test below.
     """
 
-    def test_fresh_store_has_schema_version_14(self, tmp_path: Path) -> None:
+    # Columns/tables each version added — dropped here to fabricate an
+    # older on-disk shape from the current (v15-aware) codebase. `"group"`
+    # is pre-quoted because GROUP is a reserved keyword.
+    _V14_TRUST_COLS = ("inference_method", "validation_state")
+    _V15_ENTITY_COLS = ('"group"', "bind_confidence", "rationale")
+    _V15_TABLES_COLS = ("estimated_row_count",)
+    _V15_PII_COLS = ("pii_confidence", "pii_confidence_score")
+    _V15_DESC_COLS = ("semantic_type", "meaning", "col_confidence")
+
+    @classmethod
+    def _downgrade_to_v14(cls, conn: sqlite3.Connection) -> None:
+        """Strip the v15 additions so the store looks like a v14 store."""
+        conn.execute("DROP TABLE IF EXISTS graph_edges")
+        conn.execute("DROP TABLE IF EXISTS graph_nodes")
+        for col in cls._V15_ENTITY_COLS:
+            conn.execute(f"ALTER TABLE entities DROP COLUMN {col}")
+        for col in cls._V15_TABLES_COLS:
+            conn.execute(f"ALTER TABLE tables DROP COLUMN {col}")
+        for col in cls._V15_PII_COLS:
+            conn.execute(f"ALTER TABLE column_pii_tags DROP COLUMN {col}")
+        for col in cls._V15_DESC_COLS:
+            conn.execute(f"ALTER TABLE column_descriptions DROP COLUMN {col}")
+
+    @classmethod
+    def _downgrade_to_v13(cls, conn: sqlite3.Connection) -> None:
+        """Strip v15 AND v14 additions so the store looks like a v13 store."""
+        cls._downgrade_to_v14(conn)
+        for table in ("entities", "metrics", "canonical_joins"):
+            for col in cls._V14_TRUST_COLS:
+                conn.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
+
+    @staticmethod
+    def _seed_semantic_rows(conn: sqlite3.Connection) -> None:
+        """Seed all four semantic surfaces honouring the FK chain.
+
+        Uses the minimal v13/v14 column shape (no trust / v15 columns)
+        so the same seed works against either downgraded shape — the
+        omitted columns either don't exist yet or take their DEFAULT.
+        """
+        for name in ("orders", "users"):
+            conn.execute(
+                "INSERT INTO tables (schema_name, name, source_connection_id, indexed_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("public", name, "src", 1_700_000_000),
+            )
+        conn.execute(
+            "INSERT INTO entities ("
+            "source_connection_id, name, description, binding_schema, "
+            "binding_table, identity, origin, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("src", "order", "", "public", "orders", "id", "suggested", 0, 0),
+        )
+        conn.execute(
+            "INSERT INTO entities ("
+            "source_connection_id, name, description, binding_schema, "
+            "binding_table, identity, origin, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("src", "user", "", "public", "users", "id", "manual", 0, 0),
+        )
+        conn.execute(
+            "INSERT INTO metrics ("
+            "source_connection_id, name, description, entity, measure_agg, "
+            "measure_column, measure_expression, time_dimension, "
+            "time_grains, origin, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("src", "order_count", "", "order", "count", "id", None, None, "", "suggested", 0, 0),
+        )
+        conn.execute(
+            "INSERT INTO canonical_joins ("
+            "source_connection_id, name, description, source_entity, "
+            "target_entity, on_columns_json, origin, cardinality, "
+            "created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "src",
+                "order_to_user",
+                "",
+                "order",
+                "user",
+                '[["user_id", "id"]]',
+                "manual",
+                "many_to_one",
+                0,
+                0,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO column_pii_tags ("
+            "source_connection_id, qualified_table, column_name, sensitivity, "
+            "categories, origin, classified_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("src", "public.users", "email", "pii", "", "heuristic", 0),
+        )
+        conn.commit()
+
+    @staticmethod
+    def _semantic_counts(conn: sqlite3.Connection) -> dict[str, int]:
+        return {
+            table: conn.execute(f"SELECT count(*) AS n FROM {table}").fetchone()["n"]
+            for table in ("entities", "metrics", "canonical_joins", "column_pii_tags")
+        }
+
+    def test_fresh_store_has_schema_version_15(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "sb.db") as store:
             row = (
                 store._require_conn()
                 .execute("SELECT value FROM schemabrain_meta WHERE key = 'schema_version'")
                 .fetchone()
             )
-            assert row["value"] == "14"
+            assert row["value"] == "15"
 
-    def test_v13_store_migrates_in_place(self, tmp_path: Path) -> None:
-        # v13 → v14 is the first real migration. Seed a v13 store with
-        # rows in entities / metrics / canonical_joins under origin
-        # values, close it, re-open with v14 code, and verify (a) the
-        # version bumped, (b) the new columns are populated, (c) the
-        # backfill from `origin` lands on the correct trust signal.
+    def test_v14_store_migrates_in_place(self, tmp_path: Path) -> None:
+        # Fabricate a v14 store (drop the v15 columns + graph tables),
+        # seed all four semantic surfaces, re-open with v15 code, and
+        # verify (a) version bumped to 15, (b) the new columns exist and
+        # carry the NULL/default backfill, (c) every seeded row across
+        # entities / metrics / canonical_joins / column_pii_tags
+        # survives, (d) the graph tables were (re)created EMPTY.
         db_path = tmp_path / "sb.db"
         with SQLiteStore(db_path) as store:
             conn = store._require_conn()
-            # Stamp the meta row to v13 so the re-open sees a v13 store.
-            # Drop the v14 columns we just added so the migration has
-            # work to do; this is the only way to fabricate a v13 shape
-            # from a v14-aware codebase.
-            conn.execute("UPDATE schemabrain_meta SET value = '13' WHERE key = 'schema_version'")
-            for table in ("entities", "metrics", "canonical_joins"):
-                conn.execute(f"ALTER TABLE {table} DROP COLUMN inference_method")
-                conn.execute(f"ALTER TABLE {table} DROP COLUMN validation_state")
-            # Seed `tables` + `entities` rows because the FK chain
-            # forces this order. Two entities so a canonical join can
-            # reference both.
-            conn.execute(
-                "INSERT INTO tables (schema_name, name, source_connection_id, indexed_at) "
-                "VALUES (?, ?, ?, ?)",
-                ("public", "orders", "src", 1_700_000_000),
-            )
-            conn.execute(
-                "INSERT INTO tables (schema_name, name, source_connection_id, indexed_at) "
-                "VALUES (?, ?, ?, ?)",
-                ("public", "users", "src", 1_700_000_000),
-            )
-            conn.execute(
-                "INSERT INTO entities ("
-                "source_connection_id, name, description, binding_schema, "
-                "binding_table, identity, origin, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                ("src", "order", "", "public", "orders", "id", "suggested", 0, 0),
-            )
-            conn.execute(
-                "INSERT INTO entities ("
-                "source_connection_id, name, description, binding_schema, "
-                "binding_table, identity, origin, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                ("src", "user", "", "public", "users", "id", "manual", 0, 0),
-            )
-            conn.execute(
-                "INSERT INTO metrics ("
-                "source_connection_id, name, description, entity, measure_agg, "
-                "measure_column, measure_expression, time_dimension, "
-                "time_grains, origin, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    "src",
-                    "order_count",
-                    "",
-                    "order",
-                    "count",
-                    "id",
-                    None,
-                    None,
-                    "",
-                    "suggested",
-                    0,
-                    0,
-                ),
-            )
-            conn.execute(
-                "INSERT INTO canonical_joins ("
-                "source_connection_id, name, description, source_entity, "
-                "target_entity, on_columns_json, origin, cardinality, "
-                "created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    "src",
-                    "order_to_user",
-                    "",
-                    "order",
-                    "user",
-                    '[["user_id", "id"]]',
-                    "manual",
-                    "many_to_one",
-                    0,
-                    0,
-                ),
-            )
-            conn.commit()
+            self._downgrade_to_v14(conn)
+            conn.execute("UPDATE schemabrain_meta SET value = '14' WHERE key = 'schema_version'")
+            self._seed_semantic_rows(conn)
+            before = self._semantic_counts(conn)
 
         with SQLiteStore(db_path) as store:
             conn = store._require_conn()
@@ -169,27 +204,91 @@ class TestSchemaVersionBumpToV14:
                 conn.execute(
                     "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
                 ).fetchone()["value"]
-                == "14"
+                == "15"
             )
-
-            # `suggested` rows land on (llm_suggested, applied);
-            # `manual` rows land on (manually_authored, confirmed).
-            def _signal(table: str, name: str) -> tuple[str, str]:
-                row = conn.execute(
-                    f"SELECT inference_method, validation_state FROM {table} WHERE name = ?",
-                    (name,),
-                ).fetchone()
-                return (row["inference_method"], row["validation_state"])
-
-            assert _signal("entities", "order") == ("llm_suggested", "applied")
-            assert _signal("entities", "user") == ("manually_authored", "confirmed")
-            assert _signal("metrics", "order_count") == ("llm_suggested", "applied")
-            assert _signal("canonical_joins", "order_to_user") == (
-                "manually_authored",
-                "confirmed",
+            # (b) new columns present + backfilled to NULL/default.
+            ent = conn.execute(
+                'SELECT bind_confidence, rationale, "group" FROM entities WHERE name = ?',
+                ("order",),
+            ).fetchone()
+            assert ent["bind_confidence"] is None
+            assert ent["rationale"] == ""
+            assert ent["group"] == "other"
+            assert (
+                conn.execute(
+                    "SELECT estimated_row_count FROM tables WHERE name = 'orders'"
+                ).fetchone()["estimated_row_count"]
+                is None
             )
+            pii = conn.execute(
+                "SELECT pii_confidence, pii_confidence_score FROM column_pii_tags"
+            ).fetchone()
+            assert pii["pii_confidence"] is None
+            assert pii["pii_confidence_score"] is None
+            desc_cols = {
+                r["name"] for r in conn.execute("PRAGMA table_info(column_descriptions)").fetchall()
+            }
+            assert {"semantic_type", "meaning", "col_confidence"} <= desc_cols
+            # (c) four-way round-trip preservation — no row lost.
+            assert self._semantic_counts(conn) == before
+            assert before == {
+                "entities": 2,
+                "metrics": 1,
+                "canonical_joins": 1,
+                "column_pii_tags": 1,
+            }
+            # (d) graph tables (re)exist + are EMPTY on a migrated store
+            # (the projection only runs on the next `index`).
+            assert conn.execute("SELECT count(*) AS n FROM graph_nodes").fetchone()["n"] == 0
+            assert conn.execute("SELECT count(*) AS n FROM graph_edges").fetchone()["n"] == 0
+
+    def test_v13_store_chains_to_v15(self, tmp_path: Path) -> None:
+        # Option B: a v13 store migrates 13→14 then 14→15 in one open.
+        # Fabricate a v13 shape (drop BOTH the v14 trust columns and the
+        # v15 columns), seed, re-open, and assert (a) version == 15,
+        # (b) the v14 leg ran (origin backfill landed the trust signal),
+        # (c) the v15 leg ran (the `group` column is present + default).
+        db_path = tmp_path / "sb.db"
+        with SQLiteStore(db_path) as store:
+            conn = store._require_conn()
+            self._downgrade_to_v13(conn)
+            conn.execute("UPDATE schemabrain_meta SET value = '13' WHERE key = 'schema_version'")
+            self._seed_semantic_rows(conn)
+            before = self._semantic_counts(conn)
+
+        with SQLiteStore(db_path) as store:
+            conn = store._require_conn()
+            assert (
+                conn.execute(
+                    "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
+                ).fetchone()["value"]
+                == "15"
+            )
+            row = conn.execute(
+                'SELECT inference_method, validation_state, "group" FROM entities '
+                "WHERE name = 'order'"
+            ).fetchone()
+            # v14 leg: `suggested` origin backfilled to (llm_suggested, applied).
+            assert (row["inference_method"], row["validation_state"]) == (
+                "llm_suggested",
+                "applied",
+            )
+            # v15 leg: the `group` column exists with its default.
+            assert row["group"] == "other"
+            # Four-way preservation across BOTH legs — the v13→v14 leg
+            # UPDATE-backfills three tables, so the chain touches strictly
+            # more data than the v14→v15 ALTER-only leg; no row may drop.
+            assert self._semantic_counts(conn) == before
+            assert before == {
+                "entities": 2,
+                "metrics": 1,
+                "canonical_joins": 1,
+                "column_pii_tags": 1,
+            }
 
     def test_opening_a_v12_store_raises(self, tmp_path: Path) -> None:
+        # The pre-v13 cliff does NOT move under Option B — a v12 store
+        # has no migration path and must still raise.
         db_path = tmp_path / "sb.db"
         store = SQLiteStore(db_path)
         store._require_conn().execute(
@@ -197,8 +296,90 @@ class TestSchemaVersionBumpToV14:
         )
         store._require_conn().commit()
         store.close()
-        with pytest.raises(SchemaVersionMismatchError, match=r"12.*14|14.*12"):
+        with pytest.raises(SchemaVersionMismatchError, match=r"12.*15|15.*12"):
             SQLiteStore(db_path)
+
+    def test_graph_tables_and_index_exist(self, tmp_path: Path) -> None:
+        # The v15 graph projection tables + the edge-lookup index are
+        # created by `_DDL_STATEMENTS` on a fresh store.
+        with SQLiteStore(tmp_path / "sb.db") as store:
+            names = {
+                r["name"]
+                for r in store._require_conn()
+                .execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE name IN ('graph_nodes', 'graph_edges', 'idx_graph_edges_by_pair')"
+                )
+                .fetchall()
+            }
+        assert names == {"graph_nodes", "graph_edges", "idx_graph_edges_by_pair"}
+
+    def test_migration_rolls_back_atomically_on_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A failure ANYWHERE inside `_init_schema` must roll back the
+        # WHOLE migration — DDL included. Under the legacy
+        # `isolation_level=''`, sqlite3 autocommits DDL, so a bare
+        # `with conn:` would leave each migration ALTER committed
+        # individually: a crash between two ALTERs would persist a
+        # half-migrated shape with the version row behind, and the next
+        # open would re-enter the migration and raise "duplicate column
+        # name" — permanently bricking the store. `_init_schema` guards
+        # this with an explicit BEGIN/COMMIT; this test proves it.
+        db_path = tmp_path / "sb.db"
+        with SQLiteStore(db_path) as store:
+            conn = store._require_conn()
+            self._downgrade_to_v14(conn)
+            conn.execute("UPDATE schemabrain_meta SET value = '14' WHERE key = 'schema_version'")
+            self._seed_semantic_rows(conn)
+
+        # Inject a failure at the last step inside the transaction
+        # (`ensure_audit_schema`), AFTER the nine migration ALTERs have
+        # run. `_init_schema` imports it locally from `schemabrain.audit.
+        # ddl`, so patching the module attribute is picked up on open.
+        def _boom(_conn: sqlite3.Connection) -> None:
+            raise RuntimeError("simulated crash mid-init")
+
+        monkeypatch.setattr("schemabrain.audit.ddl.ensure_audit_schema", _boom)
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            SQLiteStore(db_path)
+        monkeypatch.undo()
+
+        # The failed open must have ROLLED BACK the migration ALTERs, not
+        # half-applied them: version still '14', `group` column gone.
+        import gc
+
+        gc.collect()  # drop the failed open's leaked connection
+        raw = sqlite3.connect(db_path)
+        raw.row_factory = sqlite3.Row
+        try:
+            stranded_version = raw.execute(
+                "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
+            ).fetchone()["value"]
+            entity_cols = {r["name"] for r in raw.execute("PRAGMA table_info(entities)")}
+        finally:
+            raw.close()
+        assert stranded_version == "14"
+        assert "group" not in entity_cols
+
+        # And the store re-opens + migrates cleanly — no "duplicate
+        # column name" (the proof the rollback was complete). Seeded rows
+        # survive the now-fresh migration.
+        with SQLiteStore(db_path) as store:
+            conn = store._require_conn()
+            assert (
+                conn.execute(
+                    "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
+                ).fetchone()["value"]
+                == "15"
+            )
+            assert "group" in {r["name"] for r in conn.execute("PRAGMA table_info(entities)")}
+            assert self._semantic_counts(conn) == {
+                "entities": 2,
+                "metrics": 1,
+                "canonical_joins": 1,
+                "column_pii_tags": 1,
+            }
 
     def test_unique_index_exists(self, tmp_path: Path) -> None:
         # Without the UNIQUE index, the UPSERT's ON CONFLICT target is
