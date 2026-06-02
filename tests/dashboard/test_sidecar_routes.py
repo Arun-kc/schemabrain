@@ -44,6 +44,62 @@ def test_meta_returns_charter_info(client: TestClient) -> None:
     assert payload["source_connection_ids"] == []
 
 
+def test_meta_sources_empty_on_empty_store(client: TestClient) -> None:
+    payload = client.get("/api/meta").json()
+    assert payload["sources"] == []
+
+
+def test_meta_sources_rollup_after_index(client: TestClient, store_path) -> None:
+    """A label source surfaces in `sources` with honest counts: state is
+    always "indexed", engine is None (a label is not a connection URL),
+    and last_indexed_at is a real timestamp once a table exists."""
+    from schemabrain.core.entity import Entity, SingleTableBinding
+    from schemabrain.core.models import Column, Table
+    from schemabrain.core.store import SQLiteStore
+
+    with SQLiteStore(store_path) as store:
+        store.write_table(
+            Table(
+                schema_name="public",
+                name="users",
+                columns=(
+                    Column(
+                        schema_name="public",
+                        table_name="users",
+                        name="id",
+                        data_type="bigint",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                ),
+            ),
+            source_connection_id="demo-source",
+        )
+        store.write_entity(
+            Entity(
+                name="customer",
+                description="",
+                binding=SingleTableBinding(qualified_table="public.users"),
+                identity="id",
+                origin="manual",
+            ),
+            source_connection_id="demo-source",
+        )
+
+    payload = client.get("/api/meta").json()
+    assert payload["source_connection_ids"] == ["demo-source"]
+    assert len(payload["sources"]) == 1
+    source = payload["sources"][0]
+    assert source["source_id"] == "demo-source"
+    assert source["state"] == "indexed"
+    assert source["tables"] == 1
+    assert source["entities"] == 1
+    assert isinstance(source["last_indexed_at"], int)
+    # 'demo-source' is a label, not a connection URL → dialect unknown.
+    assert source["engine"] is None
+
+
 def test_charter_version_header_set_on_every_response(client: TestClient) -> None:
     for path in [
         "/api/health",

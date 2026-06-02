@@ -59,6 +59,57 @@ DEFAULT_PORT: int = 7878
 # client can detect protocol drift without parsing the body.
 CHARTER_VERSION_HEADER: str = "X-Schemabrain-Charter-Version"
 
+# Content-Security-Policy for the static dashboard, served on EVERY
+# response (JSON, SSE, and the static export bytes).
+#
+#  - default-src 'self': nothing loads cross-origin by default.
+#  - connect-src 'self': permits the same-origin SSE stream
+#    (/api/audit/stream) and every /api fetch; blocks exfiltration to
+#    a third-party origin.
+#  - font-src 'self': the woff2 faces are self-hosted under _next/.
+#  - img-src 'self' data:: inline SVG/data-URI assets the export emits.
+#  - script-src / style-src include 'unsafe-inline' deliberately. A
+#    Next.js `output: export` build emits inline bootstrap + RSC-flight
+#    <script> tags plus the pre-hydration theme <script>, and there is
+#    no server runtime to mint a per-request nonce (nonces need a
+#    server; the sidecar serves verbatim bytes). A hash-based CSP IS
+#    reachable but deferred: of the inline scripts only the RSC-flight
+#    payload varies build-to-build, and only by the random Next build
+#    id — pinning `generateBuildId` + a post-export hash-injection step
+#    would let script-src drop 'unsafe-inline'. style-src is harder:
+#    React inline style="" attributes fall under style-src-attr, which
+#    hashes cannot cover, so they'd have to move to classes first. Until
+#    that follow-up, 'unsafe-inline' is the pragmatic choice and the
+#    residual XSS risk is bounded by the localhost-only bind, the
+#    read-only route table, React's default escaping, and the absence of
+#    any user-authored HTML. object-src 'none' + base-uri 'self' +
+#    frame-ancestors 'none' keep the high-value sinks closed regardless.
+CONTENT_SECURITY_POLICY: str = "; ".join(
+    [
+        "default-src 'self'",
+        "base-uri 'self'",
+        "object-src 'none'",
+        "frame-ancestors 'none'",
+        "img-src 'self' data:",
+        "font-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "script-src 'self' 'unsafe-inline'",
+        "connect-src 'self'",
+        "form-action 'self'",
+    ]
+)
+
+# Static, request-independent hardening headers applied to every
+# response alongside the CSP. No HSTS: the sidecar serves plain HTTP on
+# 127.0.0.1 with no TLS, so HSTS would be meaningless (and wrong) here.
+SECURITY_HEADERS: dict[str, str] = {
+    "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+}
+
 # SSE tick interval — matches the 2s polling story in RFC §6
 # (deferred-items log). Real-time push is a v0.5 V5-2 item.
 SSE_TICK_SECONDS: float = 2.0
@@ -186,7 +237,33 @@ def create_sidecar(config: SidecarConfig) -> FastAPI:
         # full React UI.
         _register_fallback_landing(app)
 
+    # Registered LAST so it is the OUTERMOST middleware (Starlette wraps
+    # most-recently-added first), which means it stamps EVERY response —
+    # including the html-fallback FileResponse, which short-circuits and
+    # returns before the inner middleware stack ever runs. A static
+    # surface (`/pii`) must carry the CSP just as the JSON routes do.
+    _register_security_headers(app)
+
     return app
+
+
+def _register_security_headers(app: FastAPI) -> None:
+    """Attach the CSP + hardening headers to every response.
+
+    Registered first so it is the outermost middleware (LIFO on the
+    response path), which means it stamps EVERY response — the JSON
+    routes, the SSE stream, the static-export bytes, and the HTML
+    fallback's ``FileResponse`` alike.
+    """
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next: Any) -> Response:
+        response: Response = await call_next(request)
+        for header, value in SECURITY_HEADERS.items():
+            response.headers[header] = value
+        return response
 
 
 def _register_invariant_headers(app: FastAPI) -> None:
@@ -241,27 +318,62 @@ def _register_meta_route(app: FastAPI, config: SidecarConfig) -> None:
 
         with SQLiteStore(config.store_path) as store:
             source_ids = store.list_distinct_source_connection_ids()
+            summaries = store.summarize_sources()
         # Coerce config.source_connection_id to a credential-safe form
         # before echoing it back. If it's a connection URL, hash it to
         # the canonical short ID; otherwise treat it as a pre-computed
         # label and pass through. Never emit the raw URL — it carries
         # the DB password.
+        #
+        # The dialect is only knowable for THIS configured source: the
+        # store persists hashed ids, never the URL, so other sources
+        # report engine=None. `looks_like_connection_url` matches only
+        # Postgres schemes, so a recognized URL implies engine=postgres.
         configured = config.source_connection_id
+        configured_id: str | None = None
+        configured_engine: str | None = None
         if configured and looks_like_connection_url(configured):
             try:
-                configured = make_source_id(configured)
-            except ValueError:
-                # Unparseable URL — refuse to echo it back rather than
-                # leak partial credentials. Fall through to the store's
-                # indexed list.
-                configured = None
+                configured_id = make_source_id(configured)
+                configured_engine = "postgres"
+            except ValueError:  # pragma: no cover - defensive: the
+                # looks_like_connection_url guard already validated a
+                # Postgres scheme, so make_source_id cannot raise here.
+                # Kept belt-and-suspenders: refuse to echo a partial URL
+                # rather than leak credentials; fall back to the store list.
+                configured_id = None
+        elif configured:
+            # A pre-computed source_id / label, already credential-free.
+            configured_id = configured
+
+        default_source = configured_id or (source_ids[0] if source_ids else None)
+
+        # Per-source rollup for the shell source selector. `state` is
+        # always "indexed": a source only appears once it has persisted
+        # artifacts, and there is no in-flight indexing registry to back
+        # an "indexing"/"empty" value — the field stays a typed enum for
+        # forward use but is never fabricated. `last_indexed_at` is None
+        # for a source with no physical tables (UI renders '—').
+        sources = [
+            {
+                "source_id": s.source_connection_id,
+                "engine": (configured_engine if s.source_connection_id == configured_id else None),
+                "state": "indexed",
+                "last_indexed_at": s.last_indexed_at,
+                "tables": s.table_count,
+                "entities": s.entity_count,
+            }
+            for s in summaries
+        ]
+
         return {
             "charter_version": CHARTER_VERSION,
             "dashboard_schema_version": DASHBOARD_SCHEMA_VERSION,
             "fingerprint_version": FINGERPRINT_VERSION,
             "store_path": str(config.store_path),
-            "default_source_connection_id": (configured or (source_ids[0] if source_ids else None)),
+            "default_source_connection_id": default_source,
             "source_connection_ids": source_ids,
+            "sources": sources,
         }
 
 

@@ -28,12 +28,10 @@ const nextConfig = {
       },
     ];
   },
-  experimental: {
-    // Stricter <head> ordering — lets the CSP nonce reach inline
-    // styles emitted by Next.js without falling back to
-    // 'unsafe-inline'.
-    strictNextHead: true,
-  },
+  // No CSP nonce config here: a static export has no server runtime to
+  // mint per-request nonces, so the sidecar's CSP uses 'unsafe-inline'
+  // for the inline scripts/styles Next emits (see
+  // schemabrain/dashboard/sidecar.py CONTENT_SECURITY_POLICY).
 };
 
 export default nextConfig;

@@ -126,6 +126,45 @@ def test_meta_default_source_falls_back_to_first_indexed_source(tmp_path: Path) 
         assert payload["default_source_connection_id"] == "indexed-source-1"
 
 
+def test_meta_source_engine_is_postgres_for_configured_url(tmp_path: Path) -> None:
+    """The configured connection URL's source reports engine=postgres
+    (derived from the scheme, never from the leaked URL) — and only that
+    source: the dialect of other indexed sources is unknowable post-boot."""
+    from schemabrain.core.models import Column, Table
+    from schemabrain.core.source_id import make_source_id
+    from schemabrain.core.store import SQLiteStore
+
+    store_path = _empty_store(tmp_path)
+    configured_id = make_source_id(_CREDENTIAL_URL)
+
+    def _id_table() -> Table:
+        return Table(
+            schema_name="public",
+            name="t",
+            columns=(
+                Column(
+                    schema_name="public",
+                    table_name="t",
+                    name="id",
+                    data_type="integer",
+                    nullable=False,
+                    ordinal_position=1,
+                ),
+            ),
+        )
+
+    with SQLiteStore(store_path) as store:
+        store.write_table(_id_table(), source_connection_id=configured_id)
+        store.write_table(_id_table(), source_connection_id="other-indexed-source")
+
+    with _client_with_config_source(store_path, _CREDENTIAL_URL) as client:
+        sources = {s["source_id"]: s for s in client.get("/api/meta").json()["sources"]}
+
+    assert sources[configured_id]["engine"] == "postgres"
+    # Any other source's dialect is unknown — never fabricated.
+    assert sources["other-indexed-source"]["engine"] is None
+
+
 def test_meta_response_contains_no_credential_url_pattern(tmp_path: Path) -> None:
     """Defensive regex: no ``://USER:PASSWORD@HOST`` pattern in /api/meta response."""
     store_path = _empty_store(tmp_path)

@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { HeaderStrip } from "@/components/dashboard/HeaderStrip";
 import { HalfCircleIcon } from "@/components/icons/HalfCircleIcon";
 import type { AuditRow } from "@/lib/types";
 import styles from "@/components/audit/ledger.module.css";
@@ -244,19 +243,8 @@ export default function AuditPage() {
     );
   };
 
-  return (
-    <main className="relative min-h-screen bg-(--surface-base) overflow-hidden pb-16">
-      {/* Visual background grid backdrop */}
-      <div className="absolute inset-0 grid-bg pointer-events-none" />
-
-      {/* Decorative background radial glows */}
-      <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-[#3ECF8E]/8 rounded-full blur-[120px] pointer-events-none" />
-      <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-[#3ECF8E]/4 rounded-full blur-[120px] pointer-events-none" />
-
-      <div className="relative z-10">
-        <HeaderStrip surface="audit viewer" />
-        {renderContent()}
-      </div>
-    </main>
-  );
+  // The shell (app)/layout.tsx owns the chrome; this surface renders its
+  // body into the shell content slot. Reskin onto the kit/tokens is the
+  // next PR — only the per-surface HeaderStrip + full-page wrapper go now.
+  return renderContent();
 }
