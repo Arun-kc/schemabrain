@@ -1,10 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { HalfCircleIcon } from "@/components/icons/HalfCircleIcon";
+import { Eyebrow, PiiChip } from "@/components/kit";
 import type { PIICategory } from "@/lib/types";
 import styles from "@/components/refusals/ledger.module.css";
 
@@ -70,7 +70,7 @@ export default function RefusalsPage() {
     if (refusalsQuery.isPending) {
       return (
         <div className={styles.shell}>
-          <p className="font-mono text-xs text-(--text-muted) animate-pulse">loading security incident feed…</p>
+          <p className="font-mono text-xs text-(--ink-3) animate-pulse">loading security incident feed…</p>
         </div>
       );
     }
@@ -78,7 +78,7 @@ export default function RefusalsPage() {
     if (refusalsQuery.isError) {
       return (
         <div className={styles.shell}>
-          <div className={styles.banner} style={{ borderColor: "var(--color-signal-red)" }}>
+          <div className={styles.banner} style={{ borderColor: "var(--alarm)" }}>
             <div className={styles.bannerText}>
               <h2>Failed to Load Security Feed</h2>
               <p>{refusalsQuery.error.message}</p>
@@ -104,15 +104,12 @@ export default function RefusalsPage() {
                 : `${total} refused tool executions recorded across categorized PII columns.`}
             </p>
           </div>
-          <Link href="/" className={styles.backBtn}>
-            ← dashboard
-          </Link>
         </div>
 
         {incidents.length === 0 ? (
           <div className={styles.noIncident}>
             <HalfCircleIcon
-              className="text-(--color-signal-green) w-10 h-10 mb-4"
+              className="text-(--green) w-10 h-10 mb-4"
               aria-label="Ledger secure"
             />
             <h3 className={styles.noIncidentTitle}>Ledger is Secure</h3>
@@ -144,7 +141,7 @@ export default function RefusalsPage() {
                     }}
                   >
                     <div className={styles.cardHeader}>
-                      <span className={styles.badge}>{incident.refusal_reason ?? "pii_blocked"}</span>
+                      <PiiChip kind="contact">{incident.refusal_reason ?? "pii_blocked"}</PiiChip>
                       <time className={styles.cardTime}>{timeStr}</time>
                     </div>
                     <h4 className={styles.cardTitle}>{incident.tool_name}</h4>
@@ -175,17 +172,17 @@ export default function RefusalsPage() {
                     </div>
                   </header>
 
-                  <h4 className={styles.sectionTitle}>Blocked Column Sensitivity</h4>
+                  <Eyebrow className="mt-6 mb-3">Blocked Column Sensitivity</Eyebrow>
                   <div className={styles.categoryTagList}>
                     {activeIncident.pii_categories.map((cat) => (
-                      <span key={cat} className={`${styles.categoryTag} flex items-center gap-1 inline-flex`}>
-                        <HalfCircleIcon className="text-(--color-signal-red) w-3.5 h-3.5" />
+                      <PiiChip key={cat} kind="auth">
+                        <HalfCircleIcon className="text-(--alarm) w-3.5 h-3.5" />
                         <span>{cat.replace(/_/g, " ")}</span>
-                      </span>
+                      </PiiChip>
                     ))}
                   </div>
 
-                  <h4 className={styles.sectionTitle}>Structured Security Refusal</h4>
+                  <Eyebrow className="mt-6 mb-3">Structured Security Refusal</Eyebrow>
                   <div className={styles.explanation}>
                     <p>
                       SchemaBrain intercepted an LLM request invoking the tool{" "}
@@ -197,7 +194,7 @@ export default function RefusalsPage() {
                     </p>
                   </div>
 
-                  <h4 className={styles.sectionTitle}>Why this was blocked</h4>
+                  <Eyebrow className="mt-6 mb-3">Why this was blocked</Eyebrow>
                   <div className={styles.specList}>
                     <span className={styles.specLabel}>Refusal Reason:</span>
                     <span className={styles.specValue}>{activeIncident.refusal_reason ?? "pii_blocked"}</span>
@@ -208,12 +205,12 @@ export default function RefusalsPage() {
                     </span>
 
                     <span className={styles.specLabel}>Cost Class:</span>
-                    <span className={styles.specValue} style={{ color: "var(--color-signal-red)", fontWeight: "bold" }}>
+                    <span className={styles.specValue} style={{ color: "var(--alarm)", fontWeight: "bold" }}>
                       {activeIncident.cost_class}
                     </span>
                   </div>
 
-                  <h4 className={styles.sectionTitle}>Audit row hashes</h4>
+                  <Eyebrow className="mt-6 mb-3">Audit row hashes</Eyebrow>
                   <div className={styles.specList}>
                     <span className={styles.specLabel}>Fingerprint Hash:</span>
                     <span className={styles.specValue}>{activeIncident.fingerprint_hex}</span>
@@ -222,15 +219,15 @@ export default function RefusalsPage() {
                     <span className={styles.specValue}>{activeIncident.chain_hash_hex}</span>
                   </div>
 
-                  <h4 className={styles.sectionTitle}>Reconstructed Envelope Payload</h4>
+                  <Eyebrow className="mt-6 mb-3">Reconstructed Envelope Payload</Eyebrow>
                   <div className={styles.codePanel}>
                     <div className={styles.codeHeader}>
                       <span className={styles.codeTitle}>Raw Tool Response JSON</span>
-                      <span className="font-mono text-[10px] text-emerald-500 uppercase tracking-widest">
+                      <Eyebrow className="text-(--green)">
                         {refusalDetailQuery.isPending
                           ? "// loading from sidecar..."
                           : "// sidecar-reconstructed (charter v1.2)"}
-                      </span>
+                      </Eyebrow>
                     </div>
                     <pre className={styles.codeArea}>
                       {refusalDetailQuery.data
@@ -251,7 +248,7 @@ export default function RefusalsPage() {
                 </div>
               ) : (
                 <div className={styles.detailCard}>
-                  <p className="font-mono text-sm text-(--text-muted) text-center">Select an incident to view details.</p>
+                  <p className="font-mono text-sm text-(--ink-3) text-center">Select an incident to view details.</p>
                 </div>
               )}
             </div>

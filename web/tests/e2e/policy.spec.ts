@@ -65,4 +65,18 @@ test.describe("PolicyView E2E smoke", () => {
     await expect(page.getByLabel("filter by verdict")).toBeVisible();
     await expect(page.getByLabel("filter by origin")).toBeVisible();
   });
+
+  test("catastrophic floor reads as locked (reskin regression)", async ({
+    page,
+  }) => {
+    // Catastrophic-floor categories must carry a lock affordance
+    // ("can't be disabled") alongside the alarm styling, so the
+    // always-on floor is visually legible and exposed to assistive
+    // tech. The lock renders as an <Icon> with role="img" +
+    // aria-label="locked floor". The seeded demo source always carries
+    // the credential/government_id/payment_card floor, so at least one
+    // lock is present. Runs under both themes via the project matrix.
+    await page.goto("/pii");
+    await expect(page.getByLabel("locked floor").first()).toBeVisible();
+  });
 });

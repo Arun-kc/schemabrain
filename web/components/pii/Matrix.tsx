@@ -8,6 +8,7 @@ import { useSourceId } from "@/lib/useSourceId";
 import type { PiiMatrixEntity } from "@/lib/types";
 import { Drilldown } from "./Drilldown";
 import { HalfCircleIcon } from "../icons/HalfCircleIcon";
+import { Eyebrow, PiiChip } from "@/components/kit";
 import styles from "./ledger.module.css";
 
 /**
@@ -196,7 +197,7 @@ function Slab({
   const hasCatastrophic = totals.catastrophic_columns > 0;
   return (
     <aside className={styles.slab} aria-label="ledger summary">
-      <p className={styles.slabLabel}>catastrophic exposure</p>
+      <Eyebrow>catastrophic exposure</Eyebrow>
       <div className={styles.slabNumberWrap} data-danger={hasCatastrophic}>
         <span className={styles.slabNumber} data-danger={hasCatastrophic}>{totals.catastrophic_columns}</span>
       </div>
@@ -208,7 +209,7 @@ function Slab({
       <ul className={styles.slabCategories} aria-label="catastrophic categories">
         {catastrophicCategories.map((cat) => (
           <li key={cat} className="flex items-center gap-1.5 py-0.5">
-            <HalfCircleIcon className="text-(--color-signal-red) w-3.5 h-3.5 shrink-0" />
+            <HalfCircleIcon className="text-(--alarm) w-3.5 h-3.5 shrink-0" />
             <span>{cat.replace(/_/g, " ")}</span>
           </li>
         ))}
@@ -325,12 +326,10 @@ function DataCell({
         className={cn(styles.catastrophicCell, boundaryClass)}
         aria-label={`${entityName} · ${category}: ${count} catastrophic`}
       >
-        <span className={styles.catastrophicBadge}>
-          <span className={styles.catastrophicGlyph}>
-            <HalfCircleIcon className="text-(--color-signal-red) w-3 h-3 mr-1" />
-            {count}
-          </span>
-        </span>
+        <PiiChip kind="auth" className={styles.catastrophicBadge}>
+          <HalfCircleIcon className="text-(--alarm) w-3 h-3" />
+          {count}
+        </PiiChip>
       </td>
     );
   }
@@ -339,7 +338,7 @@ function DataCell({
       className={cn(boundaryClass)}
       aria-label={`${entityName} · ${category}: ${count} ${count === 1 ? "column" : "columns"}`}
     >
-      <span className={styles.piiBadge}>{count}</span>
+      <PiiChip kind="contact">{count}</PiiChip>
     </td>
   );
 }
@@ -360,11 +359,11 @@ function MatrixError({ message }: { message: string }) {
       <div className={styles.errorCard}>
         <span className={styles.errorIcon} aria-hidden="true">
           {isNoSource ? (
-            <svg className="w-6 h-6 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="w-6 h-6 text-(--amber)" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
             </svg>
           ) : (
-            <svg className="w-6 h-6 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="w-6 h-6 text-(--alarm)" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
           )}

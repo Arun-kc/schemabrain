@@ -1,10 +1,11 @@
 /*
  * PolicyView — operator-editable PII policy surface.
  *
- * Sibling to ledger.module.css (the Matrix). Shares the same design
- * tokens (signal-red / signal-amber / signal-green, mono + display
- * fonts, glass surfaces in dark mode) so the two PII surfaces read
- * as one design system.
+ * Sibling to ledger.module.css (the Matrix). Shares the .sb-app
+ * design-system tokens (sb-theme.css) and the component kit
+ * (PiiChip / Eyebrow / .sb-card) so the two PII surfaces read as
+ * one design system. Tokens auto-swap per theme — no per-theme
+ * override blocks live here.
  */
 
 /* ---------- Shell ---------- */
@@ -23,7 +24,7 @@
   justify-content: space-between;
   gap: 1rem;
   padding-bottom: 1rem;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--hair-2);
   margin-bottom: 2rem;
 }
 
@@ -33,13 +34,13 @@
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--text-primary);
+  color: var(--ink);
 }
 
 .titleMeta {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  color: var(--text-muted);
+  color: var(--ink-3);
   letter-spacing: 0.02em;
 }
 
@@ -51,13 +52,10 @@
   gap: 0.25rem;
   padding: 1rem 1.25rem;
   margin-bottom: 1.5rem;
-  border: 1px solid rgba(245, 158, 11, 0.4);
-  background: rgba(245, 158, 11, 0.06);
-  border-left: 3px solid var(--color-signal-amber);
-}
-
-[data-theme="dark"] .parseError {
-  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid color-mix(in oklch, var(--amber) 45%, transparent);
+  background: color-mix(in oklch, var(--amber) 12%, transparent);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--r-lg);
 }
 
 .parseErrorLabel {
@@ -66,13 +64,13 @@
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--color-signal-amber);
+  color: var(--amber);
 }
 
 .parseErrorBody {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  color: var(--text-secondary);
+  color: var(--ink-2);
 }
 
 /* ---------- Policy drift alert (operator edited YAML mid-serve) ---------- */
@@ -83,28 +81,28 @@
   gap: 0.25rem;
   padding: 1rem 1.25rem;
   margin-bottom: 1.5rem;
-  border: 1px solid rgba(245, 158, 11, 0.4);
-  background: rgba(245, 158, 11, 0.06);
-  border-left: 3px solid var(--color-signal-amber);
-}
-
-[data-theme="dark"] .driftBanner {
-  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid color-mix(in oklch, var(--amber) 45%, transparent);
+  background: color-mix(in oklch, var(--amber) 12%, transparent);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--r-lg);
 }
 
 .driftBannerLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
   font-family: var(--font-mono);
   font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--color-signal-amber);
+  color: var(--amber);
 }
 
 .driftBannerBody {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  color: var(--text-secondary);
+  color: var(--ink-2);
   line-height: 1.5;
 }
 
@@ -125,27 +123,16 @@
 }
 
 .panel {
-  border: 1px solid var(--border-subtle);
-  background: var(--surface-overlay);
+  border: 1px solid var(--hair);
+  background: var(--panel);
+  box-shadow: var(--shadow);
   padding: 1.25rem 1.5rem;
-  border-radius: 8px;
+  border-radius: var(--r-lg);
   display: flex;
   flex-direction: column;
 }
 
-[data-theme="dark"] .panel {
-  background: rgba(19, 25, 34, 0.55);
-  backdrop-filter: blur(12px) saturate(160%);
-  -webkit-backdrop-filter: blur(12px) saturate(160%);
-}
-
 .panelLabel {
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--text-muted);
   margin-bottom: 0.875rem;
 }
 
@@ -153,22 +140,22 @@
   margin-top: 1rem;
   font-family: var(--font-mono);
   font-size: 0.75rem;
-  color: var(--text-secondary);
+  color: var(--ink-2);
   line-height: 1.5;
 }
 
 .muted {
-  color: var(--text-muted);
+  color: var(--ink-3);
 }
 
 .inlineCode {
   font-family: var(--font-mono);
   font-size: 0.6875rem;
   padding: 0.05rem 0.3rem;
-  background: var(--surface-raised);
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  color: var(--text-primary);
+  background: var(--panel-2);
+  border: 1px solid var(--hair-2);
+  border-radius: var(--r-sm);
+  color: var(--ink);
 }
 
 /* ---------- Active-block chip list ---------- */
@@ -182,46 +169,19 @@
   margin: 0;
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.3rem 0.6rem;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  letter-spacing: 0.04em;
-  text-transform: lowercase;
-  border-radius: 4px;
-  transition: background-color var(--duration-fast) var(--ease-out-expo);
-}
-
-.chipCatastrophic {
-  background: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.25);
-  color: var(--color-signal-red);
+/* Floor chips lead with the ◐ catastrophic glyph + a lock icon so the
+   "always-on, can't be disabled" floor reads as alarm AND locked. */
+.chipFloor {
   font-weight: 600;
 }
 
-[data-theme="dark"] .chipCatastrophic {
-  background: rgba(239, 68, 68, 0.16);
-  border-color: rgba(239, 68, 68, 0.4);
-}
-
-.chipExtra {
-  background: rgba(245, 158, 11, 0.06);
-  border: 1px solid rgba(245, 158, 11, 0.2);
-  color: var(--color-signal-amber);
-  font-weight: 500;
-}
-
-[data-theme="dark"] .chipExtra {
-  background: rgba(245, 158, 11, 0.14);
-  border-color: rgba(245, 158, 11, 0.32);
-}
-
 .chipGlyph {
-  color: var(--color-signal-red);
   font-size: 0.625rem;
+  line-height: 1;
+}
+
+.chipLock {
+  opacity: 0.85;
 }
 
 .chipTag {
@@ -231,7 +191,7 @@
   opacity: 0.75;
   padding: 0.05rem 0.3rem;
   border: 1px solid currentColor;
-  border-radius: 2px;
+  border-radius: var(--r-sm);
 }
 
 /* ---------- Diff preview table ---------- */
@@ -245,7 +205,7 @@
 }
 
 .diffTable tr {
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--hair-2);
 }
 
 .diffTable tr:last-child {
@@ -253,24 +213,24 @@
 }
 
 .diffCurrent {
-  background: var(--surface-raised);
+  background: var(--panel-2);
 }
 
 .diffLabel {
   text-align: left;
   padding: 0.5rem 0.75rem 0.5rem 0;
-  color: var(--text-secondary);
+  color: var(--ink-2);
   font-weight: 500;
   letter-spacing: 0.02em;
 }
 
 .diffCurrent .diffLabel {
-  color: var(--text-primary);
+  color: var(--ink);
   font-weight: 600;
 }
 
 .diffMarker {
-  color: var(--color-signal-green);
+  color: var(--green);
   margin-left: 0.4rem;
   font-weight: 700;
 }
@@ -278,14 +238,14 @@
 .diffValue {
   text-align: right;
   padding: 0.5rem 0.75rem;
-  color: var(--text-primary);
+  color: var(--ink);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
 .diffUnit {
   padding: 0.5rem 0;
-  color: var(--text-muted);
+  color: var(--ink-3);
   font-size: 0.6875rem;
   text-align: left;
   width: 4rem;
@@ -297,14 +257,16 @@
   margin-bottom: 2.5rem;
 }
 
+/* h3 headings styled to the .sb-eyebrow idiom (mono uppercase label) while
+   keeping heading semantics. */
 .rollupTitle {
   font-family: var(--font-mono);
   font-size: 0.6875rem;
   font-weight: 600;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--text-muted);
-  border-bottom: 1px solid var(--border-subtle);
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--hair);
   padding-bottom: 0.5rem;
   margin-bottom: 1rem;
 }
@@ -319,50 +281,58 @@
 
 .rollupTable thead th {
   text-align: left;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.6875rem;
-  font-weight: 500;
-  letter-spacing: 0.08em;
+  padding: 0.625rem 0.875rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--text-muted);
-  border-bottom: 1px solid var(--border-subtle);
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--hair);
 }
 
 .rollupTable tbody td,
 .rollupTable tbody th {
-  padding: 0.625rem 0.75rem;
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 0.6875rem 0.875rem;
+  border-bottom: 1px solid var(--hair-2);
   font-weight: 400;
   text-align: left;
 }
 
-.rollupTable tbody tr:last-child td,
-.rollupTable tbody tr:last-child th {
-  border-bottom: none;
+.rollupTable tbody tr:hover td,
+.rollupTable tbody tr:hover th {
+  background: var(--panel-2);
 }
 
 .rollupCategory {
-  color: var(--text-primary);
+  color: var(--ink);
   font-weight: 500;
   display: flex;
   align-items: center;
   gap: 0.4rem;
 }
 
+/* Floor rollup rows carry the same ◐ + lock alarm affordance as the
+   floor chips so the always-on safety net is legible in the table too. */
 .rollupFloorGlyph {
-  color: var(--color-signal-red);
+  color: var(--alarm);
   font-size: 0.625rem;
+  line-height: 1;
+}
+
+.rollupFloorLock {
+  color: var(--alarm);
+  opacity: 0.85;
 }
 
 .rollupNumeric {
   text-align: right;
   font-variant-numeric: tabular-nums;
-  color: var(--text-primary);
+  color: var(--ink);
   width: 4.5rem;
 }
 
 .rollupSamples {
-  color: var(--text-secondary);
+  color: var(--ink-2);
   font-size: 0.75rem;
   max-width: 24rem;
   overflow: hidden;
@@ -381,7 +351,7 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 1rem;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--hair);
   padding-bottom: 0.5rem;
   margin-bottom: 1rem;
   flex-wrap: wrap;
@@ -391,9 +361,9 @@
   font-family: var(--font-mono);
   font-size: 0.6875rem;
   font-weight: 600;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--ink-3);
 }
 
 .filters {
@@ -409,22 +379,22 @@
   font-size: 0.6875rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--ink-3);
 }
 
 .filterSelect {
   font-family: var(--font-mono);
   font-size: 0.75rem;
   padding: 0.2rem 0.4rem;
-  background: var(--surface-raised);
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  color: var(--text-primary);
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-sm);
+  color: var(--ink);
   cursor: pointer;
 }
 
 .filterSelect:focus-visible {
-  outline: 1px solid var(--color-signal-green);
+  outline: 1px solid var(--green);
   outline-offset: 1px;
 }
 
@@ -441,28 +411,28 @@
 
 .columnsTable thead th {
   text-align: left;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.6875rem;
-  font-weight: 500;
-  letter-spacing: 0.08em;
+  padding: 0.625rem 0.875rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--text-muted);
-  border-bottom: 1px solid var(--border-subtle);
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--hair);
   white-space: nowrap;
 }
 
 .columnsTable tbody td,
 .columnsTable tbody th {
-  padding: 0.625rem 0.75rem;
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 0.6875rem 0.875rem;
+  border-bottom: 1px solid var(--hair-2);
   font-weight: 400;
   text-align: left;
   vertical-align: top;
 }
 
-.columnsTable tbody tr:last-child td,
-.columnsTable tbody tr:last-child th {
-  border-bottom: none;
+.columnsTable tbody tr:hover td,
+.columnsTable tbody tr:hover th {
+  background: var(--panel-2);
 }
 
 .colCell {
@@ -474,13 +444,13 @@
 
 .colTable {
   font-size: 0.625rem;
-  color: var(--text-muted);
+  color: var(--ink-3);
   letter-spacing: 0.04em;
   text-transform: lowercase;
 }
 
 .colName {
-  color: var(--text-primary);
+  color: var(--ink);
   font-weight: 600;
   display: inline-flex;
   align-items: baseline;
@@ -488,95 +458,44 @@
 }
 
 .operatorRow {
-  background: rgba(62, 207, 142, 0.04);
+  background: color-mix(in oklch, var(--green) 7%, transparent);
 }
 
-[data-theme="dark"] .operatorRow {
-  background: rgba(62, 207, 142, 0.08);
+.operatorRow:hover td,
+.operatorRow:hover th {
+  background: color-mix(in oklch, var(--green) 10%, transparent);
 }
 
 .operatorMarker {
-  color: var(--color-signal-green);
+  color: var(--green);
   font-weight: 700;
   font-size: 0.875rem;
 }
 
 .sensitivityCell {
-  color: var(--text-primary);
+  color: var(--ink);
   font-weight: 500;
   white-space: nowrap;
   width: 7rem;
 }
 
 .categoriesCell {
-  color: var(--text-secondary);
+  color: var(--ink-2);
   font-size: 0.75rem;
   max-width: 22rem;
 }
 
-/* ---------- Mini chips (used in rollup + per-column verdict) ---------- */
+/* ---------- Verdict / origin badges ---------- */
 
-.miniChip {
-  display: inline-block;
-  padding: 0.1rem 0.5rem;
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: lowercase;
-  border-radius: 3px;
-  white-space: nowrap;
+/* Floor verdict pairs the alarm PiiChip with the ◐ glyph + lock icon
+   so "blocked by the always-on floor — can't be disabled" is legible. */
+.floorBadge {
+  gap: 0.3rem;
 }
 
-.miniChipBlocked {
-  background: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.25);
-  color: var(--color-signal-red);
-}
-
-[data-theme="dark"] .miniChipBlocked {
-  background: rgba(239, 68, 68, 0.16);
-  border-color: rgba(239, 68, 68, 0.36);
-}
-
-.miniChipFloorBlocked {
-  background: rgba(245, 158, 11, 0.08);
-  border: 1px solid rgba(245, 158, 11, 0.25);
-  color: var(--color-signal-amber);
-}
-
-[data-theme="dark"] .miniChipFloorBlocked {
-  background: rgba(245, 158, 11, 0.16);
-  border-color: rgba(245, 158, 11, 0.36);
-}
-
-.miniChipAllowed {
-  background: rgba(62, 207, 142, 0.06);
-  border: 1px solid rgba(62, 207, 142, 0.2);
-  color: var(--color-signal-green);
-}
-
-[data-theme="dark"] .miniChipAllowed {
-  background: rgba(62, 207, 142, 0.14);
-  border-color: rgba(62, 207, 142, 0.34);
-}
-
-.miniChipOperator {
-  background: rgba(62, 207, 142, 0.06);
-  border: 1px solid rgba(62, 207, 142, 0.2);
-  color: var(--color-signal-green);
-  font-weight: 600;
-}
-
-[data-theme="dark"] .miniChipOperator {
-  background: rgba(62, 207, 142, 0.14);
-  border-color: rgba(62, 207, 142, 0.34);
-}
-
-.miniChipHeuristic {
-  background: var(--surface-raised);
-  border: 1px solid var(--border-subtle);
-  color: var(--text-muted);
+.floorBadgeGlyph {
+  font-size: 0.625rem;
+  line-height: 1;
 }
 
 /* ---------- Footnote + empty + error + skeleton ---------- */
@@ -585,13 +504,13 @@
   margin-top: 1rem;
   font-family: var(--font-mono);
   font-size: 0.6875rem;
-  color: var(--text-muted);
+  color: var(--ink-3);
   letter-spacing: 0.02em;
   line-height: 1.5;
 }
 
 .footnoteMarker {
-  color: var(--color-signal-green);
+  color: var(--green);
   font-weight: 700;
   margin-right: 0.2rem;
 }
@@ -599,7 +518,7 @@
 .empty {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  color: var(--text-muted);
+  color: var(--ink-3);
   font-style: italic;
   padding-block: 1.5rem;
   text-align: center;
@@ -607,13 +526,14 @@
 
 .errorCard {
   margin-top: 1rem;
-  border: 1px solid var(--border-subtle);
-  background: var(--surface-overlay);
+  border: 1px solid var(--hair);
+  background: var(--panel);
+  box-shadow: var(--shadow);
   padding: 1.5rem 2rem;
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  color: var(--text-secondary);
-  border-radius: 8px;
+  color: var(--ink-2);
+  border-radius: var(--r-lg);
 }
 
 .skeleton {
@@ -622,7 +542,7 @@
   gap: 0.75rem;
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  color: var(--text-muted);
+  color: var(--ink-3);
   padding-block: 2rem;
 }
 
@@ -631,7 +551,7 @@
   width: 0.5rem;
   height: 0.5rem;
   border-radius: 50%;
-  background: var(--text-muted);
+  background: var(--ink-3);
   animation: policy-pulse 1.4s ease-in-out infinite;
 }
 
@@ -649,8 +569,6 @@
   .skeleton::before {
     animation: none;
   }
-  .chip,
-  .miniChip,
   .filterSelect {
     transition: none;
   }
