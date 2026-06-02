@@ -15,16 +15,10 @@
  */
 
 import { expect, test } from "@playwright/test";
+import { pinTheme, themeForProject } from "./theme";
 
-test.beforeEach(async ({ context }) => {
-  await context.addInitScript(() => {
-    try {
-      window.localStorage.setItem("schemabrain.theme", "dark");
-    } catch {
-      // localStorage can throw in private-mode-style sandboxes; the
-      // theme just falls back to the page default.
-    }
-  });
+test.beforeEach(async ({ context }, testInfo) => {
+  await pinTheme(context, themeForProject(testInfo));
 });
 
 test.describe("PolicyView E2E smoke", () => {

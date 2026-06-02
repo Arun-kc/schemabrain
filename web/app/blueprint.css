@@ -1,0 +1,64 @@
+/* ============================================================
+   Blueprint surfaces + atmosphere
+   Glass/card surfaces, the blueprint grid texture, the green glow,
+   and registration brackets. All token-driven, all .sb-app-scoped,
+   grid opacity carried by the per-theme --grid-line token.
+   ============================================================ */
+
+/* solid card surface */
+.sb-card {
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+}
+
+/* frosted glass surface */
+.sb-glass {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--glass-stroke);
+  border-radius: var(--r-lg);
+}
+
+/* blueprint grid texture — full-bleed, decorative, non-interactive.
+   Opacity is theme-aware via --grid-line (lighter in Atlas, brighter in
+   Observatory). Pair with .sb-grid--masked to fade it radially. */
+.sb-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 36px 36px;
+}
+.sb-grid--masked {
+  -webkit-mask-image: radial-gradient(110% 80% at 50% 0%, #000 30%, transparent 76%);
+  mask-image: radial-gradient(110% 80% at 50% 0%, #000 30%, transparent 76%);
+}
+
+/* green intelligence glow — the single reserved emphasis halo */
+.sb-glow {
+  box-shadow: var(--glow-green);
+}
+
+/* registration brackets — corner ticks for the blueprint motif */
+.sb-regmark {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 0 solid var(--green);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* reduced-motion: the grid/glow are static already, but kill any
+   inherited animation on decorative atmosphere layers explicitly. */
+@media (prefers-reduced-motion: reduce) {
+  .sb-grid,
+  .sb-glow {
+    animation: none !important;
+  }
+}

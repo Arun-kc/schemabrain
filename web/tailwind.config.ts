@@ -43,16 +43,11 @@ const config: Config = {
         body: "var(--font-body)",
         mono: "var(--font-mono)",
       },
-      fontSize: {
-        base: "var(--text-base)",
-        display: "var(--text-display)",
-      },
-      spacing: {
-        "rhythm-tight": "var(--space-rhythm-tight)",
-        "rhythm-base": "var(--space-rhythm-base)",
-        "rhythm-wide": "var(--space-rhythm-wide)",
-        section: "var(--space-section)",
-      },
+      // NOTE: spacing (gap-rhythm-*, py-section) and the typographic scale are
+      // generated directly from the `@theme` tokens in app/globals.css
+      // (--spacing-rhythm-*, --spacing-section). The previous `spacing`/`fontSize`
+      // blocks here pointed at `--space-*`/`--text-*` vars that never existed —
+      // dead config that could only shadow the working @theme utilities. Removed.
       transitionTimingFunction: {
         "out-expo": "var(--ease-out-expo)",
       },

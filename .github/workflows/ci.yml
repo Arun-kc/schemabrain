@@ -387,6 +387,16 @@ jobs:
         # without regenerating the lockfile.
         run: pnpm install --frozen-lockfile
 
+      - name: Component unit tests + coverage gate (Vitest)
+        if: steps.filter.outputs.dashboard == 'true'
+        working-directory: web
+        # jsdom component tests for the design-system kit + theme hook.
+        # No sidecar or browser needed, so it runs ahead of the Chromium
+        # install + sidecar boot to fail fast on a kit regression. Coverage
+        # is scoped to components/kit + lib/useTheme (see vitest.config.ts);
+        # the run fails if any metric drops below the configured threshold.
+        run: pnpm vitest run --coverage
+
       - name: Cache Playwright browsers
         if: steps.filter.outputs.dashboard == 'true'
         id: playwright-cache

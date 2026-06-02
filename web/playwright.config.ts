@@ -37,10 +37,19 @@ export default defineConfig({
     actionTimeout: 5_000,
     navigationTimeout: 10_000,
   },
+  // Multi-theme matrix: the same specs run under both themes, derived from
+  // the project name by tests/e2e/theme.ts (themeForProject). The standard
+  // responsive breakpoints live in tests/e2e/viewports.ts for specs that
+  // assert layout per width; the full per-breakpoint visual-regression
+  // sweep is built on those in a later QA pass.
   projects: [
     {
       name: "chromium-dark",
       use: { ...devices["Desktop Chrome"], colorScheme: "dark" },
+    },
+    {
+      name: "chromium-light",
+      use: { ...devices["Desktop Chrome"], colorScheme: "light" },
     },
   ],
 });
