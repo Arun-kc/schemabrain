@@ -168,6 +168,7 @@
             "pages": [
               "architecture",
               "semantic-layer",
+              "data-dictionary",
               "agent-ux-charter",
               "landscape"
             ]
