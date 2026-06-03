@@ -45,6 +45,13 @@ export type Origin = "manual" | "suggested" | "dbt_import";
 /** v15 cosmetic graph grouping for an entity (node colour / clustering). */
 export type Group = "identity" | "billing" | "activity" | "other";
 
+/**
+ * v15 model self-rating of an LLM-suggested entity binding. Categorical,
+ * never a numeric %. Lowercase — distinct from the uppercase envelope
+ * `Confidence` (the derived trust label). Null for hand-authored entities.
+ */
+export type BindConfidence = "high" | "medium" | "low";
+
 /** Equi-join cardinality; null when authored before the column existed. */
 export type Cardinality =
   | "one_to_one"
@@ -68,6 +75,14 @@ export interface EntitySummary {
   origin: Origin;
   inference_method: InferenceMethod;
   validation_state: ValidationState;
+  /**
+   * v15 cached `pg_class.reltuples` estimate for the bound table; null
+   * when unknown (SQLite source, never-analyzed Postgres table). Render
+   * "—" on null — never a fabricated 0.
+   */
+  rows: number | null;
+  /** v15 model self-rating of the binding; null for hand-authored entities. */
+  confidence: BindConfidence | null;
 }
 
 /** One row in the /api/entities index — entity header + rollup counts. */
@@ -75,6 +90,15 @@ export interface EntityListItem extends EntitySummary {
   pii_level: PiiLevel;
   metrics_count: number;
   joins_count: number;
+}
+
+/**
+ * The drilldown entity header — the shared summary plus the free-text
+ * `rationale` (the model's "why this binding"; null for hand-authored or
+ * when the reviewer re-authored the YAML).
+ */
+export interface EntityDrilldownHeader extends EntitySummary {
+  rationale: string | null;
 }
 
 /** /api/entities list response. */
@@ -139,7 +163,7 @@ export interface EntityJoin {
 
 /** /api/entities/{name}/columns response. */
 export interface EntityDrilldownResponse {
-  entity: EntitySummary;
+  entity: EntityDrilldownHeader;
   columns: readonly EntityColumn[];
   metrics: readonly EntityMetric[];
   joins: readonly EntityJoin[];

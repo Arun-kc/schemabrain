@@ -69,7 +69,13 @@ class Store(Protocol):  # pragma: no cover
 
     # ----- Tables ---------------------------------------------------
 
-    def write_table(self, table: Table, *, source_connection_id: str) -> None: ...
+    def write_table(
+        self,
+        table: Table,
+        *,
+        source_connection_id: str,
+        estimated_row_count: int | None = None,
+    ) -> None: ...
 
     def get_table(
         self, schema_name: str, name: str, *, source_connection_id: str
@@ -78,6 +84,18 @@ class Store(Protocol):  # pragma: no cover
     def delete_table(self, schema_name: str, name: str, *, source_connection_id: str) -> None: ...
 
     def list_tables(self, *, source_connection_id: str | None = None) -> list[tuple[str, str]]: ...
+
+    def estimated_row_counts(self, *, source_connection_id: str) -> dict[str, int | None]:
+        """Map `schema.table` -> cached `pg_class.reltuples` estimate.
+
+        Keyed by qualified name so a caller resolving an entity's bound
+        table can `.get(entity.qualified_table)` without a per-row query
+        (the entities-index rollup reads it once for the whole source).
+        The value is `None` for any table indexed from a backend that
+        can't cheaply estimate row counts (SQLite, or a never-analyzed
+        Postgres table). Read-only.
+        """
+        ...
 
     def list_distinct_source_connection_ids(self) -> list[str]:
         """Return every `source_connection_id` that has data in the

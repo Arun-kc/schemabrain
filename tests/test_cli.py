@@ -282,6 +282,9 @@ class TestIndexCommandValidation:
                 # Protocol still requires this method.
                 raise NotImplementedError
 
+            def estimated_row_count(self, name: str, schema: str) -> int | None:
+                return None
+
             def close(self) -> None:
                 pass
 
@@ -376,6 +379,9 @@ class TestEnrichmentCliFlags:
 
             def get_table(self, name: str, schema: str):
                 raise NotImplementedError
+
+            def estimated_row_count(self, name: str, schema: str) -> int | None:
+                return None
 
             def close(self) -> None:
                 pass
@@ -616,6 +622,9 @@ class TestEnrichmentCliFlags:
             def get_table(self, name: str, schema: str):
                 raise NotImplementedError
 
+            def estimated_row_count(self, name: str, schema: str) -> int | None:
+                return None
+
             def close(self) -> None:
                 pass
 
@@ -695,6 +704,9 @@ class TestEnrichmentCliFlags:
             def get_table(self, name: str, schema: str):
                 raise NotImplementedError
 
+            def estimated_row_count(self, name: str, schema: str) -> int | None:
+                return None
+
             def close(self) -> None:
                 pass
 
@@ -773,6 +785,9 @@ class TestEnrichmentCliFlags:
             def get_table(self, name: str, schema: str):
                 raise NotImplementedError
 
+            def estimated_row_count(self, name: str, schema: str) -> int | None:
+                return None
+
             def close(self) -> None:
                 pass
 
@@ -828,6 +843,9 @@ class TestEnrichmentCliFlags:
             def get_table(self, name: str, schema: str):
                 raise NotImplementedError
 
+            def estimated_row_count(self, name: str, schema: str) -> int | None:
+                return None
+
             def close(self) -> None:
                 pass
 
@@ -882,6 +900,9 @@ class TestEnrichmentCliFlags:
 
             def get_table(self, name: str, schema: str):
                 raise NotImplementedError
+
+            def estimated_row_count(self, name: str, schema: str) -> int | None:
+                return None
 
             def close(self) -> None:
                 pass
@@ -944,6 +965,9 @@ class TestEnrichmentCliFlags:
 
             def get_table(self, name: str, schema: str):
                 raise NotImplementedError
+
+            def estimated_row_count(self, name: str, schema: str) -> int | None:
+                return None
 
             def close(self) -> None:
                 pass
@@ -3263,6 +3287,9 @@ class TestIndexUrlEnv:
             def get_table(self, name: str, schema: str):
                 raise NotImplementedError
 
+            def estimated_row_count(self, name: str, schema: str) -> int | None:
+                return None
+
             def close(self) -> None:
                 pass
 
@@ -3352,6 +3379,9 @@ class TestIndexUrlEnv:
 
             def get_table(self, name: str, schema: str):
                 raise NotImplementedError
+
+            def estimated_row_count(self, name: str, schema: str) -> int | None:
+                return None
 
             def close(self) -> None:
                 pass
@@ -3485,6 +3515,9 @@ class TestCmdIndexLlmFailureShape:
 
             def get_table(self, name: str, schema: str):
                 raise NotImplementedError
+
+            def estimated_row_count(self, name: str, schema: str) -> int | None:
+                return None
 
             def close(self) -> None:
                 pass

@@ -240,6 +240,41 @@ class PostgresDataSource:
             foreign_keys=foreign_keys,
         )
 
+    def estimated_row_count(self, name: str, schema: str) -> int | None:
+        """Cheap, non-locking row-count estimate from `pg_class.reltuples`.
+
+        Reads the planner's cached estimate — a single catalog lookup, no
+        scan and no lock on the user table (unlike `COUNT(*)`), so it is
+        safe to call at index time against production tables of any size.
+
+        Returns `None` when the estimate is unavailable rather than
+        guessing:
+          - the relation isn't found (dropped between listing and here);
+          - `reltuples` is negative, Postgres' "never analyzed / unknown"
+            sentinel (-1 on PG14+). A table that has never been
+            ANALYZE'd or autovacuum'd has no trustworthy estimate, and a
+            fabricated 0 would render as a real "0 rows" in the UI.
+        A non-negative estimate is rounded to the nearest integer
+        (`reltuples` is a float4).
+        """
+        engine = self._require_engine()
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT c.reltuples AS estimate "
+                    "FROM pg_class c "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE n.nspname = :schema AND c.relname = :name "
+                    "AND c.relkind IN ('r', 'p')"
+                ),
+                {"schema": schema, "name": name},
+            ).fetchone()
+        if row is None or row[0] is None or row[0] < 0:
+            return None
+        # `reltuples` is a float4; round to the nearest whole row. A
+        # bare `round()` returns int, so no redundant int() wrap.
+        return round(float(row[0]))
+
     def close(self) -> None:
         if self._engine is not None:
             self._engine.dispose()

@@ -11,12 +11,14 @@ consume:
     `is_log_mined` flag (client-side ON assembly is gone);
   - the drilldown carries a `referenced_by` {metrics, joins} rollup;
   - `/api/entities` items carry `group`, `pii_level`, `metrics_count`,
-    `joins_count`; the response carries a `summary` strip.
+    `joins_count`, plus `rows` + `confidence`; the response carries a
+    `summary` strip.
 
-`rows` and `confidence` are deliberately ABSENT from the rollup: the
-v15 columns that back them (`tables.estimated_row_count`,
-`entities.bind_confidence`) have no writer yet, so surfacing them would
-be permanent null noise. They arrive with their writer PR.
+`rows` (from `tables.estimated_row_count`) and `confidence` (from
+`entities.bind_confidence`) are surfaced now that their v15 writers
+landed — populated for LLM-suggested entities against analyzed
+Postgres tables, null for hand-authored entities / SQLite sources. The
+drilldown header additionally carries the free-text `rationale`.
 """
 
 from __future__ import annotations
@@ -59,12 +61,15 @@ def _col(table: str, name: str, ordinal: int, data_type: str = "text"):
     )
 
 
-def _write_table(store: SQLiteStore, name: str, cols) -> None:
+def _write_table(
+    store: SQLiteStore, name: str, cols, *, estimated_row_count: int | None = None
+) -> None:
     from schemabrain.core.models import Table
 
     store.write_table(
         Table(schema_name="public", name=name, columns=cols),
         source_connection_id=_SRC,
+        estimated_row_count=estimated_row_count,
     )
 
 
@@ -76,6 +81,8 @@ def _write_entity(
     identity: str = "id",
     group: str = "other",
     description: str = "",
+    bind_confidence: str | None = None,
+    rationale: str = "",
 ) -> None:
     from schemabrain.core.entity import Entity, SingleTableBinding
 
@@ -86,6 +93,8 @@ def _write_entity(
             binding=SingleTableBinding(qualified_table=f"public.{table}"),
             identity=identity,
             group=group,
+            bind_confidence=bind_confidence,  # type: ignore[arg-type]
+            rationale=rationale,
         ),
         source_connection_id=_SRC,
     )
@@ -189,6 +198,7 @@ def _seed_two_entity_store(store: SQLiteStore) -> None:
             _col("users", "email", 2),
             _col("users", "password_hash", 3),
         ),
+        estimated_row_count=4096,
     )
     _write_table(
         store,
@@ -199,7 +209,19 @@ def _seed_two_entity_store(store: SQLiteStore) -> None:
             _col("orders", "total", 3, "numeric"),
         ),
     )
-    _write_entity(store, "user", "users", group="identity", description="A registered account.")
+    # `user` is LLM-suggested: it carries a model self-rating + row-count
+    # estimate. `order` is hand-authored against a SQLite-style table with
+    # no estimate — so its `confidence` / `rows` stay null, pinning both
+    # the populated and the absent path in one seed.
+    _write_entity(
+        store,
+        "user",
+        "users",
+        group="identity",
+        description="A registered account.",
+        bind_confidence="high",
+        rationale="Sole table with a customer-shaped identity column.",
+    )
     _write_entity(store, "order", "orders", group="activity")
     _tag(
         store,
@@ -382,6 +404,28 @@ class TestDrilldownEntityHeader:
         assert payload["entity"]["group"] == "identity"
         assert payload["entity"]["description"] == "A registered account."
 
+    def test_entity_carries_rows_confidence_and_rationale(
+        self, store_path: Path, client: TestClient
+    ) -> None:
+        from schemabrain.core.store import SQLiteStore
+
+        with SQLiteStore(store_path) as store:
+            _seed_two_entity_store(store)
+        # `user` is the LLM-suggested entity with a row estimate + rating.
+        user = client.get(f"/api/entities/user/columns?source_connection_id={_SRC}").json()[
+            "entity"
+        ]
+        assert user["rows"] == 4096
+        assert user["confidence"] == "high"
+        assert user["rationale"] == "Sole table with a customer-shaped identity column."
+        # `order` is hand-authored: estimate + rating absent, rationale null.
+        order = client.get(f"/api/entities/order/columns?source_connection_id={_SRC}").json()[
+            "entity"
+        ]
+        assert order["rows"] is None
+        assert order["confidence"] is None
+        assert order["rationale"] is None
+
 
 class TestEntitiesListRollup:
     def test_items_carry_group_pii_level_and_counts(
@@ -418,19 +462,20 @@ class TestEntitiesListRollup:
         # One of two entities carries a catastrophic column.
         assert summary["catastrophic_entities"] == 1
 
-    def test_rows_and_confidence_absent_until_writer_lands(
-        self, store_path: Path, client: TestClient
-    ) -> None:
-        # The v15 columns backing these have no writer; surfacing them
-        # would be permanent null noise. They arrive with their writer PR.
+    def test_items_carry_rows_and_confidence(self, store_path: Path, client: TestClient) -> None:
+        # v15 writers landed: `rows` (estimated_row_count) and
+        # `confidence` (bind_confidence) surface per item — populated for
+        # the LLM-suggested `user`, null for the hand-authored `order`.
         from schemabrain.core.store import SQLiteStore
 
         with SQLiteStore(store_path) as store:
             _seed_two_entity_store(store)
         payload = client.get(f"/api/entities?source_connection_id={_SRC}").json()
-        item = payload["items"][0]
-        assert "rows" not in item
-        assert "confidence" not in item
+        items = {i["name"]: i for i in payload["items"]}
+        assert items["user"]["rows"] == 4096
+        assert items["user"]["confidence"] == "high"
+        assert items["order"]["rows"] is None
+        assert items["order"]["confidence"] is None
 
 
 class TestPiiLevelLadder:

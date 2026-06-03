@@ -272,6 +272,63 @@ class TestListTables:
         assert sorted(tables) == [("public", "org_members"), ("public", "users")]
 
 
+class TestEstimatedRowCount:
+    """v15: the cached `pg_class.reltuples` estimate.
+
+    Lives on the `tables` row, written at index time, read in bulk by
+    the entities-index rollup. The structural `Table` model is unchanged
+    — the estimate rides an explicit `write_table` kwarg so the model
+    stays a pure schema-shape and the value is `None` whenever the
+    backend can't cheaply produce it (SQLite, never-analyzed Postgres).
+    """
+
+    def test_defaults_to_none_when_not_supplied(self, tmp_path: Path):
+        # Hand-written tables (demo store, SQLite) omit the estimate.
+        with SQLiteStore(tmp_path / "store.db") as store:
+            store.write_table(_users_table(), source_connection_id=SOURCE_A)
+            counts = store.estimated_row_counts(source_connection_id=SOURCE_A)
+        assert counts == {"public.users": None}
+
+    def test_round_trips_supplied_estimate(self, tmp_path: Path):
+        with SQLiteStore(tmp_path / "store.db") as store:
+            store.write_table(
+                _users_table(), source_connection_id=SOURCE_A, estimated_row_count=15234
+            )
+            counts = store.estimated_row_counts(source_connection_id=SOURCE_A)
+        assert counts == {"public.users": 15234}
+
+    def test_rewrite_refreshes_estimate(self, tmp_path: Path):
+        # write_table is delete+insert; a re-index with a fresh estimate
+        # must replace the prior value, not keep a stale one.
+        with SQLiteStore(tmp_path / "store.db") as store:
+            store.write_table(
+                _users_table(), source_connection_id=SOURCE_A, estimated_row_count=100
+            )
+            store.write_table(
+                _users_table(), source_connection_id=SOURCE_A, estimated_row_count=200
+            )
+            counts = store.estimated_row_counts(source_connection_id=SOURCE_A)
+        assert counts == {"public.users": 200}
+
+    def test_keyed_by_qualified_name_and_scoped_to_source(self, tmp_path: Path):
+        with SQLiteStore(tmp_path / "store.db") as store:
+            store.write_table(_users_table(), source_connection_id=SOURCE_A, estimated_row_count=10)
+            store.write_table(
+                _members_table(), source_connection_id=SOURCE_A, estimated_row_count=20
+            )
+            store.write_table(
+                _users_table(), source_connection_id=SOURCE_B, estimated_row_count=999
+            )
+            counts_a = store.estimated_row_counts(source_connection_id=SOURCE_A)
+            counts_b = store.estimated_row_counts(source_connection_id=SOURCE_B)
+        assert counts_a == {"public.users": 10, "public.org_members": 20}
+        assert counts_b == {"public.users": 999}
+
+    def test_empty_source_returns_empty_map(self, tmp_path: Path):
+        with SQLiteStore(tmp_path / "store.db") as store:
+            assert store.estimated_row_counts(source_connection_id="nobody") == {}
+
+
 class TestPersistence:
     def test_data_survives_reopening_the_store(self, tmp_path: Path):
         db_path = tmp_path / "store.db"

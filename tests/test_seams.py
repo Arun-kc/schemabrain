@@ -365,7 +365,13 @@ class TestStoreProtocolSeamUsable:
             def close(self) -> None:
                 pass
 
-            def write_table(self, table: Table, *, source_connection_id: str) -> None:
+            def write_table(
+                self,
+                table: Table,
+                *,
+                source_connection_id: str,
+                estimated_row_count: int | None = None,
+            ) -> None:
                 pass
 
             def get_table(
@@ -382,6 +388,9 @@ class TestStoreProtocolSeamUsable:
                 self, *, source_connection_id: str | None = None
             ) -> list[tuple[str, str]]:
                 return []
+
+            def estimated_row_counts(self, *, source_connection_id: str) -> dict[str, int | None]:
+                return {}
 
             def list_distinct_source_connection_ids(self) -> list[str]:
                 return []

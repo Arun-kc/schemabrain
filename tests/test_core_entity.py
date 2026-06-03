@@ -171,6 +171,50 @@ class TestEntityGroup:
             _make_entity(group="financial")
 
 
+class TestEntityBindConfidence:
+    """`bind_confidence` (v15): nullable categorical model self-rating.
+
+    Persisted only by the LLM-suggest `--apply` path; hand-authored
+    entities and YAML round-trips leave it NULL. Mirrors the
+    `EntityCandidate.confidence` enum.
+    """
+
+    @pytest.mark.parametrize("level", ["high", "medium", "low"])
+    def test_accepts_confidence_levels(self, level: str) -> None:
+        assert _make_entity(bind_confidence=level).bind_confidence == level
+
+    def test_defaults_to_none(self) -> None:
+        assert _make_entity().bind_confidence is None
+
+    def test_accepts_explicit_none(self) -> None:
+        assert _make_entity(bind_confidence=None).bind_confidence is None
+
+    def test_rejects_unknown_confidence(self) -> None:
+        with pytest.raises(ValueError, match="bind_confidence"):
+            _make_entity(bind_confidence="very_high")
+
+    def test_rejects_numeric_confidence(self) -> None:
+        # Categorical TEXT, never a float (a 0.87 from a generation model
+        # is theater) — a numeric value must be rejected at construction.
+        with pytest.raises(ValueError, match="bind_confidence"):
+            _make_entity(bind_confidence=0.9)
+
+
+class TestEntityRationale:
+    """`rationale` (v15): free-text companion to bind_confidence.
+
+    Defaults to '' (matches the NOT NULL DEFAULT '' DDL column), so a
+    hand-authored entity that never sets it round-trips cleanly.
+    """
+
+    def test_defaults_to_empty(self) -> None:
+        assert _make_entity().rationale == ""
+
+    def test_accepts_free_text(self) -> None:
+        text = "Sole table with a customer-shaped identity column."
+        assert _make_entity(rationale=text).rationale == text
+
+
 class TestEntityTrustSignalGuards:
     """The 2D trust-signal fields enforce their closed enums in
     `__post_init__` so a direct (untyped) caller can't smuggle a bad
