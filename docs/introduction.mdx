@@ -1,6 +1,6 @@
 ---
 title: "SchemaBrain"
-description: "The semantic firewall between AI agents and your database. Read-only, PII-aware, audit-evident — by architecture, not by trust."
+description: "The trust and intelligence layer between AI agents and your database. Read-only, PII-aware, audit-evident — by architecture, not by trust."
 ---
 
 ## Why SchemaBrain exists
@@ -14,11 +14,14 @@ SchemaBrain sits between the agent and the database and changes that contract.
 <Steps>
   <Step title="Install">
     <CodeGroup>
+    ```bash uvx
+    uvx schemabrain init
+    ```
+    ```bash pipx
+    pipx install schemabrain
+    ```
     ```bash pip
     pip install schemabrain
-    ```
-    ```bash uv
-    uv pip install schemabrain
     ```
     ```bash docker
     docker pull ghcr.io/arun-kc/schemabrain:latest

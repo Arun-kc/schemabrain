@@ -10,7 +10,7 @@ authors = [
 ]
 keywords = ["mcp", "database", "semantic", "ai-agents", "postgres", "schema", "schema-intelligence", "knowledge-graph", "agent-trust"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",

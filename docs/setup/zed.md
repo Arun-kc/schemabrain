@@ -14,8 +14,8 @@ Zed is a stdio MCP client — its AI assistant launches MCP servers as subproces
 ## Install
 
 ```bash
-pip install schemabrain
-schemabrain init --host manual
+uvx schemabrain init --host manual
+# or install first: pipx install schemabrain (or: pip install schemabrain)
 ```
 
 The wizard prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 12-table SaaS fixture spins up in Docker; ~$0.03 to index). Press Enter to take the default (`2`).

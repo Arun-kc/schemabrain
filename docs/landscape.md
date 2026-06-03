@@ -35,7 +35,7 @@ SchemaBrain sits where none of these cover cleanly: **OSS + Apache-2.0 + first-p
 
 ## Is this a semantic layer like Cube or dbt Semantic Layer?
 
-Partially. SchemaBrain ships entities, metrics, and canonical joins as first-class persisted definitions today — agents call them via `list_entities`, `describe_entity`, `resolve_join`, `get_metric`. But the semantic layer isn't the headline; it's the substrate the firewall sits on. Operator-validated metric definitions are what make architectural read-only possible: the agent picks a metric by name, the compiler emits the SQL.
+Partially. SchemaBrain ships entities, metrics, and canonical joins as first-class persisted definitions today — agents call them via `list_entities`, `describe_entity`, `resolve_join`, `get_metric`. The trust and intelligence layer is the headline; the SQL firewall is one proof-point of six that the semantic layer makes possible. Operator-validated metric definitions are what make architectural read-only possible: the agent picks a metric by name, the compiler emits the SQL.
 
 If you already run dbt or Cube, SchemaBrain complements them (point at `target/manifest.json` and dbt becomes the source of truth). If you don't, the definitions are generated for you — LLM-suggested, user-confirmed.
 

@@ -53,8 +53,8 @@ class Rule:
 RULES: tuple[Rule, ...] = (
     Rule(
         "README.md",
-        r"\*\*Status: \d+\.\d+\.\d+ \(alpha\)\.\*\*",
-        "**Status: {v} (alpha).**",
+        r"\*\*Status: \d+\.\d+\.\d+ \(beta\)\.\*\*",
+        "**Status: {v} (beta).**",
         "README status line",
     ),
     Rule(
