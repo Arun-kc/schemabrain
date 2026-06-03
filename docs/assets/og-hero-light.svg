@@ -42,11 +42,11 @@
   <rect x="80" y="308" width="60" height="4" fill="#3DCD8B"></rect>
 
   
-  <text x="80" y="372" font-family="&#39;Inter&#39;, system-ui, -apple-system, &#39;Segoe UI&#39;, Roboto, sans-serif" font-weight="400" font-size="26" fill="#0C0C0C" opacity="0.85" letter-spacing="-0.3">The firewall between your agent</text>
-  <text x="80" y="412" font-family="&#39;Inter&#39;, system-ui, -apple-system, &#39;Segoe UI&#39;, Roboto, sans-serif" font-weight="400" font-size="26" fill="#0C0C0C" opacity="0.85" letter-spacing="-0.3">and your database.</text>
+  <text x="80" y="372" font-family="&#39;Inter&#39;, system-ui, -apple-system, &#39;Segoe UI&#39;, Roboto, sans-serif" font-weight="400" font-size="26" fill="#0C0C0C" opacity="0.85" letter-spacing="-0.3">The trust and intelligence layer</text>
+  <text x="80" y="412" font-family="&#39;Inter&#39;, system-ui, -apple-system, &#39;Segoe UI&#39;, Roboto, sans-serif" font-weight="400" font-size="26" fill="#0C0C0C" opacity="0.85" letter-spacing="-0.3">between AI agents and your database.</text>
 
   
-  <text x="80" y="590" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, monospace" font-weight="700" font-size="14" fill="#0C0C0C" opacity="0.6" letter-spacing="1">open source · MIT · MCP-native</text>
+  <text x="80" y="590" font-family="&#39;JetBrains Mono&#39;, ui-monospace, SFMono-Regular, Menlo, monospace" font-weight="700" font-size="14" fill="#0C0C0C" opacity="0.6" letter-spacing="1">open source · Apache-2.0 · MCP-native</text>
 
   
   <g transform="translate(640,215)">
