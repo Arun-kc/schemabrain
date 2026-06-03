@@ -548,6 +548,14 @@ def _dispatch(argv: list[str] | None) -> int:
             url_env=args.url_env,
             store_path=args.store_path,
         )
+    if args.command == "docs":
+        return _cmd_docs(
+            fmt=args.format,
+            out=args.out,
+            positional_url=args.source,
+            url_env=args.url_env,
+            store_path=args.store_path,
+        )
     if args.command == "metrics":
         if args.metrics_action == "apply":
             return _cmd_metrics_apply(
@@ -755,6 +763,7 @@ First hour:
   doctor                Verify the wiring (--verify for a no-API-key mock-agent smoke)
   dashboard             Serve the local read-only UI (requires `pip install schemabrain[ui]`)
   inspect               Show what was curated (entities, metrics, joins)
+  docs                  Generate a data dictionary (markdown/html) from the store
   tail                  Stream MCP tool calls live
 
 Operate:
@@ -2393,6 +2402,46 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
     )
 
+    # `docs` renders a data dictionary from the store — every indexed
+    # table, column, type, PII classification, semantic join, and metric.
+    # Store-only reader (no LLM, no live source), same shape as `inspect`.
+    p_docs = sub.add_parser(
+        "docs",
+        help="Generate a data dictionary (markdown/html) from the indexed store (no LLM)",
+    )
+    p_docs.add_argument(
+        "--format",
+        choices=["markdown", "html"],
+        default="markdown",
+        help="Output format (default: markdown).",
+    )
+    p_docs.add_argument(
+        "--out",
+        dest="out",
+        default=None,
+        help="Write the dictionary to this file. Without --out, writes to stdout.",
+    )
+    p_docs.add_argument(
+        "--source",
+        default=None,
+        help="Scope to one indexed source. Optional — required only when the "
+        "store carries more than one source. Prefer --url-env when the URL "
+        "contains a password.",
+    )
+    p_docs.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL. "
+        "Mutually exclusive with --source.",
+    )
+    p_docs.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+
     # `policy` is the operator-facing surface for PII enforcement.
     # Five actions: `show` (read-only state inspection), `apply`
     # (load a pii_policy.yaml file into the store + emit a confirmation),
@@ -3797,6 +3846,75 @@ def _resolve_single_source_id(
         )
         return None, 2
     return source_ids[0], 0
+
+
+def _cmd_docs(
+    *,
+    fmt: str,
+    out: str | None,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+) -> int:
+    """Render a data dictionary from the store as Markdown or HTML.
+
+    Store-only reader — no LLM, no live source connection. The
+    `--source` / `--url-env` flag is optional and only needed to scope
+    the dictionary when the store carries more than one source.
+
+    Exit codes (mirroring `inspect` / `policy show`):
+      - 0: rendered successfully (to stdout or `--out`)
+      - 1: store has no indexed sources (run `index` first)
+      - 2: missing store / `--source`+`--url-env` conflict / malformed
+        URL / ambiguous multi-source / schema-version mismatch
+    """
+    from schemabrain.datadict import build_dictionary, render_html, render_markdown
+
+    store_p = Path(store_path)
+    if not store_p.exists():
+        _render_guided(
+            GuidedError(
+                kind="docs_store_missing",
+                message=f"store not found at {store_path}",
+                why="`schemabrain docs` renders the data dictionary from the "
+                "local SQLite store; without a store there is nothing to document",
+                fix=f"run `schemabrain index --url-env DBURL --store-path "
+                f"{store_path}` to populate it",
+                next_step="re-run `schemabrain docs` after `index` completes",
+            )
+        )
+        return 2
+
+    try:
+        with SQLiteStore(store_p) as store:
+            source_id, rc = _resolve_single_source_id(
+                store,
+                positional_url=positional_url,
+                url_env=url_env,
+                store_path=store_path,
+            )
+            if rc:
+                return rc
+            assert (
+                source_id is not None
+            )  # pragma: no cover — defensive; rc gate above caught all None paths
+            model = build_dictionary(store=store, source_connection_id=source_id)
+    except SchemaVersionMismatchError as exc:
+        # Same guided recovery `inspect` gives on a stale store; covered
+        # by test_docs_schema_version_mismatch_exits_2.
+        _render_guided(
+            GuidedError(
+                kind="docs_schema_version_mismatch",
+                message=str(exc),
+                why="the local store was written by a different schemabrain version",
+                fix="delete the store file and re-run `schemabrain index`",
+                next_step=f"rm {store_path} && schemabrain index --url-env DBURL",
+            )
+        )
+        return 2
+
+    body = render_html(model) if fmt == "html" else render_markdown(model)
+    return _write_yaml_body(body, out)
 
 
 def _cmd_policy_show(
