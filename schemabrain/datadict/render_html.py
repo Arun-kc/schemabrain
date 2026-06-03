@@ -65,6 +65,48 @@ _BRAND_MARK = (
     "</g></svg>"
 )
 
+# The SchemaBrain browser icon (canonical `docs/assets/browser-icon.svg`),
+# base64-encoded so the favicon is embedded with no external request. Pinned
+# to the asset by `test_html_favicon_matches_browser_icon_asset`.
+_FAVICON_SVG_B64 = (
+    "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIiB3aWR0"
+    "aD0iNTEyIiBoZWlnaHQ9IjUxMiI+CiAgPGRlZnM+CiAgICA8Y2xpcFBhdGggaWQ9ImJpLWJyYWluIj4KICAgICAg"
+    "PHBhdGggZD0iTTE3NiA5NiBDIDE3NiA2NCwgMjQwIDQ4LCAyNTYgODAgQyAyODggNDgsIDM1MiA2NCwgMzUyIDEx"
+    "MiBDIDQwMCA5NiwgNDQ4IDE0NCwgNDE2IDE5MiBDIDQ2NCAyMjQsIDQ0OCAyODgsIDQwMCAzMDQgQyA0MzIgMzUy"
+    "LCAzODQgNDE2LCAzMjAgNDAwIEMgMzA0IDQ0OCwgMjI0IDQ0OCwgMjA4IDQxNiBDIDE0NCA0MzIsIDk2IDM4NCwg"
+    "MTEyIDMzNiBDIDY0IDMyMCwgNDggMjU2LCA5NiAyNDAgQyA2NCAxOTIsIDk2IDEyOCwgMTQ0IDE0NCBDIDE0NCAx"
+    "MTIsIDE2MCA5NiwgMTc2IDk2IFoiPjwvcGF0aD4KICAgIDwvY2xpcFBhdGg+CiAgICA8Y2xpcFBhdGggaWQ9ImJp"
+    "LWNhcmQiPgogICAgICA8cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgcng9Ijk2IiBy"
+    "eT0iOTYiPjwvcmVjdD4KICAgIDwvY2xpcFBhdGg+CiAgPC9kZWZzPgoKICA8ZyBjbGlwLXBhdGg9InVybCgjYmkt"
+    "Y2FyZCkiPgogICAgPHJlY3Qgd2lkdGg9IjUxMiIgaGVpZ2h0PSI1MTIiIGZpbGw9IiNGQUZBRjciPjwvcmVjdD4K"
+    "CiAgICAKICAgIDxnIGNsaXAtcGF0aD0idXJsKCNiaS1icmFpbikiPgogICAgICA8cmVjdCB4PSIyNTYiIHk9IjAi"
+    "IHdpZHRoPSIyNTYiIGhlaWdodD0iNTEyIiBmaWxsPSIjM0VDRjhFIj48L3JlY3Q+CiAgICA8L2c+CgogICAgCiAg"
+    "ICA8cGF0aCBkPSJNMTc2IDk2IEMgMTc2IDY0LCAyNDAgNDgsIDI1NiA4MCBDIDI4OCA0OCwgMzUyIDY0LCAzNTIg"
+    "MTEyIEMgNDAwIDk2LCA0NDggMTQ0LCA0MTYgMTkyIEMgNDY0IDIyNCwgNDQ4IDI4OCwgNDAwIDMwNCBDIDQzMiAz"
+    "NTIsIDM4NCA0MTYsIDMyMCA0MDAgQyAzMDQgNDQ4LCAyMjQgNDQ4LCAyMDggNDE2IEMgMTQ0IDQzMiwgOTYgMzg0"
+    "LCAxMTIgMzM2IEMgNjQgMzIwLCA0OCAyNTYsIDk2IDI0MCBDIDY0IDE5MiwgOTYgMTI4LCAxNDQgMTQ0IEMgMTQ0"
+    "IDExMiwgMTYwIDk2LCAxNzYgOTYgWiIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjIwIiBzdHJva2Ut"
+    "bGluZWpvaW49InJvdW5kIiBmaWxsPSJub25lIj48L3BhdGg+CgogICAgCiAgICA8bGluZSB4MT0iMjU2IiB5MT0i"
+    "ODAiIHgyPSIyNTYiIHkyPSI0MTYiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIxNiIgc3Ryb2tlLWxp"
+    "bmVjYXA9InJvdW5kIj48L2xpbmU+CgogICAgCiAgICA8cGF0aCBkPSJNMTEyIDE3NiBDIDE2MCAxNTIsIDIwOCAx"
+    "NzYsIDI0MCAxNjgiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIxNCIgc3Ryb2tlLWxpbmVjYXA9InJv"
+    "dW5kIiBmaWxsPSJub25lIj48L3BhdGg+CiAgICA8cGF0aCBkPSJNOTYgMjU2IEMgMTQ0IDIyNCwgMjA4IDI2NCwg"
+    "MjQwIDI0OCIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjE0IiBzdHJva2UtbGluZWNhcD0icm91bmQi"
+    "IGZpbGw9Im5vbmUiPjwvcGF0aD4KICAgIDxwYXRoIGQ9Ik0xMTIgMzM2IEMgMTYwIDMxMiwgMjA4IDM0NCwgMjQw"
+    "IDMyOCIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjE0IiBzdHJva2UtbGluZWNhcD0icm91bmQiIGZp"
+    "bGw9Im5vbmUiPjwvcGF0aD4KCiAgICAKICAgIDxnIGNsaXAtcGF0aD0idXJsKCNiaS1icmFpbikiPgogICAgICA8"
+    "Y2lyY2xlIGN4PSIyODgiIGN5PSIxNzYiIHI9IjE0IiBmaWxsPSIjRkFGQUY3Ij48L2NpcmNsZT4KICAgICAgPGxp"
+    "bmUgeDE9IjMxMiIgeTE9IjE3NiIgeDI9IjQwMCIgeTI9IjE3NiIgc3Ryb2tlPSIjRkFGQUY3IiBzdHJva2Utd2lk"
+    "dGg9IjE2IiBzdHJva2UtbGluZWNhcD0icm91bmQiPjwvbGluZT4KICAgICAgPGNpcmNsZSBjeD0iMjg4IiBjeT0i"
+    "MjU2IiByPSIxNCIgZmlsbD0iI0ZBRkFGNyI+PC9jaXJjbGU+CiAgICAgIDxsaW5lIHgxPSIzMTIiIHkxPSIyNTYi"
+    "IHgyPSI0MTYiIHkyPSIyNTYiIHN0cm9rZT0iI0ZBRkFGNyIgc3Ryb2tlLXdpZHRoPSIxNiIgc3Ryb2tlLWxpbmVj"
+    "YXA9InJvdW5kIj48L2xpbmU+CiAgICAgIDxjaXJjbGUgY3g9IjI4OCIgY3k9IjMzNiIgcj0iMTQiIGZpbGw9IiNG"
+    "QUZBRjciPjwvY2lyY2xlPgogICAgICA8bGluZSB4MT0iMzEyIiB5MT0iMzM2IiB4Mj0iNDAwIiB5Mj0iMzM2IiBz"
+    "dHJva2U9IiNGQUZBRjciIHN0cm9rZS13aWR0aD0iMTYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCI+PC9saW5lPgog"
+    "ICAgPC9nPgogIDwvZz4KPC9zdmc+"
+)
+_FAVICON = f"data:image/svg+xml;base64,{_FAVICON_SVG_B64}"
+
 # Headings are styled by CLASS, not tag, so the visual hierarchy stays
 # correct regardless of heading DEPTH — a multi-source document nests
 # entities one level deeper (## source -> ### entity -> #### section) for
@@ -251,6 +293,7 @@ def render_html(model: DictionaryModel) -> str:
         "<head>",
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        f'<link rel="icon" type="image/svg+xml" href="{_FAVICON}">',
         "<title>schemabrain · data dictionary</title>",
         f"<style>{_STYLE}</style>",
         "</head>",

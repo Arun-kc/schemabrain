@@ -56,6 +56,19 @@ def test_html_carries_brand_identity(tmp_path: Path) -> None:
     assert "--brand: #3ecf8e" in out
 
 
+def test_html_favicon_matches_browser_icon_asset(tmp_path: Path) -> None:
+    import base64
+
+    from schemabrain.datadict.render_html import _FAVICON_SVG_B64
+
+    out = _saas_html(tmp_path)
+    assert '<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,' in out
+    # The embedded favicon is exactly the canonical browser-icon asset; if the
+    # asset changes, regenerate _FAVICON_SVG_B64.
+    asset = Path(__file__).resolve().parents[2] / "docs" / "assets" / "browser-icon.svg"
+    assert base64.b64encode(asset.read_bytes()).decode("ascii") == _FAVICON_SVG_B64
+
+
 def test_html_escapes_markup_in_values() -> None:
     # A redacted ON clause carries angle brackets; a hostile description
     # carries a tag. Both must render escaped, never as live markup.
