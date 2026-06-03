@@ -33,12 +33,27 @@ def _saas_html(tmp_path: Path) -> str:
 def test_html_document_is_wellformed(tmp_path: Path) -> None:
     out = _saas_html(tmp_path)
     assert out.startswith("<!DOCTYPE html>\n")
-    assert "<title>Data dictionary</title>" in out
+    assert "<title>schemabrain · data dictionary</title>" in out
     assert "<table>" in out
     assert "password_hash" in out
     # Catastrophic columns get the highlight span.
     assert '<span class="catastrophic">Credential (catastrophic)</span>' in out
     assert out.rstrip("\n").endswith("</html>")
+
+
+def test_html_carries_brand_identity(tmp_path: Path) -> None:
+    from schemabrain.positioning import TAGLINE
+
+    out = _saas_html(tmp_path)
+    # Masthead: brain mark + schema/brain wordmark with the brand accent.
+    assert '<header class="masthead">' in out
+    assert '<span class="wordmark">schema<span class="accent">brain</span></span>' in out
+    assert "<svg" in out and 'viewBox="0 0 64 64"' in out  # the inlined brand mark
+    # Canonical tagline + a branded footer.
+    assert TAGLINE in out
+    assert '<footer class="footer">' in out
+    # Brand green is defined as a token and applied (wordmark accent, h1 rule).
+    assert "--brand: #3ecf8e" in out
 
 
 def test_html_escapes_markup_in_values() -> None:

@@ -24,32 +24,95 @@ from schemabrain.datadict.render_common import (
     is_catastrophic_category,
     sensitivity_label,
 )
+from schemabrain.positioning import TAGLINE
 
 _EM_DASH = "—"
+
+# The SchemaBrain brain mark (canonical `docs/assets/schemabrain-mark-64.svg`,
+# inlined verbatim so the export stays self-contained). Its own ivory
+# background makes it read as a branded tile on both light and dark pages.
+_BRAND_MARK = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">'
+    '<rect width="64" height="64" fill="#FAFAF7"></rect>'
+    '<defs><clipPath id="sb-mark-clip"><path d="M22 12 C 22 8, 30 6, 32 10 C 36 6, 44 8, 44 14 '
+    "C 50 12, 56 18, 52 24 C 58 28, 56 36, 50 38 C 54 44, 48 52, 40 50 C 38 56, 28 56, 26 52 "
+    'C 18 54, 12 48, 14 42 C 8 40, 6 32, 12 30 C 8 24, 12 16, 18 18 C 18 14, 20 12, 22 12 Z">'
+    "</path></clipPath></defs>"
+    '<g clip-path="url(#sb-mark-clip)"><rect x="32" y="0" width="32" height="64" fill="#3DCD8B">'
+    "</rect></g>"
+    '<path d="M22 12 C 22 8, 30 6, 32 10 C 36 6, 44 8, 44 14 C 50 12, 56 18, 52 24 C 58 28, 56 36, '
+    "50 38 C 54 44, 48 52, 40 50 C 38 56, 28 56, 26 52 C 18 54, 12 48, 14 42 C 8 40, 6 32, 12 30 "
+    'C 8 24, 12 16, 18 18 C 18 14, 20 12, 22 12 Z" stroke="#0C0C0C" stroke-width="2.2" '
+    'stroke-linejoin="round" fill="none"></path>'
+    '<line x1="32" y1="10" x2="32" y2="52" stroke="#0C0C0C" stroke-width="1.6" '
+    'stroke-linecap="round"></line>'
+    '<path d="M14 22 C 20 19, 26 22, 30 21" stroke="#0C0C0C" stroke-width="1.4" '
+    'stroke-linecap="round" fill="none"></path>'
+    '<path d="M12 32 C 18 28, 26 33, 30 31" stroke="#0C0C0C" stroke-width="1.4" '
+    'stroke-linecap="round" fill="none"></path>'
+    '<path d="M14 42 C 20 39, 26 43, 30 41" stroke="#0C0C0C" stroke-width="1.4" '
+    'stroke-linecap="round" fill="none"></path>'
+    '<g clip-path="url(#sb-mark-clip)">'
+    '<circle cx="36" cy="22" r="1.4" fill="#FAFAF7"></circle>'
+    '<line x1="38.5" y1="22" x2="50" y2="22" stroke="#FAFAF7" stroke-width="1.6" '
+    'stroke-linecap="round"></line>'
+    '<circle cx="36" cy="32" r="1.4" fill="#FAFAF7"></circle>'
+    '<line x1="38.5" y1="32" x2="52" y2="32" stroke="#FAFAF7" stroke-width="1.6" '
+    'stroke-linecap="round"></line>'
+    '<circle cx="36" cy="42" r="1.4" fill="#FAFAF7"></circle>'
+    '<line x1="38.5" y1="42" x2="50" y2="42" stroke="#FAFAF7" stroke-width="1.6" '
+    'stroke-linecap="round"></line>'
+    "</g></svg>"
+)
 
 # Headings are styled by CLASS, not tag, so the visual hierarchy stays
 # correct regardless of heading DEPTH — a multi-source document nests
 # entities one level deeper (## source -> ### entity -> #### section) for
 # a semantically correct outline without changing how they look.
 _STYLE = """\
-:root { color-scheme: light dark; }
+:root {
+  color-scheme: light dark;
+  --brand: #3ecf8e;
+  --bg: #ffffff; --text: #14181d; --muted: #5b6470;
+  --border: #e4e7eb; --border-soft: #eceef1; --code-bg: #f2f4f6; --alarm: #b00020;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b0f14; --text: #e6edf3; --muted: #9aa4b2;
+    --border: #222a33; --border-soft: #1a212a; --code-bg: #1b232c; --alarm: #ff6b6b;
+  }
+}
 body { font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-       max-width: 64rem; margin: 2rem auto; padding: 0 1.25rem; color: #14181d; }
-h1 { font-size: 1.9rem; margin: 0 0 .25rem; }
-.lede { color: #5b6470; margin: 0 0 2rem; }
+       max-width: 64rem; margin: 2rem auto; padding: 0 1.25rem;
+       background: var(--bg); color: var(--text); }
+.masthead { display: flex; align-items: center; gap: .6rem; margin: 0 0 .4rem; }
+.masthead .mark { width: 34px; height: 34px; border-radius: 8px; overflow: hidden; flex: none; }
+.masthead .mark svg { width: 100%; height: 100%; display: block; }
+.wordmark { font: 600 1.15rem ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, monospace;
+            letter-spacing: -.02em; color: var(--text); }
+.wordmark .accent { color: var(--brand); }
+.tagline { color: var(--muted); margin: 0 0 2.25rem; font-size: .95rem; max-width: 46rem; }
+h1 { font-size: 1.9rem; margin: 0 0 .25rem;
+     border-left: 4px solid var(--brand); padding-left: .6rem; }
+.lede { color: var(--muted); margin: 0 0 2rem; }
+.footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border);
+          color: var(--muted); font: .82em ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo,
+          monospace; }
+.footer .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+               background: var(--brand); margin-right: .45rem; vertical-align: middle; }
 .source-heading { font-size: 1.6rem; margin: 2.5rem 0 .5rem; }
-section.entity { border-top: 1px solid #e4e7eb; padding-top: 1.5rem; margin-top: 1.5rem; }
+section.entity { border-top: 1px solid var(--border); padding-top: 1.5rem; margin-top: 1.5rem; }
 .entity-name { font-size: 1.35rem; margin: 0 0 .35rem; }
 .section-heading { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em;
-     color: #5b6470; margin: 1.5rem 0 .5rem; }
-ul.meta { list-style: none; padding: 0; margin: .5rem 0 0; color: #5b6470; }
+     color: var(--muted); margin: 1.5rem 0 .5rem; }
+ul.meta { list-style: none; padding: 0; margin: .5rem 0 0; color: var(--muted); }
 code { font: .85em ui-monospace, "SF Mono", Menlo, monospace;
-       background: #f2f4f6; padding: .1em .35em; border-radius: 4px; }
+       background: var(--code-bg); color: var(--text); padding: .1em .35em; border-radius: 4px; }
 table { border-collapse: collapse; width: 100%; margin: .25rem 0 .5rem; font-size: .9rem; }
-th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #eceef1;
+th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--border-soft);
          vertical-align: top; }
-th { font-weight: 600; color: #5b6470; }
-.catastrophic { color: #b00020; font-weight: 600; }
+th { font-weight: 600; color: var(--muted); }
+.catastrophic { color: var(--alarm); font-weight: 600; }
 """
 
 
@@ -188,10 +251,13 @@ def render_html(model: DictionaryModel) -> str:
         "<head>",
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        "<title>Data dictionary</title>",
+        "<title>schemabrain · data dictionary</title>",
         f"<style>{_STYLE}</style>",
         "</head>",
         "<body>",
+        f'<header class="masthead"><span class="mark">{_BRAND_MARK}</span>'
+        '<span class="wordmark">schema<span class="accent">brain</span></span></header>',
+        f'<p class="tagline">{_esc(TAGLINE)}</p>',
         "<h1>Data dictionary</h1>",
         f'<p class="lede">{lede}</p>',
     ]
@@ -205,5 +271,11 @@ def render_html(model: DictionaryModel) -> str:
             )
         for entity in source.entities:
             lines += _entity_section(entity, level=entity_level)
-    lines += ["</body>", "</html>", ""]
+    lines += [
+        '<footer class="footer"><span class="dot"></span>'
+        "schemabrain · data dictionary · generated locally from your store</footer>",
+        "</body>",
+        "</html>",
+        "",
+    ]
     return "\n".join(lines)
