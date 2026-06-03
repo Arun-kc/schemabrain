@@ -42,29 +42,72 @@ export interface Meta {
 /** Origin tag carried by entity / metric / join writes. */
 export type Origin = "manual" | "suggested" | "dbt_import";
 
-/** Item shape in the /api/entities list. */
+/** v15 cosmetic graph grouping for an entity (node colour / clustering). */
+export type Group = "identity" | "billing" | "activity" | "other";
+
+/** Equi-join cardinality; null when authored before the column existed. */
+export type Cardinality =
+  | "one_to_one"
+  | "one_to_many"
+  | "many_to_one"
+  | "many_to_many";
+
+/**
+ * One decisive PII severity badge per entity. "catastrophic" outranks the
+ * 4-level sensitivity ladder; "none" when every column is public/untagged.
+ */
+export type PiiLevel = "catastrophic" | "pii" | "confidential" | "internal" | "none";
+
+/** Entity header shape shared by the list rows and the drilldown. */
 export interface EntitySummary {
   name: string;
   description: string;
   qualified_table: string;
   identity: string;
+  group: Group;
   origin: Origin;
   inference_method: InferenceMethod;
   validation_state: ValidationState;
 }
 
+/** One row in the /api/entities index — entity header + rollup counts. */
+export interface EntityListItem extends EntitySummary {
+  pii_level: PiiLevel;
+  metrics_count: number;
+  joins_count: number;
+}
+
 /** /api/entities list response. */
 export interface EntityListResponse {
   source_connection_id: string;
-  items: readonly EntitySummary[];
+  items: readonly EntityListItem[];
   count: number;
+  summary: {
+    entities: number;
+    metrics: number;
+    joins: number;
+    catastrophic_entities: number;
+  };
+}
+
+/** A column→column nearest neighbour for the drilldown "similar" field. */
+export interface SimilarColumn {
+  schema: string;
+  table: string;
+  column: string;
+  /** Cosine similarity to the reference column, in [-1, 1]. */
+  score: number;
 }
 
 /** One column inside the /api/entities/{name}/columns response. */
 export interface EntityColumn {
   name: string;
+  data_type: string;
+  /** Free-text "meaning"; null when the column is un-enriched. */
+  description: string | null;
   sensitivity: ColumnPiiTag["sensitivity"];
   pii_categories: readonly ColumnPiiTag["pii_categories"][number][];
+  similar: readonly SimilarColumn[];
 }
 
 /** One metric linked to an entity. */
@@ -85,7 +128,13 @@ export interface EntityJoin {
   description: string;
   source_entity: string;
   target_entity: string;
-  on: readonly { source_column: string; target_column: string }[];
+  /** Server-rendered, quoted, catastrophic-FK-redacted ON predicate. */
+  on_clause: string;
+  cardinality: Cardinality | null;
+  origin: Origin;
+  inference_method: InferenceMethod;
+  /** True when `inference_method === "observed_in_query_log"`. */
+  is_log_mined: boolean;
 }
 
 /** /api/entities/{name}/columns response. */
@@ -94,6 +143,10 @@ export interface EntityDrilldownResponse {
   columns: readonly EntityColumn[];
   metrics: readonly EntityMetric[];
   joins: readonly EntityJoin[];
+  referenced_by: {
+    metrics: number;
+    joins: number;
+  };
 }
 
 /** One row in the PII Viz matrix — entity × category counts. */

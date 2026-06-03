@@ -162,14 +162,7 @@ function DrilldownCard({
                       <span className={styles.itemDetail}>──▶ {partner}</span>
                     </div>
                     <p className={styles.itemLabel}>{j.description}</p>
-                    <code className={styles.joinClause}>
-                      {j.on
-                        .map(
-                          (edge) =>
-                            `${j.source_entity}.${edge.source_column} = ${j.target_entity}.${edge.target_column}`,
-                        )
-                        .join(" AND ")}
-                    </code>
+                    <code className={styles.joinClause}>{j.on_clause}</code>
                   </div>
                 );
               })}
