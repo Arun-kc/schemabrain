@@ -35,6 +35,7 @@ import asyncio
 import json
 import sqlite3
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -377,11 +378,68 @@ def _register_meta_route(app: FastAPI, config: SidecarConfig) -> None:
         }
 
 
+# Per-entity PII severity ladder for the entities-list rollup + drilldown
+# header. "catastrophic" outranks the 4-level sensitivity ladder so the
+# entities index can render one decisive badge per entity.
+_PII_LEVEL_SENSITIVITY_ORDER: tuple[str, ...] = ("pii", "confidential", "internal")
+
+# How many nearest-neighbour columns to surface per drilldown column.
+# Bounded small: the drilldown "similar" hint is a few candidates, not a
+# ranked catalogue, and each lookup is a per-source cosine scan.
+_SIMILAR_COLUMNS_K: int = 5
+
+
+def _pii_level_from_tags(
+    tag_values: Iterable[tuple[str, frozenset[str]]],
+    *,
+    catastrophic_categories: frozenset[str],
+) -> str:
+    """Collapse a table's PII tags into one entity-level severity label.
+
+    Returns "catastrophic" when any column carries a catastrophic-leak
+    category; otherwise the highest sensitivity present on the 4-level
+    ladder ("pii" > "confidential" > "internal"); "none" when every column
+    is public/untagged. Mirrors the matrix route's catastrophic +
+    sensitivity bucketing so the two surfaces never disagree on severity.
+    """
+    sensitivities: set[str] = set()
+    for sensitivity, categories in tag_values:
+        if categories & catastrophic_categories:
+            return "catastrophic"
+        sensitivities.add(sensitivity)
+    for level in _PII_LEVEL_SENSITIVITY_ORDER:
+        if level in sensitivities:
+            return level
+    return "none"
+
+
+def _entity_pii_level(
+    store: Any,
+    entity: Any,
+    *,
+    source_connection_id: str,
+    catastrophic_categories: frozenset[str],
+) -> str:
+    """Resolve one entity's PII severity label from its bound table's tags."""
+    schema_name, table_name = entity.qualified_table.split(".", 1)
+    table = store.get_table(schema_name, table_name, source_connection_id=source_connection_id)
+    if table is None:  # pragma: no cover - defensive; FK guarantees the table
+        return "none"
+    column_names = [c.name for c in table.columns]
+    tags = store.get_column_pii_tags(
+        source_connection_id=source_connection_id,
+        qualified_table=entity.qualified_table,
+        columns=column_names,
+    )
+    return _pii_level_from_tags(tags.values(), catastrophic_categories=catastrophic_categories)
+
+
 def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
     """PII Viz routes — list entities + per-entity column drill-down."""
     from fastapi import HTTPException
 
     from schemabrain.core.store import SQLiteStore
+    from schemabrain.mcp._redaction import render_join_on_clause
     from schemabrain.pii.categories import (
         CATASTROPHIC_LEAK_CATEGORIES,
         PII_CATEGORIES_ORDERED,
@@ -487,29 +545,74 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
     def list_entities_route(
         source_connection_id: str | None = None,
     ) -> dict[str, Any]:
+        """Entities index: per-entity rollup + a summary strip.
+
+        Each item carries the entity's `group`, a single `pii_level`
+        badge, and `metrics_count` / `joins_count` so the index renders
+        without an N+1 drill per row — metrics + joins are fetched once
+        and counted in Python. `rows` and `confidence` are intentionally
+        absent: the v15 columns backing them (`estimated_row_count`,
+        `bind_confidence`) have no writer yet, so they would be permanent
+        null noise; they arrive with their writer PR.
+        """
         with SQLiteStore(config.store_path) as store:
             resolved_source = _resolve_source(store, config, source_connection_id)
             entities = store.list_entities(source_connection_id=resolved_source)
-        items = [
-            {
-                "name": e.name,
-                "description": e.description,
-                "qualified_table": e.qualified_table,
-                "identity": e.identity,
-                "origin": e.origin,
-                "inference_method": e.inference_method,
-                "validation_state": e.validation_state,
-            }
-            for e in entities
-        ]
+            all_metrics = store.list_metrics(source_connection_id=resolved_source)
+            all_joins = store.list_canonical_joins(source_connection_id=resolved_source)
+            items: list[dict[str, Any]] = []
+            catastrophic_entities = 0
+            for e in entities:
+                pii_level = _entity_pii_level(
+                    store,
+                    e,
+                    source_connection_id=resolved_source,
+                    catastrophic_categories=CATASTROPHIC_LEAK_CATEGORIES,
+                )
+                if pii_level == "catastrophic":
+                    catastrophic_entities += 1
+                items.append(
+                    {
+                        "name": e.name,
+                        "description": e.description,
+                        "qualified_table": e.qualified_table,
+                        "identity": e.identity,
+                        "group": e.group,
+                        "origin": e.origin,
+                        "inference_method": e.inference_method,
+                        "validation_state": e.validation_state,
+                        "pii_level": pii_level,
+                        "metrics_count": sum(1 for m in all_metrics if m.entity == e.name),
+                        "joins_count": sum(
+                            1 for j in all_joins if e.name in (j.source_entity, j.target_entity)
+                        ),
+                    }
+                )
         return {
             "source_connection_id": resolved_source,
             "items": items,
             "count": len(items),
+            "summary": {
+                "entities": len(items),
+                "metrics": len(all_metrics),
+                "joins": len(all_joins),
+                "catastrophic_entities": catastrophic_entities,
+            },
         }
 
     @app.get("/api/entities/{name}/columns")
     def entity_columns_route(name: str, source_connection_id: str | None = None) -> dict[str, Any]:
+        """Entity drilldown: physical columns + semantic metrics/joins.
+
+        Columns carry `data_type`, the free-text `description` (the human
+        "meaning", null when un-enriched), and `similar` (column→column
+        nearest neighbours elsewhere in the schema — structured, no
+        free-text reason that could leak a value). Joins carry a
+        server-rendered, catastrophic-redacted `on_clause` (the client no
+        longer assembles it), plus `cardinality`, `origin`,
+        `inference_method`, and a derived `is_log_mined` flag. A
+        `referenced_by` rollup counts the anchored metrics + touching joins.
+        """
         with SQLiteStore(config.store_path) as store:
             resolved_source = _resolve_source(store, config, source_connection_id)
             entity = store.get_entity(name, source_connection_id=resolved_source)
@@ -518,8 +621,14 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                     status_code=404,
                     detail=f"entity {name!r} not found for source {resolved_source!r}",
                 )
+            # Both join endpoints must resolve to render the redacted ON
+            # clause; one list_entities call serves every join on the page.
+            entity_by_name = {
+                e.name: e for e in store.list_entities(source_connection_id=resolved_source)
+            }
             schema_name, table_name = entity.qualified_table.split(".", 1)
             table = store.get_table(schema_name, table_name, source_connection_id=resolved_source)
+            columns: list[dict[str, Any]] = []
             if table is None:  # pragma: no cover - defensive
                 # An entity bound to a table that's no longer indexed —
                 # ship the entity with zero columns rather than 500.
@@ -527,71 +636,89 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                 # (`delete_table` cascades to entities), but kept as a
                 # belt-and-suspenders guard against a future store
                 # backend that breaks the cascade.
-                column_names: list[str] = []
-                pii_tags: dict[str, Any] = {}
+                pass
             else:
-                column_names = [c.name for c in table.columns]
+                ordered = sorted(table.columns, key=lambda c: c.ordinal_position)
                 raw_tags = store.get_column_pii_tags(
                     source_connection_id=resolved_source,
                     qualified_table=entity.qualified_table,
-                    columns=column_names,
+                    columns=[c.name for c in ordered],
                 )
-                pii_tags = {
-                    col: {
-                        "sensitivity": tag[0],
-                        "pii_categories": sorted(tag[1]),
-                    }
-                    for col, tag in raw_tags.items()
-                }
+                descriptions = store.get_table_descriptions(
+                    schema_name, table_name, source_connection_id=resolved_source
+                )
+                for col in ordered:
+                    sensitivity, categories = raw_tags.get(col.name, ("public", frozenset()))
+                    description = descriptions.get(col.name)
+                    similar = store.nearest_columns(
+                        schema_name,
+                        table_name,
+                        col.name,
+                        source_connection_id=resolved_source,
+                        k=_SIMILAR_COLUMNS_K,
+                    )
+                    columns.append(
+                        {
+                            "name": col.name,
+                            "data_type": col.data_type,
+                            "description": description.text if description is not None else None,
+                            "sensitivity": sensitivity,
+                            "pii_categories": sorted(categories),
+                            "similar": [
+                                {"schema": s, "table": t, "column": c, "score": score}
+                                for s, t, c, score in similar
+                            ],
+                        }
+                    )
 
-            # Fetch active metrics and joins anchored on this entity inside the with-block
             all_metrics = store.list_metrics(source_connection_id=resolved_source)
             all_joins = store.list_canonical_joins(source_connection_id=resolved_source)
 
-        columns = [
-            {
-                "name": col,
-                "sensitivity": pii_tags.get(col, {}).get("sensitivity", "public"),
-                "pii_categories": pii_tags.get(col, {}).get("pii_categories", []),
-            }
-            for col in column_names
-        ]
+            metrics = [
+                {
+                    "name": m.name,
+                    "description": m.description,
+                    "measure": {
+                        "agg": m.measure.agg,
+                        "column": m.measure.column,
+                        "expression": m.measure.expression,
+                    },
+                    "time_grains": m.time_grains,
+                }
+                for m in all_metrics
+                if m.entity == name
+            ]
 
-        metrics = [
-            {
-                "name": m.name,
-                "description": m.description,
-                "measure": {
-                    "agg": m.measure.agg,
-                    "column": m.measure.column,
-                    "expression": m.measure.expression,
-                },
-                "time_grains": m.time_grains,
-            }
-            for m in all_metrics
-            if m.entity == name
-        ]
-
-        joins = [
-            {
-                "name": j.name,
-                "description": j.description,
-                "source_entity": j.source_entity,
-                "target_entity": j.target_entity,
-                "on": [
-                    {"source_column": edge.source_column, "target_column": edge.target_column}
-                    for edge in j.on
-                ],
-            }
-            for j in all_joins
-            if j.source_entity == name or j.target_entity == name
-        ]
+            # ON clauses render inside the with-block — the shared helper
+            # queries PII tags to mask catastrophic FK column names.
+            joins = [
+                {
+                    "name": j.name,
+                    "description": j.description,
+                    "source_entity": j.source_entity,
+                    "target_entity": j.target_entity,
+                    "on_clause": render_join_on_clause(
+                        j,
+                        store=store,
+                        source_connection_id=resolved_source,
+                        entity_by_name=entity_by_name,
+                    ),
+                    "cardinality": j.cardinality,
+                    "origin": j.origin,
+                    "inference_method": j.inference_method,
+                    "is_log_mined": j.inference_method == "observed_in_query_log",
+                }
+                for j in all_joins
+                if j.source_entity == name or j.target_entity == name
+            ]
 
         return {
             "entity": {
                 "name": entity.name,
+                "description": entity.description,
                 "qualified_table": entity.qualified_table,
                 "identity": entity.identity,
+                "group": entity.group,
                 "origin": entity.origin,
                 "inference_method": entity.inference_method,
                 "validation_state": entity.validation_state,
@@ -599,6 +726,10 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
             "columns": columns,
             "metrics": metrics,
             "joins": joins,
+            "referenced_by": {
+                "metrics": len(metrics),
+                "joins": len(joins),
+            },
         }
 
 
