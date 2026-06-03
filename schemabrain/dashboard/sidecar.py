@@ -32,13 +32,14 @@ Route inventory (full spec in ``docs/internal/v0.4_ui_rfc.md`` §3):
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import sqlite3
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from schemabrain.dashboard import DASHBOARD_SCHEMA_VERSION, STATIC_DIR
 
@@ -889,18 +890,38 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
     always-on catastrophic-leak floor (enforced at every read gate —
     `describe_*` AND `get_metric`); `allowed` = neither.
     """
+    from fastapi import HTTPException, Query
+
     from schemabrain.core.store import SQLiteStore
     from schemabrain.pii.categories import (
         CATASTROPHIC_LEAK_CATEGORIES,
         PII_CATEGORIES_ORDERED,
         PIICategory,
+        Sensitivity,
     )
+    from schemabrain.pii.policy import ColumnOverride, Policy
     from schemabrain.pii.policy_yaml import (
         PolicyYamlError,
         parse_policy_yaml_file,
+        policy_to_yaml,
     )
 
     _POLICY_YAML_PATH = Path("./schemabrain/pii_policy.yaml")
+    # Bound the work a single preview request can ask for. The category
+    # block set is naturally capped by the 12-value enum; column
+    # overrides are operator-supplied and unbounded, so cap the list
+    # length to keep the (untrusted, localhost) query from forcing an
+    # arbitrarily large diff. Far above any realistic count of hand-
+    # asserted dashboard overrides; the YAML-edit + `policy apply` path
+    # carries no such cap, so a genuinely huge policy stays expressible.
+    _MAX_PREVIEW_OVERRIDES = 1000
+
+    # Repeatable query params for the preview route. Bound to singletons so
+    # the `Query(...)` call isn't evaluated in the argument default (ruff
+    # B008) — the empty-list default is FastAPI metadata, not a shared
+    # mutable arg (FastAPI builds a fresh list per request).
+    _BLOCK_QUERY = Query(default=[])
+    _OVERRIDE_QUERY = Query(default=[])
     _SENTINEL_PATH = SERVE_POLICY_MTIME_SENTINEL_PATH
 
     def _compute_policy_drift(yaml_path: Path) -> dict[str, Any]:
@@ -1170,6 +1191,119 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
             "diff_preview": diff_preview,
             "yaml_parse_error": yaml_error,
             "policy_drift": _compute_policy_drift(_POLICY_YAML_PATH),
+        }
+
+    def _load_current_policy() -> tuple[Policy, str | None]:
+        """(current_policy, parse_error). Mirrors `_load_active_block` but
+        returns the whole `Policy` (block + column_overrides + description)
+        so the preview can diff staged YAML against a faithful canonical
+        rendering of what's on disk. Falls back to the catastrophic-floor
+        default when no YAML exists or the file fails to parse — same
+        posture as `_load_active_block`, so the diff baseline matches what
+        the running firewall would actually enforce.
+        """
+        if not _POLICY_YAML_PATH.exists():
+            return Policy(block=CATASTROPHIC_LEAK_CATEGORIES), None
+        try:
+            return parse_policy_yaml_file(_POLICY_YAML_PATH), None
+        except PolicyYamlError as exc:
+            return Policy(block=CATASTROPHIC_LEAK_CATEGORIES), str(exc)
+
+    def _parse_override_param(raw: str) -> ColumnOverride:
+        """Decode one `override` query value into a `ColumnOverride`.
+
+        Wire shape: ``<qualified_column>|<sensitivity>|<comma-joined
+        categories>`` — e.g. ``public.users.email|internal|`` for the
+        canonical "mark safe" (empty categories) override, or
+        ``s.t.c|pii|contact,location`` for an explicit reclassification.
+        `ColumnOverride.__post_init__` validates the column shape,
+        sensitivity, and categories; any violation surfaces as a 400.
+        """
+        parts = raw.split("|")
+        if len(parts) != 3:
+            raise HTTPException(
+                400,
+                detail=(
+                    f"override must be 'qualified_column|sensitivity|categories' (got {raw!r})"
+                ),
+            )
+        qualified_column, sensitivity, categories_csv = parts
+        categories = frozenset(c for c in categories_csv.split(",") if c)
+        try:
+            return ColumnOverride(
+                qualified_column=qualified_column,
+                sensitivity=cast(Sensitivity, sensitivity),
+                categories=cast("frozenset[PIICategory]", categories),
+            )
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
+
+    def _yaml_diff(current_yaml: str, staged_yaml: str) -> list[dict[str, str]]:
+        """Line-level diff of two canonical YAML bodies as ordered
+        ``{kind, text}`` rows (``context`` / ``remove`` / ``add``). The
+        staged-diff pane renders these directly; `ndiff` hint lines
+        (``? ``) are dropped.
+        """
+        out: list[dict[str, str]] = []
+        for line in difflib.ndiff(current_yaml.splitlines(), staged_yaml.splitlines()):
+            tag, text = line[:2], line[2:]
+            if tag == "  ":
+                out.append({"kind": "context", "text": text})
+            elif tag == "- ":
+                out.append({"kind": "remove", "text": text})
+            elif tag == "+ ":
+                out.append({"kind": "add", "text": text})
+        return out
+
+    @app.get("/api/pii/policy/preview")
+    def policy_preview_route(
+        block: list[str] = _BLOCK_QUERY,
+        override: list[str] = _OVERRIDE_QUERY,
+    ) -> dict[str, Any]:
+        """Render the canonical YAML + line diff for a *staged* policy.
+
+        Pure, side-effect-free renderer (ADR 0006): the dashboard posts
+        its staged block set + column overrides as repeatable query
+        params, and this returns ``policy_to_yaml(staged)`` plus the line
+        diff against the current on-disk policy. It writes nothing and
+        reads no per-source store state — qualified columns are global
+        strings, so the rendering is source-independent.
+
+        The catastrophic-downgrade guard (`CatastrophicDowngradeError`)
+        is NOT simulated here — that's enforced at `policy apply` time by
+        the store. The dashboard never offers a floor-column override
+        (ADR 0007), so a downgrade can't be staged through the UI; a YAML
+        that would strip a floor protection still renders, and the
+        operator's own `policy apply` rejects it loudly.
+        """
+        if len(override) > _MAX_PREVIEW_OVERRIDES:
+            raise HTTPException(
+                400,
+                detail=f"too many overrides (max {_MAX_PREVIEW_OVERRIDES}, got {len(override)})",
+            )
+
+        current_policy, current_parse_error = _load_current_policy()
+        overrides = tuple(_parse_override_param(raw) for raw in override)
+        try:
+            staged_policy = Policy(
+                block=cast("frozenset[PIICategory]", frozenset(block)),
+                column_overrides=overrides,
+                # Carry the on-disk description so the diff doesn't show a
+                # spurious description add/drop the operator never made.
+                description=current_policy.description,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
+
+        current_yaml = policy_to_yaml(current_policy)
+        staged_yaml = policy_to_yaml(staged_policy)
+        return {
+            "staged_yaml": staged_yaml,
+            "current_yaml": current_yaml,
+            "diff_lines": _yaml_diff(current_yaml, staged_yaml),
+            "changed": staged_yaml != current_yaml,
+            "staged_block": sorted(staged_policy.block),
+            "current_parse_error": current_parse_error,
         }
 
 

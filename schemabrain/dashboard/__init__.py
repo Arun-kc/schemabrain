@@ -22,13 +22,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# Schema version of the dashboard's JSON contract (the 8 read-only
-# routes + SSE + health). Bumped when a route shape changes in a
+# Schema version of the dashboard's JSON contract (the read-only routes
+# + SSE + health). Bumped when a route shape changes in a
 # backward-incompatible way OR the shared type surface is extended
 # (the TS↔Python parity matrix in `test_ts_charter_sync.py`). v0.4 M1
 # shipped at 1.0; 1.1 adds the v15 `BindConfidence` union + the entity
-# `rows` / `confidence` / `rationale` fields on /api/entities + drilldown.
-DASHBOARD_SCHEMA_VERSION = "1.1"
+# `rows` / `confidence` / `rationale` fields on /api/entities + drilldown;
+# 1.2 adds the read-only `GET /api/pii/policy/preview` route + its
+# `PolicyPreviewResponse` contract for the editable Policy surface.
+DASHBOARD_SCHEMA_VERSION = "1.2"
 
 # Directory holding the static Next.js export. Populated at wheel-build
 # time by the ``web/`` workspace's ``pnpm build`` output. At install

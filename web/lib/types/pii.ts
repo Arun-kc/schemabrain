@@ -136,3 +136,29 @@ export interface PolicyResponse {
   yaml_parse_error: string | null;
   policy_drift: PolicyDriftState;
 }
+
+/* ───────── Policy preview (GET /api/pii/policy/preview) ───────── */
+
+export type PolicyDiffKind = "context" | "add" | "remove";
+
+export interface PolicyDiffLine {
+  kind: PolicyDiffKind;
+  text: string;
+}
+
+/**
+ * Server-rendered preview of a *staged* policy (ADR 0006/0007). The
+ * editor posts its staged block set + column overrides as query params
+ * and the sidecar returns the canonical `policy_to_yaml` rendering plus
+ * the line diff against the current on-disk policy. The dashboard never
+ * re-implements the YAML grammar — `staged_yaml` is the byte-exact text
+ * `schemabrain policy apply` will parse.
+ */
+export interface PolicyPreviewResponse {
+  staged_yaml: string;
+  current_yaml: string;
+  diff_lines: readonly PolicyDiffLine[];
+  changed: boolean;
+  staged_block: readonly PIICategory[];
+  current_parse_error: string | null;
+}

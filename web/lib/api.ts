@@ -10,6 +10,7 @@ import type {
   Meta,
   PaginatedAuditResponse,
   PiiMatrixResponse,
+  PolicyPreviewResponse,
   PolicyResponse,
   RefusalEntry,
 } from "@/lib/types";
@@ -63,6 +64,20 @@ export const api = {
   piiPolicy: (sourceId?: string) => {
     const qs = sourceId ? `?source_connection_id=${encodeURIComponent(sourceId)}` : "";
     return getJson<PolicyResponse>(`/api/pii/policy${qs}`);
+  },
+
+  /**
+   * Render the canonical YAML + diff for a staged policy (ADR 0006).
+   * Source-independent (qualified columns are global), so no source id.
+   * `block` / `override` are repeatable query params — see lib/policy.ts
+   * for the override wire encoding.
+   */
+  piiPolicyPreview: (params: { block: readonly string[]; override: readonly string[] }) => {
+    const qs = new URLSearchParams();
+    for (const category of params.block) qs.append("block", category);
+    for (const override of params.override) qs.append("override", override);
+    const tail = qs.toString() ? `?${qs.toString()}` : "";
+    return getJson<PolicyPreviewResponse>(`/api/pii/policy/preview${tail}`);
   },
 
   auditRows: (params?: { limit?: number; offset?: number; status?: string }) => {

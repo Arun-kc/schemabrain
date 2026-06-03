@@ -65,10 +65,8 @@ test.describe("dashboard E2E smoke", () => {
 
     // The matrix must list at least one entity from the fixture.
     // Anchor on the qualified table name (`public.users`) inside the
-    // matrix label so the assertion stays scoped to the Ledger pane
-    // even after PolicyView (which also renders the qualified-column
-    // strings in its rollup samples + per-column rows) lands on the
-    // same surface. Without the scope, strict-mode fires.
+    // matrix label so the assertion stays scoped to the Ledger pane and
+    // survives any sibling that renders the same qualified-column string.
     await expect(
       page.getByLabel("pii ledger matrix").getByText("public.users"),
     ).toBeVisible();
