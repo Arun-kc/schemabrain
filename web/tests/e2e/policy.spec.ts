@@ -1,17 +1,18 @@
 /**
  * Policy editor E2E smoke (/policy).
  *
- * The editable policy surface (ADR 0007): a category block panel + a
- * per-column override list on the left, a server-rendered schemabrain.yaml
- * panel + staged diff on the right. The catastrophic floor is locked in
- * both. Apply is read-only (copy YAML + reveal command, ADR 0006).
+ * Matches the design handoff: a single per-column block/redact/allow grid
+ * (ADR 0008) beside a server-rendered, syntax-highlighted schemabrain.yaml
+ * panel + staged diff. The 3-way control is an ARIA radiogroup; floor
+ * columns render locked. Apply is read-only (copy YAML + reveal command,
+ * ADR 0006) — the sidecar stays GET-only.
  *
- * The category list is static (the 12-value enum), so "block contact" is
- * present regardless of which source is indexed — the interaction test
- * anchors on it for determinism.
+ * The interaction tests target the first non-floor row's segments
+ * generically (aria-label `<verb> <qualified_column>`), so they don't
+ * depend on the seeded source's exact column names.
  *
- * Prerequisite: a dashboard sidecar running on http://127.0.0.1:7878 with
- * at least one indexed source. See web/tests/e2e/README.md.
+ * Prerequisite: a dashboard sidecar on http://127.0.0.1:7878 with at least
+ * one indexed source. See web/tests/e2e/README.md.
  */
 
 import { expect, test } from "@playwright/test";
@@ -22,45 +23,92 @@ test.beforeEach(async ({ context }, testInfo) => {
 });
 
 test.describe("Policy editor E2E smoke", () => {
-  test("renders the two levers + yaml + diff panels", async ({ page }) => {
+  test("renders the per-column grid + yaml + diff panels", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
 
     await page.goto("/policy");
 
     await expect(page.getByRole("heading", { name: "Policy", exact: true })).toBeVisible();
-    await expect(page.getByLabel("category block set")).toBeVisible();
-    await expect(page.getByLabel("column overrides")).toBeVisible();
+    await expect(page.getByLabel("per-column enforcement")).toBeVisible();
     await expect(page.getByLabel("generated policy yaml")).toBeVisible();
     await expect(page.getByLabel("staged changes")).toBeVisible();
 
-    // The server-rendered YAML always carries the version line.
-    await expect(page.getByLabel("generated policy yaml").getByText("version: 1")).toBeVisible();
+    // The server-rendered YAML carries the canonical version key.
+    await expect(page.getByLabel("generated policy yaml").getByText(/version/).first()).toBeVisible();
 
-    // The catastrophic floor renders locked (alarm + lock affordance)
-    // in the category panel — exposed to assistive tech as "locked
-    // floor". Runs under both themes via the project matrix.
+    // The catastrophic floor renders locked, exposed once as "locked floor".
     await expect(page.getByLabel("locked floor").first()).toBeVisible();
 
     await page.screenshot({ path: "test-results/08-policy.png", fullPage: true });
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });
 
-  test("staging a category block reveals the diff + read-only apply", async ({ page }) => {
+  test("staging via the radiogroup reveals the diff + read-only apply, GET-only", async ({
+    page,
+  }) => {
+    // Guard the read-only invariant: NO non-GET request to /api during the
+    // whole interaction (Apply must copy + reveal a command, never write).
+    const writes: string[] = [];
+    page.on("request", (req) => {
+      const url = req.url();
+      if (url.includes("/api/") && !["GET", "HEAD", "OPTIONS"].includes(req.method())) {
+        writes.push(`${req.method()} ${url}`);
+      }
+    });
+
     await page.goto("/policy");
+    const staged = page.getByLabel("staged changes");
+    const grid = page.getByLabel("per-column enforcement");
+    await expect(staged.getByText("0 staged")).toBeVisible();
 
-    // At rest there are no staged changes.
-    await expect(page.getByLabel("staged changes").getByText(/0 staged/)).toBeVisible();
+    // Block the first non-floor column (segments are role=radio).
+    const blockRadio = grid.getByRole("radio", { name: /^block / }).first();
+    await blockRadio.click();
+    await expect(blockRadio).toHaveAttribute("aria-checked", "true");
+    await expect(staged.getByText("1 staged")).toBeVisible();
 
-    // Block a non-floor category (always present — static enum).
-    await page.getByRole("button", { name: "block contact" }).click();
+    // Apply is read-only: reveals the CLI command, never writes.
+    const apply = page.getByRole("button", { name: /^Apply policy/ });
+    await expect(apply).toBeVisible();
+    await apply.click();
+    await expect(page.getByText("Run to apply")).toBeVisible();
+    await expect(page.getByText(/schemabrain policy apply/)).toBeVisible();
 
-    // The diff pane updates and the read-only Apply control appears.
-    await expect(page.getByLabel("staged changes").getByText(/1 staged/)).toBeVisible();
-    await expect(page.getByRole("button", { name: "Apply policy" })).toBeVisible();
-
-    // Discard reverts back to the clean baseline.
+    // Discard reverts to the clean baseline.
     await page.getByRole("button", { name: "Discard" }).click();
-    await expect(page.getByLabel("staged changes").getByText(/0 staged/)).toBeVisible();
+    await expect(staged.getByText("0 staged")).toBeVisible();
+
+    expect(writes, `unexpected non-GET /api calls: ${writes.join("; ")}`).toEqual([]);
+  });
+
+  test("allow is mutually exclusive with block in the radiogroup", async ({ page }) => {
+    await page.goto("/policy");
+    const grid = page.getByLabel("per-column enforcement");
+
+    const allowRadio = grid.getByRole("radio", { name: /^allow / }).first();
+    await allowRadio.click();
+    await expect(allowRadio).toHaveAttribute("aria-checked", "true");
+    // selecting allow unchecks block on the same row
+    await expect(grid.getByRole("radio", { name: /^block / }).first()).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+  });
+
+  test("arrow keys move selection AND focus (roving tabindex)", async ({ page }) => {
+    await page.goto("/policy");
+    const grid = page.getByLabel("per-column enforcement");
+
+    const blockRadio = grid.getByRole("radio", { name: /^block / }).first();
+    const colName = (await blockRadio.getAttribute("aria-label"))!.replace(/^block /, "");
+    await blockRadio.click();
+    await expect(blockRadio).toBeFocused();
+
+    // ArrowRight selects redact and focus follows it.
+    await page.keyboard.press("ArrowRight");
+    const redactRadio = grid.getByRole("radio", { name: `redact ${colName}` });
+    await expect(redactRadio).toHaveAttribute("aria-checked", "true");
+    await expect(redactRadio).toBeFocused();
   });
 });

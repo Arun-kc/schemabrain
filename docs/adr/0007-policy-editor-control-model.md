@@ -5,8 +5,18 @@ description: "The dashboard Policy editor exposes the engine's two real levers a
 
 # ADR 0007 — Policy editor control model
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0008](0008-policy-editor-handoff-verb-mapping.md) (2026-06-03)
 - **Date:** 2026-06-03
+
+> **Superseded.** This ADR chose to split the handoff's single per-column
+> `block / redact / allow` grid into two honest levers (a category block
+> panel + a per-column `mark safe` override list). After review, the operator
+> chose handoff-exact fidelity; **ADR 0008** keeps the single per-column 3-way
+> grid and maps the verbs onto the same category-block + override engine model
+> with disclosed category-wide effects. The engine analysis below still
+> holds and motivates 0008's mapping; only the control *shape* changed. This
+> record is retained as the point-in-time rationale for why the split was
+> first considered.
 
 ## Context
 

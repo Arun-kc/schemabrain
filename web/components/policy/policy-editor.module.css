@@ -1,11 +1,10 @@
 /*
- * PolicyEditor — the editable PII policy surface (/policy).
+ * PolicyEditor — editable PII policy surface (/policy).
  *
- * Ports the handoff app/policy.jsx visual language (app/pages2.css
- * .pg-banner / .po-* ) onto the .sb-app dual-theme tokens (sb-theme.css)
- * and the component kit. Two honest levers (ADR 0007): a category block
- * panel + a per-column override list, with the catastrophic floor locked
- * in both. Tokens auto-swap per theme — no per-theme blocks here.
+ * Ports the design handoff (app/policy.jsx + app/pages2.css: .pg-banner /
+ * .po-grid / .po-rule / .po-seg / .po-yaml / .po-diff) onto the .sb-app
+ * dual-theme tokens (sb-theme.css) + the component kit. Single per-column
+ * 3-way grid (ADR 0008). Tokens auto-swap per theme — no per-theme blocks.
  */
 
 /* ---------- page scaffold ---------- */
@@ -17,7 +16,6 @@
 .pageHead {
   padding-bottom: 20px;
   border-bottom: 1px solid var(--hair);
-  margin-bottom: 4px;
 }
 
 .pageHead h1 {
@@ -35,10 +33,18 @@
 .body {
   display: flex;
   flex-direction: column;
-  gap: 16px;
 }
 
-/* ---------- banners ---------- */
+.inlineCode {
+  font-family: var(--f-mono);
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  border: 1px solid var(--hair-2);
+}
+
+/* ---------- drift / parse banners (handoff .pg-banner) ---------- */
 
 .banner {
   display: flex;
@@ -81,22 +87,13 @@
   flex-shrink: 0;
 }
 
-.inlineCode {
-  font-family: var(--f-mono);
-  font-size: 0.9em;
-  padding: 1px 5px;
-  border-radius: var(--r-sm);
-  background: var(--bg-1);
-  border: 1px solid var(--hair-2);
-}
-
-/* ---------- two-pane grid ---------- */
+/* ---------- two-pane grid (handoff .po-grid) ---------- */
 
 .grid {
   display: grid;
   grid-template-columns: 1.1fr 0.9fr;
   gap: 18px;
-  margin-top: 4px;
+  margin-top: 20px;
   align-items: start;
 }
 
@@ -107,13 +104,14 @@
   min-width: 0;
 }
 
-@media (max-width: 1040px) {
+/* Handoff collapses the two-pane grid at 900px (app/pages2.css). */
+@media (max-width: 900px) {
   .grid {
     grid-template-columns: 1fr;
   }
 }
 
-/* ---------- pane ---------- */
+/* ---------- pane (handoff .po-pane) ---------- */
 
 .pane {
   background: var(--panel);
@@ -141,98 +139,7 @@
   color: var(--ink-3);
 }
 
-/* ---------- category block panel ---------- */
-
-.catRow {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 11px 16px;
-  border-bottom: 1px solid var(--hair-2);
-}
-
-.catRow:last-child {
-  border-bottom: none;
-}
-
-.catRow.on {
-  background: color-mix(in oklch, var(--alarm) 6%, transparent);
-}
-
-.catRow.floor {
-  background: color-mix(in oklch, var(--alarm) 8%, transparent);
-}
-
-.catId {
-  min-width: 0;
-  flex: 1;
-}
-
-.catName {
-  font-family: var(--f-mono);
-  font-size: 13px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.catMeta {
-  font-family: var(--f-mono);
-  font-size: 10px;
-  color: var(--ink-3);
-  margin-top: 2px;
-}
-
-.floorLock {
-  color: var(--alarm);
-}
-
-.floorTag {
-  font-family: var(--f-mono);
-  font-size: 10px;
-  color: var(--alarm);
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-}
-
-/* toggle (block on/off) — a labelled switch, not the 3-way segment */
-.toggle {
-  font-family: var(--f-mono);
-  font-size: 10.5px;
-  font-weight: 600;
-  padding: 5px 11px;
-  border-radius: var(--r-md);
-  border: 1px solid var(--hair);
-  background: var(--bg-1);
-  color: var(--ink-3);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition:
-    color var(--dur-2) var(--ease),
-    border-color var(--dur-2) var(--ease),
-    background var(--dur-2) var(--ease);
-}
-
-.toggle:hover {
-  color: var(--ink-2);
-  border-color: var(--ink-3);
-}
-
-.toggle.on {
-  background: color-mix(in oklch, var(--alarm) 16%, transparent);
-  color: var(--alarm);
-  border-color: color-mix(in oklch, var(--alarm) 40%, transparent);
-}
-
-.toggle:focus-visible {
-  outline: 2px solid var(--green);
-  outline-offset: 2px;
-}
-
-/* ---------- per-column override list ---------- */
+/* ---------- per-column rule rows (handoff .po-rule) ---------- */
 
 .rule {
   display: flex;
@@ -281,7 +188,26 @@
   margin-top: 2px;
 }
 
-/* 2-way segmented control [use classifier | mark safe] */
+.catWide {
+  color: var(--amber);
+}
+
+.floorLock {
+  color: var(--alarm);
+}
+
+.floorTag {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  color: var(--alarm);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+/* ---------- 3-way segmented control (handoff .po-seg) ---------- */
+
 .seg {
   display: inline-flex;
   background: var(--bg-1);
@@ -305,7 +231,7 @@
   transition: all var(--dur-2) var(--ease);
 }
 
-.seg button:hover:not(:disabled) {
+.seg button:hover {
   color: var(--ink-2);
 }
 
@@ -314,13 +240,17 @@
   outline-offset: 2px;
 }
 
-.seg button.onUse {
-  background: var(--panel);
-  color: var(--ink);
-  box-shadow: var(--glow-green);
+.seg button.onBlock {
+  background: color-mix(in oklch, var(--alarm) 18%, transparent);
+  color: var(--alarm);
 }
 
-.seg button.onSafe {
+.seg button.onRedact {
+  background: color-mix(in oklch, var(--cyan) 18%, transparent);
+  color: var(--cyan);
+}
+
+.seg button.onAllow {
   background: color-mix(in oklch, var(--green) 18%, transparent);
   color: var(--green);
 }
@@ -332,7 +262,7 @@
   font-size: 13px;
 }
 
-/* ---------- yaml panel ---------- */
+/* ---------- syntax-highlighted YAML (handoff .po-yaml) ---------- */
 
 .yaml {
   font-family: var(--f-mono);
@@ -343,8 +273,53 @@
   overflow-x: auto;
   color: var(--ink);
   background: var(--bg-1);
+  /* Intentional addition over the handoff's grow-to-fit .po-yaml: a real
+   * policy on a large source can be long, so the panel scrolls past 440px
+   * instead of pushing the diff pane off-screen. */
+  max-height: 440px;
+  overflow-y: auto;
+}
+
+/* preview is refetching for a newly-staged state — dim until it settles
+ * so the shown YAML is never mistaken for the final, copyable text. */
+.stale {
+  opacity: 0.55;
+  transition: opacity var(--dur-1) var(--ease);
+}
+
+/*
+ * NOTE (a11y, deferred): the segment label colors + syntax-highlight token
+ * palette below are ported verbatim from the handoff and inherit its
+ * light-theme contrast (some tokens fall short of WCAG AA 4.5:1 on --bg-1).
+ * Tuning these is a SYSTEM-WIDE token change (they're shared --ink-3 /
+ * accent tokens), so it is owned by the responsive-a11y-system pass
+ * (PR-21), not patched per-surface here — changing them locally would
+ * diverge this surface from the handoff + the rest of the app.
+ */
+
+.yamlLine {
   white-space: pre;
-  max-height: 420px;
+  min-height: 1.75em;
+}
+
+.tkKey {
+  color: var(--cyan);
+}
+
+.tkValue {
+  color: var(--green);
+}
+
+.tkComment {
+  color: var(--ink-3);
+}
+
+.tkAlarm {
+  color: var(--alarm);
+}
+
+.tkPunct {
+  color: var(--ink-3);
 }
 
 .yamlNote {
@@ -354,11 +329,7 @@
   color: var(--ink-2);
 }
 
-.yamlNote .alarm {
-  color: var(--alarm);
-}
-
-/* ---------- staged diff ---------- */
+/* ---------- staged diff (handoff .po-diff) ---------- */
 
 .diff {
   display: flex;
@@ -374,9 +345,11 @@
 
 .diffRow {
   display: flex;
+  /* flex-start (not the handoff's center) is required for wrapping real-YAML
+   * diff lines; padding + sign gutter match the handoff .po-diff-row spec. */
   align-items: flex-start;
   gap: 10px;
-  padding: 7px 16px;
+  padding: 9px 16px;
   font-family: var(--f-mono);
   font-size: 12px;
   border-bottom: 1px solid var(--hair-2);
@@ -385,7 +358,7 @@
 }
 
 .diffSign {
-  width: 12px;
+  width: 14px;
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -479,4 +452,17 @@
   color: var(--ink);
   font-size: 13.5px;
   line-height: 1.55;
+}
+
+/* visually-hidden live region (staging feedback for screen readers) */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
