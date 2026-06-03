@@ -66,6 +66,7 @@ class TestStoreProtocolConformance:
             "get_table_embeddings",
             "write_table_embeddings",
             "search_embeddings_topk",
+            "nearest_columns",
             "write_example_queries",
             "list_example_queries",
             "list_all_example_queries",

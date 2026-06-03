@@ -455,6 +455,17 @@ class TestStoreProtocolSeamUsable:
             ) -> list[tuple[str, str, str, float]]:
                 return []
 
+            def nearest_columns(
+                self,
+                schema_name: str,
+                table_name: str,
+                column_name: str,
+                *,
+                source_connection_id: str,
+                k: int,
+            ) -> list[tuple[str, str, str, float]]:
+                return []
+
             def write_example_queries(
                 self,
                 rows: list[ExampleQuery],

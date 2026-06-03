@@ -256,6 +256,46 @@ class Store(Protocol):  # pragma: no cover
         """
         ...
 
+    def nearest_columns(
+        self,
+        schema_name: str,
+        table_name: str,
+        column_name: str,
+        *,
+        source_connection_id: str,
+        k: int,
+    ) -> list[tuple[str, str, str, float]]:
+        """Return the top-`k` columns most similar to one reference column.
+
+        The column→column nearest-neighbour counterpart of
+        `search_embeddings_topk`: the query vector is the reference
+        column's OWN stored embedding, searched over the same
+        per-source vector space. Each result is `(schema_name,
+        table_name, column_name, cosine_score)`.
+
+        Implementations MUST:
+          - exclude the reference column AND every other column in its
+            table (table-mates are the same record, not "similar
+            elsewhere"); a single same-table filter covers both;
+          - order descending by `cosine_score`, ties broken ascending by
+            `(schema_name, table_name, column_name)` — identical to
+            `search_embeddings_topk` so the two share a cosine core;
+          - return at most `k` rows, never padding.
+
+        Implementations MUST return `[]` (NOT raise) for every degenerate
+        INPUT, because the caller is a read-only drilldown surface that
+        renders "no similar columns":
+          - empty store / no candidates after the same-table filter,
+          - the reference column has no stored embedding,
+          - the reference embedding has zero norm (cosine undefined).
+
+        `ValueError` is raised on the caller bug `k < 1`, and (as in
+        `search_embeddings_topk`) may propagate from a corrupt or
+        mixed-dimension store — a defense-in-depth guard that is
+        unreachable through the write path.
+        """
+        ...
+
     # ----- Example queries -----------------------------------------
     #
     # Storage primitive behind tool #5 `get_example_queries`. The

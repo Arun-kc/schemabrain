@@ -1076,6 +1076,122 @@ def _unpack_vector(blob: bytes, dimension: int) -> tuple[float, ...]:
     return struct.unpack(f"<{dimension}f", blob)
 
 
+def _cosine_topk(
+    rows: list[sqlite3.Row],
+    q: np.ndarray,
+    *,
+    k: int,
+    source_connection_id: str,
+) -> list[tuple[str, str, str, float]]:
+    """Score pre-fetched embedding rows against query vector `q`, return top-`k`.
+
+    The shared cosine core behind `search_embeddings_topk` (query from a
+    caller-supplied list) and `nearest_columns` (query from a stored
+    embedding) — extracted so the two retrieval seams can never disagree
+    on scoring, dimension validation, or tiebreak ordering.
+
+    Preconditions the callers MUST satisfy:
+      - `rows` is non-empty (the empty-store short-circuit lives upstream,
+        before any dimension validation) and exposes `schema_name`,
+        `table_name`, `column_name`, `dimension`, `vector`.
+      - `rows` is SQL-ordered by `(schema_name, table_name, column_name)`
+        ascending so the score-tie tiebreak is deterministic.
+      - `q` is already validated finite with non-zero norm.
+
+    Validation of the STORED side happens here (callers can't):
+      - query/stored dimension mismatch raises with "dimension" in the
+        message (the substring `EmbeddingRetriever` matches on);
+      - a per-row dimension or blob-length disagreement raises likewise.
+
+    Zero-norm STORED rows score 0.0 (never NaN); any non-finite score is
+    clamped to 0.0 so a poisoned blob can't rank #1.
+    """
+    expected_dim = int(q.shape[0])
+    q_norm = float(np.linalg.norm(q))
+
+    # All stored vectors should share a dimension under one
+    # `source_connection_id` (one embedder model per source), but
+    # don't trust SQL — validate per-row below after this fast check.
+    stored_dim = int(rows[0]["dimension"])
+    if stored_dim != expected_dim:
+        raise ValueError(
+            f"dimension mismatch: query has {expected_dim}, stored has "
+            f"{stored_dim}. The embedder used at retrieval time differs "
+            f"from the one used at index time. Wipe the store and "
+            f"re-index with the new embedder."
+        )
+
+    m = len(rows)
+    expected_blob_len = expected_dim * _FLOAT32_BYTES
+    matrix = np.empty((m, expected_dim), dtype=np.float32)
+    for i, row in enumerate(rows):
+        row_dim = int(row["dimension"])
+        if row_dim != expected_dim:
+            # Mixed dimensions within one source — possible if the
+            # embedder was swapped mid-index (rare; guarded here for
+            # defense-in-depth, not as a normal path). Include
+            # `source_connection_id` so a multi-source store doesn't
+            # require row-by-row triage to find the bad data.
+            raise ValueError(
+                f"dimension mismatch within store: row "
+                f"({row['schema_name']!r}, {row['table_name']!r}, "
+                f"{row['column_name']!r}) under "
+                f"source {source_connection_id!r} has dimension "
+                f"{row_dim}, expected {expected_dim}"
+            )
+        blob = row["vector"]
+        if len(blob) != expected_blob_len:
+            # Blob length disagrees with declared dimension. The
+            # per-table read path (`get_table_embeddings` →
+            # `_unpack_vector`) catches this, but `np.frombuffer`
+            # silently truncates — without this guard, a 512-float
+            # blob declared at dim 384 would read the first 384
+            # floats and produce wrong scores.
+            raise ValueError(
+                f"column_embeddings: blob length {len(blob)} for row "
+                f"({row['schema_name']!r}, {row['table_name']!r}, "
+                f"{row['column_name']!r}) does not match expected "
+                f"{expected_blob_len} bytes for dimension {expected_dim}"
+            )
+        matrix[i] = np.frombuffer(blob, dtype="<f4")
+
+    # Cosine = (M @ q) / (||row|| * ||q||). Replace zero-norm rows'
+    # divisor with 1.0 so we don't divide by zero, then overwrite
+    # those scores to 0.0 — a zero-norm row has no direction so the
+    # only safe answer is "no alignment".
+    row_norms = np.linalg.norm(matrix, axis=1)
+    safe_norms = np.where(row_norms == 0.0, 1.0, row_norms)
+    raw_scores = matrix @ q
+    scores = raw_scores / (safe_norms * q_norm)
+    scores = np.where(row_norms == 0.0, 0.0, scores)
+    # Defense in depth: even with write-side finiteness validation
+    # in `write_table_embeddings`, a NaN/inf could in principle
+    # arrive via a bypass (manual SQL poke, future store backend
+    # that skipped the write guard). NaN scores propagate silently
+    # through `EmbeddingRetriever`'s `score <= 0.0` filter (NaN
+    # comparisons always return False) and can rank as the top
+    # result. Clamp non-finite scores to 0.0 so they're treated as
+    # "no signal" instead of poisoning the ranking.
+    scores = np.where(np.isfinite(scores), scores, 0.0)
+
+    # Full sort by (-score, schema, table, column) for deterministic
+    # tiebreaks at the k boundary. M is bounded by the store's
+    # embedding count; full sort is a few ms in practice at v1 scale
+    # (<10k columns), enforced by the pytest-benchmark perf gate.
+    # `np.argpartition` is a possible optimisation when scales grow.
+    indexed = [
+        (
+            rows[i]["schema_name"],
+            rows[i]["table_name"],
+            rows[i]["column_name"],
+            float(scores[i]),
+        )
+        for i in range(m)
+    ]
+    indexed.sort(key=lambda r: (-r[3], r[0], r[1], r[2]))
+    return indexed[:k]
+
+
 def _decode_pii_categories(stored: str) -> frozenset[str]:
     """Inverse of the storage shape for `example_queries.pii_categories`.
 
@@ -1814,88 +1930,86 @@ class SQLiteStore:
             # store has no "expected dimension" yet.
             return []
 
-        # All stored vectors should share a dimension under one
-        # `source_connection_id` (one embedder model per source), but
-        # don't trust SQL — validate per-row.
-        expected_dim = int(q.shape[0])
-        stored_dim = int(rows[0]["dimension"])
-        if stored_dim != expected_dim:
-            raise ValueError(
-                f"dimension mismatch: query has {expected_dim}, stored has "
-                f"{stored_dim}. The embedder used at retrieval time differs "
-                f"from the one used at index time. Wipe the store and "
-                f"re-index with the new embedder."
-            )
+        # Score, sort, top-k via the shared cosine core. `q` is already
+        # validated finite + non-zero norm; `rows` is non-empty and
+        # SQL-sorted for the deterministic tiebreak.
+        return _cosine_topk(rows, q, k=k, source_connection_id=source_connection_id)
 
-        m = len(rows)
-        expected_blob_len = expected_dim * _FLOAT32_BYTES
-        matrix = np.empty((m, expected_dim), dtype=np.float32)
-        for i, row in enumerate(rows):
-            row_dim = int(row["dimension"])
-            if row_dim != expected_dim:
-                # Mixed dimensions within one source — possible if the
-                # embedder was swapped mid-index (rare; guarded here for
-                # defense-in-depth, not as a normal path). Include
-                # `source_connection_id` so a multi-source store doesn't
-                # require row-by-row triage to find the bad data.
-                raise ValueError(
-                    f"dimension mismatch within store: row "
-                    f"({row['schema_name']!r}, {row['table_name']!r}, "
-                    f"{row['column_name']!r}) under "
-                    f"source {source_connection_id!r} has dimension "
-                    f"{row_dim}, expected {expected_dim}"
-                )
-            blob = row["vector"]
-            if len(blob) != expected_blob_len:
-                # Blob length disagrees with declared dimension. The
-                # per-table read path (`get_table_embeddings` →
-                # `_unpack_vector`) catches this, but `np.frombuffer`
-                # silently truncates — without this guard, a 512-float
-                # blob declared at dim 384 would read the first 384
-                # floats and produce wrong scores.
-                raise ValueError(
-                    f"column_embeddings: blob length {len(blob)} for row "
-                    f"({row['schema_name']!r}, {row['table_name']!r}, "
-                    f"{row['column_name']!r}) does not match expected "
-                    f"{expected_blob_len} bytes for dimension {expected_dim}"
-                )
-            matrix[i] = np.frombuffer(blob, dtype="<f4")
+    def nearest_columns(
+        self,
+        schema_name: str,
+        table_name: str,
+        column_name: str,
+        *,
+        source_connection_id: str,
+        k: int,
+    ) -> list[tuple[str, str, str, float]]:
+        """Return the top-`k` columns most similar to one reference column.
 
-        # Cosine = (M @ q) / (||row|| * ||q||). Replace zero-norm rows'
-        # divisor with 1.0 so we don't divide by zero, then overwrite
-        # those scores to 0.0 — a zero-norm row has no direction so the
-        # only safe answer is "no alignment".
-        row_norms = np.linalg.norm(matrix, axis=1)
-        safe_norms = np.where(row_norms == 0.0, 1.0, row_norms)
-        raw_scores = matrix @ q
-        scores = raw_scores / (safe_norms * q_norm)
-        scores = np.where(row_norms == 0.0, 0.0, scores)
-        # Defense in depth: even with write-side finiteness validation
-        # in `write_table_embeddings`, a NaN/inf could in principle
-        # arrive via a bypass (manual SQL poke, future store backend
-        # that skipped the write guard). NaN scores propagate silently
-        # through `EmbeddingRetriever`'s `score <= 0.0` filter (NaN
-        # comparisons always return False) and can rank as the top
-        # result. Clamp non-finite scores to 0.0 so they're treated as
-        # "no signal" instead of poisoning the ranking.
-        scores = np.where(np.isfinite(scores), scores, 0.0)
+        Powers the entity drilldown's "similar columns" field: given one
+        reference column, find the columns ELSEWHERE in the same source's
+        schema whose embeddings are closest by cosine. The query vector is
+        the reference column's own stored embedding, so this is a
+        column→column nearest-neighbour over the same vector space
+        `search_embeddings_topk` searches (and shares its cosine core).
 
-        # Full sort by (-score, schema, table, column) for deterministic
-        # tiebreaks at the k boundary. M is bounded by the store's
-        # embedding count; full sort is a few ms in practice at v1 scale
-        # (<10k columns), enforced by the pytest-benchmark perf gate.
-        # `np.argpartition` is a possible optimisation when scales grow.
-        indexed = [
-            (
-                rows[i]["schema_name"],
-                rows[i]["table_name"],
-                rows[i]["column_name"],
-                float(scores[i]),
-            )
-            for i in range(m)
-        ]
-        indexed.sort(key=lambda r: (-r[3], r[0], r[1], r[2]))
-        return indexed[:k]
+        Exclusions (REQUIRED):
+          - the reference column itself, and
+          - every other column in the reference column's table.
+        Table-mates are the same record's other attributes, not "similar
+        columns found elsewhere", so they're dropped via a single
+        same-table filter (which also subsumes self-exclusion).
+
+        Ordering matches `search_embeddings_topk`: descending cosine,
+        ties broken ascending by `(schema, table, column)`. Returns up to
+        `k` rows; fewer when fewer candidates exist.
+
+        Degenerate INPUTS return `[]` rather than raising — a read-surface
+        drilldown must render "no similar columns", not a 500:
+          - empty store / no candidates after the same-table filter,
+          - the reference column has no stored embedding (no query
+            direction),
+          - the reference embedding has zero norm (cosine undefined).
+
+        Raises `ValueError` on the caller bug `k < 1` and — like
+        `search_embeddings_topk`, via the shared cosine core — on a
+        corrupt or mixed-dimension store (a blob whose length disagrees
+        with its declared dimension, or candidates whose dimension
+        differs from the reference). Those are defense-in-depth guards
+        against a manual SQL poke; they are unreachable through the
+        write path, where `ColumnEmbedding` pins `dimension == len(vector)`
+        and one embedder runs per source.
+        """
+        if k < 1:
+            raise ValueError(f"k must be >= 1, got {k}")
+        conn = self._require_conn()
+        ref = conn.execute(
+            "SELECT dimension, vector FROM column_embeddings "
+            "WHERE schema_name = ? AND table_name = ? AND column_name = ? "
+            "AND source_connection_id = ?",
+            (schema_name, table_name, column_name, source_connection_id),
+        ).fetchone()
+        if ref is None:
+            # No embedding for the reference column → no query direction.
+            return []
+        # Stored vectors are write-guarded finite (`write_table_embeddings`),
+        # so the only degenerate case left is a zero-norm reference, which
+        # has no direction — cosine is undefined, so there is no similarity
+        # signal to return.
+        q = np.asarray(_unpack_vector(ref["vector"], ref["dimension"]), dtype=np.float32)
+        if float(np.linalg.norm(q)) == 0.0:
+            return []
+        rows = conn.execute(
+            "SELECT schema_name, table_name, column_name, dimension, vector "
+            "FROM column_embeddings "
+            "WHERE source_connection_id = ? "
+            "AND NOT (schema_name = ? AND table_name = ?) "
+            "ORDER BY schema_name, table_name, column_name",
+            (source_connection_id, schema_name, table_name),
+        ).fetchall()
+        if not rows:
+            return []
+        return _cosine_topk(rows, q, k=k, source_connection_id=source_connection_id)
 
     def write_example_queries(
         self,
