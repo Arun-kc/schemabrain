@@ -550,16 +550,20 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
         Each item carries the entity's `group`, a single `pii_level`
         badge, and `metrics_count` / `joins_count` so the index renders
         without an N+1 drill per row — metrics + joins are fetched once
-        and counted in Python. `rows` and `confidence` are intentionally
-        absent: the v15 columns backing them (`estimated_row_count`,
-        `bind_confidence`) have no writer yet, so they would be permanent
-        null noise; they arrive with their writer PR.
+        and counted in Python. `rows` (the v15 `estimated_row_count` for
+        the bound table) and `confidence` (the v15 `bind_confidence`
+        model self-rating) ride the same single-fetch path: row counts
+        are read once for the whole source and `confidence` comes off
+        the already-loaded entity. Both are `null` when unpopulated
+        (hand-authored entity / SQLite source / never-analyzed table) so
+        the UI renders "—" rather than a fabricated count.
         """
         with SQLiteStore(config.store_path) as store:
             resolved_source = _resolve_source(store, config, source_connection_id)
             entities = store.list_entities(source_connection_id=resolved_source)
             all_metrics = store.list_metrics(source_connection_id=resolved_source)
             all_joins = store.list_canonical_joins(source_connection_id=resolved_source)
+            row_counts = store.estimated_row_counts(source_connection_id=resolved_source)
             items: list[dict[str, Any]] = []
             catastrophic_entities = 0
             for e in entities:
@@ -581,6 +585,8 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                         "origin": e.origin,
                         "inference_method": e.inference_method,
                         "validation_state": e.validation_state,
+                        "rows": row_counts.get(e.qualified_table),
+                        "confidence": e.bind_confidence,
                         "pii_level": pii_level,
                         "metrics_count": sum(1 for m in all_metrics if m.entity == e.name),
                         "joins_count": sum(
@@ -712,6 +718,12 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                 if j.source_entity == name or j.target_entity == name
             ]
 
+            # Read the bound table's row estimate inside the with-block —
+            # the store closes before the return is built.
+            entity_rows = store.estimated_row_counts(source_connection_id=resolved_source).get(
+                entity.qualified_table
+            )
+
         return {
             "entity": {
                 "name": entity.name,
@@ -722,6 +734,15 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                 "origin": entity.origin,
                 "inference_method": entity.inference_method,
                 "validation_state": entity.validation_state,
+                # v15 model self-rating + row estimate. `rows` is the
+                # bound table's cached `estimated_row_count` (null when
+                # unknown); `confidence` is the model's `bind_confidence`
+                # (null for hand-authored). `rationale` maps the empty
+                # default to null so the UI omits it rather than rendering
+                # a blank line.
+                "rows": entity_rows,
+                "confidence": entity.bind_confidence,
+                "rationale": entity.rationale or None,
             },
             "columns": columns,
             "metrics": metrics,

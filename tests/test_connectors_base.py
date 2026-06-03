@@ -18,6 +18,9 @@ class _FakeSource:
     def get_table(self, name: str, schema: str) -> Table:
         return Table(name=name, schema_name=schema)
 
+    def estimated_row_count(self, name: str, schema: str) -> int | None:
+        return None
+
     def close(self) -> None:
         self.closed = True
 

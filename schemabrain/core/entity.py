@@ -75,6 +75,18 @@ _VALID_VALIDATION_STATES: frozenset[str] = frozenset(get_args(ValidationState))
 Group = Literal["identity", "billing", "activity", "other"]
 _VALID_GROUPS: frozenset[str] = frozenset(get_args(Group))
 
+# v15: the model's self-rating of an LLM-suggested binding — orthogonal
+# to `validation_state` (the human-gate axis). Categorical, never a
+# float: a 0.87 from a generation model is theater, not a calibrated
+# probability. Mirrors `EntityCandidate.confidence` in
+# `entities/suggest.py` (the producer) and the `bind_confidence` SQL
+# CHECK in `core/store.py::_DDL_STATEMENTS`; the three stay in lock-step.
+# NULL is a first-class value — hand-authored entities and YAML
+# round-trips have no model rating, so the field is `BindConfidence |
+# None` with a `None` default rather than carrying a sentinel.
+BindConfidence = Literal["high", "medium", "low"]
+_VALID_BIND_CONFIDENCE: frozenset[str] = frozenset(get_args(BindConfidence))
+
 # Postgres unquoted identifier shape: letter/underscore lead,
 # letters/digits/underscores/`$` after. Matches the column-name regex
 # in `mcp/_helpers.py` so an entity whose `identity` column references
@@ -156,6 +168,17 @@ class Entity:
     # colour / clustering). Cosmetic, operator-declarable via YAML;
     # defaults to "other". Not a trust or PII signal.
     group: Group = "other"
+    # v15: the LLM-suggest path's self-rating + reasoning for this
+    # binding. Both ride only the direct `entities suggest --apply`
+    # path (threaded from the transient `EntityCandidate`); hand-
+    # authored YAML and export→edit→apply round-trips leave
+    # `bind_confidence` NULL and `rationale` "" — the same reset the
+    # `inference_method` / `validation_state` trust signals already get,
+    # because an operator who edits the YAML has authored it themselves.
+    # They are deliberately NOT part of the canonical entity YAML (see
+    # `entities/yaml_grammar.py::entity_to_yaml`).
+    bind_confidence: BindConfidence | None = None
+    rationale: str = ""
 
     def __post_init__(self) -> None:
         if not _IDENT_RE.fullmatch(self.name):
@@ -181,6 +204,14 @@ class Entity:
             )
         if self.group not in _VALID_GROUPS:
             raise ValueError(f"group must be one of {sorted(_VALID_GROUPS)} (got {self.group!r})")
+        # `bind_confidence` is nullable — NULL (no model rating) is valid.
+        # A non-null value must be one of the categorical levels; a float
+        # or unknown string is rejected here before the store-side CHECK.
+        if self.bind_confidence is not None and self.bind_confidence not in _VALID_BIND_CONFIDENCE:
+            raise ValueError(
+                f"bind_confidence must be None or one of "
+                f"{sorted(_VALID_BIND_CONFIDENCE)} (got {self.bind_confidence!r})"
+            )
 
     @property
     def qualified_table(self) -> str:

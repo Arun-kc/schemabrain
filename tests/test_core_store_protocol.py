@@ -57,6 +57,7 @@ class TestStoreProtocolConformance:
             "get_table",
             "delete_table",
             "list_tables",
+            "estimated_row_counts",
             "get_table_fingerprints",
             "write_table_fingerprints",
             "get_table_descriptions",

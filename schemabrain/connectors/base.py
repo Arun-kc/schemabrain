@@ -33,6 +33,18 @@ class DataSource(Protocol):
         """
         ...
 
+    def estimated_row_count(self, name: str, schema: str) -> int | None:
+        """Return a cheap, non-locking row-count estimate, or `None`.
+
+        Captured at index time and cached as `tables.estimated_row_count`
+        (v15). Implementations must NOT run a locking `COUNT(*)` — use a
+        catalog estimate (e.g. Postgres `pg_class.reltuples`). Return
+        `None` whenever no trustworthy estimate is available (the backend
+        can't estimate, or the table has never been analyzed) so the
+        column stays NULL rather than carrying a fabricated count.
+        """
+        ...
+
     def close(self) -> None:
         """Release any underlying resources. Must be idempotent."""
         ...

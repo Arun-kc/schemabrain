@@ -367,10 +367,21 @@ def index(
                 embeddings[col_name] = embedding_for(desc.text, embedder=embedder)
                 embeddings_generated += 1
 
+        # Capture the cheap row-count estimate (pg_class.reltuples; None
+        # when the backend can't estimate or the table is never-analyzed)
+        # only for tables we're about to (re)write — the unchanged tables
+        # `continue`d above, so this adds no catalog query to a no-op
+        # re-index. The estimate refreshes on every structural change.
+        estimated_row_count = source.estimated_row_count(name, schema)
+
         # Now persist. write_table cascades to delete any stale
         # fingerprints/descriptions/embeddings; the writes that follow
         # repopulate them.
-        store.write_table(table, source_connection_id=source_connection_id)
+        store.write_table(
+            table,
+            source_connection_id=source_connection_id,
+            estimated_row_count=estimated_row_count,
+        )
         new_fingerprints = {
             col.name: (
                 new_structural[col.name],

@@ -922,12 +922,13 @@ def _row_to_entity(row: sqlite3.Row) -> Entity:
     surface much later in MCP-tool callers.
 
     v14 columns `inference_method` and `validation_state` and the v15
-    `"group"` column round-trip directly into the matching dataclass
-    fields. Stores are migrated in-place on open (v13 chains 13→14→15,
-    v14 runs `_migrate_v14_to_v15`) so the columns are always present.
-    The reserved v15 columns `bind_confidence` / `rationale` are NOT
-    hydrated here — no producer persists them yet; they ride a follow-up
-    PR that adds the matching dataclass fields.
+    `"group"`, `bind_confidence`, and `rationale` columns round-trip
+    directly into the matching dataclass fields. Stores are migrated
+    in-place on open (v13 chains 13→14→15, v14 runs
+    `_migrate_v14_to_v15`) so the columns are always present.
+    `bind_confidence` is NULL for hand-authored entities (only the
+    LLM-suggest `--apply` path persists it) and `rationale` defaults to
+    '' — both round-trip as-is.
     """
     return Entity(
         name=row["name"],
@@ -940,6 +941,8 @@ def _row_to_entity(row: sqlite3.Row) -> Entity:
         inference_method=row["inference_method"],
         validation_state=row["validation_state"],
         group=row["group"],
+        bind_confidence=row["bind_confidence"],
+        rationale=row["rationale"],
     )
 
 
@@ -1296,11 +1299,26 @@ class SQLiteStore:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
-    def write_table(self, table: Table, *, source_connection_id: str) -> None:
+    def write_table(
+        self,
+        table: Table,
+        *,
+        source_connection_id: str,
+        estimated_row_count: int | None = None,
+    ) -> None:
         """Idempotent upsert of one Table (and its columns + FKs).
 
         Replaces all existing rows for `(schema, name, source_connection_id)`.
         Atomic: if any insert fails, the entire write rolls back.
+
+        `estimated_row_count` is the v15 cached `pg_class.reltuples`
+        estimate captured at index time. It rides an explicit kwarg
+        rather than the `Table` model so the model stays a
+        pure schema-shape; `None` (the default) persists as SQL NULL,
+        which is correct for SQLite sources and never-analyzed Postgres
+        tables. Because this is a delete+insert, a re-index always
+        refreshes the estimate (or clears it back to NULL if a later run
+        can't produce one).
         """
         conn = self._require_conn()
         with conn:
@@ -1311,13 +1329,15 @@ class SQLiteStore:
             )
             conn.execute(
                 "INSERT INTO tables "
-                "(schema_name, name, source_connection_id, indexed_at) "
-                "VALUES (?, ?, ?, ?)",
+                "(schema_name, name, source_connection_id, indexed_at, "
+                "estimated_row_count) "
+                "VALUES (?, ?, ?, ?, ?)",
                 (
                     table.schema_name,
                     table.name,
                     source_connection_id,
                     int(time.time()),
+                    estimated_row_count,
                 ),
             )
             conn.executemany(
@@ -2167,6 +2187,23 @@ class SQLiteStore:
             ).fetchall()
         return [(row["schema_name"], row["name"]) for row in rows]
 
+    def estimated_row_counts(self, *, source_connection_id: str) -> dict[str, int | None]:
+        """Map `schema.table` -> cached `pg_class.reltuples` estimate.
+
+        One round-trip for the whole source so the entities-index rollup
+        can `.get(entity.qualified_table)` per row without an N+1. The
+        value is the v15 `estimated_row_count` column verbatim: `None`
+        for tables indexed from a backend that can't cheaply estimate
+        (SQLite, never-analyzed Postgres). Empty source → empty map.
+        """
+        conn = self._require_conn()
+        rows = conn.execute(
+            "SELECT schema_name, name, estimated_row_count FROM tables "
+            "WHERE source_connection_id = ?",
+            (source_connection_id,),
+        ).fetchall()
+        return {f"{row['schema_name']}.{row['name']}": row["estimated_row_count"] for row in rows}
+
     def list_distinct_source_connection_ids(self) -> list[str]:
         """Union of `source_connection_id` values across the four data
         tables (`tables`, `entities`, `metrics`, `canonical_joins`).
@@ -2294,8 +2331,9 @@ class SQLiteStore:
                 "source_connection_id, name, description, "
                 "binding_schema, binding_table, identity, origin, "
                 'inference_method, validation_state, "group", '
+                "bind_confidence, rationale, "
                 "created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (source_connection_id, name) DO UPDATE SET "
                 "description = excluded.description, "
                 "binding_schema = excluded.binding_schema, "
@@ -2305,6 +2343,8 @@ class SQLiteStore:
                 "inference_method = excluded.inference_method, "
                 "validation_state = excluded.validation_state, "
                 '"group" = excluded."group", '
+                "bind_confidence = excluded.bind_confidence, "
+                "rationale = excluded.rationale, "
                 "updated_at = excluded.updated_at",
                 (
                     source_connection_id,
@@ -2317,6 +2357,8 @@ class SQLiteStore:
                     entity.inference_method,
                     entity.validation_state,
                     entity.group,
+                    entity.bind_confidence,
+                    entity.rationale,
                     now,
                     now,
                 ),
@@ -2327,7 +2369,7 @@ class SQLiteStore:
         row = conn.execute(
             "SELECT name, description, binding_schema, binding_table, "
             "identity, origin, inference_method, validation_state, "
-            '"group" '
+            '"group", bind_confidence, rationale '
             "FROM entities "
             "WHERE source_connection_id = ? AND name = ?",
             (source_connection_id, name),
@@ -2350,7 +2392,7 @@ class SQLiteStore:
             rows = conn.execute(
                 "SELECT name, description, binding_schema, binding_table, "
                 "identity, origin, inference_method, validation_state, "
-                '"group" '
+                '"group", bind_confidence, rationale '
                 "FROM entities "
                 "ORDER BY name, source_connection_id"
             ).fetchall()
@@ -2358,7 +2400,7 @@ class SQLiteStore:
             rows = conn.execute(
                 "SELECT name, description, binding_schema, binding_table, "
                 "identity, origin, inference_method, validation_state, "
-                '"group" '
+                '"group", bind_confidence, rationale '
                 "FROM entities "
                 "WHERE source_connection_id = ? ORDER BY name",
                 (source_connection_id,),

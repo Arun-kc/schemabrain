@@ -5138,7 +5138,15 @@ def _render_apply(
         with SQLiteStore(store_path) as store:
             for candidate in result.candidates:
                 try:
-                    store.write_entity(candidate.entity, source_connection_id=source_id)
+                    # Persist the model's self-rating (bind_confidence +
+                    # rationale) alongside the clean entity. The file-
+                    # review workflow (`suggest` → edit → `apply`) keeps
+                    # these as YAML comments and resets them to NULL on
+                    # apply; the direct `--apply` path is the one that
+                    # persists them — see `to_persisted_entity`.
+                    store.write_entity(
+                        candidate.to_persisted_entity(), source_connection_id=source_id
+                    )
                 except DbtOwnedEntityError as exc:
                     _entity_error(_partial_write_message(written, total, str(exc)))
                     return 1

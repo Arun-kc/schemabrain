@@ -63,6 +63,49 @@ class TestEntityCandidate:
         with pytest.raises(dataclasses.FrozenInstanceError):
             candidate.confidence = "low"  # type: ignore[misc]
 
+    def test_to_persisted_entity_threads_confidence_and_rationale(self) -> None:
+        # The direct `entities suggest --apply` path persists the model's
+        # self-rating onto the Entity. `to_persisted_entity()` is the one
+        # place that maps the transient envelope fields onto the
+        # persisted-clean Entity, so the apply path can't drift.
+        candidate = EntityCandidate(
+            entity=_sample_entity(),
+            confidence="high",
+            rationale="users table has id PK and email NOT NULL",
+            pii_hints={"email": "pii"},
+        )
+        persisted = candidate.to_persisted_entity()
+        assert persisted.bind_confidence == "high"
+        assert persisted.rationale == "users table has id PK and email NOT NULL"
+        # Everything else is preserved verbatim from the wrapped entity.
+        assert persisted.name == candidate.entity.name
+        assert persisted.origin == candidate.entity.origin
+        assert persisted.qualified_table == candidate.entity.qualified_table
+
+    def test_to_persisted_entity_carries_empty_rationale(self) -> None:
+        candidate = EntityCandidate(
+            entity=_sample_entity(),
+            confidence="low",
+            rationale="",
+            pii_hints={},
+        )
+        persisted = candidate.to_persisted_entity()
+        assert persisted.bind_confidence == "low"
+        assert persisted.rationale == ""
+
+    def test_to_persisted_entity_does_not_mutate_wrapped_entity(self) -> None:
+        # The wrapped `entity` stays the persisted-clean shape; only the
+        # returned copy carries the rating (frozen-dataclass `replace`).
+        candidate = EntityCandidate(
+            entity=_sample_entity(),
+            confidence="medium",
+            rationale="why",
+            pii_hints={},
+        )
+        candidate.to_persisted_entity()
+        assert candidate.entity.bind_confidence is None
+        assert candidate.entity.rationale == ""
+
     @pytest.mark.parametrize("confidence", ["high", "medium", "low"])
     def test_accepts_all_three_confidence_levels(self, confidence: str) -> None:
         candidate = EntityCandidate(

@@ -111,8 +111,13 @@ def _stats_for(table: Table) -> dict[str, ColumnStats]:
 
 
 class FakeDataSource:
-    def __init__(self, tables: list[Table]) -> None:
+    def __init__(
+        self,
+        tables: list[Table],
+        row_counts: dict[tuple[str, str], int | None] | None = None,
+    ) -> None:
         self._tables = {(t.schema_name, t.name): t for t in tables}
+        self._row_counts = row_counts or {}
         self.list_tables_calls: int = 0
         self.get_table_calls: list[tuple[str, str]] = []
 
@@ -126,6 +131,9 @@ class FakeDataSource:
     def get_table(self, name: str, schema: str) -> Table:
         self.get_table_calls.append((schema, name))
         return self._tables[(schema, name)]
+
+    def estimated_row_count(self, name: str, schema: str) -> int | None:
+        return self._row_counts.get((schema, name))
 
     def close(self) -> None:
         pass
@@ -181,6 +189,23 @@ class TestFreshRun:
         for structural, semantic in fps.values():
             assert len(structural) == 64
             assert len(semantic) == 64
+        store.close()
+
+    def test_captures_estimated_row_count_from_source(self) -> None:
+        # The indexer queries the connector's row-count estimate per
+        # (re)written table and persists it. A table whose source returns
+        # None lands NULL — the two cases ride one index.
+        source = FakeDataSource(
+            [_users_table(), _orders_table()],
+            row_counts={("public", "users"): 4096, ("public", "orders"): None},
+        )
+        profiler = CountingProfiler()
+        store = SQLiteStore(":memory:")
+
+        index(source=source, profiler=profiler, store=store, source_connection_id=SOURCE_ID)
+
+        counts = store.estimated_row_counts(source_connection_id=SOURCE_ID)
+        assert counts == {"public.users": 4096, "public.orders": None}
         store.close()
 
 
