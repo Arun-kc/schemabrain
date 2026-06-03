@@ -30,9 +30,8 @@ from schemabrain.datadict.model import (
     DictMetric,
     DictSource,
 )
-from schemabrain.datadict.render_common import render_on_clause
-from schemabrain.mcp._redaction import redact_blocked_fk_columns
-from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES, PII_CATEGORIES_ORDERED
+from schemabrain.mcp._redaction import render_join_on_clause
+from schemabrain.pii import PII_CATEGORIES_ORDERED
 
 # Human label for an entity/join's `inference_method`. Unknown values
 # fall through verbatim so a future taxonomy addition degrades cleanly.
@@ -88,34 +87,6 @@ def _build_columns(store: Store, sid: str, entity: Entity) -> tuple[DictColumn, 
     return tuple(result)
 
 
-def _render_join_on(
-    store: Store,
-    sid: str,
-    join: CanonicalJoin,
-    entity_by_name: dict[str, Entity],
-) -> str:
-    # Both endpoints are FK-guaranteed entities (write_canonical_join
-    # enforces it at the SQLite layer), so the lookups always resolve.
-    source_entity = entity_by_name[join.source_entity]
-    target_entity = entity_by_name[join.target_entity]
-    source_columns = redact_blocked_fk_columns(
-        [pair.source_column for pair in join.on],
-        qualified_table=source_entity.qualified_table,
-        store=store,
-        source_connection_id=sid,
-        effective_block=CATASTROPHIC_LEAK_CATEGORIES,
-    )
-    target_columns = redact_blocked_fk_columns(
-        [pair.target_column for pair in join.on],
-        qualified_table=target_entity.qualified_table,
-        store=store,
-        source_connection_id=sid,
-        effective_block=CATASTROPHIC_LEAK_CATEGORIES,
-    )
-    pairs = tuple(zip(source_columns, target_columns, strict=True))
-    return render_on_clause(pairs, source_alias=join.source_entity, target_alias=join.target_entity)
-
-
 def _build_joins(
     store: Store,
     sid: str,
@@ -129,7 +100,12 @@ def _build_joins(
             description=join.description,
             source_entity=join.source_entity,
             target_entity=join.target_entity,
-            on_clause=_render_join_on(store, sid, join, entity_by_name),
+            on_clause=render_join_on_clause(
+                join,
+                store=store,
+                source_connection_id=sid,
+                entity_by_name=entity_by_name,
+            ),
             cardinality=join.cardinality,
             provenance=_provenance(join.inference_method),
         )
