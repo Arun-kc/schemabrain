@@ -1,17 +1,17 @@
 /**
- * PolicyView E2E smoke.
+ * Policy editor E2E smoke (/policy).
  *
- * The Ledger (Matrix) and PolicyView share the /pii surface. This
- * spec covers the PolicyView pane only — the Matrix is exercised by
- * smoke.spec.ts's `PII ledger renders the stat slab + entity matrix`
- * test. Splitting the policy assertions out keeps each spec focused
- * on one component's render contract.
+ * The editable policy surface (ADR 0007): a category block panel + a
+ * per-column override list on the left, a server-rendered schemabrain.yaml
+ * panel + staged diff on the right. The catastrophic floor is locked in
+ * both. Apply is read-only (copy YAML + reveal command, ADR 0006).
  *
- * Prerequisite: a dashboard sidecar running on http://127.0.0.1:7878
- * with at least one indexed source containing PII-tagged columns
- * (the same fixture the Matrix smoke depends on satisfies this).
+ * The category list is static (the 12-value enum), so "block contact" is
+ * present regardless of which source is indexed — the interaction test
+ * anchors on it for determinism.
  *
- * See web/tests/e2e/README.md for the canonical setup flow.
+ * Prerequisite: a dashboard sidecar running on http://127.0.0.1:7878 with
+ * at least one indexed source. See web/tests/e2e/README.md.
  */
 
 import { expect, test } from "@playwright/test";
@@ -21,62 +21,46 @@ test.beforeEach(async ({ context }, testInfo) => {
   await pinTheme(context, themeForProject(testInfo));
 });
 
-test.describe("PolicyView E2E smoke", () => {
-  test("policy view renders active block + per-column verdict table", async ({
-    page,
-  }) => {
+test.describe("Policy editor E2E smoke", () => {
+  test("renders the two levers + yaml + diff panels", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
 
-    await page.goto("/pii");
+    await page.goto("/policy");
 
-    // The PolicyView title strip — distinct from the Matrix's
-    // "THE LEDGER" so a substring match isolates this pane.
-    await expect(page.getByText(/Active Policy/i)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Policy", exact: true })).toBeVisible();
+    await expect(page.getByLabel("category block set")).toBeVisible();
+    await expect(page.getByLabel("column overrides")).toBeVisible();
+    await expect(page.getByLabel("generated policy yaml")).toBeVisible();
+    await expect(page.getByLabel("staged changes")).toBeVisible();
 
-    // The "active block" panel label always renders, regardless of
-    // whether a YAML file is present or only the catastrophic floor
-    // is active.
-    await expect(page.getByText("active block", { exact: true })).toBeVisible();
+    // The server-rendered YAML always carries the version line.
+    await expect(page.getByLabel("generated policy yaml").getByText("version: 1")).toBeVisible();
 
-    // Posture preview panel — the diff table label sits below the
-    // active block. "posture preview" is unique to this surface.
-    await expect(page.getByText("posture preview", { exact: true })).toBeVisible();
+    // The catastrophic floor renders locked (alarm + lock affordance)
+    // in the category panel — exposed to assistive tech as "locked
+    // floor". Runs under both themes via the project matrix.
+    await expect(page.getByLabel("locked floor").first()).toBeVisible();
 
-    // Per-column verdict heading — the table that lists each tagged
-    // column with its computed enforcement verdict.
-    await expect(page.getByText(/Per-column verdict/i)).toBeVisible();
-
-    // Catastrophic floor chips always render with the three default
-    // categories. `credential` is the most stable string to anchor
-    // on (one word, no underscore-to-space transform).
-    await expect(page.getByText(/credential/i).first()).toBeVisible();
-
-    await page.screenshot({ path: "test-results/05-policy.png", fullPage: true });
+    await page.screenshot({ path: "test-results/08-policy.png", fullPage: true });
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });
 
-  test("policy view exposes verdict + origin filters", async ({ page }) => {
-    await page.goto("/pii");
+  test("staging a category block reveals the diff + read-only apply", async ({ page }) => {
+    await page.goto("/policy");
 
-    // Both filter dropdowns must render; tests assert their presence
-    // via accessible labels rather than depending on the order they
-    // appear in the DOM.
-    await expect(page.getByLabel("filter by verdict")).toBeVisible();
-    await expect(page.getByLabel("filter by origin")).toBeVisible();
-  });
+    // At rest there are no staged changes.
+    await expect(page.getByLabel("staged changes").getByText(/0 staged/)).toBeVisible();
 
-  test("catastrophic floor reads as locked (reskin regression)", async ({
-    page,
-  }) => {
-    // Catastrophic-floor categories must carry a lock affordance
-    // ("can't be disabled") alongside the alarm styling, so the
-    // always-on floor is visually legible and exposed to assistive
-    // tech. The lock renders as an <Icon> with role="img" +
-    // aria-label="locked floor". The seeded demo source always carries
-    // the credential/government_id/payment_card floor, so at least one
-    // lock is present. Runs under both themes via the project matrix.
-    await page.goto("/pii");
-    await expect(page.getByLabel("locked floor").first()).toBeVisible();
+    // Block a non-floor category (always present — static enum).
+    await page.getByRole("button", { name: "block contact" }).click();
+
+    // The diff pane updates and the read-only Apply control appears.
+    await expect(page.getByLabel("staged changes").getByText(/1 staged/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Apply policy" })).toBeVisible();
+
+    // Discard reverts back to the clean baseline.
+    await page.getByRole("button", { name: "Discard" }).click();
+    await expect(page.getByLabel("staged changes").getByText(/0 staged/)).toBeVisible();
   });
 });

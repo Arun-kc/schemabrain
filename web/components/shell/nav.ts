@@ -40,7 +40,7 @@ export const NAV: readonly NavGroup[] = [
       { id: "pii", href: "/pii", label: "PII matrix", icon: "shield", built: true },
       { id: "refusals", href: "/refusals", label: "Refusals", icon: "ban", built: true },
       { id: "audit", href: "/audit", label: "Audit", icon: "scroll-text", built: true },
-      { id: "policy", href: "/policy", label: "Policy", icon: "scale", built: false },
+      { id: "policy", href: "/policy", label: "Policy", icon: "scale", built: true },
     ],
   },
   {

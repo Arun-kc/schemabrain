@@ -85,11 +85,11 @@ describe("nav model", () => {
     expect(isNavItemActive(item, "/audit")).toBe(false);
   });
 
-  it("ships the eight handoff surfaces with pii/refusals/audit built", () => {
+  it("ships the eight handoff surfaces with pii/refusals/audit/policy built", () => {
     const ids = NAV.flatMap((g) => g.items.map((i) => i.id));
     expect(ids).toEqual(["graph", "entities", "dict", "pii", "refusals", "audit", "policy", "drift"]);
     const built = NAV.flatMap((g) => g.items).filter((i) => i.built).map((i) => i.id);
-    expect(built).toEqual(["pii", "refusals", "audit"]);
+    expect(built).toEqual(["pii", "refusals", "audit", "policy"]);
   });
 });
 

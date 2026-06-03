@@ -1,0 +1,482 @@
+/*
+ * PolicyEditor — the editable PII policy surface (/policy).
+ *
+ * Ports the handoff app/policy.jsx visual language (app/pages2.css
+ * .pg-banner / .po-* ) onto the .sb-app dual-theme tokens (sb-theme.css)
+ * and the component kit. Two honest levers (ADR 0007): a category block
+ * panel + a per-column override list, with the catastrophic floor locked
+ * in both. Tokens auto-swap per theme — no per-theme blocks here.
+ */
+
+/* ---------- page scaffold ---------- */
+
+.page {
+  padding: 28px 32px 64px;
+}
+
+.pageHead {
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--hair);
+  margin-bottom: 4px;
+}
+
+.pageHead h1 {
+  font-size: 24px;
+}
+
+.pageHead p {
+  color: var(--ink-2);
+  font-size: 14px;
+  margin-top: 6px;
+  max-width: 640px;
+  line-height: 1.55;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---------- banners ---------- */
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 13px 16px;
+  border-radius: var(--r-lg);
+  border: 1px solid color-mix(in oklch, var(--amber) 40%, transparent);
+  background: color-mix(in oklch, var(--amber) 9%, transparent);
+}
+
+.bannerIcon {
+  color: var(--amber);
+  flex-shrink: 0;
+  display: inline-flex;
+}
+
+.bannerText {
+  font-size: 13.5px;
+  color: var(--ink);
+}
+
+.bannerText b {
+  font-family: var(--f-mono);
+  font-weight: 600;
+}
+
+.bannerSub {
+  color: var(--ink-2);
+  font-size: 12.5px;
+  margin-top: 2px;
+  line-height: 1.5;
+}
+
+.bannerActions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.inlineCode {
+  font-family: var(--f-mono);
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  border: 1px solid var(--hair-2);
+}
+
+/* ---------- two-pane grid ---------- */
+
+.grid {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 18px;
+  margin-top: 4px;
+  align-items: start;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+@media (max-width: 1040px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- pane ---------- */
+
+.pane {
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.paneHead {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--hair);
+  font-family: var(--f-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  color: var(--ink-2);
+}
+
+.paneCount {
+  margin-left: auto;
+  color: var(--ink-3);
+}
+
+/* ---------- category block panel ---------- */
+
+.catRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--hair-2);
+}
+
+.catRow:last-child {
+  border-bottom: none;
+}
+
+.catRow.on {
+  background: color-mix(in oklch, var(--alarm) 6%, transparent);
+}
+
+.catRow.floor {
+  background: color-mix(in oklch, var(--alarm) 8%, transparent);
+}
+
+.catId {
+  min-width: 0;
+  flex: 1;
+}
+
+.catName {
+  font-family: var(--f-mono);
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.catMeta {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
+
+.floorLock {
+  color: var(--alarm);
+}
+
+.floorTag {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  color: var(--alarm);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+/* toggle (block on/off) — a labelled switch, not the 3-way segment */
+.toggle {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 5px 11px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--hair);
+  background: var(--bg-1);
+  color: var(--ink-3);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    color var(--dur-2) var(--ease),
+    border-color var(--dur-2) var(--ease),
+    background var(--dur-2) var(--ease);
+}
+
+.toggle:hover {
+  color: var(--ink-2);
+  border-color: var(--ink-3);
+}
+
+.toggle.on {
+  background: color-mix(in oklch, var(--alarm) 16%, transparent);
+  color: var(--alarm);
+  border-color: color-mix(in oklch, var(--alarm) 40%, transparent);
+}
+
+.toggle:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+/* ---------- per-column override list ---------- */
+
+.rule {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--hair-2);
+}
+
+.rule:last-child {
+  border-bottom: none;
+}
+
+.rule.pending {
+  background: color-mix(in oklch, var(--green) 6%, transparent);
+}
+
+.rule.floor {
+  background: color-mix(in oklch, var(--alarm) 6%, transparent);
+}
+
+.ruleId {
+  min-width: 0;
+  flex: 1;
+}
+
+.ruleTable {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+.ruleName {
+  font-family: var(--f-mono);
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ruleCats {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
+
+/* 2-way segmented control [use classifier | mark safe] */
+.seg {
+  display: inline-flex;
+  background: var(--bg-1);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-md);
+  padding: 2px;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.seg button {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 5px 9px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: all var(--dur-2) var(--ease);
+}
+
+.seg button:hover:not(:disabled) {
+  color: var(--ink-2);
+}
+
+.seg button:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+.seg button.onUse {
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: var(--glow-green);
+}
+
+.seg button.onSafe {
+  background: color-mix(in oklch, var(--green) 18%, transparent);
+  color: var(--green);
+}
+
+.empty {
+  padding: 22px 16px;
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 13px;
+}
+
+/* ---------- yaml panel ---------- */
+
+.yaml {
+  font-family: var(--f-mono);
+  font-size: 12px;
+  line-height: 1.75;
+  padding: 14px 16px;
+  margin: 0;
+  overflow-x: auto;
+  color: var(--ink);
+  background: var(--bg-1);
+  white-space: pre;
+  max-height: 420px;
+}
+
+.yamlNote {
+  padding: 10px 16px;
+  border-top: 1px solid var(--hair-2);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.yamlNote .alarm {
+  color: var(--alarm);
+}
+
+/* ---------- staged diff ---------- */
+
+.diff {
+  display: flex;
+  flex-direction: column;
+}
+
+.diffEmpty {
+  padding: 22px 16px;
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 13px;
+}
+
+.diffRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 16px;
+  font-family: var(--f-mono);
+  font-size: 12px;
+  border-bottom: 1px solid var(--hair-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diffSign {
+  width: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.diffRow.add {
+  background: color-mix(in oklch, var(--green) 8%, transparent);
+}
+
+.diffRow.add .diffSign {
+  color: var(--green);
+}
+
+.diffRow.remove {
+  background: color-mix(in oklch, var(--alarm) 7%, transparent);
+}
+
+.diffRow.remove .diffSign {
+  color: var(--alarm);
+}
+
+.diffRow.context {
+  color: var(--ink-3);
+}
+
+.diffFoot {
+  display: flex;
+  gap: 9px;
+  padding: 13px 16px;
+  flex-wrap: wrap;
+}
+
+/* ---------- apply command reveal ---------- */
+
+.command {
+  border-top: 1px solid var(--hair);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: color-mix(in oklch, var(--green) 5%, transparent);
+}
+
+.commandLabel {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  color: var(--ink-2);
+}
+
+.commandRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.commandCode {
+  font-family: var(--f-mono);
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--bg-1);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-md);
+  padding: 8px 11px;
+  flex: 1;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.commandHint {
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+/* ---------- loading / error ---------- */
+
+.skeleton {
+  padding: 48px 32px;
+  color: var(--ink-3);
+  font-family: var(--f-mono);
+  font-size: 13px;
+}
+
+.errorCard {
+  margin: 16px 0;
+  padding: 18px;
+  border: 1px solid color-mix(in oklch, var(--alarm) 40%, transparent);
+  background: color-mix(in oklch, var(--alarm) 7%, transparent);
+  border-radius: var(--r-lg);
+  color: var(--ink);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
