@@ -1,14 +1,14 @@
 [project]
 name = "schemabrain"
 version = "0.5.0"
-description = "The SQL firewall between AI agents and your production database."
+description = "The trust and intelligence layer between AI agents and your database."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [
     { name = "Arun K C" },
 ]
-keywords = ["mcp", "database", "semantic", "ai-agents", "postgres", "schema"]
+keywords = ["mcp", "database", "semantic", "ai-agents", "postgres", "schema", "schema-intelligence", "knowledge-graph", "agent-trust"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

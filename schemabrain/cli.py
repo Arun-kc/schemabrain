@@ -165,6 +165,7 @@ from schemabrain.metrics.yaml_grammar import (
     parse_metric_yaml_file,
 )
 from schemabrain.mining.pipeline import mine_queries
+from schemabrain.positioning import SHORT_DESCRIPTION
 from schemabrain.profiler.postgres import PostgresProfiler
 
 if TYPE_CHECKING:
@@ -778,7 +779,7 @@ Get started: `schemabrain init`.
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="schemabrain",
-        description="The SQL firewall between AI agents and your production database.",
+        description=SHORT_DESCRIPTION,
         epilog=_CLI_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

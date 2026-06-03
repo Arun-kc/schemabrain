@@ -175,8 +175,8 @@ def _server_icons() -> list[Any]:
 
 
 _SERVER_INSTRUCTIONS = (
-    "SchemaBrain — a SQL firewall between AI agents and a Postgres "
-    "database. You never write raw SQL; you call these 12 read-only "
+    "SchemaBrain — the trust and intelligence layer between AI agents and "
+    "a Postgres database. You never write raw SQL; you call these 12 read-only "
     "tools to learn the schema and request validated aggregations. "
     "The firewall enforces PII and policy ONLY through these tools — "
     "raw SQL you emit in your response text bypasses it. If a tool "
