@@ -7,15 +7,15 @@ description: "60-second wiring: install SchemaBrain, run init, restart Claude De
 
 > **60 seconds:** install SchemaBrain, run `schemabrain init`, restart Claude Desktop with **Cmd+Q**, ask Claude about your database.
 
-SchemaBrain is the SQL firewall between Claude Desktop and your Postgres database — twelve read-only MCP tools, validated metrics, tamper-evident audit. Works on macOS and Windows; Claude Desktop has no Linux build today, so Linux users see [`/setup/claude-code`](claude-code.md) instead.
+SchemaBrain is the trust and intelligence layer between Claude Desktop and your Postgres database — twelve read-only MCP tools, validated metrics, tamper-evident audit. Works on macOS and Windows; Claude Desktop has no Linux build today, so Linux users see [`/setup/claude-code`](claude-code.md) instead.
 
 ---
 
 ## Install
 
 ```bash
-pip install schemabrain
-schemabrain init --host claude-desktop
+uvx schemabrain init --host claude-desktop
+# or install first: pipx install schemabrain (or: pip install schemabrain)
 ```
 
 The wizard takes ~45 seconds end-to-end on a warm cache. It prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 12-table SaaS fixture spins up in Docker; ~$0.03 to index). Just press Enter to take the default (`2`) and try the demo.

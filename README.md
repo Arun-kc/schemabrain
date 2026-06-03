@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-dark.svg">
-    <img src="docs/assets/readme-hero-light.svg" alt="SchemaBrain — the SQL firewall between AI agents and your database" width="100%">
+    <img src="docs/assets/readme-hero-light.svg" alt="SchemaBrain — the trust and intelligence layer between AI agents and your database" width="100%">
   </picture>
 </p>
 
@@ -22,7 +22,7 @@
 
 <p align="center">
   <strong>Stop giving AI agents raw database connection strings.</strong><br>
-  SchemaBrain is the SQL firewall between AI agents and your production database — twelve read-only tools, validated metrics, tamper-evident audit.
+  SchemaBrain is the trust and intelligence layer between AI agents and your production database — twelve read-only tools, validated metrics, tamper-evident audit.
 </p>
 
 > **The agent never writes SQL. SchemaBrain does, from definitions you control.**
@@ -46,14 +46,14 @@ Three guarantees that close the trust gap between AI agents and your database:
 ---
 
 ```bash
-pip install schemabrain
-schemabrain init
+uvx schemabrain init
 # then: Cmd+Q Claude Desktop, relaunch, and ask: "list the entities SchemaBrain knows about"
+# prefer a persistent install? pipx install schemabrain (or) pip install schemabrain
 ```
 
 **Cost:** **$0** to run the bundled demo (pre-curated pack, no API key) · ~$0.03 to LLM-index a fresh 84-column schema · **$0** to re-index unchanged schemas. Detail in [Sample session](#sample-session).
 
-**Status: 0.5.0 (alpha).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap.
+**Status: 0.5.0 (beta).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap.
 
 ---
 
@@ -64,7 +64,7 @@ schemabrain init
 | Goal | Where to go |
 |---|---|
 | Try it on the bundled fixture | [Quickstart](#quickstart) |
-| Understand the firewall properties | [The firewall](#the-firewall) |
+| Understand the safety guarantees | [The firewall](#the-firewall) |
 | Wire up your MCP client | [Claude Desktop](docs/setup/claude-desktop.md) · [Claude Code](docs/setup/claude-code.md) · [Cursor](docs/setup/cursor.md) · [Windsurf](docs/setup/windsurf.md) · [ChatGPT (roadmap)](docs/setup/chatgpt.md) |
 | Plug into your own agent loop | [`docs/setup/manual.md`](docs/setup/manual.md#3-wire-your-own-agent-anthropic-sdk) |
 | Build a semantic layer | [`docs/semantic-layer.md`](docs/semantic-layer.md) |
@@ -77,12 +77,14 @@ schemabrain init
 
 ## Quickstart
 
-Three steps from `pip install` to a working Claude Desktop integration. If you paste your own Postgres URL — no Docker needed, ~30s. Press Enter for the bundled demo and `init` invokes Docker + downloads a ~67 MB embedding model first time; ~45s once cached.
+Three steps from `uvx schemabrain init` to a working Claude Desktop integration. If you paste your own Postgres URL — no Docker needed, ~30s. Press Enter for the bundled demo and `init` invokes Docker + downloads a ~67 MB embedding model first time; ~45s once cached.
 
 ### 1. Install
 
 ```bash
-pip install schemabrain
+uvx schemabrain init        # zero-install: runs the wizard in one shot
+# or install persistently first:
+pipx install schemabrain    # (or) pip install schemabrain
 schemabrain --version
 ```
 
@@ -354,10 +356,9 @@ What you get from `pip install schemabrain` right now:
 
 The vision-launch feature set. These are in active development and **not** on PyPI yet:
 
-- **Repositioning** — from "SQL firewall" to a **trust and intelligence layer between AI agents and your database**, with the firewall demoted to one proof-point of six.
 - **Graph-first dashboard, 9 surfaces, dual-theme reskin** — an interactive Knowledge Graph (the signature surface), Entities index, Entity drilldown with a semantic pane, Data dictionary with Export-to-Markdown, plus the existing PII matrix, Refusals, Audit, an editable Policy editor, and Drift intelligence.
 - **New capabilities** — a persisted knowledge graph behind `/api/graph`; a `schemabrain docs` CLI that emits a Markdown/HTML data dictionary; per-column PII confidence; RFC-6962 Merkle-root audit proofs; hybrid retrieval (bge query-prefix + BM25 via RRF); two-tier model routing.
-- **Openness** — Apache-2.0 relicense and a Beta maturity label; a documented top-of-funnel `uvx` / `pipx` install command (the generated agent host-snippet already runs via `uvx` today — this is about the human-facing install instructions leading with it); a published `ROADMAP`, Code of Conduct, good-first-issues, and GitHub Discussions.
+- **Openness** — a published `ROADMAP`, Code of Conduct, good-first-issues, and GitHub Discussions.
 
 ### Later — roadmap (deferred; future direction only)
 
@@ -428,7 +429,7 @@ Postgres 16+ (primary target) and SQLite (for development and demos). Adding Sno
 The consumer is an agent, not a service. MCP standardizes tool registration, schema description, and request/response transport. Agents discover SchemaBrain natively and get its tool surface — no API wrapper, no SDK to maintain per language.
 
 **Is this a semantic layer like Cube or dbt Semantic Layer?**
-No — SchemaBrain is a SQL firewall built on a semantic-layer substrate. Entities, metrics, and canonical joins are first-class persisted definitions (`list_entities`, `describe_entity`, `resolve_join`, `get_metric`), but they exist to make the safety primitives possible — read-only-by-architecture, PII refusal, audit chain. The substrate is the means; the firewall is the headline. Full comparison vs Cube / dbt-mcp / Vanna / WrenAI in [`docs/landscape.md`](docs/landscape.md).
+Not exactly — SchemaBrain is the trust and intelligence layer between AI agents and your database, built on a semantic-layer substrate. Entities, metrics, and canonical joins are first-class persisted definitions (`list_entities`, `describe_entity`, `resolve_join`, `get_metric`), and they make the safety primitives possible — read-only-by-architecture, PII refusal, audit chain. The semantic substrate is the foundation; SQL-boundary safety, including the firewall, is one proof-point of the layer, not its whole identity. Full comparison vs Cube / dbt-mcp / Vanna / WrenAI in [`docs/landscape.md`](docs/landscape.md).
 
 More questions answered in [`docs/setup/manual.md`](docs/setup/manual.md#5-troubleshooting) (why local embeddings, more troubleshooting).
 

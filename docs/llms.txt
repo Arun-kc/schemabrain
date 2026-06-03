@@ -1,6 +1,6 @@
 # SchemaBrain
 
-> The semantic firewall between AI agents and your database. Read-only, PII-aware, audit-evident — by architecture, not by trust.
+> The trust and intelligence layer between AI agents and your database. Read-only, PII-aware, audit-evident — by architecture, not by trust.
 
 SchemaBrain sits between LLM-powered agents and production Postgres, exposing 12 Pydantic-typed MCP tools (no `execute_query`, no `run_sql`, no path from an agent prompt to a write). Every column carries a typed PII tag that propagates through joins at compile time so `get_metric` refuses unsafe queries before the database is queried. Every tool call lands in a hash-chained audit log that `schemabrain audit verify` re-walks to detect tampering.
 

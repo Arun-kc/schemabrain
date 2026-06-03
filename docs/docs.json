@@ -2,7 +2,7 @@
   "$schema": "https://mintlify.com/docs.json",
   "theme": "mint",
   "name": "SchemaBrain",
-  "description": "The semantic firewall between AI agents and your database. Read-only, PII-aware, audit-evident.",
+  "description": "The trust and intelligence layer between AI agents and your database. Read-only, PII-aware, audit-evident.",
   "colors": {
     "primary": "#3ECF8E",
     "light": "#3ECF8E",

@@ -7,15 +7,15 @@ description: "60-second wiring for Windsurf / Cascade. Auto-detected by the acti
 
 > **60 seconds:** install SchemaBrain, run `schemabrain init`, restart Windsurf, ask Cascade about your database.
 
-SchemaBrain is the SQL firewall between Windsurf's Cascade agent and your Postgres database — twelve read-only MCP tools, validated metrics, tamper-evident audit. Works on macOS, Linux, and Windows.
+SchemaBrain is the trust and intelligence layer between Windsurf's Cascade agent and your Postgres database — twelve read-only MCP tools, validated metrics, tamper-evident audit. Works on macOS, Linux, and Windows.
 
 ---
 
 ## Install
 
 ```bash
-pip install schemabrain
-schemabrain init --host windsurf
+uvx schemabrain init --host windsurf
+# or install first: pipx install schemabrain (or: pip install schemabrain)
 ```
 
 The wizard prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 12-table SaaS fixture spins up in Docker; ~$0.03 to index). Press Enter to take the default (`2`).

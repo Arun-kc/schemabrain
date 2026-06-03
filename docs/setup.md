@@ -15,8 +15,8 @@ Two alternative install paths are documented separately:
 ## 1. Install + run the wizard
 
 ```bash
-pip install schemabrain
-schemabrain init
+uvx schemabrain init
+# or install first: pipx install schemabrain (or: pip install schemabrain)
 ```
 
 That's it. With no URL set, the wizard opens with a fork prompt:

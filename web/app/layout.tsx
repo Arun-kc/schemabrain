@@ -7,7 +7,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "SchemaBrain Dashboard",
   description:
-    "Read-only dashboard for the SQL firewall between AI agents and your database.",
+    "Read-only dashboard for the trust and intelligence layer between AI agents and your database.",
   // The sidecar serves this app at 127.0.0.1; no public indexing
   // should ever happen. Belt-and-suspenders meta tag in addition to
   // the bind-localhost contract.

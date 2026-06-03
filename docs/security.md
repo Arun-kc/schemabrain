@@ -7,7 +7,7 @@ description: "Procurement-friendly summary of SchemaBrain's security architectur
 
 > Procurement-friendly summary of SchemaBrain's security architecture, threat model, and disclosure process. For the full attack-surface walk-through with code citations, see [`docs/threat-model.md`](threat-model.md).
 
-SchemaBrain is the SQL firewall between AI agents and your production Postgres database. This document is the summary your security team will want to read before approving the package.
+SchemaBrain is the trust and intelligence layer between AI agents and your production Postgres database. This document is the summary your security team will want to read before approving the package.
 
 ---
 
