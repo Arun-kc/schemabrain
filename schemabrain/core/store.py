@@ -51,6 +51,7 @@ from schemabrain.pii.categories import (
     CATASTROPHIC_LEAK_CATEGORIES,
     ColumnPiiTag,
     PIICategory,
+    PiiConfidenceBand,
     Sensitivity,
 )
 from schemabrain.pii.policy import CatastrophicDowngradeError
@@ -2803,6 +2804,7 @@ class SQLiteStore:
         source_connection_id: str,
         qualified_table: str,
         tags: Mapping[str, ColumnPiiTag],
+        confidence: Mapping[str, tuple[PiiConfidenceBand | None, float | None]] | None = None,
     ) -> None:
         """Replace all PII tags for `qualified_table` atomically.
 
@@ -2822,12 +2824,22 @@ class SQLiteStore:
         `_encode_pii_categories` helper handles the serialisation so
         round-trips are byte-identical.
 
+        `confidence` (ADR 0009) is the optional index-time
+        `column_name → (band, score)` map. A column absent from it — or
+        the whole argument omitted — writes NULL into both
+        `pii_confidence` and `pii_confidence_score`, which is the
+        pre-spike behaviour. The band/score are advisory PII-matrix
+        metadata only; they never gate enforcement. Because the atomic
+        delete+insert replaces every row, a re-index that no longer
+        corroborates a tag cleanly overwrites a stale higher band.
+
         Always writes `origin='heuristic'` at v12 — operator overrides
         land via a follow-up PR that writes `origin='operator'`
         through a separate code path.
         """
         conn = self._require_conn()
         now = int(time.time())
+        confidence = confidence or {}
         with conn:
             conn.execute(
                 "DELETE FROM column_pii_tags "
@@ -2844,8 +2856,9 @@ class SQLiteStore:
             conn.executemany(
                 "INSERT INTO column_pii_tags "
                 "(source_connection_id, qualified_table, column_name, "
-                "sensitivity, categories, origin, classified_at) "
-                "VALUES (?, ?, ?, ?, ?, 'heuristic', ?)",
+                "sensitivity, categories, origin, classified_at, "
+                "pii_confidence, pii_confidence_score) "
+                "VALUES (?, ?, ?, ?, ?, 'heuristic', ?, ?, ?)",
                 [
                     (
                         source_connection_id,
@@ -2854,6 +2867,7 @@ class SQLiteStore:
                         sensitivity,
                         _encode_pii_categories(categories),
                         now,
+                        *confidence.get(column_name, (None, None)),
                     )
                     for column_name, (sensitivity, categories) in tags.items()
                 ],

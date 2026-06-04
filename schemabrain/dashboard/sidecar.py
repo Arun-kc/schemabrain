@@ -471,6 +471,7 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
             resolved_source = _resolve_source(store, config, source_connection_id)
             entities = store.list_entities(source_connection_id=resolved_source)
             matrix_entries: list[dict[str, Any]] = []
+            column_entries: list[dict[str, Any]] = []
             total_columns = 0
             total_pii = 0
             total_confidential = 0
@@ -489,6 +490,15 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                     qualified_table=entity.qualified_table,
                     columns=column_names,
                 )
+                # ADR 0009: per-column advisory confidence band, read
+                # from the index-time-populated column. Absent rows
+                # (public columns / pre-spike stores) read back as
+                # `(None, None)` — the band renders "—", never a faked 0.
+                confidence = store.get_column_pii_confidence(
+                    source_connection_id=resolved_source,
+                    qualified_table=entity.qualified_table,
+                    columns=column_names,
+                )
                 # Counts: category → number of columns in this entity
                 # that carry that category. Sensitivity counters
                 # accumulate at the entity level (1 column = 1
@@ -503,8 +513,22 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                 for col_name in column_names:
                     tag = tags.get(col_name)
                     total_columns += 1
+                    # Only the band is surfaced — the raw score stays
+                    # internal (no numeric % in the UI; the band is the
+                    # display contract, see ADR 0009 / §7 #6).
+                    band = confidence.get(col_name, (None, None))[0]
                     if tag is None:
                         total_internal_or_public += 1
+                        column_entries.append(
+                            {
+                                "entity": entity.name,
+                                "qualified_table": entity.qualified_table,
+                                "column_name": col_name,
+                                "sensitivity": "public",
+                                "categories": [],
+                                "pii_confidence": band,
+                            }
+                        )
                         continue
                     sensitivity, categories = tag
                     if sensitivity == "pii":
@@ -518,6 +542,16 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                             counts[cat] += 1
                     if any(c in CATASTROPHIC_LEAK_CATEGORIES for c in categories):
                         catastrophic_columns_here += 1
+                    column_entries.append(
+                        {
+                            "entity": entity.name,
+                            "qualified_table": entity.qualified_table,
+                            "column_name": col_name,
+                            "sensitivity": sensitivity,
+                            "categories": [c for c in PII_CATEGORIES_ORDERED if c in categories],
+                            "pii_confidence": band,
+                        }
+                    )
                 has_catastrophic = catastrophic_columns_here > 0
                 total_catastrophic_columns += catastrophic_columns_here
                 matrix_entries.append(
@@ -536,6 +570,10 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
         return {
             "source_connection_id": resolved_source,
             "entities": matrix_entries,
+            # Per-column projection (ADR 0009) for the column x category
+            # confidence heatmap — one entry per entity-bound column,
+            # canonical category order, advisory band (or null).
+            "columns": column_entries,
             "categories": list(PII_CATEGORIES_ORDERED),
             "catastrophic_categories": sorted(CATASTROPHIC_LEAK_CATEGORIES),
             "totals": {

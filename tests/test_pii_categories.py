@@ -14,8 +14,10 @@ from typing import get_args
 from schemabrain.pii.categories import (
     PII_CATEGORIES,
     PII_CATEGORIES_ORDERED,
+    PII_CONFIDENCE_BANDS,
     SENSITIVITIES,
     PIICategory,
+    PiiConfidenceBand,
     Sensitivity,
 )
 
@@ -84,3 +86,25 @@ class TestPIICategoryLiteralType:
         # dashboard headers diverge from set-arithmetic membership
         # tests elsewhere in the codebase.
         assert frozenset(PII_CATEGORIES_ORDERED) == PII_CATEGORIES
+
+
+class TestPiiConfidenceBand:
+    """ADR 0009 — the advisory PII-matrix confidence band enum."""
+
+    def test_bands_tuple_matches_literal_args(self) -> None:
+        # The Literal type and the runtime tuple must agree exactly so
+        # static checks and runtime validation can't diverge.
+        assert get_args(PiiConfidenceBand) == PII_CONFIDENCE_BANDS
+
+    def test_bands_exact_membership(self) -> None:
+        assert PII_CONFIDENCE_BANDS == ("floor_locked", "high", "medium", "low")
+
+    def test_bands_match_store_sql_check(self) -> None:
+        # Lock-step with the `pii_confidence` SQL CHECK in the store DDL.
+        # If a band is added/removed without updating both, a write of
+        # the new value would silently violate the CHECK at runtime.
+        from schemabrain.core import store as store_module
+
+        ddl = " ".join(store_module._DDL_STATEMENTS)
+        for band in PII_CONFIDENCE_BANDS:
+            assert f"'{band}'" in ddl
