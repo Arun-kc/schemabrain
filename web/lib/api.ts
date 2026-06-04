@@ -4,6 +4,7 @@
 
 import type {
   AuditChainStatus,
+  DriftResponse,
   EntityDrilldownResponse,
   EntityListResponse,
   HealthResponse,
@@ -64,6 +65,11 @@ export const api = {
   piiPolicy: (sourceId?: string) => {
     const qs = sourceId ? `?source_connection_id=${encodeURIComponent(sourceId)}` : "";
     return getJson<PolicyResponse>(`/api/pii/policy${qs}`);
+  },
+
+  drift: (sourceId?: string) => {
+    const qs = sourceId ? `?source_connection_id=${encodeURIComponent(sourceId)}` : "";
+    return getJson<DriftResponse>(`/api/drift${qs}`);
   },
 
   /**

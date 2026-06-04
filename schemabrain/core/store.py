@@ -1539,6 +1539,45 @@ class SQLiteStore:
             for row in rows
         }
 
+    def latest_enriched_at(self, *, source_connection_id: str) -> int | None:
+        """Most recent ``column_descriptions.generated_at`` for the source.
+
+        Epoch seconds of the newest enrichment write, or ``None`` when the
+        source has no descriptions yet (never enriched, or indexed with
+        ``--no-enrich``, which writes the table but no description rows).
+        The Drift surface renders ``None`` as "—", never a fabricated ``0``.
+        ``MAX`` over zero rows yields a single ``NULL`` row → ``None``.
+        """
+        conn = self._require_conn()
+        row = conn.execute(
+            "SELECT MAX(generated_at) AS last FROM column_descriptions "
+            "WHERE source_connection_id = ?",
+            (source_connection_id,),
+        ).fetchone()
+        last: int | None = row["last"]
+        return last
+
+    def has_stale_prompt_version(
+        self, *, source_connection_id: str, current_prompt_version: str
+    ) -> bool:
+        """True iff any persisted description for the source was generated
+        with a prompt version other than ``current_prompt_version``.
+
+        The enrichment-drift signal for the Drift surface: a prompt-version
+        mismatch means the AI context predates the live prompt, so a
+        ``schemabrain index --enrich`` would regenerate it. ``False`` when
+        every description matches (fresh) or the source has none (nothing
+        to be stale). ``LIMIT 1`` — existence only, never loads all rows.
+        """
+        conn = self._require_conn()
+        row = conn.execute(
+            "SELECT 1 FROM column_descriptions "
+            "WHERE source_connection_id = ? AND prompt_version != ? "
+            "LIMIT 1",
+            (source_connection_id, current_prompt_version),
+        ).fetchone()
+        return row is not None
+
     def write_table_descriptions(
         self,
         schema_name: str,

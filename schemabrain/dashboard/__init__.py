@@ -29,8 +29,10 @@ from pathlib import Path
 # shipped at 1.0; 1.1 adds the v15 `BindConfidence` union + the entity
 # `rows` / `confidence` / `rationale` fields on /api/entities + drilldown;
 # 1.2 adds the read-only `GET /api/pii/policy/preview` route + its
-# `PolicyPreviewResponse` contract for the editable Policy surface.
-DASHBOARD_SCHEMA_VERSION = "1.2"
+# `PolicyPreviewResponse` contract for the editable Policy surface;
+# 1.3 adds the read-only `GET /api/drift` route + its `DriftResponse`
+# contract for the Drift surface.
+DASHBOARD_SCHEMA_VERSION = "1.3"
 
 # Directory holding the static Next.js export. Populated at wheel-build
 # time by the ``web/`` workspace's ``pnpm build`` output. At install
