@@ -1,8 +1,8 @@
 """FastAPI sidecar for the v0.4 dashboard.
 
-The sidecar exposes 8 read-only JSON routes + 1 SSE stream + 1 health
-endpoint, plus serves the static Next.js export at ``/``. Architectural
-invariants:
+The sidecar exposes a set of read-only JSON routes + 1 SSE stream + 1
+health endpoint, plus serves the static Next.js export at ``/``.
+Architectural invariants:
 
   - Bind ``127.0.0.1`` only. ``create_sidecar`` accepts no ``host``
     argument by design; the CLI launcher also does not surface one.
@@ -25,8 +25,14 @@ Route inventory (full spec in ``docs/internal/v0.4_ui_rfc.md`` §3):
   6. GET  /api/audit/verify                    chain verify status
   7. GET  /api/audit/refusals                  Refusal feed
   8. GET  /api/audit/refusals/{id}             Refusal envelope detail
+  9. GET  /api/audit/merkle/root               derived Merkle root
+ 10. GET  /api/audit/rows/{id}/proof           inclusion proof
   SSE.   GET  /api/audit/stream                live audit row push
   H.     GET  /api/health                      liveness
+
+(Additional read-only routes — entities/pii-matrix, pii/policy,
+pii/policy/preview, drift — register in their own ``_register_*``
+helpers below; the list above is the audit + entity core.)
 """
 
 from __future__ import annotations
@@ -803,6 +809,7 @@ def _register_audit_routes(app: FastAPI, config: SidecarConfig) -> None:
     """Audit routes — rows, refusals, verify."""
     from fastapi import HTTPException
 
+    from schemabrain.audit.merkle import inclusion_proof, leaf_hash, merkle_root
     from schemabrain.audit.verify import (
         SinceCursorError,
         resolve_since_cursor,
@@ -909,6 +916,82 @@ def _register_audit_routes(app: FastAPI, config: SidecarConfig) -> None:
                     detail=f"refusal row {row_id} not found (or not a refused row)",
                 )
         return _serialize_refusal(row, include_envelope=True)
+
+    @app.get("/api/audit/merkle/root")
+    def audit_merkle_root_route() -> dict[str, Any]:
+        """Derived RFC-6962 Merkle root over every audit row (id-ASC).
+
+        Stateless: recomputed per request from the same canonical leaf
+        preimages the chain consumes. An empty log returns the SHA-256 of
+        the empty string (never null, never all-zeros).
+        """
+        with _open_audit_conn(config) as conn:
+            leaves = _audit_leaf_preimages(conn)
+        return {"tree_size": len(leaves), "root_hex": merkle_root(leaves).hex()}
+
+    @app.get("/api/audit/rows/{row_id}/proof")
+    def audit_row_proof_route(row_id: int) -> dict[str, Any]:
+        """Inclusion proof for one audit row against the current root.
+
+        ``leaf_index`` is the 0-based position in id-ASC order — computed
+        server-side from the row's id rank, NOT from the id-DESC render
+        order of ``/api/audit/rows``. 404 if the id is absent.
+        """
+        with _open_audit_conn(config) as conn:
+            exists = conn.execute("SELECT 1 FROM mcp_audit WHERE id = ?", (row_id,)).fetchone()
+            if exists is None:
+                raise HTTPException(404, detail=f"audit row {row_id} not found")
+            rank = conn.execute(
+                "SELECT COUNT(*) AS c FROM mcp_audit WHERE id < ?", (row_id,)
+            ).fetchone()
+            leaf_index = int(rank["c"])
+            leaves = _audit_leaf_preimages(conn)
+        return {
+            "leaf_index": leaf_index,
+            "tree_size": len(leaves),
+            "root_hex": merkle_root(leaves).hex(),
+            "leaf_hash_hex": leaf_hash(leaves[leaf_index]).hex(),
+            "audit_path": [h.hex() for h in inclusion_proof(leaf_index, leaves)],
+        }
+
+
+def _audit_leaf_preimages(conn: sqlite3.Connection) -> list[bytes]:
+    """Return every ``mcp_audit`` row's canonical leaf preimage, id-ASC.
+
+    Reuses ``verify._ROW_COLUMNS`` + ``verify._row_to_canonical_dict`` +
+    ``canonical_audit_row`` — the EXACT serialisation path the chain walk
+    uses (``verify.py:126-127``) — so the Merkle tree and the hash chain
+    can never disagree on a row's bytes. id-ASC matches the chain order;
+    the resulting list index is the leaf index.
+    """
+    from fastapi import HTTPException
+
+    from schemabrain.audit.canonical import canonical_audit_row
+    from schemabrain.audit.verify import _ROW_COLUMNS, _row_to_canonical_dict
+
+    # `_ROW_COLUMNS` is a hardcoded module-level tuple of column names; no
+    # operator input enters the SELECT. ORDER BY id ASC matches walk_chain.
+    select_cols = ", ".join(_ROW_COLUMNS)
+    rows = conn.execute(
+        f"SELECT {select_cols} FROM mcp_audit ORDER BY id ASC"  # nosec B608 — column list hardcoded
+    )
+    leaves: list[bytes] = []
+    for row in rows:
+        try:
+            leaves.append(canonical_audit_row(_row_to_canonical_dict(row)))
+        except ValueError as exc:
+            # A row whose canonical shape is broken (corruption / future-schema
+            # drift) cannot be a deterministic leaf. Surface it as an actionable
+            # 422 rather than a 500 — `audit verify --full` reports exactly which
+            # row, mirroring verify.py's graceful posture toward such rows.
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"audit row {row['id']} failed canonicalisation ({exc}); "
+                    "run `schemabrain audit verify --full` to inspect the chain"
+                ),
+            ) from exc
+    return leaves
 
 
 def _compute_policy_drift(yaml_path: Path) -> dict[str, Any]:
@@ -1514,8 +1597,10 @@ def _open_audit_conn(config: SidecarConfig) -> sqlite3.Connection:
 
     The sidecar never writes; the writer-discipline contract is
     enforced by code path (no INSERT/UPDATE/DELETE statements anywhere
-    in this module). WAL pragmas let the connection see rows committed
-    by a concurrent ``schemabrain serve`` process.
+    in this module) and belt-and-suspenders by ``PRAGMA query_only``.
+    The store is already in WAL mode (set by the writer in
+    ``core/store.py``); this read connection inherits it and so sees rows
+    committed by a concurrent ``schemabrain serve`` process.
     """
     conn = sqlite3.connect(str(config.store_path))
     conn.row_factory = sqlite3.Row
@@ -1880,7 +1965,7 @@ _LANDING_HTML = """<!doctype html>
   <div class="banner">
     <strong>Why am I seeing this page?</strong> The wheel does not yet
     ship a built Next.js export under <code>schemabrain/dashboard/static/</code>.
-    The sidecar still serves all 8 API routes; you can browse them
+    The sidecar still serves all of its API routes; you can browse them
     below.
   </div>
 
@@ -1908,6 +1993,7 @@ _LANDING_HTML = """<!doctype html>
     <li><a href="/api/audit/rows">/api/audit/rows</a><span>Audit Viewer table</span></li>
     <li><a href="/api/audit/refusals">/api/audit/refusals</a><span>Refusal Experience feed</span></li>
     <li><a href="/api/audit/verify">/api/audit/verify</a><span>chain verify status</span></li>
+    <li><a href="/api/audit/merkle/root">/api/audit/merkle/root</a><span>derived Merkle root</span></li>
   </ul>
 
   <h2>Get the full UI</h2>

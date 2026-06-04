@@ -8,6 +8,8 @@ import type {
   EntityDrilldownResponse,
   EntityListResponse,
   HealthResponse,
+  MerkleProofResponse,
+  MerkleRootResponse,
   Meta,
   PaginatedAuditResponse,
   PiiMatrixResponse,
@@ -106,10 +108,21 @@ export const api = {
   auditRefusalDetail: (id: number) =>
     getJson<RefusalEntry>(`/api/audit/refusals/${id}`),
 
-  auditVerify: (since?: string) => {
-    const qs = since ? `?since=${encodeURIComponent(since)}` : "";
-    return getJson<AuditChainStatus>(`/api/audit/verify${qs}`);
+  auditVerify: (opts?: { since?: string; full?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (opts?.since) qs.set("since", opts.since);
+    if (opts?.full) qs.set("full", "true");
+    const tail = qs.toString() ? `?${qs}` : "";
+    return getJson<AuditChainStatus>(`/api/audit/verify${tail}`);
   },
+
+  /** The derived Merkle root over every audit row (id-ASC). */
+  auditMerkleRoot: () => getJson<MerkleRootResponse>("/api/audit/merkle/root"),
+
+  /** Inclusion proof for one audit row — the browser verifies it against
+   * the global root via lib/merkle.ts. 404 if the id is absent. */
+  auditRowProof: (id: number) =>
+    getJson<MerkleProofResponse>(`/api/audit/rows/${id}/proof`),
 };
 
 export { SidecarError };

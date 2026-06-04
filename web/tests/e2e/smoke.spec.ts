@@ -98,18 +98,31 @@ test.describe("dashboard E2E smoke", () => {
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });
 
-  test("audit viewer renders the ledger chain + block detail", async ({ page }) => {
+  test("audit ledger renders the merkle root + verifies inclusion proofs", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
 
     await page.goto("/audit");
 
-    await expect(page.getByText(/Ledger Chain Intact/i)).toBeVisible();
-    // The block-detail right pane shows when a row is selected; the
-    // first row should be auto-selected on load. "BLOCK PAYLOAD"
-    // headers the JSON pane that is the audit chain's tamper-evident
-    // payload.
-    await expect(page.getByText(/BLOCK PAYLOAD/i)).toBeVisible();
+    // The surface title (a heading, so it doesn't collide with the nav link
+    // of the same name) + the honest lede the surface is framed around.
+    await expect(page.getByRole("heading", { name: /Audit/i })).toBeVisible();
+    await expect(page.getByText(/commits to the hash of the row before it/i)).toBeVisible();
+    // The derived Merkle root is the spine of the surface.
+    await expect(page.getByText(/merkle root/i)).toBeVisible();
+
+    // A seeded row renders inside the audit list (scoped to the list so the
+    // assertion stays anchored to a real row, not chrome).
+    const ledger = page.getByLabel("audit rows");
+    await expect(ledger.getByText("list_entities()")).toBeVisible();
+
+    // The real verification: clicking Verify recomputes each row's RFC-6962
+    // inclusion proof in the browser (crypto.subtle) and reconciles it to the
+    // one global root — proof the merkle route → fetch → verify chain worked.
+    await page.getByRole("button", { name: /verify against root/i }).click();
+    await expect(page.getByText(/verified · \d+\/\d+ intact/i).first()).toBeVisible({
+      timeout: 15000,
+    });
 
     await page.screenshot({ path: "test-results/04-audit.png", fullPage: true });
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
