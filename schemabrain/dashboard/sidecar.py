@@ -126,6 +126,11 @@ SSE_TICK_SECONDS: float = 2.0
 # equality test against the sentinel's recorded absolute path.
 SERVE_POLICY_MTIME_SENTINEL_PATH: Path = Path("./schemabrain/.serve_policy_mtime")
 
+# The canonical project-relative policy file (dbt-style project dir).
+# Shared by the policy route and the drift route so the config-drift
+# signal compares the SAME file `serve` recorded its mtime against.
+DEFAULT_POLICY_YAML_PATH: Path = Path("./schemabrain/pii_policy.yaml")
+
 
 def is_ui_available() -> bool:
     """``True`` if the ``[ui]`` extra is importable.
@@ -212,6 +217,7 @@ def create_sidecar(config: SidecarConfig) -> FastAPI:
     _register_entity_routes(app, config)
     _register_audit_routes(app, config)
     _register_policy_route(app, config)
+    _register_drift_route(app, config)
     _register_stream_route(app, config)
 
     has_static_export = STATIC_DIR.exists() and any(
@@ -867,6 +873,159 @@ def _register_audit_routes(app: FastAPI, config: SidecarConfig) -> None:
         return _serialize_refusal(row, include_envelope=True)
 
 
+def _compute_policy_drift(yaml_path: Path) -> dict[str, Any]:
+    """Compare ``schemabrain serve``'s recorded YAML mtime against
+    the current on-disk YAML mtime.
+
+    Shared by the policy route (``/api/pii/policy``) and the drift route
+    (``/api/drift``) — both surface the same config-drift signal, so the
+    computation lives at module level rather than inside either closure.
+
+    Returns a dict with stable keys:
+
+        {
+            "detected": bool,
+            "recorded_at": iso8601 | None,
+            "current_mtime": iso8601 | None,
+        }
+
+    ``detected`` fires when:
+      - sentinel records ``yaml_existed_at_boot=True`` AND the
+        current YAML is missing (operator removed the file),
+      - sentinel mtime differs from the current YAML mtime by
+        more than 1ms (operator edited the file),
+      - sentinel records ``yaml_existed_at_boot=False`` AND a
+        YAML appears now (operator created the file).
+
+    Returns ``detected=False`` when:
+      - no sentinel exists (no serve running OR serve used
+        ``--pii-block`` CLI override),
+      - sentinel's recorded ``policy_path`` does not resolve to
+        ``yaml_path`` (serve was watching a different file),
+      - any stat/parse error (fail-closed: better silent than
+        misleading).
+    """
+    # `json` is imported at module level; `datetime` is deferred here
+    # (only this drift computation needs it).
+    from datetime import UTC, datetime
+
+    def _iso_from_mtime(mtime: float) -> str:
+        return datetime.fromtimestamp(mtime, tz=UTC).isoformat(timespec="seconds")
+
+    def _current_mtime_iso() -> str | None:
+        try:
+            return _iso_from_mtime(yaml_path.stat().st_mtime)
+        except OSError:
+            return None
+
+    # Collapse the exists-check + read into one open to eliminate
+    # the TOCTOU window between them. FileNotFoundError is the
+    # "no sentinel" steady state; any other OSError + malformed
+    # JSON is fail-closed.
+    try:
+        sentinel_text = SERVE_POLICY_MTIME_SENTINEL_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {
+            "detected": False,
+            "recorded_at": None,
+            "current_mtime": _current_mtime_iso(),
+        }
+    except OSError:
+        return {
+            "detected": False,
+            "recorded_at": None,
+            "current_mtime": _current_mtime_iso(),
+        }
+
+    try:
+        payload = json.loads(sentinel_text)
+    except json.JSONDecodeError:
+        return {
+            "detected": False,
+            "recorded_at": None,
+            "current_mtime": _current_mtime_iso(),
+        }
+
+    # Type-narrow every field read from the JSON payload. The
+    # sentinel writer is well-behaved, but a corrupt or hand-edited
+    # file can carry any JSON type for any key — and an unguarded
+    # float() on a string crashes the whole route.
+    raw_recorded_iso = payload.get("recorded_at_iso") if isinstance(payload, dict) else None
+    recorded_iso = raw_recorded_iso if isinstance(raw_recorded_iso, str) else None
+    recorded_mtime = payload.get("recorded_at_mtime") if isinstance(payload, dict) else None
+    sentinel_path = payload.get("policy_path") if isinstance(payload, dict) else None
+    yaml_existed = bool(payload.get("yaml_existed_at_boot") if isinstance(payload, dict) else False)
+
+    try:
+        resolved_yaml = str(yaml_path.expanduser().resolve())
+    except OSError:
+        return {
+            "detected": False,
+            "recorded_at": recorded_iso,
+            "current_mtime": None,
+        }
+
+    # Sentinel watched a different file — drift signal isn't meaningful.
+    if sentinel_path != resolved_yaml:
+        return {
+            "detected": False,
+            "recorded_at": recorded_iso,
+            "current_mtime": _current_mtime_iso(),
+        }
+
+    # Collapse exists/stat into a single stat that surfaces
+    # FileNotFoundError separately from other OSError so the
+    # deletion-drift branch preserves the yaml_existed context
+    # even if the file disappears in a TOCTOU race.
+    try:
+        current_mtime_float = yaml_path.stat().st_mtime
+    except FileNotFoundError:
+        return {
+            "detected": yaml_existed,
+            "recorded_at": recorded_iso,
+            "current_mtime": None,
+        }
+    except OSError:  # pragma: no cover — defensive; same fail-closed posture as the read_text / resolve OSError branches above which ARE pinned
+        return {
+            "detected": False,
+            "recorded_at": recorded_iso,
+            "current_mtime": None,
+        }
+
+    current_iso = _iso_from_mtime(current_mtime_float)
+    if recorded_mtime is None:
+        # Serve booted with no YAML; a YAML appeared since — but
+        # only honour that interpretation when the sentinel agrees
+        # yaml DID NOT exist at boot. A sentinel claiming
+        # yaml_existed_at_boot=True with recorded_mtime=None is
+        # internally inconsistent (the writer cannot produce it);
+        # treat that as fail-closed rather than false-positive drift.
+        return {
+            "detected": not yaml_existed,
+            "recorded_at": recorded_iso,
+            "current_mtime": current_iso,
+        }
+
+    # 1ms epsilon to avoid float precision false positives. The
+    # float() coercion can raise ValueError (string like "abc") or
+    # TypeError (list/dict) on a corrupt sentinel — fail-closed so
+    # the route stays available even if the sentinel is mangled.
+    try:
+        recorded_mtime_float = float(recorded_mtime)
+    except (TypeError, ValueError):
+        return {
+            "detected": False,
+            "recorded_at": recorded_iso,
+            "current_mtime": current_iso,
+        }
+    drifted = abs(current_mtime_float - recorded_mtime_float) > 0.001
+    return {
+        "detected": drifted,
+        "recorded_at": recorded_iso,
+        "current_mtime": current_iso,
+    }
+
+
 def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
     """GET /api/pii/policy — operator-editable PII enforcement state.
 
@@ -906,7 +1065,7 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
         policy_to_yaml,
     )
 
-    _POLICY_YAML_PATH = Path("./schemabrain/pii_policy.yaml")
+    _POLICY_YAML_PATH = DEFAULT_POLICY_YAML_PATH
     # Bound the work a single preview request can ask for. The category
     # block set is naturally capped by the 12-value enum; column
     # overrides are operator-supplied and unbounded, so cap the list
@@ -922,157 +1081,6 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
     # mutable arg (FastAPI builds a fresh list per request).
     _BLOCK_QUERY = Query(default=[])
     _OVERRIDE_QUERY = Query(default=[])
-    _SENTINEL_PATH = SERVE_POLICY_MTIME_SENTINEL_PATH
-
-    def _compute_policy_drift(yaml_path: Path) -> dict[str, Any]:
-        """Compare ``schemabrain serve``'s recorded YAML mtime against
-        the current on-disk YAML mtime.
-
-        Returns a dict with stable keys:
-
-            {
-                "detected": bool,
-                "recorded_at": iso8601 | None,
-                "current_mtime": iso8601 | None,
-            }
-
-        ``detected`` fires when:
-          - sentinel records ``yaml_existed_at_boot=True`` AND the
-            current YAML is missing (operator removed the file),
-          - sentinel mtime differs from the current YAML mtime by
-            more than 1ms (operator edited the file),
-          - sentinel records ``yaml_existed_at_boot=False`` AND a
-            YAML appears now (operator created the file).
-
-        Returns ``detected=False`` when:
-          - no sentinel exists (no serve running OR serve used
-            ``--pii-block`` CLI override),
-          - sentinel's recorded ``policy_path`` does not resolve to
-            ``yaml_path`` (serve was watching a different file),
-          - any stat/parse error (fail-closed: better silent than
-            misleading).
-        """
-        import json
-        from datetime import UTC, datetime
-
-        def _iso_from_mtime(mtime: float) -> str:
-            return datetime.fromtimestamp(mtime, tz=UTC).isoformat(timespec="seconds")
-
-        def _current_mtime_iso() -> str | None:
-            try:
-                return _iso_from_mtime(yaml_path.stat().st_mtime)
-            except OSError:
-                return None
-
-        # Collapse the exists-check + read into one open to eliminate
-        # the TOCTOU window between them. FileNotFoundError is the
-        # "no sentinel" steady state; any other OSError + malformed
-        # JSON is fail-closed.
-        try:
-            sentinel_text = _SENTINEL_PATH.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return {
-                "detected": False,
-                "recorded_at": None,
-                "current_mtime": _current_mtime_iso(),
-            }
-        except OSError:
-            return {
-                "detected": False,
-                "recorded_at": None,
-                "current_mtime": _current_mtime_iso(),
-            }
-
-        try:
-            payload = json.loads(sentinel_text)
-        except json.JSONDecodeError:
-            return {
-                "detected": False,
-                "recorded_at": None,
-                "current_mtime": _current_mtime_iso(),
-            }
-
-        # Type-narrow every field read from the JSON payload. The
-        # sentinel writer is well-behaved, but a corrupt or hand-edited
-        # file can carry any JSON type for any key — and an unguarded
-        # float() on a string crashes the whole /api/pii/policy route.
-        raw_recorded_iso = payload.get("recorded_at_iso") if isinstance(payload, dict) else None
-        recorded_iso = raw_recorded_iso if isinstance(raw_recorded_iso, str) else None
-        recorded_mtime = payload.get("recorded_at_mtime") if isinstance(payload, dict) else None
-        sentinel_path = payload.get("policy_path") if isinstance(payload, dict) else None
-        yaml_existed = bool(
-            payload.get("yaml_existed_at_boot") if isinstance(payload, dict) else False
-        )
-
-        try:
-            resolved_yaml = str(yaml_path.expanduser().resolve())
-        except OSError:
-            return {
-                "detected": False,
-                "recorded_at": recorded_iso,
-                "current_mtime": None,
-            }
-
-        # Sentinel watched a different file — drift signal isn't meaningful.
-        if sentinel_path != resolved_yaml:
-            return {
-                "detected": False,
-                "recorded_at": recorded_iso,
-                "current_mtime": _current_mtime_iso(),
-            }
-
-        # Collapse exists/stat into a single stat that surfaces
-        # FileNotFoundError separately from other OSError so the
-        # deletion-drift branch preserves the yaml_existed context
-        # even if the file disappears in a TOCTOU race.
-        try:
-            current_mtime_float = yaml_path.stat().st_mtime
-        except FileNotFoundError:
-            return {
-                "detected": yaml_existed,
-                "recorded_at": recorded_iso,
-                "current_mtime": None,
-            }
-        except OSError:  # pragma: no cover — defensive; same fail-closed posture as the read_text / resolve OSError branches above which ARE pinned
-            return {
-                "detected": False,
-                "recorded_at": recorded_iso,
-                "current_mtime": None,
-            }
-
-        current_iso = _iso_from_mtime(current_mtime_float)
-        if recorded_mtime is None:
-            # Serve booted with no YAML; a YAML appeared since — but
-            # only honour that interpretation when the sentinel agrees
-            # yaml DID NOT exist at boot. A sentinel claiming
-            # yaml_existed_at_boot=True with recorded_mtime=None is
-            # internally inconsistent (the writer cannot produce it);
-            # treat that as fail-closed rather than false-positive drift.
-            return {
-                "detected": not yaml_existed,
-                "recorded_at": recorded_iso,
-                "current_mtime": current_iso,
-            }
-
-        # 1ms epsilon to avoid float precision false positives. The
-        # float() coercion can raise ValueError (string like "abc") or
-        # TypeError (list/dict) on a corrupt sentinel — fail-closed so
-        # the /api/pii/policy route stays available even if the sentinel
-        # is mangled.
-        try:
-            recorded_mtime_float = float(recorded_mtime)
-        except (TypeError, ValueError):
-            return {
-                "detected": False,
-                "recorded_at": recorded_iso,
-                "current_mtime": current_iso,
-            }
-        drifted = abs(current_mtime_float - recorded_mtime_float) > 0.001
-        return {
-            "detected": drifted,
-            "recorded_at": recorded_iso,
-            "current_mtime": current_iso,
-        }
 
     def _load_active_block() -> tuple[frozenset[PIICategory], str, str | None]:
         """(active_block, source_label, error_message)."""
@@ -1307,6 +1315,110 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
         }
 
 
+def _register_drift_route(app: FastAPI, config: SidecarConfig) -> None:
+    """GET /api/drift — read-only context-health signal.
+
+    Surfaces the two drift kinds the store-only sidecar can honestly
+    verify from persisted state alone:
+
+      - ``config``: the policy YAML diverged from what ``serve`` recorded
+        at boot (reuses ``_compute_policy_drift``).
+      - ``enrichment``: a persisted column description was generated with
+        an older prompt version than the live one, so the AI context is
+        stale (reuses ``store.has_stale_prompt_version``).
+
+    SCHEMA drift (table/column missing) and YAML-vs-disk DEFINITION drift
+    are DELIBERATELY OMITTED: both require a live DB connection the
+    credential-less sidecar does not have, so emitting them would be
+    fabricated. The surface stays honest — ``fresh`` is true iff there
+    are zero items. Every action is a copy-the-CLI-command affordance
+    (ADR-0006); the route writes nothing and never flips state.
+    """
+    from schemabrain.core.store import SQLiteStore
+    from schemabrain.enrichment.prompts import PROMPT_VERSION
+
+    @app.get("/api/drift")
+    def drift(source_connection_id: str | None = None) -> dict[str, Any]:
+        with SQLiteStore(config.store_path) as store:
+            resolved_source = _resolve_source(store, config, source_connection_id)
+            # Coerce a URL-shaped override to its canonical hashed id BEFORE
+            # it touches the store query or the response — never echo a raw
+            # connection URL (it carries the DB password). A hashed id /
+            # label passes through unchanged, so the normal path is a no-op.
+            safe_source = _credential_safe_source_label(resolved_source)
+            last_enriched = store.latest_enriched_at(source_connection_id=safe_source)
+            enrichment_stale = store.has_stale_prompt_version(
+                source_connection_id=safe_source,
+                current_prompt_version=PROMPT_VERSION,
+            )
+            indexed_by_source = {
+                s.source_connection_id: s.last_indexed_at for s in store.summarize_sources()
+            }
+
+        items: list[dict[str, Any]] = []
+
+        # --- config drift: policy YAML edited since `serve` recorded it ---
+        # Global (not per-source): the policy file governs every source.
+        policy_drift = _compute_policy_drift(DEFAULT_POLICY_YAML_PATH)
+        if policy_drift["detected"]:
+            items.append(
+                {
+                    "kind": "config",
+                    "risk": "med",
+                    "title": "Policy file changed since serve started",
+                    "when": policy_drift["current_mtime"],
+                    "detail": (
+                        "pii_policy.yaml was edited after `schemabrain serve` recorded it. "
+                        "The running firewall still enforces the policy it loaded at boot — "
+                        "restart serve to apply the change."
+                    ),
+                    "action": {"label": "Copy restart command", "command": "schemabrain serve"},
+                }
+            )
+
+        # --- enrichment drift: descriptions built on an older prompt ---
+        if enrichment_stale:
+            items.append(
+                {
+                    "kind": "enrichment",
+                    "risk": "med",
+                    "title": "AI context built on an older prompt version",
+                    "when": None,
+                    "detail": (
+                        f"Some column descriptions predate the live prompt version "
+                        f"({PROMPT_VERSION}). A structural re-index will not refresh them — "
+                        f"re-enrich to regenerate the descriptions with the current prompt."
+                    ),
+                    "action": {
+                        "label": "Copy re-enrich command",
+                        "command": "schemabrain index <source> --enrich",
+                    },
+                }
+            )
+
+        return {
+            "source_connection_id": safe_source,
+            "freshness": {
+                "fresh": len(items) == 0,
+                "change_count": len(items),
+                # Every drift kind is "med" today; high_risk is a forward-
+                # compatible UI-contract field (the hero shows a high-risk
+                # count) that stays 0 until a high-risk kind ships.
+                "high_risk": sum(1 for item in items if item["risk"] == "high"),
+                # Epoch seconds; None when nothing enriched / no tables —
+                # the UI renders "—", never a fabricated 0.
+                "last_enriched": last_enriched,
+                "last_indexed": indexed_by_source.get(safe_source),
+                # Credential-safe: a URL-shaped source is hashed to its
+                # canonical id by _credential_safe_source_label before it
+                # reaches here, so this never carries the raw URL.
+                "source_label": safe_source,
+                "prompt_version": PROMPT_VERSION,
+            },
+            "items": items,
+        }
+
+
 def _register_stream_route(app: FastAPI, config: SidecarConfig) -> None:
     """GET /api/audit/stream — SSE feed of new audit rows."""
     from sse_starlette.sse import EventSourceResponse
@@ -1398,6 +1510,26 @@ def _no_sources_http_error() -> Exception:
             "store has no indexed sources. Run `schemabrain index` against your source DB first."
         ),
     )
+
+
+def _credential_safe_source_label(source: str) -> str:
+    """Coerce a resolved source id to a form safe to echo over HTTP.
+
+    ``_resolve_source`` returns an operator-supplied ``source_connection_id``
+    override verbatim, so a URL-shaped value (which carries the DB password)
+    could otherwise reach the response body. Hash any URL-shaped source to
+    the canonical short id — the same id indexing persisted — before it is
+    emitted, mirroring the defence in ``_register_meta_route``. A normal
+    hashed id / label is not URL-shaped and passes through unchanged.
+    """
+    from schemabrain.core.source_id import looks_like_connection_url, make_source_id
+
+    if looks_like_connection_url(source):
+        try:
+            return make_source_id(source)
+        except ValueError:  # pragma: no cover - defensive: looks_like_connection_url already validated the Postgres scheme make_source_id needs, so it cannot raise; we refuse to echo a partial URL rather than leak it
+            return "source"
+    return source
 
 
 def _validate_pagination(limit: int, offset: int) -> tuple[int, int]:

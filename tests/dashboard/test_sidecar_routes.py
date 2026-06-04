@@ -39,7 +39,7 @@ def test_meta_returns_charter_info(client: TestClient) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["charter_version"] == "1.2"
-    assert payload["dashboard_schema_version"] == "1.2"
+    assert payload["dashboard_schema_version"] == "1.3"
     assert payload["fingerprint_version"] == "fp-v1"
     assert payload["source_connection_ids"] == []
 
@@ -110,7 +110,7 @@ def test_charter_version_header_set_on_every_response(client: TestClient) -> Non
     ]:
         response = client.get(path)
         assert response.headers["X-Schemabrain-Charter-Version"] == "1.2"
-        assert response.headers["X-Schemabrain-Dashboard-Schema"] == "1.2"
+        assert response.headers["X-Schemabrain-Dashboard-Schema"] == "1.3"
 
 
 def test_entities_route_409_when_no_sources(client: TestClient) -> None:
