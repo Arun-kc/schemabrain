@@ -18,6 +18,7 @@ import {
 } from "@/lib/policy";
 import { useSourceId } from "@/lib/useSourceId";
 import {
+  CATASTROPHIC_LEAK_CATEGORIES,
   type PIICategory,
   type PolicyColumnEntry,
   type PolicyDriftState,
@@ -263,6 +264,11 @@ function YamlPane({
               </div>
             ))}
       </pre>
+      <p className={styles.yamlNote}>
+        <span className={styles.tkAlarm}>+ always-on floor</span> ·{" "}
+        {CATASTROPHIC_LEAK_CATEGORIES.join(" · ")} — enforced on every read even when absent from{" "}
+        <code className={styles.inlineCode}>block:</code>; these can&apos;t be unblocked.
+      </p>
       {preview?.current_parse_error && (
         <p className={styles.yamlNote}>
           <span className={styles.tkAlarm}>current pii_policy.yaml doesn&apos;t parse</span> ·

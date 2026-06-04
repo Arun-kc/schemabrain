@@ -72,6 +72,11 @@ test.describe("Policy editor E2E smoke", () => {
     // The server-rendered YAML carries the canonical version key.
     await expect(page.getByLabel("generated policy yaml").getByText(/version/).first()).toBeVisible();
 
+    // The always-on floor is disclosed on the panel (it isn't listed in block:).
+    await expect(
+      page.getByLabel("generated policy yaml").getByText(/always-on floor/),
+    ).toBeVisible();
+
     // Collapse-by-default: with multiple tables, no row control is mounted yet.
     await expect(page.getByRole("radiogroup")).toHaveCount(0);
     // At least one collapsible table group header is present.
