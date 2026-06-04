@@ -211,7 +211,9 @@
 .ledgerPanel {
   /* The 5 grid tracks, declared once and reused by the head + every row so the
      columns line up like an instrument readout. */
-  --cols: 5.5rem 10rem minmax(9rem, 1fr) minmax(0, auto) 6rem;
+  /* reason track is wide enough to hold the bucket badge + the FLOOR tag on
+     one line (12rem) so the tag never bleeds into the tool column. */
+  --cols: 5.5rem 12rem minmax(9rem, 1fr) minmax(0, auto) 6rem;
   border: 1px solid var(--hair);
   border-radius: var(--r-lg);
   background: var(--panel);
@@ -264,7 +266,7 @@
   font: inherit;
   background: transparent;
   border: none;
-  padding: 0.85rem 1.25rem;
+  padding: 1.2rem 1.25rem;
   cursor: pointer;
   /* left reason-rail; the variant classes set the colour */
   box-shadow: inset 3px 0 0 var(--rail, transparent);
@@ -329,10 +331,14 @@
 .reasonCell {
   display: flex;
   align-items: center;
+  /* wrap is a safety net — the FLOOR tag drops under the badge rather than
+     bleeding into the next column if the badge ever runs long. */
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  min-width: 0;
 }
 
 .floorTag {
-  margin-left: 0.35rem;
   font-family: var(--font-mono);
   font-size: 0.5625rem;
   font-weight: 700;
