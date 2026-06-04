@@ -39,7 +39,7 @@ def test_meta_returns_charter_info(client: TestClient) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["charter_version"] == "1.2"
-    assert payload["dashboard_schema_version"] == "1.3"
+    assert payload["dashboard_schema_version"] == "1.4"
     assert payload["fingerprint_version"] == "fp-v1"
     assert payload["source_connection_ids"] == []
 
@@ -110,7 +110,7 @@ def test_charter_version_header_set_on_every_response(client: TestClient) -> Non
     ]:
         response = client.get(path)
         assert response.headers["X-Schemabrain-Charter-Version"] == "1.2"
-        assert response.headers["X-Schemabrain-Dashboard-Schema"] == "1.3"
+        assert response.headers["X-Schemabrain-Dashboard-Schema"] == "1.4"
 
 
 def test_entities_route_409_when_no_sources(client: TestClient) -> None:
@@ -307,6 +307,92 @@ def test_pii_matrix_returns_aggregated_shape(store_path, client: TestClient) -> 
         "payment_card",
         "government_id",
     }
+
+
+def test_pii_matrix_includes_per_column_confidence(store_path, client: TestClient) -> None:
+    """ADR 0009 — the matrix carries a per-column band for the heatmap."""
+    from schemabrain.core.entity import Entity, SingleTableBinding
+    from schemabrain.core.models import Column, Table
+    from schemabrain.core.store import SQLiteStore
+
+    src = "conf-source"
+    with SQLiteStore(store_path) as store:
+        store.write_table(
+            Table(
+                schema_name="public",
+                name="users",
+                columns=(
+                    Column(
+                        schema_name="public",
+                        table_name="users",
+                        name="id",
+                        data_type="integer",
+                        nullable=False,
+                        ordinal_position=1,
+                    ),
+                    Column(
+                        schema_name="public",
+                        table_name="users",
+                        name="password_hash",
+                        data_type="text",
+                        nullable=False,
+                        ordinal_position=2,
+                    ),
+                    Column(
+                        schema_name="public",
+                        table_name="users",
+                        name="email",
+                        data_type="text",
+                        nullable=False,
+                        ordinal_position=3,
+                    ),
+                ),
+            ),
+            source_connection_id=src,
+        )
+        store.write_entity(
+            Entity(
+                name="user",
+                description="A registered account.",
+                binding=SingleTableBinding(qualified_table="public.users"),
+                identity="id",
+            ),
+            source_connection_id=src,
+        )
+        store.write_column_pii_tags(
+            source_connection_id=src,
+            qualified_table="public.users",
+            tags={
+                "password_hash": ("pii", frozenset({"credential"})),
+                "email": ("pii", frozenset({"contact"})),
+            },
+            confidence={
+                "password_hash": ("floor_locked", None),
+                "email": ("high", 0.9),
+            },
+        )
+
+    response = client.get(f"/api/entities/pii-matrix?source_connection_id={src}")
+    assert response.status_code == 200
+    payload = response.json()
+
+    columns = {c["column_name"]: c for c in payload["columns"]}
+    assert set(columns) == {"id", "password_hash", "email"}
+
+    pw = columns["password_hash"]
+    assert pw["pii_confidence"] == "floor_locked"
+    assert pw["categories"] == ["credential"]
+    assert pw["sensitivity"] == "pii"
+    assert pw["qualified_table"] == "public.users"
+    assert pw["entity"] == "user"
+
+    assert columns["email"]["pii_confidence"] == "high"
+    assert columns["email"]["categories"] == ["contact"]
+
+    # Public column — no band, no categories, never a fabricated 0.
+    assert columns["id"]["pii_confidence"] is None
+    assert columns["id"]["categories"] == []
+    assert columns["id"]["sensitivity"] == "public"
 
 
 def test_pii_matrix_counts_confidential_and_internal_sensitivities(

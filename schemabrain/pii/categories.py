@@ -94,3 +94,18 @@ CATASTROPHIC_LEAK_CATEGORIES: frozenset[PIICategory] = frozenset(
 # Literal-narrowed types — and a future change to the pair shape lands
 # in exactly one declaration site.
 ColumnPiiTag = tuple[Sensitivity, frozenset[PIICategory]]
+
+# Display band for per-column PII-classification confidence (ADR 0009).
+# ADVISORY metadata for the PII matrix — it NEVER gates enforcement.
+# `floor_locked` marks a catastrophic-floor column whose tag is locked
+# regardless of any numeric score (the score is NULL for it); `high` /
+# `medium` / `low` are derived from the index-time `pii_confidence_score`.
+# Mirrors the `pii_confidence` SQL CHECK in `core/store.py`; the two stay
+# in lock-step (pinned by `tests/test_pii_categories.py`).
+PiiConfidenceBand = Literal["floor_locked", "high", "medium", "low"]
+PII_CONFIDENCE_BANDS: tuple[PiiConfidenceBand, ...] = (
+    "floor_locked",
+    "high",
+    "medium",
+    "low",
+)

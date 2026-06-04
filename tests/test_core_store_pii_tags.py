@@ -336,3 +336,84 @@ class TestGetColumnPiiConfidence:
                 columns=["email", "email", "email"],
             )
             assert result == {"email": (None, None)}
+
+
+class TestWriteConfidence:
+    """The `confidence` writer param (the index-time score writer)."""
+
+    def test_writer_persists_band_and_score(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "sb.db") as store:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={
+                    "email": ("pii", frozenset({"contact"})),
+                    "ssn": ("pii", frozenset({"government_id"})),
+                },
+                confidence={
+                    "email": ("high", 0.9),
+                    "ssn": ("floor_locked", None),
+                },
+            )
+            result = store.get_column_pii_confidence(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                columns=["email", "ssn"],
+            )
+            assert result == {"email": ("high", 0.9), "ssn": ("floor_locked", None)}
+
+    def test_omitted_confidence_arg_writes_null(self, tmp_path: Path) -> None:
+        # Backward-compatible: callers that don't pass confidence leave
+        # both columns NULL (the pre-spike behaviour).
+        with SQLiteStore(tmp_path / "sb.db") as store:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={"email": ("pii", frozenset({"contact"}))},
+            )
+            result = store.get_column_pii_confidence(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                columns=["email"],
+            )
+            assert result == {"email": (None, None)}
+
+    def test_column_absent_from_confidence_map_writes_null(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "sb.db") as store:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={
+                    "email": ("pii", frozenset({"contact"})),
+                    "id": ("public", frozenset()),
+                },
+                confidence={"email": ("medium", 0.6)},
+            )
+            result = store.get_column_pii_confidence(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                columns=["email", "id"],
+            )
+            assert result == {"email": ("medium", 0.6), "id": (None, None)}
+
+    def test_atomic_replace_clears_stale_confidence(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "sb.db") as store:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={"email": ("pii", frozenset({"contact"}))},
+                confidence={"email": ("high", 0.9)},
+            )
+            # A re-index that no longer corroborates drops to medium.
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={"email": ("pii", frozenset({"contact"}))},
+                confidence={"email": ("medium", 0.6)},
+            )
+            result = store.get_column_pii_confidence(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                columns=["email"],
+            )
+            assert result == {"email": ("medium", 0.6)}

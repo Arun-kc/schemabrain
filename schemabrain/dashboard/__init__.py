@@ -32,7 +32,11 @@ from pathlib import Path
 # `PolicyPreviewResponse` contract for the editable Policy surface;
 # 1.3 adds the read-only `GET /api/drift` route + its `DriftResponse`
 # contract for the Drift surface.
-DASHBOARD_SCHEMA_VERSION = "1.3"
+# 1.4 adds the per-column `columns` projection (column_name, entity,
+# qualified_table, sensitivity, categories, advisory `pii_confidence`
+# band) to `GET /api/entities/pii-matrix` for the confidence heatmap
+# (ADR 0009).
+DASHBOARD_SCHEMA_VERSION = "1.4"
 
 # Directory holding the static Next.js export. Populated at wheel-build
 # time by the ``web/`` workspace's ``pnpm build`` output. At install

@@ -30,7 +30,12 @@ from schemabrain.core.example_query import ExampleQuery
 from schemabrain.core.join import CanonicalJoin
 from schemabrain.core.metric import Metric
 from schemabrain.core.models import ForeignKey, IncomingForeignKey, Table
-from schemabrain.pii.categories import ColumnPiiTag, PIICategory, Sensitivity
+from schemabrain.pii.categories import (
+    ColumnPiiTag,
+    PIICategory,
+    PiiConfidenceBand,
+    Sensitivity,
+)
 
 
 @runtime_checkable
@@ -597,6 +602,7 @@ class Store(Protocol):  # pragma: no cover
         source_connection_id: str,
         qualified_table: str,
         tags: Mapping[str, ColumnPiiTag],
+        confidence: Mapping[str, tuple[PiiConfidenceBand | None, float | None]] | None = None,
     ) -> None:
         """Replace all PII tags for `qualified_table` atomically.
 
@@ -606,6 +612,12 @@ class Store(Protocol):  # pragma: no cover
         row for the table before inserting; an empty `tags` deletes
         without re-inserting (the `--no-pii-classify` opt-out depends
         on this shape).
+
+        `confidence` (ADR 0009) is the optional index-time
+        `column_name → (band, score)` map. A column absent from it — or
+        the whole argument omitted — persists NULL for both
+        `pii_confidence` and `pii_confidence_score`. The band/score are
+        advisory PII-matrix metadata and never gate enforcement.
         """
         ...
 

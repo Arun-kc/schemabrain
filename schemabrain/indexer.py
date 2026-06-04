@@ -73,7 +73,7 @@ from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder, embedding_for
 from schemabrain.enrichment.pipeline import EnrichmentPipeline
 from schemabrain.enrichment.prompts import PROMPT_VERSION
-from schemabrain.pii import classify_column
+from schemabrain.pii import classify_column, classify_pii_confidence
 from schemabrain.profiler.base import Profiler
 
 
@@ -440,10 +440,23 @@ def index(
                 )
                 for col in table.columns
             }
+            # ADR 0009: derive the advisory PII-matrix confidence band
+            # from the matched categories + the same raw value-shape
+            # signal, at index time while the shapes are still in
+            # memory. Keyed by the same column names as `classified` so
+            # the store writes both in one atomic swap.
+            confidence = {
+                col.name: classify_pii_confidence(
+                    classified[col.name][1],
+                    stats[col.name].shape_patterns if col.name in stats else (),
+                )
+                for col in table.columns
+            }
             store.write_column_pii_tags(
                 source_connection_id=source_connection_id,
                 qualified_table=qualified_table,
                 tags=classified,
+                confidence=confidence,
             )
 
         tables_changed += 1
