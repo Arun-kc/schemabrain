@@ -32,6 +32,7 @@ export default defineConfig({
         "lib/useTheme.ts",
         "lib/policy.ts",
         "lib/piiMatrix.ts",
+        "lib/refusals.ts",
         "lib/relativeTime.ts",
       ],
       exclude: ["**/index.ts"],
