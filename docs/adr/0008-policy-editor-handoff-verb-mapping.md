@@ -67,7 +67,7 @@ Because blocking is category-grained, `block`/`redact` on one column also
 flips every sibling column sharing those categories. This is **disclosed in
 the UI**, not hidden: a blocked row whose category is shared shows an inline
 note ("category-wide: also blocks N other column(s)"), computed by
-`siblingsSharingCategory`. The honest framing is *"block is a property of
+`siblingsAffectedByVerb`. The honest framing is *"block is a property of
 the category; allow is a property of the column."* `allow` is the only
 genuinely per-column verb (it writes a per-column override), which is why the
 canonical false-positive workflow (`card_number_last4`) maps to it.
@@ -131,7 +131,7 @@ the bytes are real.
 ## References
 
 - `web/components/policy/PolicyEditor.tsx` — the handoff-exact grid.
-- `web/lib/policy.ts` — `columnVerb` / `applyVerb` / `siblingsSharingCategory`
+- `web/lib/policy.ts` — `columnVerb` / `applyVerb` / `siblingsAffectedByVerb`
   / `highlightYaml` (the projection + highlighter, unit-tested).
 - `schemabrain/pii/policy.py`, `policy_yaml.py`, `categories.py` — the
   category-block + override model the verbs map onto.
