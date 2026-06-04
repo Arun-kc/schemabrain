@@ -9,8 +9,8 @@
  * Prerequisite: a dashboard sidecar must already be running on
  * http://127.0.0.1:7878 against a store with:
  *   - at least one indexed source
- *   - at least one refused audit row (so the Refusal surface renders
- *     a populated incident card, not the empty state)
+ *   - at least one refused audit row (so the Refusals ledger renders
+ *     a held row, not the empty state)
  *
  * See `web/tests/e2e/README.md` for the canonical setup flow.
  */
@@ -75,19 +75,24 @@ test.describe("dashboard E2E smoke", () => {
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });
 
-  test("refusal experience renders the populated incident detail", async ({ page }) => {
+  test("refusals timeline renders the protective ledger with a held row", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
 
     await page.goto("/refusals");
 
-    await expect(page.getByText(/Active Threat Telemetry Feed/i)).toBeVisible();
-    // With a seeded refused row, the detail pane shows the tool name.
-    await expect(page.getByText(/Refusal Event:/i)).toBeVisible();
-    // pii_blocked is the refusal_reason every catastrophic-PII refusal
-    // carries — its presence in the envelope properties is the
-    // crispest signal that the row → API → render chain worked.
-    await expect(page.getByText(/pii_blocked/i).first()).toBeVisible();
+    // The surface title (a heading, so it doesn't collide with the nav link
+    // of the same name) + the protective lede the ledger is framed around.
+    await expect(page.getByRole("heading", { name: /Refusals/i })).toBeVisible();
+    await expect(page.getByText(/held at the boundary/i)).toBeVisible();
+
+    // A seeded refused row renders inside the ledger as a Sensitive-data
+    // bucket row terminating in a green "held" status — proof the
+    // row → API → render chain worked. Scoped to the ledger list so the
+    // assertion stays anchored to a real row, not chrome.
+    const ledger = page.getByLabel("refusals ledger");
+    await expect(ledger.getByText("Sensitive-data").first()).toBeVisible();
+    await expect(ledger.getByText("held", { exact: true }).first()).toBeVisible();
 
     await page.screenshot({ path: "test-results/03-refusals.png", fullPage: true });
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);

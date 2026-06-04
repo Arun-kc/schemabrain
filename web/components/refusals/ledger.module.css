@@ -1,231 +1,520 @@
 /*
- * Stylesheet for the Refusal Experience surface.
- * Designed to look like a premium SIEM security event log.
- * Reskinned onto the .sb-app dual-theme token system (sb-theme.css);
- * the new tokens auto-swap per theme, so the legacy [data-theme="dark"]
- * fakes are gone.
+ * THE LEDGER — the Refusals protective timeline (/refusals).
+ *
+ * The instrument-panel sibling of the /pii heatmap "THE READOUT": an uppercase
+ * display title strip, a bordered tone-coloured stat strip, one panel surface
+ * with hairline rows on a shared grid, an alarm left-rail for the catastrophic
+ * floor, and a bottom legend. Each refusal is one banded row; clicking a row
+ * expands the reconstructed envelope in place (accordion, never a 2-pane).
+ *
+ * Honest framing lives in the markup/copy, not here — this module only reserves
+ * --alarm for the floor, keeps accents to the {alarm, cyan, green} tone set,
+ * and animates transform/opacity only (reduced-motion clamped at the bottom).
  */
+
+/* ---------- Surface shell ---------- */
 
 .shell {
   margin: 0 auto;
-  max-width: 88rem;
+  max-width: 78rem;
   padding-inline: 2.5rem;
   padding-block: 2.5rem 4rem;
 }
 
-/* Header summary banner */
-.banner {
+/* ---------- Title strip + protective lede ---------- */
+
+.titleStrip {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--s4);
-  background: color-mix(in oklch, var(--amber) 7%, var(--panel));
-  border: 1px solid var(--hair);
-  padding: 1.5rem 2rem;
-  border-radius: var(--r-lg);
-  margin-bottom: var(--s6);
-  position: relative;
-  overflow: hidden;
-  box-shadow: var(--shadow);
-}
-
-.banner::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 4px;
-  height: 100%;
-  background: var(--amber);
-}
-
-.bannerText h2 {
-  font-family: var(--font-display);
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: var(--ink);
-  margin-bottom: 0.25rem;
-}
-
-.bannerText p {
-  font-family: var(--font-mono);
-  font-size: 0.8125rem;
-  color: var(--ink-3);
-}
-
-/* Two pane split layout */
-.layout {
-  display: grid;
-  grid-template-columns: 22rem 1fr;
-  gap: 2.5rem;
-  align-items: start;
-}
-
-@media (max-width: 960px) {
-  .layout {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* Incidents list column */
-.listColumn {
-  display: flex;
-  flex-direction: column;
   gap: 1rem;
-}
-
-.listHeader {
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-  margin-bottom: 0.5rem;
-}
-
-/* Incident Cards */
-.card {
-  background: var(--panel);
-  border: 1px solid var(--hair);
-  padding: 1.25rem 1.5rem;
-  border-radius: var(--r-lg);
-  cursor: pointer;
-  position: relative;
-  transition: all var(--dur-2) var(--ease-out);
-  box-shadow: var(--shadow);
-}
-
-.card:hover {
-  transform: translateY(-2px);
-  border-color: var(--amber);
-}
-
-.activeCard {
-  border-color: var(--ink);
-  background: var(--panel-2);
-}
-
-.activeCard::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--amber);
-  border-radius: var(--r-sm) 0 0 var(--r-sm);
-}
-
-.cardHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 0.75rem;
-}
-
-.cardTime {
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  color: var(--ink-3);
-}
-
-.cardTitle {
-  font-family: var(--font-display);
-  font-size: 1.0625rem;
-  font-weight: 600;
-  color: var(--ink);
-  margin-bottom: 0.35rem;
-}
-
-.cardSubtitle {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  color: var(--ink-2);
-}
-
-/* Detail panel */
-.detailColumn {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
-.detailCard {
-  background: var(--panel);
-  border: 1px solid var(--hair);
-  border-radius: var(--r-lg);
-  padding: 2.25rem;
-  box-shadow: var(--shadow);
-  position: relative;
-  overflow: hidden;
-}
-
-.detailCard::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: linear-gradient(90deg, var(--amber), var(--alarm));
-}
-
-.detailHeader {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1.5rem;
-  padding-bottom: 1.5rem;
-  margin-bottom: 1.5rem;
+  padding-bottom: 1rem;
   border-bottom: 1px solid var(--hair-2);
 }
 
-.detailHeaderTitle {
+.surfaceTitle {
   font-family: var(--font-display);
-  font-size: 1.5rem;
-  font-weight: 600;
+  font-size: 1.375rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--ink);
-  margin-bottom: 0.5rem;
 }
 
-.detailMetaList {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  color: var(--ink-2);
-}
-
-.explanation {
-  background: var(--panel-2);
-  border: 1px solid var(--hair-2);
-  padding: 1.25rem 1.5rem;
-  border-radius: var(--r-sm);
-  font-family: var(--font-body);
-  font-size: 0.9375rem;
-  color: var(--ink-2);
-  line-height: 1.6;
-}
-
-.explanation strong {
-  color: var(--ink);
-  font-weight: 600;
-}
-
-/* Envelope specs list */
-.specList {
-  display: grid;
-  grid-template-columns: minmax(8rem, max-content) 1fr;
-  column-gap: 2rem;
-  row-gap: 0.5rem;
+.titleMeta {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+}
+
+.lede {
+  margin-top: 1rem;
+  margin-bottom: 1.75rem;
+  max-width: 46rem;
+  font-family: var(--font-body);
+  font-size: 1.0625rem;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+
+/* ---------- Stat strip ---------- */
+
+.summaryStrip {
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: 1.5rem;
+  border: 1px solid var(--hair-2);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.stat {
+  flex: 1 1 9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 1rem 1.25rem;
+  border-left: 1px solid var(--hair-2);
+}
+
+.stat:first-child {
+  border-left: none;
+}
+
+.statNum {
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.statNum[data-tone="alarm"] {
+  color: var(--alarm);
+}
+.statNum[data-tone="cyan"] {
+  color: var(--cyan);
+}
+.statNum[data-tone="green"] {
+  color: var(--green);
+}
+
+.statLabel {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
+}
+
+.statSub {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  color: var(--ink-3);
+  margin-top: 0.1rem;
+}
+
+/* ---------- Control bar (bucket filter) ---------- */
+
+.controlBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 0.85rem;
+}
+
+.bucketSeg {
+  display: inline-flex;
+  background: var(--bg-1);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-md);
+  padding: 2px;
+  gap: 2px;
+}
+
+.segBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: color var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
+}
+
+.segBtn:hover:not(:disabled) {
+  color: var(--ink-2);
+}
+
+.segBtn:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+.segOn {
+  background: color-mix(in oklch, var(--green) 16%, transparent);
+  color: var(--green);
+}
+
+.segBtn:disabled {
+  color: var(--ink-3);
+  /* A mild dim marks the empty-bucket segment as inactive while keeping its
+     count (real information) legible — not the compounded ink-3 × 0.45 that
+     crushed the digit. Disabled controls are exempt from 1.4.3, but the count
+     still conveys data. */
+  opacity: 0.6;
+  cursor: default;
+}
+
+.segCount {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.resultCount {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.filterHelper {
+  margin: 0 0 1rem;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.01em;
+}
+
+/* Honest disclosure under the stat strip when the feed is windowed — the
+   time/floor counts cover the loaded page, not the all-time total. */
+.windowNote {
+  margin: -1rem 0 1.25rem;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.01em;
+}
+
+/* ---------- Ledger panel ---------- */
+
+.ledgerPanel {
+  /* The 5 grid tracks, declared once and reused by the head + every row so the
+     columns line up like an instrument readout. */
+  --cols: 5.5rem 10rem minmax(9rem, 1fr) minmax(0, auto) 6rem;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.ledgerHead {
+  display: grid;
+  grid-template-columns: var(--cols);
+  align-items: end;
+  gap: 0.75rem 1rem;
+  padding: 0.7rem 1.25rem 0.6rem;
+  border-bottom: 1px solid var(--hair);
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.headStatus {
+  text-align: right;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rowWrap {
+  border-bottom: 1px solid var(--hair-2);
+}
+
+.rowWrap:last-child {
+  border-bottom: none;
+}
+
+/* The row is the accordion toggle (a full-width button laid out on the shared
+   grid). No nested interactive content — copy buttons live in the expand
+   region below. */
+.row {
+  display: grid;
+  grid-template-columns: var(--cols);
+  align-items: center;
+  gap: 0.75rem 1rem;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  background: transparent;
+  border: none;
+  padding: 0.85rem 1.25rem;
+  cursor: pointer;
+  /* left reason-rail; the variant classes set the colour */
+  box-shadow: inset 3px 0 0 var(--rail, transparent);
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.row:hover {
+  background-color: var(--panel-2);
+}
+
+.row:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: -2px;
+}
+
+.railSensitive {
+  --rail: var(--cyan);
+}
+.railUnsafe {
+  --rail: var(--amber);
+}
+.railIntegrity {
+  --rail: var(--ink-2);
+}
+
+/* Floor refusals — alarm rail + faint band, the same idiom as /pii's .floorRow,
+   giving catastrophic moments extra weight inside the Sensitive-data bucket. */
+.rowFloor {
+  --rail: var(--alarm);
+  background: color-mix(in oklch, var(--alarm) 5%, transparent);
+}
+
+.rowFloor:hover {
+  background: color-mix(in oklch, var(--alarm) 9%, transparent);
+}
+
+.rowOpen {
+  background-color: var(--panel-2);
+}
+
+/* time cell */
+.timeCell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.timeAgo {
+  font-size: 0.75rem;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.timeClock {
+  font-size: 0.625rem;
+  color: var(--ink-3);
+}
+
+/* reason cell */
+.reasonCell {
+  display: flex;
+  align-items: center;
+}
+
+.floorTag {
+  margin-left: 0.35rem;
+  font-family: var(--font-mono);
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--alarm);
+}
+
+/* tool · caller cell */
+.toolCell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.toolName {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.callerChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+.callerName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* categories cell */
+.catCell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.catChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.catEmpty {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+}
+
+/* status cell */
+.statusCell {
+  justify-self: end;
+}
+
+.heldChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.chevron {
+  color: var(--ink-3);
+  transition: transform var(--dur-2) var(--ease);
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+/* ---------- Expanded envelope detail ---------- */
+
+.expandRegion {
+  padding: 0 1.25rem 1.5rem;
+  animation: detailReveal var(--dur-2) var(--ease-out);
+}
+
+@keyframes detailReveal {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.expandInner {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  border-top: 1px dashed var(--hair-2);
+  padding-top: 1.25rem;
+}
+
+.detailSection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.detailHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.detailCaption {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--ink-3);
+  line-height: 1.5;
+}
+
+.hintLine {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+  line-height: 1.55;
   background: var(--panel-2);
   border: 1px solid var(--hair-2);
-  padding: 1.25rem 1.5rem;
+  border-left: 2px solid var(--green);
   border-radius: var(--r-sm);
+  padding: 0.7rem 0.9rem;
+}
+
+.codePanel {
+  background: var(--bg-1);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+
+.codeHeader {
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--hair);
+  padding: 0.4rem 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.codeTitle {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+}
+
+.codeArea {
+  padding: 1rem;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--ink-2);
+  overflow-x: auto;
+  max-height: 18rem;
+}
+
+.specList {
+  display: grid;
+  grid-template-columns: minmax(7rem, max-content) 1fr;
+  column-gap: 1.5rem;
+  row-gap: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  align-items: baseline;
 }
 
 .specLabel {
@@ -234,76 +523,223 @@
 
 .specValue {
   color: var(--ink);
-  font-weight: 500;
+  word-break: break-all;
 }
 
-/* Codeblock editor for raw details — token-driven panel that auto-swaps. */
-.codePanel {
-  background: var(--bg-1);
-  border: 1px solid var(--hair);
-  border-radius: var(--r-sm);
-  overflow: hidden;
-  margin-top: 1rem;
+.copyHash {
+  font: inherit;
+  color: var(--ink);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  word-break: break-all;
+  text-align: left;
 }
 
-.codeHeader {
-  background: var(--panel-2);
-  border-bottom: 1px solid var(--hair);
-  padding: 0.5rem 1rem;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.codeTitle {
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  color: var(--ink-3);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.codeArea {
-  padding: 1.25rem;
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: 0.8125rem;
-  line-height: 1.5;
+.copyHash:hover {
   color: var(--green);
-  overflow-x: auto;
-  max-height: 20rem;
 }
 
-.categoryTagList {
+.copyHash:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+/* ---------- Legend ---------- */
+
+.legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid var(--hair-2);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--ink-2);
 }
 
-/* Empty placeholder */
-.noIncident {
+.legendKey {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.legendSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.swatchSensitive {
+  background: var(--cyan);
+}
+.swatchUnsafe {
+  background: var(--amber);
+}
+.swatchIntegrity {
+  background: var(--ink-2);
+}
+.swatchFloor {
+  background: var(--alarm);
+}
+
+.legendNote {
+  margin-left: auto;
+  color: var(--ink-3);
+}
+
+/* ---------- Empty state (good news) ---------- */
+
+.emptyState {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  text-align: center;
   padding: 4rem 2rem;
   border: 1px dashed var(--hair);
   border-radius: var(--r-lg);
-  text-align: center;
+  gap: 0.75rem;
 }
 
-.noIncidentTitle {
+.emptyIcon {
+  color: var(--green);
+}
+
+.emptyTitle {
   font-family: var(--font-display);
-  font-size: 1.125rem;
-  font-weight: 600;
+  font-size: 1.25rem;
+  font-weight: 500;
   color: var(--ink);
-  margin-bottom: 0.5rem;
+  letter-spacing: 0.02em;
 }
 
-.noIncidentText {
+.emptyText {
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--ink-3);
-  max-width: 24rem;
+  max-width: 30rem;
+  line-height: 1.6;
+}
+
+/* ---------- Error card ---------- */
+
+.errorCard {
+  margin-top: 2rem;
+  border: 1px solid var(--hair);
+  background: var(--panel);
+  padding: 2rem 2.5rem;
+  display: grid;
+  grid-template-columns: 1.5rem 1fr;
+  column-gap: 1rem;
+  max-width: 56rem;
+  border-radius: var(--r-lg);
+}
+
+.errorIcon {
+  color: var(--ink-2);
+  line-height: 1.2;
+}
+
+.errorBody h2 {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 500;
+  color: var(--ink);
+  margin-bottom: 0.75rem;
+  letter-spacing: 0.02em;
+}
+
+.errorBody p {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--ink-2);
+  line-height: 1.6;
+  margin-bottom: 0.75rem;
+}
+
+.errorBody code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--green);
+  background: var(--panel-2);
+  border: 1px solid var(--hair-2);
+  padding: 0.5rem 0.75rem;
+  margin-block: 0.25rem;
+  border-radius: var(--r-sm);
+}
+
+/* ---------- Skeleton ---------- */
+
+.skeleton {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+  padding-block: 2rem;
+}
+
+.skeleton::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--ink-3);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---------- Responsive (stack the grid on narrow viewports) ---------- */
+
+@media (max-width: 760px) {
+  .shell {
+    padding-inline: 1.25rem;
+  }
+  .ledgerHead {
+    display: none;
+  }
+  .row {
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+    padding-block: 1rem;
+  }
+  .timeCell {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+  .statusCell {
+    justify-self: start;
+  }
+}
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .row,
+  .chevron,
+  .segBtn {
+    transition: none;
+  }
+  .expandRegion {
+    animation: none;
+  }
+  .skeleton::before {
+    animation: none;
+  }
 }
