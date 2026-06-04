@@ -33,6 +33,7 @@ from schemabrain.pii.categories import (
     CATASTROPHIC_LEAK_CATEGORIES,
     PII_CATEGORIES,
     PIICategory,
+    PiiConfidenceBand,
     Sensitivity,
 )
 
@@ -95,6 +96,7 @@ def _ts_array_values(ts_file: Path, const_name: str) -> set[str]:
         (DegradationReason, "envelope.ts", "DegradationReason"),
         (PIICategory, "pii.ts", "PIICategory"),
         (Sensitivity, "pii.ts", "Sensitivity"),
+        (PiiConfidenceBand, "pii.ts", "PiiConfidenceBand"),
         (CostClass, "audit.ts", "CostClass"),
         (RefusalReason, "audit.ts", "RefusalReason"),
     ],

@@ -5,7 +5,7 @@
 // into the response shapes the UI consumes.
 
 import type { InferenceMethod, ValidationState } from "./envelope";
-import type { ColumnPiiTag } from "./pii";
+import type { ColumnPiiTag, PIICategory, PiiConfidenceBand, Sensitivity } from "./pii";
 
 /**
  * Per-source index state. Only "indexed" is emitted today — a source
@@ -187,10 +187,33 @@ export interface PiiMatrixEntity {
   has_catastrophic: boolean;
 }
 
-/** /api/entities/pii-matrix response — drives The Ledger surface. */
+/**
+ * One classified column in the PII matrix's per-column projection (ADR 0009).
+ * Drives the column × 12-category confidence heatmap: a cell is lit only for
+ * a category in `categories`, and its intensity is the column's single
+ * advisory `pii_confidence` band (applied uniformly to the column's lit
+ * cells — there is no per-category score). `pii_confidence` is null on legacy
+ * / SQLite / unclassified columns and renders '—', never a faked 0.
+ */
+export interface PiiMatrixColumn {
+  entity: string;
+  qualified_table: string;
+  column_name: string;
+  sensitivity: Sensitivity;
+  /** Canonical-ordered subset of the 12 categories this column carries. */
+  categories: readonly PIICategory[];
+  pii_confidence: PiiConfidenceBand | null;
+}
+
+/** /api/entities/pii-matrix response — drives the PII matrix surface. */
 export interface PiiMatrixResponse {
   source_connection_id: string;
   entities: readonly PiiMatrixEntity[];
+  /**
+   * Per-column projection (ADR 0009) — one entry per entity-bound column,
+   * the data source for the column × category confidence heatmap.
+   */
+  columns: readonly PiiMatrixColumn[];
   /** The 12 PII categories in canonical column order for the matrix. */
   categories: readonly string[];
   /** Subset of `categories` that get the catastrophic underline + stamp treatment. */

@@ -148,6 +148,13 @@ def _seed_store(store_path: Path) -> None:
                 "email": ColumnPiiTag(("pii", frozenset({"contact"}))),
                 "password_hash": ColumnPiiTag(("pii", frozenset({"credential"}))),
             },
+            # Index-time PII-confidence bands (ADR 0009) the real indexer would
+            # write: catastrophic-floor columns lock; a corroborated contact
+            # column grades high. Drives the /pii heatmap's band intensity.
+            confidence={
+                "email": ("high", 0.9),
+                "password_hash": ("floor_locked", None),
+            },
         )
 
         orders_table = Table(
@@ -204,6 +211,7 @@ def _seed_store(store_path: Path) -> None:
             tags={
                 "card_pan": ColumnPiiTag(("pii", frozenset({"payment_card"}))),
             },
+            confidence={"card_pan": ("floor_locked", None)},
         )
 
         # Seed canonical joins and metrics for the semantic dashboard preview
