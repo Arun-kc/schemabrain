@@ -7,14 +7,25 @@ import {
   columnIsFloor,
   columnVerb,
   countStagedChanges,
+  EMPTY_POLICY_FILTER,
+  filterPerColumn,
+  groupByTable,
   highlightYaml,
   highlightYamlLine,
   initialOverridesFromPerColumn,
   isColumnOverrideChanged,
+  isEmptyPolicyFilter,
+  countVerbs,
   MARK_SAFE_SENSITIVITY,
+  matchesPolicyFilter,
+  type PolicyFilter,
+  prettyCategory,
   serializeOverride,
   siblingsAffectedByVerb,
   type StagedOverride,
+  type StagedOverrides,
+  summarizePolicyCategories,
+  toggleCategoryBlock,
 } from "@/lib/policy";
 
 function entry(over: Partial<PolicyColumnEntry>): PolicyColumnEntry {
@@ -333,5 +344,231 @@ describe("highlightYaml", () => {
     const lines = highlightYaml("version: 1\nblock:\n- contact");
     expect(lines).toHaveLength(3);
     expect(lines[2].some((t) => t.kind === "value" && t.text === "contact")).toBe(true);
+  });
+});
+
+/* ───────── scaling: grouping · filtering · category summary ───────── */
+
+describe("prettyCategory", () => {
+  it("turns underscores into spaces", () => {
+    expect(prettyCategory("online_identifier")).toBe("online identifier");
+    expect(prettyCategory("demographic_protected")).toBe("demographic protected");
+  });
+  it("leaves single-word categories unchanged", () => {
+    expect(prettyCategory("contact")).toBe("contact");
+  });
+});
+
+describe("groupByTable", () => {
+  it("returns an empty array for empty input", () => {
+    expect(groupByTable([])).toEqual([]);
+  });
+  it("groups rows by qualified_table preserving first-seen + intra-table order", () => {
+    const rows = [
+      entry({ qualified_table: "public.users", column_name: "email", qualified_column: "public.users.email" }),
+      entry({ qualified_table: "public.users", column_name: "phone", qualified_column: "public.users.phone" }),
+      entry({ qualified_table: "public.orders", column_name: "card", qualified_column: "public.orders.card" }),
+    ];
+    const groups = groupByTable(rows);
+    expect(groups.map((g) => g.qualifiedTable)).toEqual(["public.users", "public.orders"]);
+    expect(groups[0].columns.map((c) => c.column_name)).toEqual(["email", "phone"]);
+    expect(groups[1].columns.map((c) => c.column_name)).toEqual(["card"]);
+  });
+  it("keeps same column-name across tables in distinct groups", () => {
+    const rows = [
+      entry({ qualified_table: "a.t", column_name: "id", qualified_column: "a.t.id" }),
+      entry({ qualified_table: "b.t", column_name: "id", qualified_column: "b.t.id" }),
+    ];
+    expect(groupByTable(rows)).toHaveLength(2);
+  });
+});
+
+describe("matchesPolicyFilter / filterPerColumn", () => {
+  const rows = [
+    entry({
+      qualified_table: "public.users",
+      column_name: "email",
+      qualified_column: "public.users.email",
+      categories: ["contact"],
+    }),
+    entry({
+      qualified_table: "public.users",
+      column_name: "ssn",
+      qualified_column: "public.users.ssn",
+      categories: ["government_id"],
+    }),
+    entry({
+      qualified_table: "public.orders",
+      column_name: "ip_addr",
+      qualified_column: "public.orders.ip_addr",
+      categories: ["online_identifier"],
+    }),
+  ];
+  const noStaged = { block: new Set<PIICategory>(), overrides: new Map() as StagedOverrides };
+
+  it("empty filter passes everything (and short-circuits)", () => {
+    expect(isEmptyPolicyFilter(EMPTY_POLICY_FILTER)).toBe(true);
+    expect(filterPerColumn(rows, EMPTY_POLICY_FILTER, noStaged.block, noStaged.overrides)).toBe(rows);
+  });
+  it("query matches table, column, qualified column, and prettified category (case-insensitive)", () => {
+    const byTable: PolicyFilter = { query: "ORDERS", category: null, status: null };
+    expect(
+      filterPerColumn(rows, byTable, noStaged.block, noStaged.overrides).map((r) => r.column_name),
+    ).toEqual(["ip_addr"]);
+
+    const byCol: PolicyFilter = { query: "email", category: null, status: null };
+    expect(filterPerColumn(rows, byCol, noStaged.block, noStaged.overrides)).toHaveLength(1);
+
+    const byQualified: PolicyFilter = { query: "users.ssn", category: null, status: null };
+    expect(filterPerColumn(rows, byQualified, noStaged.block, noStaged.overrides)).toHaveLength(1);
+
+    const byPrettyCat: PolicyFilter = { query: "online identifier", category: null, status: null };
+    expect(
+      filterPerColumn(rows, byPrettyCat, noStaged.block, noStaged.overrides).map((r) => r.column_name),
+    ).toEqual(["ip_addr"]);
+  });
+  it("category facet matches base categories", () => {
+    const f: PolicyFilter = { query: "", category: "contact", status: null };
+    expect(filterPerColumn(rows, f, noStaged.block, noStaged.overrides).map((r) => r.column_name)).toEqual([
+      "email",
+    ]);
+  });
+  it("status facet matches the derived verb under staged state", () => {
+    // government_id is catastrophic → floor; online_identifier blocked when staged.
+    const blocked = new Set<PIICategory>(["online_identifier"]);
+    const floorF: PolicyFilter = { query: "", category: null, status: "floor" };
+    expect(filterPerColumn(rows, floorF, blocked, noStaged.overrides).map((r) => r.column_name)).toEqual([
+      "ssn",
+    ]);
+    const blockF: PolicyFilter = { query: "", category: null, status: "block" };
+    expect(filterPerColumn(rows, blockF, blocked, noStaged.overrides).map((r) => r.column_name)).toEqual([
+      "ip_addr",
+    ]);
+    const redactF: PolicyFilter = { query: "", category: null, status: "redact" };
+    expect(filterPerColumn(rows, redactF, blocked, noStaged.overrides).map((r) => r.column_name)).toEqual([
+      "email",
+    ]);
+  });
+  it("combines facets with AND", () => {
+    const f: PolicyFilter = { query: "users", category: "contact", status: "redact" };
+    expect(matchesPolicyFilter(rows[0], f, noStaged.block, noStaged.overrides)).toBe(true);
+    expect(matchesPolicyFilter(rows[1], f, noStaged.block, noStaged.overrides)).toBe(false);
+  });
+});
+
+describe("summarizePolicyCategories", () => {
+  const rows = [
+    entry({ qualified_column: "a.t.email", categories: ["contact"] }),
+    entry({ qualified_column: "a.t.phone", categories: ["contact"] }),
+    entry({ qualified_column: "a.t.ssn", categories: ["government_id"] }),
+    entry({ qualified_column: "a.t.card", categories: ["payment_card", "financial"] }),
+  ];
+  const noOverrides = new Map() as StagedOverrides;
+
+  it("emits one entry per present category, ordered by PII_CATEGORIES, omitting absent", () => {
+    const summary = summarizePolicyCategories(rows, new Set(), noOverrides);
+    expect(summary.map((s) => s.category)).toEqual([
+      "contact",
+      "financial",
+      "payment_card",
+      "government_id",
+    ]);
+  });
+  it("breakdown counts sum to total and reflect derived verbs", () => {
+    const summary = summarizePolicyCategories(rows, new Set<PIICategory>(["contact"]), noOverrides);
+    const contact = summary.find((s) => s.category === "contact")!;
+    expect(contact.total).toBe(2);
+    expect(contact.blocked).toBe(2);
+    expect(contact.blocked + contact.redacted + contact.allowed + contact.floor).toBe(contact.total);
+    expect(contact.inBlockSet).toBe(true);
+    expect(contact.isCatastrophic).toBe(false);
+  });
+  it("catastrophic categories are locked (inBlockSet + isCatastrophic) with floor counts", () => {
+    const summary = summarizePolicyCategories(rows, new Set(), noOverrides);
+    const gov = summary.find((s) => s.category === "government_id")!;
+    expect(gov.isCatastrophic).toBe(true);
+    expect(gov.inBlockSet).toBe(true);
+    expect(gov.floor).toBe(1);
+    // payment_card column co-tagged financial: the column is floor under BOTH
+    const financial = summary.find((s) => s.category === "financial")!;
+    expect(financial.floor).toBe(1);
+  });
+  it("allow override moves a column out of blocked into allowed", () => {
+    const overrides = new Map([["a.t.email", { sensitivity: "internal" as const, categories: [] }]]);
+    const summary = summarizePolicyCategories(rows, new Set<PIICategory>(["contact"]), overrides);
+    const contact = summary.find((s) => s.category === "contact")!;
+    expect(contact.allowed).toBe(1);
+    expect(contact.blocked).toBe(1);
+  });
+});
+
+describe("toggleCategoryBlock", () => {
+  it("adds a category to the block set when block=true (immutable)", () => {
+    const base = new Set<PIICategory>(["contact"]);
+    const next = toggleCategoryBlock(base, "financial", true);
+    expect([...next].sort()).toEqual(["contact", "financial"]);
+    expect([...base]).toEqual(["contact"]); // input untouched
+  });
+  it("removes a non-catastrophic category when block=false", () => {
+    const next = toggleCategoryBlock(new Set<PIICategory>(["contact", "financial"]), "contact", false);
+    expect([...next]).toEqual(["financial"]);
+  });
+  it("un-blocking a catastrophic category is a no-op", () => {
+    const base = new Set<PIICategory>(["payment_card"]);
+    const next = toggleCategoryBlock(base, "payment_card", false);
+    expect([...next]).toEqual(["payment_card"]);
+  });
+});
+
+describe("countVerbs", () => {
+  it("tallies each column's derived verb once", () => {
+    const cols = [
+      entry({ qualified_column: "a.t.email", categories: ["contact"] }),
+      entry({ qualified_column: "a.t.phone", categories: ["contact"] }),
+      entry({ qualified_column: "a.t.ssn", categories: ["government_id"] }),
+      entry({
+        qualified_column: "a.t.x",
+        categories: ["online_identifier"],
+        origin: "operator",
+        sensitivity: "internal",
+      }),
+    ];
+    const overrides = new Map([["a.t.x", { sensitivity: "internal" as const, categories: [] }]]);
+    const counts = countVerbs(cols, new Set<PIICategory>(["contact"]), overrides);
+    expect(counts).toEqual({ block: 2, redact: 0, allow: 1, floor: 1 });
+  });
+  it("is all-zero for empty input", () => {
+    expect(countVerbs([], new Set(), new Map())).toEqual({ block: 0, redact: 0, allow: 0, floor: 0 });
+  });
+});
+
+describe("filter/sibling decoupling invariant (ADR 0008 §3)", () => {
+  // A `contact` column with siblings in other tables must report the SAME
+  // sibling blast radius whether or not a filter would hide those siblings.
+  const rows = [
+    entry({ qualified_table: "a.t", column_name: "email", qualified_column: "a.t.email", categories: ["contact"] }),
+    entry({ qualified_table: "b.t", column_name: "email", qualified_column: "b.t.email", categories: ["contact"] }),
+    entry({ qualified_table: "c.t", column_name: "email", qualified_column: "c.t.email", categories: ["contact"] }),
+  ];
+  it("sibling count is computed over the FULL set, not the filtered view", () => {
+    // contact is staged-blocked → all three columns are currently `block`, so
+    // the disclosure on a.t.email reads "also blocks N other columns".
+    const block = new Set<PIICategory>(["contact"]);
+    const overrides = new Map() as StagedOverrides;
+
+    const full = siblingsAffectedByVerb(rows, "a.t.email", ["contact"], "block", block, overrides);
+    expect(full).toBe(2); // b.t.email + c.t.email ride the same block
+
+    // Filter to just table a — the RENDERED set shrinks to 1 row...
+    const filtered = filterPerColumn(rows, { query: "a.t", category: null, status: null }, block, overrides);
+    expect(filtered).toHaveLength(1);
+
+    // ...but the disclosure math must STILL use the full array and report 2.
+    const stillFull = siblingsAffectedByVerb(rows, "a.t.email", ["contact"], "block", block, overrides);
+    expect(stillFull).toBe(2);
+    // Guard against the bug: feeding the filtered view in would under-count.
+    const wrong = siblingsAffectedByVerb(filtered, "a.t.email", ["contact"], "block", block, overrides);
+    expect(wrong).toBe(0);
+    expect(wrong).not.toBe(stillFull);
   });
 });

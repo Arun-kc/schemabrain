@@ -14,10 +14,18 @@
 import {
   CATASTROPHIC_LEAK_CATEGORIES,
   isCatastrophic,
+  PII_CATEGORIES,
   type PIICategory,
   type PolicyColumnEntry,
   type Sensitivity,
 } from "@/lib/types";
+
+/** Display form of a category id — underscores to spaces (`online_identifier`
+ * → `online identifier`). Shared by the grid, the search haystack, and the
+ * category strip so the prettified text is consistent everywhere. */
+export function prettyCategory(category: string): string {
+  return category.replace(/_/g, " ");
+}
 
 /** The sensitivity an `allow` verb asserts (matches the engine's
  * card_number_last4 false-positive fix: `sensitivity: internal`). */
@@ -159,6 +167,236 @@ export function categoryWideNote(verb: PolicyVerb, siblings: number): string | n
   if (verb === "block") return `category-wide: also blocks ${cols}`;
   if (verb === "redact") return `category-wide: also un-blocks ${cols}`;
   return null;
+}
+
+/* ───────── scaling: grouping · filtering · category summary ─────────
+ *
+ * These derive RENDER views over the per-column listing so the page holds
+ * up on a real multi-table schema. They are deliberately decoupled from the
+ * disclosure math: `siblingsAffectedByVerb` / `categoryWideNote` must always
+ * be computed over the FULL `per_column` set, never a grouped/filtered subset
+ * (ADR 0008 §3 — a search filter must not change how many siblings a verb
+ * reports as affected). Callers pass the full array to the sibling math and
+ * the filtered array only to the renderer.
+ */
+
+/** One table's columns, in the server's `(qualified_table, column_name)`
+ * order. `groupByTable` partitions the (pre-sorted) per-column listing. */
+export interface PolicyTableGroup {
+  qualifiedTable: string;
+  columns: readonly PolicyColumnEntry[];
+}
+
+/**
+ * Partition a per-column listing into per-table groups, PRESERVING order:
+ * groups appear in first-seen table order and columns keep their incoming
+ * order. The API is already sorted by `(qualified_table, column_name)`
+ * (store.py), so a single insertion-ordered pass is order-correct without
+ * re-sorting. Pure; empty input → empty array.
+ */
+export function groupByTable(
+  perColumn: readonly PolicyColumnEntry[],
+): readonly PolicyTableGroup[] {
+  const groups = new Map<string, PolicyColumnEntry[]>();
+  for (const row of perColumn) {
+    const existing = groups.get(row.qualified_table);
+    if (existing) existing.push(row);
+    else groups.set(row.qualified_table, [row]);
+  }
+  return [...groups.entries()].map(([qualifiedTable, columns]) => ({
+    qualifiedTable,
+    columns,
+  }));
+}
+
+/** The enforcement-status facet — mirrors the derived verb, plus `floor`
+ * (the locked catastrophic state `columnVerb` returns). */
+export type PolicyStatusFilter = "block" | "redact" | "allow" | "floor";
+
+export interface PolicyFilter {
+  /** Free text — matched case-insensitively against table, column, qualified
+   * column, and prettified categories. */
+  query: string;
+  /** Restrict to columns whose BASE categories include this one (null = any). */
+  category: PIICategory | null;
+  /** Restrict to columns whose DERIVED verb equals this (null = any). */
+  status: PolicyStatusFilter | null;
+}
+
+export const EMPTY_POLICY_FILTER: PolicyFilter = {
+  query: "",
+  category: null,
+  status: null,
+};
+
+/** True when no facet of the filter is active (renderers skip filtering). */
+export function isEmptyPolicyFilter(filter: PolicyFilter): boolean {
+  return filter.query.trim() === "" && filter.category === null && filter.status === null;
+}
+
+/**
+ * Whether one column passes the active filter under the STAGED state.
+ * `query` is a substring match across table / column / qualified column /
+ * prettified categories. `category` matches the column's BASE categories
+ * (the operator filters by what was classified). `status` matches the
+ * column's DERIVED verb (via `columnVerb`), so it stays consistent with the
+ * grid being edited.
+ */
+export function matchesPolicyFilter(
+  row: PolicyColumnEntry,
+  filter: PolicyFilter,
+  stagedBlock: ReadonlySet<PIICategory>,
+  stagedOverrides: StagedOverrides,
+): boolean {
+  const query = filter.query.trim().toLowerCase();
+  if (query) {
+    const haystack = [
+      row.qualified_table,
+      row.column_name,
+      row.qualified_column,
+      ...row.categories.map(prettyCategory),
+    ]
+      .join(" ")
+      .toLowerCase();
+    if (!haystack.includes(query)) return false;
+  }
+  if (filter.category && !row.categories.includes(filter.category)) return false;
+  if (filter.status) {
+    const verb = columnVerb(row.qualified_column, row.categories, stagedBlock, stagedOverrides);
+    if (verb !== filter.status) return false;
+  }
+  return true;
+}
+
+/** Filter a per-column listing (order-preserving). Composes
+ * `matchesPolicyFilter`; pure. Used for RENDERING only — never feed the
+ * result into `siblingsAffectedByVerb`. */
+export function filterPerColumn(
+  perColumn: readonly PolicyColumnEntry[],
+  filter: PolicyFilter,
+  stagedBlock: ReadonlySet<PIICategory>,
+  stagedOverrides: StagedOverrides,
+): readonly PolicyColumnEntry[] {
+  if (isEmptyPolicyFilter(filter)) return perColumn;
+  return perColumn.filter((row) => matchesPolicyFilter(row, filter, stagedBlock, stagedOverrides));
+}
+
+/** Per-category overview for the summary strip — one entry per category that
+ * appears on any column, ordered by `PII_CATEGORIES`. Counts are by DERIVED
+ * verb under the staged state; `inBlockSet` drives the one-click toggle and
+ * `isCatastrophic` renders the cell as a locked floor. */
+export interface PolicyCategorySummary {
+  category: PIICategory;
+  total: number;
+  blocked: number;
+  redacted: number;
+  allowed: number;
+  floor: number;
+  /** Staged block-set membership (toggle state). Always true for the floor. */
+  inBlockSet: boolean;
+  /** A catastrophic-floor category — locked, can't be toggled off. */
+  isCatastrophic: boolean;
+}
+
+interface CategoryTally {
+  total: number;
+  blocked: number;
+  redacted: number;
+  allowed: number;
+  floor: number;
+}
+
+/**
+ * Per-category breakdown computed over the FULL per-column listing under the
+ * staged state. A column carrying N categories contributes to N tallies; its
+ * derived verb (the whole column's verb, via `columnVerb`) is what's counted,
+ * so a column blocked by one category but carrying a second shows as `blocked`
+ * under both. Categories with zero columns are omitted. Pure.
+ */
+export function summarizePolicyCategories(
+  perColumn: readonly PolicyColumnEntry[],
+  stagedBlock: ReadonlySet<PIICategory>,
+  stagedOverrides: StagedOverrides,
+): readonly PolicyCategorySummary[] {
+  const tallies = new Map<PIICategory, CategoryTally>();
+  for (const row of perColumn) {
+    const verb = columnVerb(row.qualified_column, row.categories, stagedBlock, stagedOverrides);
+    for (const category of row.categories) {
+      let tally = tallies.get(category);
+      if (!tally) {
+        tally = { total: 0, blocked: 0, redacted: 0, allowed: 0, floor: 0 };
+        tallies.set(category, tally);
+      }
+      tally.total += 1;
+      if (verb === "block") tally.blocked += 1;
+      else if (verb === "redact") tally.redacted += 1;
+      else if (verb === "allow") tally.allowed += 1;
+      else tally.floor += 1;
+    }
+  }
+  const out: PolicyCategorySummary[] = [];
+  for (const category of PII_CATEGORIES) {
+    const tally = tallies.get(category);
+    if (!tally) continue;
+    const catastrophic = isCatastrophic(category);
+    out.push({
+      category,
+      total: tally.total,
+      blocked: tally.blocked,
+      redacted: tally.redacted,
+      allowed: tally.allowed,
+      floor: tally.floor,
+      inBlockSet: catastrophic ? true : stagedBlock.has(category),
+      isCatastrophic: catastrophic,
+    });
+  }
+  return out;
+}
+
+/** Verb tally across a set of columns (each column counted once by its
+ * derived verb). Drives the per-table mini-summary in a collapsed group
+ * header ("3 blocked · 1 floor"). */
+export interface VerbCounts {
+  block: number;
+  redact: number;
+  allow: number;
+  floor: number;
+}
+
+/** Count each column's derived verb across `columns` under the staged state.
+ * Pure. Used for the collapsed table-group header summary. */
+export function countVerbs(
+  columns: readonly PolicyColumnEntry[],
+  stagedBlock: ReadonlySet<PIICategory>,
+  stagedOverrides: StagedOverrides,
+): VerbCounts {
+  const counts: VerbCounts = { block: 0, redact: 0, allow: 0, floor: 0 };
+  for (const row of columns) {
+    const verb = columnVerb(row.qualified_column, row.categories, stagedBlock, stagedOverrides);
+    counts[verb] += 1;
+  }
+  return counts;
+}
+
+/**
+ * Block (or un-block) an entire category in one action — the strip toggle.
+ * Adds/removes the category from the block set ONLY; column overrides are
+ * untouched, so `allow`-overridden columns stay immune (consistent with the
+ * engine grain + `siblingsAffectedByVerb`). Un-blocking a catastrophic
+ * category is a no-op (the floor is non-negotiable). Immutable.
+ */
+export function toggleCategoryBlock(
+  stagedBlock: ReadonlySet<PIICategory>,
+  category: PIICategory,
+  block: boolean,
+): Set<PIICategory> {
+  const next = new Set(stagedBlock);
+  if (block) {
+    next.add(category);
+  } else if (!isCatastrophic(category)) {
+    next.delete(category);
+  }
+  return next;
 }
 
 /** Encode one override for the preview route's `override` query param:

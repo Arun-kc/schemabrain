@@ -1,6 +1,6 @@
 "use client";
 
-import { type KeyboardEvent, useMemo, useRef, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Button, Icon, useToast } from "@/components/kit";
 import { api } from "@/lib/api";
@@ -8,14 +8,12 @@ import { cn } from "@/lib/cn";
 import {
   applyVerb,
   buildPreviewQuery,
-  categoryWideNote,
-  columnVerb,
   countStagedChanges,
   highlightYaml,
   initialOverridesFromPerColumn,
   type PolicyVerb,
-  siblingsAffectedByVerb,
   type StagedOverrides,
+  toggleCategoryBlock,
   type YamlTokenKind,
 } from "@/lib/policy";
 import { useSourceId } from "@/lib/useSourceId";
@@ -26,27 +24,22 @@ import {
   type PolicyPreviewResponse,
   type PolicyResponse,
 } from "@/lib/types";
+import { PerColumnPane } from "./PerColumnPane";
 import styles from "./policy-editor.module.css";
 
 /**
  * PolicyEditor — the editable PII enforcement surface (/policy), matching
- * the design handoff exactly: a single per-column block/redact/allow grid
- * beside a server-rendered schemabrain.yaml panel + staged diff.
+ * the design handoff: a per-column block/redact/allow grid beside a
+ * server-rendered schemabrain.yaml panel + staged diff. Scaled to a real
+ * multi-table schema — the grid (PerColumnPane) groups by table, filters, and
+ * exposes a category strip; this shell owns the staged state, the preview
+ * query, and read-only Apply.
  *
  * The 3-way grid is a CLIENT PROJECTION over the engine's real
  * (category block-set × column overrides) model (ADR 0008): `lib/policy.ts`
- * maps each verb to/from the staged pair, the read-only preview route
- * renders it, and Apply copies the canonical YAML + reveals the CLI command
- * (ADR 0006). `block`/`redact` are category-wide and disclose it inline.
+ * maps each verb to/from the staged pair, the read-only preview route renders
+ * it, and Apply copies the canonical YAML + reveals the CLI command (ADR 0006).
  */
-const VERBS: readonly PolicyVerb[] = ["block", "redact", "allow"];
-
-const VERB_ACTIVE_CLASS: Record<PolicyVerb, string> = {
-  block: "onBlock",
-  redact: "onRedact",
-  allow: "onAllow",
-};
-
 const YAML_TOKEN_CLASS: Record<YamlTokenKind, string | undefined> = {
   comment: "tkComment",
   key: "tkKey",
@@ -89,10 +82,6 @@ function baselineSignature(data: PolicyResponse): string {
     initialOverridesFromPerColumn(data.per_column),
   );
   return JSON.stringify({ block, override });
-}
-
-function prettyCategory(category: string): string {
-  return category.replace(/_/g, " ");
 }
 
 function PolicyEditorContent({ data }: { data: PolicyResponse }) {
@@ -138,6 +127,12 @@ function PolicyEditorContent({ data }: { data: PolicyResponse }) {
     setStagedBlock(next.block);
     setStagedOverrides(next.overrides);
   };
+  // Category strip: block/un-block a whole category at once (category-wide is
+  // the engine grain). Only touches the block set — allow overrides stay.
+  const handleToggleCategory = (category: PIICategory, block: boolean) => {
+    setShowCommand(false);
+    setStagedBlock(toggleCategoryBlock(stagedBlock, category, block));
+  };
   const handleDiscard = () => {
     setShowCommand(false);
     setStagedBlock(initialBlock);
@@ -167,14 +162,17 @@ function PolicyEditorContent({ data }: { data: PolicyResponse }) {
         )}
 
         <div className={styles.grid}>
-          <PerColumnPane
-            perColumn={data.per_column}
-            stagedBlock={stagedBlock}
-            stagedOverrides={stagedOverrides}
-            initialBlock={initialBlock}
-            initialOverrides={initialOverrides}
-            onSetVerb={setVerb}
-          />
+          <Suspense fallback={<p className={styles.skeleton}>loading columns…</p>}>
+            <PerColumnPane
+              perColumn={data.per_column}
+              stagedBlock={stagedBlock}
+              stagedOverrides={stagedOverrides}
+              initialBlock={initialBlock}
+              initialOverrides={initialOverrides}
+              onSetVerb={setVerb}
+              onToggleCategory={handleToggleCategory}
+            />
+          </Suspense>
 
           <div className={styles.col}>
             <YamlPane
@@ -223,184 +221,6 @@ function PageHead() {
         <code className={styles.inlineCode}>schemabrain.yaml</code> for you to commit and run.
       </p>
     </header>
-  );
-}
-
-/* ─────────── per-column enforcement grid (handoff left pane) ─────────── */
-
-function PerColumnPane({
-  perColumn,
-  stagedBlock,
-  stagedOverrides,
-  initialBlock,
-  initialOverrides,
-  onSetVerb,
-}: {
-  perColumn: readonly PolicyColumnEntry[];
-  stagedBlock: ReadonlySet<PIICategory>;
-  stagedOverrides: StagedOverrides;
-  initialBlock: ReadonlySet<PIICategory>;
-  initialOverrides: StagedOverrides;
-  onSetVerb: (row: PolicyColumnEntry, verb: PolicyVerb) => void;
-}) {
-  return (
-    <section className={styles.pane} aria-label="per-column enforcement">
-      <div className={styles.paneHead}>
-        <Icon name="sliders-horizontal" size={14} /> Per-column enforcement
-        <span className={styles.paneCount}>
-          {perColumn.length} {perColumn.length === 1 ? "column" : "columns"}
-        </span>
-      </div>
-      {perColumn.length === 0 ? (
-        <p className={styles.empty}>no columns have been tagged on this source yet</p>
-      ) : (
-        perColumn.map((row) => {
-          const verb = columnVerb(row.qualified_column, row.categories, stagedBlock, stagedOverrides);
-          const initialVerb = columnVerb(
-            row.qualified_column,
-            row.categories,
-            initialBlock,
-            initialOverrides,
-          );
-          // `block` and `redact` are both category-wide; disclose for either
-          // (ADR 0008 §3). Count the columns that ACTUALLY flip (not raw
-          // overlap) so the note never over-claims. `allow` → 0.
-          const siblings =
-            verb === "floor"
-              ? 0
-              : siblingsAffectedByVerb(
-                  perColumn,
-                  row.qualified_column,
-                  row.categories,
-                  verb,
-                  stagedBlock,
-                  stagedOverrides,
-                );
-          return (
-            <PerColumnRow
-              key={row.qualified_column}
-              row={row}
-              verb={verb}
-              pending={verb !== initialVerb}
-              siblings={siblings}
-              onSetVerb={onSetVerb}
-            />
-          );
-        })
-      )}
-    </section>
-  );
-}
-
-function PerColumnRow({
-  row,
-  verb,
-  pending,
-  siblings,
-  onSetVerb,
-}: {
-  row: PolicyColumnEntry;
-  verb: PolicyVerb | "floor";
-  pending: boolean;
-  siblings: number;
-  onSetVerb: (row: PolicyColumnEntry, verb: PolicyVerb) => void;
-}) {
-  const isFloor = verb === "floor";
-  // `block` has no effect on a column with no categories (nothing to add to
-  // the block set) — disable that segment and hint at the real fix.
-  const noCategories = row.categories.length === 0;
-  const isEnabled = (option: PolicyVerb) => !(option === "block" && noCategories);
-  const note = isFloor ? null : categoryWideNote(verb as PolicyVerb, siblings);
-  const noteId = `pol-note-${row.qualified_column.replace(/[^a-zA-Z0-9]/g, "-")}`;
-
-  // Radio refs so arrow-key navigation moves DOM focus to the newly-selected
-  // option (WAI-ARIA radiogroup: focus must follow the checked radio).
-  const radioRefs = useRef(new Map<PolicyVerb, HTMLButtonElement>());
-
-  // Roving tabindex + arrow-key selection (WAI-ARIA radiogroup pattern):
-  // arrows move to the next/previous ENABLED option, select it, AND move
-  // focus to it (the element stays mounted across the re-render).
-  const moveSelection = (delta: number) => {
-    if (isFloor) return;
-    const current = VERBS.indexOf(verb as PolicyVerb);
-    for (let step = 1; step <= VERBS.length; step += 1) {
-      const candidate = VERBS[(current + delta * step + VERBS.length * step) % VERBS.length];
-      if (isEnabled(candidate)) {
-        onSetVerb(row, candidate);
-        radioRefs.current.get(candidate)?.focus();
-        return;
-      }
-    }
-  };
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-      event.preventDefault();
-      moveSelection(1);
-    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-      event.preventDefault();
-      moveSelection(-1);
-    }
-  };
-
-  return (
-    <div className={cn(styles.rule, isFloor ? styles.floor : pending && styles.pending)}>
-      <div className={styles.ruleId}>
-        <div className={styles.ruleTable}>{row.qualified_table}</div>
-        <div className={styles.ruleName}>
-          {/* decorative — the labelled lock lives on the `floor · locked`
-           * tag so the locked state is announced exactly once. */}
-          {isFloor && <Icon name="lock" size={12} className={styles.floorLock} />}
-          {row.column_name}
-        </div>
-        <div className={styles.ruleCats}>
-          {noCategories ? "no categories" : row.categories.map(prettyCategory).join(" · ")}
-          {note && (
-            <span id={noteId} className={styles.catWide}>
-              {" "}
-              · {note}
-            </span>
-          )}
-        </div>
-      </div>
-      {isFloor ? (
-        <span className={styles.floorTag}>
-          <Icon name="lock" size={11} label="locked floor" /> floor · locked
-        </span>
-      ) : (
-        <div
-          className={styles.seg}
-          role="radiogroup"
-          aria-label={`enforcement for ${row.qualified_column}`}
-          aria-describedby={note ? noteId : undefined}
-          onKeyDown={onKeyDown}
-        >
-          {VERBS.map((option) => {
-            const active = verb === option;
-            const enabled = isEnabled(option);
-            return (
-              <button
-                key={option}
-                ref={(el) => {
-                  if (el) radioRefs.current.set(option, el);
-                  else radioRefs.current.delete(option);
-                }}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                aria-label={`${option} ${row.qualified_column}`}
-                disabled={!enabled}
-                title={enabled ? undefined : "no category to block — reclassify via `schemabrain policy tag` first"}
-                tabIndex={active ? 0 : -1}
-                className={cn(active && styles[VERB_ACTIVE_CLASS[option]])}
-                onClick={() => enabled && onSetVerb(row, option)}
-              >
-                {option}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
   );
 }
 
