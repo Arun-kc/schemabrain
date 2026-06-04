@@ -1,11 +1,10 @@
 /*
- * PolicyEditor — the editable PII policy surface (/policy).
+ * PolicyEditor — editable PII policy surface (/policy).
  *
- * Ports the handoff app/policy.jsx visual language (app/pages2.css
- * .pg-banner / .po-* ) onto the .sb-app dual-theme tokens (sb-theme.css)
- * and the component kit. Two honest levers (ADR 0007): a category block
- * panel + a per-column override list, with the catastrophic floor locked
- * in both. Tokens auto-swap per theme — no per-theme blocks here.
+ * Ports the design handoff (app/policy.jsx + app/pages2.css: .pg-banner /
+ * .po-grid / .po-rule / .po-seg / .po-yaml / .po-diff) onto the .sb-app
+ * dual-theme tokens (sb-theme.css) + the component kit. Single per-column
+ * 3-way grid (ADR 0008). Tokens auto-swap per theme — no per-theme blocks.
  */
 
 /* ---------- page scaffold ---------- */
@@ -17,7 +16,6 @@
 .pageHead {
   padding-bottom: 20px;
   border-bottom: 1px solid var(--hair);
-  margin-bottom: 4px;
 }
 
 .pageHead h1 {
@@ -35,10 +33,18 @@
 .body {
   display: flex;
   flex-direction: column;
-  gap: 16px;
 }
 
-/* ---------- banners ---------- */
+.inlineCode {
+  font-family: var(--f-mono);
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  border: 1px solid var(--hair-2);
+}
+
+/* ---------- drift / parse banners (handoff .pg-banner) ---------- */
 
 .banner {
   display: flex;
@@ -81,22 +87,13 @@
   flex-shrink: 0;
 }
 
-.inlineCode {
-  font-family: var(--f-mono);
-  font-size: 0.9em;
-  padding: 1px 5px;
-  border-radius: var(--r-sm);
-  background: var(--bg-1);
-  border: 1px solid var(--hair-2);
-}
-
-/* ---------- two-pane grid ---------- */
+/* ---------- two-pane grid (handoff .po-grid) ---------- */
 
 .grid {
   display: grid;
   grid-template-columns: 1.1fr 0.9fr;
   gap: 18px;
-  margin-top: 4px;
+  margin-top: 20px;
   align-items: start;
 }
 
@@ -107,13 +104,14 @@
   min-width: 0;
 }
 
-@media (max-width: 1040px) {
+/* Handoff collapses the two-pane grid at 900px (app/pages2.css). */
+@media (max-width: 900px) {
   .grid {
     grid-template-columns: 1fr;
   }
 }
 
-/* ---------- pane ---------- */
+/* ---------- pane (handoff .po-pane) ---------- */
 
 .pane {
   background: var(--panel);
@@ -141,98 +139,7 @@
   color: var(--ink-3);
 }
 
-/* ---------- category block panel ---------- */
-
-.catRow {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 11px 16px;
-  border-bottom: 1px solid var(--hair-2);
-}
-
-.catRow:last-child {
-  border-bottom: none;
-}
-
-.catRow.on {
-  background: color-mix(in oklch, var(--alarm) 6%, transparent);
-}
-
-.catRow.floor {
-  background: color-mix(in oklch, var(--alarm) 8%, transparent);
-}
-
-.catId {
-  min-width: 0;
-  flex: 1;
-}
-
-.catName {
-  font-family: var(--f-mono);
-  font-size: 13px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.catMeta {
-  font-family: var(--f-mono);
-  font-size: 10px;
-  color: var(--ink-3);
-  margin-top: 2px;
-}
-
-.floorLock {
-  color: var(--alarm);
-}
-
-.floorTag {
-  font-family: var(--f-mono);
-  font-size: 10px;
-  color: var(--alarm);
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-}
-
-/* toggle (block on/off) — a labelled switch, not the 3-way segment */
-.toggle {
-  font-family: var(--f-mono);
-  font-size: 10.5px;
-  font-weight: 600;
-  padding: 5px 11px;
-  border-radius: var(--r-md);
-  border: 1px solid var(--hair);
-  background: var(--bg-1);
-  color: var(--ink-3);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition:
-    color var(--dur-2) var(--ease),
-    border-color var(--dur-2) var(--ease),
-    background var(--dur-2) var(--ease);
-}
-
-.toggle:hover {
-  color: var(--ink-2);
-  border-color: var(--ink-3);
-}
-
-.toggle.on {
-  background: color-mix(in oklch, var(--alarm) 16%, transparent);
-  color: var(--alarm);
-  border-color: color-mix(in oklch, var(--alarm) 40%, transparent);
-}
-
-.toggle:focus-visible {
-  outline: 2px solid var(--green);
-  outline-offset: 2px;
-}
-
-/* ---------- per-column override list ---------- */
+/* ---------- per-column rule rows (handoff .po-rule) ---------- */
 
 .rule {
   display: flex;
@@ -281,7 +188,26 @@
   margin-top: 2px;
 }
 
-/* 2-way segmented control [use classifier | mark safe] */
+.catWide {
+  color: var(--amber);
+}
+
+.floorLock {
+  color: var(--alarm);
+}
+
+.floorTag {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  color: var(--alarm);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+/* ---------- 3-way segmented control (handoff .po-seg) ---------- */
+
 .seg {
   display: inline-flex;
   background: var(--bg-1);
@@ -305,7 +231,7 @@
   transition: all var(--dur-2) var(--ease);
 }
 
-.seg button:hover:not(:disabled) {
+.seg button:hover {
   color: var(--ink-2);
 }
 
@@ -314,13 +240,17 @@
   outline-offset: 2px;
 }
 
-.seg button.onUse {
-  background: var(--panel);
-  color: var(--ink);
-  box-shadow: var(--glow-green);
+.seg button.onBlock {
+  background: color-mix(in oklch, var(--alarm) 18%, transparent);
+  color: var(--alarm);
 }
 
-.seg button.onSafe {
+.seg button.onRedact {
+  background: color-mix(in oklch, var(--cyan) 18%, transparent);
+  color: var(--cyan);
+}
+
+.seg button.onAllow {
   background: color-mix(in oklch, var(--green) 18%, transparent);
   color: var(--green);
 }
@@ -332,7 +262,316 @@
   font-size: 13px;
 }
 
-/* ---------- yaml panel ---------- */
+.linkBtn {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--green);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ---------- category summary strip (scaling: full-set overview) ---------- */
+
+.strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--hair-2);
+  background: var(--bg-1);
+}
+
+.stripCell {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 10px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--hair);
+  background: var(--panel);
+  font-family: var(--f-mono);
+  text-align: left;
+  color: var(--ink-2);
+}
+
+.stripToggle {
+  cursor: pointer;
+  transition: all var(--dur-2) var(--ease);
+}
+
+.stripToggle:hover {
+  border-color: var(--ink-3);
+  color: var(--ink);
+}
+
+.stripToggle:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+.stripOn {
+  border-color: color-mix(in oklch, var(--alarm) 45%, transparent);
+  background: color-mix(in oklch, var(--alarm) 12%, transparent);
+  color: var(--alarm);
+}
+
+.stripFloor {
+  border-color: color-mix(in oklch, var(--alarm) 30%, transparent);
+  background: color-mix(in oklch, var(--alarm) 8%, transparent);
+  color: var(--alarm);
+  cursor: default;
+}
+
+.stripCat {
+  font-size: 10.5px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.stripMeta {
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+/* ---------- search / filter bar (scaling) ---------- */
+
+.searchBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--hair-2);
+}
+
+.searchField {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 1 1 200px;
+  min-width: 160px;
+}
+
+.searchIcon {
+  position: absolute;
+  left: 9px;
+  color: var(--ink-3);
+  pointer-events: none;
+}
+
+.searchInput {
+  width: 100%;
+  font-family: var(--f-mono);
+  font-size: 12px;
+  padding: 7px 10px 7px 30px;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--ink);
+}
+
+.searchInput:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
+}
+
+.catSelect {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  padding: 6px 8px;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.catSelect:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
+}
+
+.statusSeg {
+  display: inline-flex;
+  background: var(--bg-1);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-md);
+  padding: 2px;
+  gap: 2px;
+}
+
+.statusSeg button {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: all var(--dur-2) var(--ease);
+}
+
+.statusSeg button:hover {
+  color: var(--ink-2);
+}
+
+.statusSeg button:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+.statusSeg button.statusOn {
+  background: color-mix(in oklch, var(--green) 16%, transparent);
+  color: var(--green);
+}
+
+.searchClear {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  padding: 5px 8px;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: all var(--dur-2) var(--ease);
+}
+
+.searchClear:hover {
+  color: var(--ink);
+}
+
+.searchClear:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+.searchCount {
+  margin-left: auto;
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* ---------- collapsible table groups (scaling) ---------- */
+
+.groupList {
+  display: flex;
+  flex-direction: column;
+}
+
+.group {
+  border-bottom: 1px solid var(--hair-2);
+}
+
+.group:last-child {
+  border-bottom: none;
+}
+
+.groupHead {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 11px 16px;
+  border: none;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink);
+  transition: background var(--dur-2) var(--ease);
+}
+
+.groupHead:hover {
+  background: var(--bg-1);
+}
+
+.groupHead:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: -2px;
+}
+
+.groupHead[aria-expanded="true"] {
+  border-bottom-color: var(--hair-2);
+}
+
+.groupChevron {
+  color: var(--ink-3);
+  flex-shrink: 0;
+  transition: transform var(--dur-2) var(--ease);
+}
+
+.groupChevronClosed {
+  transform: rotate(-90deg);
+}
+
+.groupTableIcon {
+  color: var(--ink-3);
+  flex-shrink: 0;
+}
+
+.groupName {
+  font-family: var(--f-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.groupCount {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  flex-shrink: 0;
+}
+
+.groupMini {
+  margin-left: auto;
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.miniBlock {
+  color: var(--alarm);
+}
+
+.miniFloor {
+  color: color-mix(in oklch, var(--alarm) 78%, var(--ink-3));
+}
+
+.miniAllow {
+  color: var(--green);
+}
+
+.miniRedact {
+  color: var(--cyan);
+}
+
+.groupPanel {
+  /* Keep collapsed panels cheap to lay out at scale. content-visibility:auto
+   * lets the browser skip rendering work for off-screen expanded panels too. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 0;
+}
+
+/* ---------- syntax-highlighted YAML (handoff .po-yaml) ---------- */
 
 .yaml {
   font-family: var(--f-mono);
@@ -343,8 +582,54 @@
   overflow-x: auto;
   color: var(--ink);
   background: var(--bg-1);
+  /* Intentional addition over the handoff's grow-to-fit .po-yaml: a real
+   * policy on a large source can be long, so the panel scrolls past 440px
+   * instead of pushing the diff pane off-screen. */
+  max-height: 440px;
+  overflow-y: auto;
+}
+
+/* preview is refetching for a newly-staged state — dim until it settles
+ * so the shown YAML is never mistaken for the final, copyable text. */
+.stale {
+  opacity: 0.55;
+  transition: opacity var(--dur-1) var(--ease);
+}
+
+/*
+ * NOTE (a11y, deferred): the segment label colors + syntax-highlight token
+ * palette below are ported verbatim from the handoff and inherit its
+ * light-theme contrast (some tokens fall short of WCAG AA 4.5:1 on --bg-1).
+ * Tuning these is a SYSTEM-WIDE token change (they're shared --ink-3 /
+ * accent tokens), so it is owned by a later system-wide accessibility pass,
+ * not patched per-surface here — changing them locally would diverge this
+ * surface from the handoff + the rest of the app. (The new strip/group muted
+ * labels use the same --ink-3 token; fold them into that same pass.)
+ */
+
+.yamlLine {
   white-space: pre;
-  max-height: 420px;
+  min-height: 1.75em;
+}
+
+.tkKey {
+  color: var(--cyan);
+}
+
+.tkValue {
+  color: var(--green);
+}
+
+.tkComment {
+  color: var(--ink-3);
+}
+
+.tkAlarm {
+  color: var(--alarm);
+}
+
+.tkPunct {
+  color: var(--ink-3);
 }
 
 .yamlNote {
@@ -354,11 +639,7 @@
   color: var(--ink-2);
 }
 
-.yamlNote .alarm {
-  color: var(--alarm);
-}
-
-/* ---------- staged diff ---------- */
+/* ---------- staged diff (handoff .po-diff) ---------- */
 
 .diff {
   display: flex;
@@ -374,9 +655,11 @@
 
 .diffRow {
   display: flex;
+  /* flex-start (not the handoff's center) is required for wrapping real-YAML
+   * diff lines; padding + sign gutter match the handoff .po-diff-row spec. */
   align-items: flex-start;
   gap: 10px;
-  padding: 7px 16px;
+  padding: 9px 16px;
   font-family: var(--f-mono);
   font-size: 12px;
   border-bottom: 1px solid var(--hair-2);
@@ -385,7 +668,7 @@
 }
 
 .diffSign {
-  width: 12px;
+  width: 14px;
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -479,4 +762,17 @@
   color: var(--ink);
   font-size: 13.5px;
   line-height: 1.55;
+}
+
+/* visually-hidden live region (staging feedback for screen readers) */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }

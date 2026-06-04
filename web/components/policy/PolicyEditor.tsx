@@ -1,45 +1,55 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Button, Icon, useToast } from "@/components/kit";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import {
+  applyVerb,
   buildPreviewQuery,
-  columnIsFloor,
   countStagedChanges,
+  highlightYaml,
   initialOverridesFromPerColumn,
-  isColumnOverrideChanged,
-  isMarkedSafe,
+  type PolicyVerb,
   type StagedOverrides,
-  toggleBlockCategory,
-  toggleMarkSafe,
+  toggleCategoryBlock,
+  type YamlTokenKind,
 } from "@/lib/policy";
 import { useSourceId } from "@/lib/useSourceId";
 import {
-  isCatastrophic,
+  CATASTROPHIC_LEAK_CATEGORIES,
   type PIICategory,
-  PII_CATEGORIES,
-  type PolicyCategoryRollup,
   type PolicyColumnEntry,
   type PolicyDriftState,
   type PolicyPreviewResponse,
   type PolicyResponse,
 } from "@/lib/types";
+import { PerColumnPane } from "./PerColumnPane";
 import styles from "./policy-editor.module.css";
 
 /**
- * PolicyEditor — the editable PII enforcement surface (/policy).
+ * PolicyEditor — the editable PII enforcement surface (/policy), matching
+ * the design handoff: a per-column block/redact/allow grid beside a
+ * server-rendered schemabrain.yaml panel + staged diff. Scaled to a real
+ * multi-table schema — the grid (PerColumnPane) groups by table, filters, and
+ * exposes a category strip; this shell owns the staged state, the preview
+ * query, and read-only Apply.
  *
- * Two honest levers reconciled from the handoff's per-column grid
- * (ADR 0007): a category block panel (writes `block:`) and a per-column
- * override list (writes `column_overrides:` via "mark safe"). The
- * catastrophic floor is locked in both. The YAML panel + diff are
- * rendered server-side through GET /api/pii/policy/preview, and Apply
- * copies that canonical YAML + reveals the CLI command rather than
- * writing (ADR 0006) — the sidecar stays read-only.
+ * The 3-way grid is a CLIENT PROJECTION over the engine's real
+ * (category block-set × column overrides) model (ADR 0008): `lib/policy.ts`
+ * maps each verb to/from the staged pair, the read-only preview route renders
+ * it, and Apply copies the canonical YAML + reveals the CLI command (ADR 0006).
  */
+const YAML_TOKEN_CLASS: Record<YamlTokenKind, string | undefined> = {
+  comment: "tkComment",
+  key: "tkKey",
+  value: "tkValue",
+  alarm: "tkAlarm",
+  punct: "tkPunct",
+  plain: undefined,
+};
+
 export function PolicyEditor({ sourceId: sourceIdProp }: { sourceId?: string }) {
   const { sourceId: resolvedSourceId, status: sourceStatus } = useSourceId();
   const sourceId = sourceIdProp ?? resolvedSourceId ?? undefined;
@@ -62,10 +72,6 @@ export function PolicyEditor({ sourceId: sourceIdProp }: { sourceId?: string }) 
     return <PolicyEditorError message={policyQuery.error.message} />;
   }
 
-  // Re-key on the baseline so a real policy change (operator ran
-  // `policy apply` + restarted serve) remounts with a fresh staged
-  // baseline, while a background refetch of identical content does not
-  // clobber in-progress staging.
   return (
     <PolicyEditorContent key={baselineSignature(policyQuery.data)} data={policyQuery.data} />
   );
@@ -77,10 +83,6 @@ function baselineSignature(data: PolicyResponse): string {
     initialOverridesFromPerColumn(data.per_column),
   );
   return JSON.stringify({ block, override });
-}
-
-function prettyCategory(category: string): string {
-  return category.replace(/_/g, " ");
 }
 
 function PolicyEditorContent({ data }: { data: PolicyResponse }) {
@@ -113,14 +115,24 @@ function PolicyEditorContent({ data }: { data: PolicyResponse }) {
     initialOverrides,
     stagedOverrides,
   );
+  // Gate the diff/Apply on the CLIENT's staged count, not the server's
+  // `changed` flag: the on-disk YAML can disagree with the store's operator
+  // overrides, which would otherwise show a phantom diff on an untouched
+  // editor. If the operator hasn't staged anything, there is nothing to
+  // apply — regardless of server-side block-vs-store drift.
+  const hasStaged = stagedCount > 0;
 
-  const handleToggleBlock = (category: PIICategory) => {
+  const setVerb = (row: PolicyColumnEntry, verb: PolicyVerb) => {
     setShowCommand(false);
-    setStagedBlock((prev) => toggleBlockCategory(prev, category));
+    const next = applyVerb(stagedBlock, stagedOverrides, row.qualified_column, row.categories, verb);
+    setStagedBlock(next.block);
+    setStagedOverrides(next.overrides);
   };
-  const handleMarkSafe = (qualifiedColumn: string, safe: boolean) => {
+  // Category strip: block/un-block a whole category at once (category-wide is
+  // the engine grain). Only touches the block set — allow overrides stay.
+  const handleToggleCategory = (category: PIICategory, block: boolean) => {
     setShowCommand(false);
-    setStagedOverrides((prev) => toggleMarkSafe(prev, qualifiedColumn, safe));
+    setStagedBlock(toggleCategoryBlock(stagedBlock, category, block));
   };
   const handleDiscard = () => {
     setShowCommand(false);
@@ -129,7 +141,11 @@ function PolicyEditorContent({ data }: { data: PolicyResponse }) {
   };
   const applyCommand = `schemabrain policy apply ${data.policy_path}`;
   const handleApply = () => {
-    if (!preview?.changed) return;
+    // Never copy YAML for a superseded/stale/failed staged state: require
+    // staged changes AND a settled (non-fetching, non-errored) preview that
+    // reflects them. Self-guarding so it holds independent of how DiffPane
+    // renders the button (keepPreviousData retains stale data on error).
+    if (!hasStaged || previewQuery.isFetching || previewQuery.isError || !preview) return;
     copyToClipboard(preview.staged_yaml, "policy YAML");
     setShowCommand(true);
   };
@@ -147,25 +163,30 @@ function PolicyEditorContent({ data }: { data: PolicyResponse }) {
         )}
 
         <div className={styles.grid}>
-          <div className={styles.col}>
-            <CategoryBlockPanel
-              stagedBlock={stagedBlock}
-              rollup={data.category_rollup}
-              onToggle={handleToggleBlock}
-            />
-            <OverrideListPanel
+          <Suspense fallback={<p className={styles.skeleton}>loading columns…</p>}>
+            <PerColumnPane
               perColumn={data.per_column}
+              stagedBlock={stagedBlock}
               stagedOverrides={stagedOverrides}
+              initialBlock={initialBlock}
               initialOverrides={initialOverrides}
-              onMarkSafe={handleMarkSafe}
+              onSetVerb={setVerb}
+              onToggleCategory={handleToggleCategory}
             />
-          </div>
+          </Suspense>
 
           <div className={styles.col}>
-            <YamlPanel preview={preview} />
-            <DiffPanel
+            <YamlPane
+              preview={preview}
+              stale={hasStaged && previewQuery.isFetching && !previewQuery.isError}
+              error={previewQuery.isError ? previewQuery.error.message : null}
+            />
+            <DiffPane
               preview={preview}
               stagedCount={stagedCount}
+              hasStaged={hasStaged}
+              fetching={previewQuery.isFetching}
+              error={previewQuery.isError ? previewQuery.error.message : null}
               onApply={handleApply}
               onDiscard={handleDiscard}
               showCommand={showCommand}
@@ -176,6 +197,15 @@ function PolicyEditorContent({ data }: { data: PolicyResponse }) {
           </div>
         </div>
       </div>
+
+      {/* Polite live region so staging feedback reaches assistive tech. */}
+      <p className={styles.srOnly} role="status" aria-live="polite">
+        {previewQuery.isError
+          ? "preview failed to render"
+          : stagedCount === 0
+            ? "no staged changes"
+            : `${stagedCount} staged ${stagedCount === 1 ? "change" : "changes"}`}
+      </p>
     </div>
   );
 }
@@ -185,198 +215,63 @@ function PageHead() {
     <header className={styles.pageHead}>
       <h1>Policy</h1>
       <p>
-        The enforcement policy SchemaBrain compiles every query against. Block a category to
-        refuse it everywhere, or mark a column safe to clear a false positive — the catastrophic
-        floor (credential, payment card, government ID) is always on and can&apos;t be unlocked.
-        Applying copies the canonical{" "}
+        The enforcement policy SchemaBrain compiles every query against. Tag a column to tighten
+        it, clear to loosen — the catastrophic-floor columns (credential, payment card, government
+        ID) are locked and can&apos;t be unblocked. Blocking acts on the column&apos;s category, so
+        it can cover sibling columns; applying copies the canonical{" "}
         <code className={styles.inlineCode}>schemabrain.yaml</code> for you to commit and run.
       </p>
     </header>
   );
 }
 
-/* ─────────── category block panel (writes `block:`) ─────────── */
+/* ─────────── server-rendered, syntax-highlighted YAML panel ─────────── */
 
-function CategoryBlockPanel({
-  stagedBlock,
-  rollup,
-  onToggle,
+function YamlPane({
+  preview,
+  stale,
+  error,
 }: {
-  stagedBlock: ReadonlySet<PIICategory>;
-  rollup: readonly PolicyCategoryRollup[];
-  onToggle: (category: PIICategory) => void;
+  preview?: PolicyPreviewResponse;
+  stale?: boolean;
+  error?: string | null;
 }) {
-  const countByCategory = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const row of rollup) map.set(row.category, row.column_count);
-    return map;
-  }, [rollup]);
-  const blockedCount = PII_CATEGORIES.filter(
-    (category) => isCatastrophic(category) || stagedBlock.has(category),
-  ).length;
-
-  return (
-    <section className={styles.pane} aria-label="category block set">
-      <div className={styles.paneHead}>
-        <Icon name="sliders-horizontal" size={14} /> Block categories
-        <span className={styles.paneCount}>{blockedCount} blocked</span>
-      </div>
-      {PII_CATEGORIES.map((category) => {
-        const floor = isCatastrophic(category);
-        const on = stagedBlock.has(category);
-        const count = countByCategory.get(category) ?? 0;
-        return (
-          <div
-            key={category}
-            className={cn(styles.catRow, floor ? styles.floor : on && styles.on)}
-          >
-            <div className={styles.catId}>
-              <div className={styles.catName}>
-                {floor && (
-                  <Icon name="lock" size={12} className={styles.floorLock} label="locked floor" />
-                )}
-                {prettyCategory(category)}
-              </div>
-              <div className={styles.catMeta}>
-                {count === 0
-                  ? "no tagged columns"
-                  : `${count} ${count === 1 ? "column" : "columns"}`}
-              </div>
-            </div>
-            {floor ? (
-              <span className={styles.floorTag}>
-                <Icon name="lock" size={11} /> floor · locked
-              </span>
-            ) : (
-              <button
-                type="button"
-                className={cn(styles.toggle, on && styles.on)}
-                aria-pressed={on}
-                aria-label={`${on ? "unblock" : "block"} ${prettyCategory(category)}`}
-                onClick={() => onToggle(category)}
-              >
-                {on ? "blocked" : "block"}
-              </button>
-            )}
-          </div>
-        );
-      })}
-    </section>
+  const lines = useMemo(
+    () => (preview ? highlightYaml(preview.staged_yaml) : null),
+    [preview],
   );
-}
-
-/* ─────────── per-column override list (writes `column_overrides:`) ─────────── */
-
-function OverrideListPanel({
-  perColumn,
-  stagedOverrides,
-  initialOverrides,
-  onMarkSafe,
-}: {
-  perColumn: readonly PolicyColumnEntry[];
-  stagedOverrides: StagedOverrides;
-  initialOverrides: StagedOverrides;
-  onMarkSafe: (qualifiedColumn: string, safe: boolean) => void;
-}) {
-  const editable = useMemo(
-    () => perColumn.filter((row) => !columnIsFloor(row.categories)),
-    [perColumn],
-  );
-  const floorCount = perColumn.length - editable.length;
-
-  return (
-    <section className={styles.pane} aria-label="column overrides">
-      <div className={styles.paneHead}>
-        <Icon name="shield" size={14} /> Column overrides
-        <span className={styles.paneCount}>{editable.length} editable</span>
-      </div>
-      {editable.length === 0 ? (
-        <p className={styles.empty}>
-          {perColumn.length === 0
-            ? "no columns have been tagged on this source yet"
-            : "every tagged column is on the catastrophic floor — nothing to override"}
-        </p>
-      ) : (
-        editable.map((row) => (
-          <OverrideRow
-            key={row.qualified_column}
-            row={row}
-            marked={isMarkedSafe(row.qualified_column, stagedOverrides)}
-            pending={isColumnOverrideChanged(
-              initialOverrides,
-              stagedOverrides,
-              row.qualified_column,
-            )}
-            onMarkSafe={onMarkSafe}
-          />
-        ))
-      )}
-      {floorCount > 0 && (
-        <p className={styles.empty}>
-          {floorCount} catastrophic-floor{" "}
-          {floorCount === 1 ? "column is" : "columns are"} always protected — see Block categories.
-        </p>
-      )}
-    </section>
-  );
-}
-
-function OverrideRow({
-  row,
-  marked,
-  pending,
-  onMarkSafe,
-}: {
-  row: PolicyColumnEntry;
-  marked: boolean;
-  pending: boolean;
-  onMarkSafe: (qualifiedColumn: string, safe: boolean) => void;
-}) {
-  return (
-    <div className={cn(styles.rule, pending && styles.pending)}>
-      <div className={styles.ruleId}>
-        <div className={styles.ruleTable}>{row.qualified_table}</div>
-        <div className={styles.ruleName}>{row.column_name}</div>
-        <div className={styles.ruleCats}>
-          {row.categories.length === 0
-            ? "asserted safe · no categories"
-            : row.categories.map(prettyCategory).join(" · ")}
-        </div>
-      </div>
-      <div className={styles.seg} role="group" aria-label={`override ${row.qualified_column}`}>
-        <button
-          type="button"
-          className={cn(!marked && styles.onUse)}
-          aria-pressed={!marked}
-          onClick={() => onMarkSafe(row.qualified_column, false)}
-        >
-          use classifier
-        </button>
-        <button
-          type="button"
-          className={cn(marked && styles.onSafe)}
-          aria-pressed={marked}
-          onClick={() => onMarkSafe(row.qualified_column, true)}
-        >
-          mark safe
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ─────────── server-rendered YAML panel ─────────── */
-
-function YamlPanel({ preview }: { preview?: PolicyPreviewResponse }) {
   return (
     <section className={styles.pane} aria-label="generated policy yaml">
       <div className={styles.paneHead}>
         <Icon name="file-code" size={14} /> schemabrain.yaml
       </div>
-      <pre className={styles.yaml}>{preview ? preview.staged_yaml : "rendering…"}</pre>
+      <pre className={cn(styles.yaml, stale && styles.stale)} aria-busy={stale || undefined}>
+        {error
+          ? `couldn't render preview — ${error}`
+          : lines === null
+          ? "rendering…"
+          : lines.map((tokens, lineIndex) => (
+              // YAML lines are positional + immutable per preview.
+              <div key={lineIndex} className={styles.yamlLine}>
+                {tokens.map((token, tokenIndex) => {
+                  const cls = YAML_TOKEN_CLASS[token.kind];
+                  return (
+                    <span key={tokenIndex} className={cls ? styles[cls] : undefined}>
+                      {token.text}
+                    </span>
+                  );
+                })}
+              </div>
+            ))}
+      </pre>
+      <p className={styles.yamlNote}>
+        <span className={styles.tkAlarm}>+ always-on floor</span> ·{" "}
+        {CATASTROPHIC_LEAK_CATEGORIES.join(" · ")} — enforced on every read even when absent from{" "}
+        <code className={styles.inlineCode}>block:</code>; these can&apos;t be unblocked.
+      </p>
       {preview?.current_parse_error && (
         <p className={styles.yamlNote}>
-          <span className={styles.alarm}>current pii_policy.yaml doesn&apos;t parse</span> ·
+          <span className={styles.tkAlarm}>current pii_policy.yaml doesn&apos;t parse</span> ·
           diffing against the catastrophic-floor default. {preview.current_parse_error}
         </p>
       )}
@@ -386,9 +281,12 @@ function YamlPanel({ preview }: { preview?: PolicyPreviewResponse }) {
 
 /* ─────────── staged diff + read-only apply (ADR 0006) ─────────── */
 
-function DiffPanel({
+function DiffPane({
   preview,
   stagedCount,
+  hasStaged,
+  fetching,
+  error,
   onApply,
   onDiscard,
   showCommand,
@@ -398,6 +296,9 @@ function DiffPanel({
 }: {
   preview?: PolicyPreviewResponse;
   stagedCount: number;
+  hasStaged: boolean;
+  fetching: boolean;
+  error?: string | null;
   onApply: () => void;
   onDiscard: () => void;
   showCommand: boolean;
@@ -405,42 +306,49 @@ function DiffPanel({
   policyPath: string;
   onCopyCommand: () => void;
 }) {
-  const changed = preview?.changed ?? false;
+  // Gate on the client's staged count (ADR 0008 / phantom-diff fix), not the
+  // server `changed` flag. Apply is disabled until the preview settles so we
+  // never copy YAML for a superseded staged state. The dim is for in-flight
+  // refetches only — never while the error branch is showing.
+  const stale = hasStaged && fetching && !error;
   return (
     <section className={styles.pane} aria-label="staged changes">
       <div className={styles.paneHead}>
         <Icon name="git-pull-request" size={14} /> Pending changes
         <span className={styles.paneCount}>{stagedCount} staged</span>
       </div>
-      <div className={styles.diff}>
-        {!changed || !preview ? (
+      <div className={cn(styles.diff, stale && styles.stale)} aria-busy={stale || undefined}>
+        {error ? (
+          <div className={styles.diffEmpty}>couldn&apos;t render preview — {error}</div>
+        ) : !hasStaged || !preview ? (
           <div className={styles.diffEmpty}>
-            No staged changes. Block a category or mark a column safe to preview a diff.
+            No staged changes. Tag a column to preview a diff before applying.
           </div>
         ) : (
           <>
             {preview.diff_lines.map((line, index) => (
-              <div
-                // diff lines are positional + immutable for a given preview;
-                // index is a stable key here.
-                key={index}
-                className={cn(styles.diffRow, styles[line.kind])}
-              >
+              <div key={index} className={cn(styles.diffRow, styles[line.kind])}>
                 <span className={styles.diffSign}>
                   {line.kind === "add" ? "+" : line.kind === "remove" ? "−" : ""}
                 </span>
-                {line.text || " "}
+                {line.text || " "}
               </div>
             ))}
             <div className={styles.diffFoot}>
-              <Button variant="primary" icon="check" onClick={onApply}>
+              <Button
+                variant="primary"
+                icon="check"
+                onClick={onApply}
+                disabled={stale}
+                aria-label={stale ? "Apply policy (rendering…)" : "Apply policy"}
+              >
                 Apply policy
               </Button>
               <Button onClick={onDiscard}>Discard</Button>
             </div>
           </>
         )}
-        {showCommand && changed && (
+        {showCommand && hasStaged && !error && (
           <div className={styles.command}>
             <span className={styles.commandLabel}>Run to apply</span>
             <div className={styles.commandRow}>
@@ -508,8 +416,7 @@ function ParseErrorBanner({ error }: { error: string }) {
 }
 
 function PolicyEditorError({ message }: { message: string }) {
-  const isNoSource =
-    message.includes("409") || message.toLowerCase().includes("no source");
+  const isNoSource = message.includes("409") || message.toLowerCase().includes("no source");
   return (
     <div className={styles.page}>
       <PageHead />

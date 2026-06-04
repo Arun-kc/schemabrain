@@ -7604,6 +7604,9 @@ def _emit_yaml_projection(
         starter = Policy(
             block=CATASTROPHIC_LEAK_CATEGORIES,
             description="Edit `block` to change the categories the firewall refuses.\n"
+            "The catastrophic floor (credential, payment_card, government_id) is\n"
+            "always enforced in addition to this list — removing those lines does\n"
+            "not disable it.\n"
             "`column_overrides` lets operators downgrade over-tagged columns\n"
             "(e.g. card_number_last4 per PCI-DSS Q&A — declare it `internal`\n"
             "with empty categories to allow analytics on it).",
