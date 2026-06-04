@@ -31,6 +31,7 @@ export default defineConfig({
         "components/kit/**/*.{ts,tsx}",
         "lib/useTheme.ts",
         "lib/policy.ts",
+        "lib/piiMatrix.ts",
         "lib/relativeTime.ts",
       ],
       exclude: ["**/index.ts"],

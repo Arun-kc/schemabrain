@@ -50,25 +50,25 @@ test.describe("dashboard E2E smoke", () => {
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });
 
-  test("PII ledger renders the stat slab + entity matrix", async ({ page }) => {
+  test("PII matrix renders the confidence heatmap", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
 
     await page.goto("/pii");
 
-    await expect(page.getByText(/THE LEDGER/i)).toBeVisible();
-    // Slab label is exact-case "catastrophic exposure" (lowercase).
-    // The title-meta string "no catastrophic exposure" appears on a
-    // safe store and would shadow a case-insensitive match; an
-    // exact-case match isolates the slab block reliably either way.
-    await expect(page.getByText("catastrophic exposure", { exact: true })).toBeVisible();
+    // The surface title (a heading, so it doesn't collide with the nav link
+    // of the same name).
+    await expect(page.getByRole("heading", { name: /PII matrix/i })).toBeVisible();
+    // The honest 3-level band legend is always rendered — the heatmap's
+    // load-bearing "advisory, never gates" framing.
+    await expect(page.getByText(/never gates enforcement/i)).toBeVisible();
 
-    // The matrix must list at least one entity from the fixture.
-    // Anchor on the qualified table name (`public.users`) inside the
-    // matrix label so the assertion stays scoped to the Ledger pane and
-    // survives any sibling that renders the same qualified-column string.
+    // The heatmap must list at least one classified column from the fixture.
+    // Anchor on the qualified table name (`public.users`) inside the matrix
+    // label so the assertion stays scoped to the grid; `.first()` because a
+    // column-row layout repeats the table name per column.
     await expect(
-      page.getByLabel("pii ledger matrix").getByText("public.users"),
+      page.getByLabel("pii matrix").getByText("public.users").first(),
     ).toBeVisible();
 
     await page.screenshot({ path: "test-results/02-pii.png", fullPage: true });

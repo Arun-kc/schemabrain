@@ -9,7 +9,7 @@ data.
 | Surface | Spec | Assertion shape |
 | --- | --- | --- |
 | Landing (`/`) | renders the three surface cards | hero h1 + each card name + telemetry section |
-| PII Ledger (`/pii`) | stat slab + entity matrix | "THE LEDGER" + slab label + at least one entity row |
+| PII matrix (`/pii`) | confidence heatmap | "PII matrix" heading + band legend + at least one classified column |
 | Refusal Experience (`/refusals`) | populated incident detail | feed header + "Refusal Event:" detail + `pii_blocked` envelope tag |
 | Audit Viewer (`/audit`) | ledger chain + selected-block payload | "Ledger Chain Intact" + JSON payload pane |
 | Source ID auto-resolution | header strip pill | a 16-char hex string appears (proves `useSourceId` works) |

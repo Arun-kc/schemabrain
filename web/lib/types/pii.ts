@@ -65,6 +65,29 @@ export function isCatastrophic(category: PIICategory): boolean {
 }
 
 /**
+ * Index-time PII-confidence band (ADR 0009) — an ADVISORY signal on a
+ * classified column, never an enforcement gate. `floor_locked` marks a
+ * catastrophic-floor column (locked); `high`/`medium`/`low` grade a
+ * non-floor classification's corroboration. The classifier emits only
+ * `floor_locked`/`high`/`medium` in v1 — `low` stays reserved (withholding
+ * it under-states sensitivity, the safe direction). A column with no band
+ * (legacy / SQLite / unclassified) serialises as null and renders '—',
+ * never a faked 0. The raw 0..1 score stays internal: only the band crosses
+ * the API.
+ *
+ * SOURCE: schemabrain/pii/categories.py PiiConfidenceBand — DO NOT EDIT
+ * WITHOUT BUMPING CHARTER (test_ts_charter_sync).
+ */
+export type PiiConfidenceBand = "floor_locked" | "high" | "medium" | "low";
+
+export const PII_CONFIDENCE_BANDS: readonly PiiConfidenceBand[] = [
+  "floor_locked",
+  "high",
+  "medium",
+  "low",
+] as const;
+
+/**
  * Per-column PII tag — the (sensitivity, categories) pair the Python
  * side calls `ColumnPiiTag`. Serialised by the sidecar route
  * /api/entities/{name}/columns.
