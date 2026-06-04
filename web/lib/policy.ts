@@ -281,6 +281,21 @@ export function filterPerColumn(
   return perColumn.filter((row) => matchesPolicyFilter(row, filter, stagedBlock, stagedOverrides));
 }
 
+/**
+ * Columns that carry at least one PII category — the *enforceable* set. The
+ * indexer tags every column (non-PII ones get an empty category list), but a
+ * no-category column has no meaningful 3-way action: `block` needs a category,
+ * and `allow` on a non-PII column is a no-op. So the grid shows only these by
+ * default. Floor (catastrophic) columns qualify — they carry a category. Pure;
+ * order-preserving. (Returns the same reference would be nice but the filter
+ * always allocates; callers memoize.)
+ */
+export function piiColumns(
+  perColumn: readonly PolicyColumnEntry[],
+): readonly PolicyColumnEntry[] {
+  return perColumn.filter((row) => row.categories.length > 0);
+}
+
 /** Per-category overview for the summary strip — one entry per category that
  * appears on any column, ordered by `PII_CATEGORIES`. Counts are by DERIVED
  * verb under the staged state; `inBlockSet` drives the one-click toggle and

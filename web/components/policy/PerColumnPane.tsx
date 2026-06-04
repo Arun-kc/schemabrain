@@ -6,6 +6,7 @@ import {
   filterPerColumn,
   groupByTable,
   isEmptyPolicyFilter,
+  piiColumns,
   type PolicyVerb,
   type StagedOverrides,
   summarizePolicyCategories,
@@ -50,9 +51,17 @@ export function PerColumnPane({
   const { filter, setFilter } = usePolicyFilter();
   const filterActive = !isEmptyPolicyFilter(filter);
 
+  // No-category columns have no meaningful 3-way action (block needs a
+  // category; allow on a non-PII column is a no-op), so the grid shows only
+  // PII-bearing columns by default and offers a toggle to reveal the rest.
+  const [showAll, setShowAll] = useState(false);
+  const pii = useMemo(() => piiColumns(perColumn), [perColumn]);
+  const nonPiiCount = perColumn.length - pii.length;
+  const baseColumns = showAll ? perColumn : pii;
+
   const filtered = useMemo(
-    () => filterPerColumn(perColumn, filter, stagedBlock, stagedOverrides),
-    [perColumn, filter, stagedBlock, stagedOverrides],
+    () => filterPerColumn(baseColumns, filter, stagedBlock, stagedOverrides),
+    [baseColumns, filter, stagedBlock, stagedOverrides],
   );
   const groups = useMemo(() => groupByTable(filtered), [filtered]);
   const summaries = useMemo(
@@ -98,7 +107,8 @@ export function PerColumnPane({
       <div className={styles.paneHead}>
         <Icon name="sliders-horizontal" size={14} /> Per-column enforcement
         <span className={styles.paneCount}>
-          {perColumn.length} {perColumn.length === 1 ? "column" : "columns"}
+          {baseColumns.length} {baseColumns.length === 1 ? "column" : "columns"}
+          {!showAll && nonPiiCount > 0 ? " · PII only" : ""}
         </span>
       </div>
 
@@ -113,18 +123,39 @@ export function PerColumnPane({
             resultColumns={filtered.length}
             resultTables={groups.length}
             onFilterChange={setFilter}
+            showAll={showAll}
+            nonPiiCount={nonPiiCount}
+            onToggleShowAll={() => setShowAll((v) => !v)}
           />
           {groups.length === 0 ? (
-            <p className={styles.empty}>
-              no columns match —{" "}
-              <button
-                type="button"
-                className={styles.linkBtn}
-                onClick={() => setFilter({ query: "", category: null, status: null })}
-              >
-                clear the filter
-              </button>
-            </p>
+            filterActive ? (
+              <p className={styles.empty}>
+                no columns match —{" "}
+                <button
+                  type="button"
+                  className={styles.linkBtn}
+                  onClick={() => setFilter({ query: "", category: null, status: null })}
+                >
+                  clear the filter
+                </button>
+              </p>
+            ) : (
+              <p className={styles.empty}>
+                no PII-tagged columns on this source.
+                {nonPiiCount > 0 && (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      className={styles.linkBtn}
+                      onClick={() => setShowAll(true)}
+                    >
+                      show all {perColumn.length} columns
+                    </button>
+                  </>
+                )}
+              </p>
+            )
           ) : (
             <div className={styles.groupList}>
               {groups.map((group) => (

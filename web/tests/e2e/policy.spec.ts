@@ -216,6 +216,67 @@ test.describe("Policy editor E2E smoke", () => {
     expect(writes, `unexpected non-GET /api calls: ${writes.join("; ")}`).toEqual([]);
   });
 
+  test("hides non-PII columns by default; 'show all' reveals them", async ({ page }) => {
+    const col = (qt: string, name: string, categories: string[]) => ({
+      qualified_table: qt,
+      column_name: name,
+      qualified_column: `${qt}.${name}`,
+      sensitivity: categories.length ? "pii" : "internal",
+      categories,
+      origin: "heuristic",
+      effective_enforcement: "allowed",
+    });
+    const resp = {
+      source_connection_id: "pii-default-smoke",
+      policy_path: "./schemabrain/pii_policy.yaml",
+      block_source: "default",
+      active_block: [],
+      catastrophic_floor: ["credential", "payment_card", "government_id"],
+      effective_block_for_describe: ["credential", "payment_card", "government_id"],
+      category_rollup: [],
+      per_column: [
+        col("public.users", "email", ["contact"]),
+        col("public.users", "full_name", ["contact"]),
+        col("public.users", "id", []),
+        col("public.users", "created_at", []),
+        col("public.users", "role", []),
+        col("public.invoices", "id", []),
+        col("public.invoices", "status", []),
+        col("public.invoices", "total_cents", []),
+      ],
+      diff_preview: {
+        current_blocked: 0,
+        if_all_blocked: 0,
+        if_catastrophic_only: 0,
+        if_none_blocked: 0,
+      },
+      yaml_parse_error: null,
+      policy_drift: { detected: false, recorded_at: null, current_mtime: null },
+    };
+    await page.route(
+      (url) => url.pathname === "/api/pii/policy",
+      (route) => route.fulfill({ json: resp }),
+    );
+
+    await page.goto("/policy");
+    const pane = gridPane(page);
+    const search = page.getByRole("search");
+
+    // Default: only the PII-bearing table (users) shows; the all-non-PII table
+    // (invoices) is hidden entirely.
+    await expect(pane.getByRole("button", { name: /public\.users/ })).toBeVisible();
+    await expect(pane.getByRole("button", { name: /public\.invoices/ })).toHaveCount(0);
+    // The toggle advertises the hidden non-PII columns (6 of them).
+    const showAll = search.getByRole("button", { name: /non-PII/ });
+    await expect(showAll).toBeVisible();
+    await expect(showAll).toHaveAttribute("aria-pressed", "false");
+
+    // Reveal them — the non-PII table now appears.
+    await showAll.click();
+    await expect(pane.getByRole("button", { name: /public\.invoices/ })).toBeVisible();
+    await expect(search.getByRole("button", { name: "PII only" })).toBeVisible();
+  });
+
   test("scales to many tables: collapse keeps the initial render light", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));

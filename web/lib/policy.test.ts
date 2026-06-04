@@ -18,6 +18,7 @@ import {
   countVerbs,
   MARK_SAFE_SENSITIVITY,
   matchesPolicyFilter,
+  piiColumns,
   type PolicyFilter,
   prettyCategory,
   serializeOverride,
@@ -517,6 +518,29 @@ describe("toggleCategoryBlock", () => {
     const base = new Set<PIICategory>(["payment_card"]);
     const next = toggleCategoryBlock(base, "payment_card", false);
     expect([...next]).toEqual(["payment_card"]);
+  });
+});
+
+describe("piiColumns", () => {
+  it("keeps only columns with >=1 category (incl. floor); drops no-category", () => {
+    const rows = [
+      entry({ qualified_column: "a.t.email", categories: ["contact"] }),
+      entry({ qualified_column: "a.t.pw", categories: ["credential"] }), // floor — kept
+      entry({ qualified_column: "a.t.id", categories: [] }),
+      entry({ qualified_column: "a.t.created", categories: [] }),
+    ];
+    expect(piiColumns(rows).map((c) => c.qualified_column)).toEqual(["a.t.email", "a.t.pw"]);
+  });
+  it("is empty when no column carries a category", () => {
+    expect(piiColumns([entry({ categories: [] })])).toEqual([]);
+  });
+  it("preserves order", () => {
+    const rows = [
+      entry({ qualified_column: "a.t.x", categories: ["contact"] }),
+      entry({ qualified_column: "a.t.y", categories: [] }),
+      entry({ qualified_column: "a.t.z", categories: ["location"] }),
+    ];
+    expect(piiColumns(rows).map((c) => c.qualified_column)).toEqual(["a.t.x", "a.t.z"]);
   });
 });
 

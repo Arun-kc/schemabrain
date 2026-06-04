@@ -47,12 +47,18 @@ export function PolicySearchBar({
   resultColumns,
   resultTables,
   onFilterChange,
+  showAll,
+  nonPiiCount,
+  onToggleShowAll,
 }: {
   filter: PolicyFilter;
   categories: readonly PIICategory[];
   resultColumns: number;
   resultTables: number;
   onFilterChange: (filter: PolicyFilter) => void;
+  showAll: boolean;
+  nonPiiCount: number;
+  onToggleShowAll: () => void;
 }) {
   const active = !isEmptyPolicyFilter(filter);
 
@@ -125,6 +131,20 @@ export function PolicySearchBar({
           onClick={() => onFilterChange({ query: "", category: null, status: null })}
         >
           <Icon name="x" size={13} /> clear
+        </button>
+      )}
+
+      {/* Reveal/hide the non-PII columns (no enforcement action) — only shown
+       * when there are any to reveal. */}
+      {nonPiiCount > 0 && (
+        <button
+          type="button"
+          className={styles.searchClear}
+          aria-pressed={showAll}
+          onClick={onToggleShowAll}
+        >
+          <Icon name={showAll ? "eye-off" : "boxes"} size={13} />{" "}
+          {showAll ? "PII only" : `show all (+${nonPiiCount} non-PII)`}
         </button>
       )}
 
