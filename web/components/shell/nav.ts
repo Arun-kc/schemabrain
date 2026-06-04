@@ -45,7 +45,7 @@ export const NAV: readonly NavGroup[] = [
   },
   {
     title: "Health",
-    items: [{ id: "drift", href: "/drift", label: "Drift", icon: "radar", built: false }],
+    items: [{ id: "drift", href: "/drift", label: "Drift", icon: "radar", built: true }],
   },
 ];
 

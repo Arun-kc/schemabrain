@@ -27,7 +27,12 @@ export default defineConfig({
     exclude: ["**/node_modules/**", "tests/e2e/**", "playwright-report/**"],
     coverage: {
       provider: "v8",
-      include: ["components/kit/**/*.{ts,tsx}", "lib/useTheme.ts", "lib/policy.ts"],
+      include: [
+        "components/kit/**/*.{ts,tsx}",
+        "lib/useTheme.ts",
+        "lib/policy.ts",
+        "lib/relativeTime.ts",
+      ],
       exclude: ["**/index.ts"],
       reporter: ["text", "html"],
       thresholds: {

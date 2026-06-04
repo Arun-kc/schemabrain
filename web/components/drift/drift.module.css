@@ -1,0 +1,370 @@
+/*
+ * Drift surface (/drift).
+ *
+ * Ports the design handoff (app/drift.jsx + app/pages2.css: .dr-hero /
+ * .dr-list / .dr-card / .dr-icon / .risk, app/trio.css: .tp-toolbar /
+ * .tp-seg) onto the .sb-app dual-theme tokens (sb-theme.css) + the
+ * component kit. Tokens auto-swap per theme — no per-theme blocks.
+ *
+ * Honest adaptation: only config + enrichment kinds exist (the sidecar
+ * can't verify live schema/definition drift), the default is the
+ * fresh/empty state, and every action copies a CLI command (ADR 0006).
+ */
+
+/* ---------- page scaffold ---------- */
+
+.page {
+  padding: 28px 32px 64px;
+}
+
+.pageHead {
+  padding-bottom: 4px;
+}
+
+.pageHead h1 {
+  font-size: 24px;
+}
+
+.pageHead p {
+  color: var(--ink-2);
+  font-size: 14px;
+  margin-top: 6px;
+  max-width: 660px;
+  line-height: 1.55;
+}
+
+/* ---------- freshness hero ---------- */
+
+.hero {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-top: 18px;
+  padding: 22px 24px;
+  border-radius: var(--r-xl);
+  border: 1px solid var(--hair);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.hero.stale {
+  border-color: color-mix(in oklch, var(--amber) 40%, transparent);
+  background: color-mix(in oklch, var(--amber) 7%, transparent);
+}
+
+.ring {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 2px solid color-mix(in oklch, var(--amber) 50%, transparent);
+  color: var(--amber);
+}
+
+.hero.fresh .ring {
+  border-color: color-mix(in oklch, var(--green) 50%, transparent);
+  color: var(--green);
+}
+
+.heroBody {
+  min-width: 0;
+}
+
+.hero h2 {
+  font-size: 21px;
+}
+
+.hero p {
+  font-size: 13.5px;
+  color: var(--ink-2);
+  margin-top: 5px;
+  max-width: 520px;
+  line-height: 1.5;
+}
+
+.meta {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  /* --ink-2 (not --ink-3): the "last enriched" timestamp is meaningful
+   * content (it becomes "never" for a null) and must clear 4.5:1. */
+  color: var(--ink-2);
+  margin-top: 9px;
+}
+
+.cta {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.upToDate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--f-mono);
+  font-size: 12px;
+  font-weight: 600;
+  /* --ink (not --green) so the label clears 4.5:1 in light theme — green
+   * on a green tint only hits 3.5:1. The green identity stays on the
+   * check icon (a graphic, 3:1) and the border. */
+  color: var(--ink);
+  padding: 7px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid color-mix(in oklch, var(--green) 35%, transparent);
+  background: color-mix(in oklch, var(--green) 8%, transparent);
+}
+
+.upToDateIcon {
+  display: inline-flex;
+  color: var(--green);
+}
+
+/* ---------- kind filter toolbar ---------- */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 22px 0 14px;
+  flex-wrap: wrap;
+}
+
+.seg {
+  display: inline-flex;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-md);
+  padding: 3px;
+  gap: 2px;
+}
+
+.seg button {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: all var(--dur-2);
+}
+
+.seg button:hover {
+  color: var(--ink);
+}
+
+/* Branded focus ring (matches the Policy sibling) — these are raw
+ * borderless buttons, so without this they fall back to the weak UA
+ * outline. WCAG 2.4.7. */
+.seg button:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+.seg button.segActive {
+  background: var(--bg-1);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--hair);
+}
+
+.count {
+  margin-left: auto;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+/* ---------- drift cards ---------- */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.card {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  gap: 14px;
+  align-items: start;
+  padding: 15px 17px;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  transition: border-color var(--dur-2);
+}
+
+.card:hover {
+  border-color: var(--glass-stroke);
+}
+
+.icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--hair);
+}
+
+.riskHigh {
+  color: var(--alarm);
+}
+
+.riskMed {
+  color: var(--amber);
+}
+
+.riskLow {
+  color: var(--ink-2);
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.title {
+  font-family: var(--f-mono);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.when {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.detail {
+  font-size: 13px;
+  color: var(--ink-2);
+  margin-top: 8px;
+  line-height: 1.5;
+  max-width: 640px;
+}
+
+.act {
+  align-self: center;
+}
+
+.risk {
+  font-family: var(--f-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  text-transform: uppercase;
+  /* Neutral high-contrast ink for the label (clears 4.5:1 in both themes);
+   * risk is encoded by the tinted fill + colored border below and the
+   * risk-colored card icon. Colored label text on a same-hue tint failed
+   * WCAG 1.4.3 (amber-on-amber hit 1.6:1 in light theme). */
+  color: var(--ink);
+}
+
+.risk.high {
+  background: color-mix(in oklch, var(--alarm) 14%, transparent);
+  border: 1px solid color-mix(in oklch, var(--alarm) 40%, transparent);
+}
+
+.risk.med {
+  background: color-mix(in oklch, var(--amber) 14%, transparent);
+  border: 1px solid color-mix(in oklch, var(--amber) 40%, transparent);
+}
+
+.risk.low {
+  background: var(--panel-2);
+  border: 1px solid var(--hair);
+}
+
+/* ---------- empty / fresh state ---------- */
+
+.empty {
+  margin-top: 14px;
+  padding: 36px 28px;
+  border: 1px dashed var(--hair);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  text-align: center;
+}
+
+.empty h3 {
+  font-size: 15px;
+  margin-top: 12px;
+}
+
+.empty p {
+  color: var(--ink-2);
+  font-size: 13px;
+  margin-top: 6px;
+  max-width: 440px;
+  margin-left: auto;
+  margin-right: auto;
+  line-height: 1.5;
+}
+
+.emptyIcon {
+  color: var(--green);
+}
+
+/* ---------- loading / error ---------- */
+
+.skeleton {
+  color: var(--ink-3);
+  font-family: var(--f-mono);
+  font-size: 13px;
+  margin-top: 18px;
+}
+
+.errorCard {
+  margin-top: 18px;
+  padding: 18px 20px;
+  border: 1px solid color-mix(in oklch, var(--alarm) 40%, transparent);
+  background: color-mix(in oklch, var(--alarm) 7%, transparent);
+  border-radius: var(--r-lg);
+  color: var(--ink);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 900px) {
+  .page {
+    padding: 24px 18px 56px;
+  }
+
+  .hero {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .cta {
+    margin-left: 0;
+    align-items: flex-start;
+  }
+}
