@@ -33,6 +33,8 @@ export default defineConfig({
         "lib/policy.ts",
         "lib/piiMatrix.ts",
         "lib/refusals.ts",
+        "lib/merkle.ts",
+        "lib/auditVerdict.ts",
         "lib/relativeTime.ts",
       ],
       exclude: ["**/index.ts"],

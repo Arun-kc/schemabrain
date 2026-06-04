@@ -36,7 +36,11 @@ from pathlib import Path
 # qualified_table, sensitivity, categories, advisory `pii_confidence`
 # band) to `GET /api/entities/pii-matrix` for the confidence heatmap
 # (ADR 0009).
-DASHBOARD_SCHEMA_VERSION = "1.4"
+# 1.5 adds the derived RFC-6962 Merkle layer over the audit chain: the
+# read-only `GET /api/audit/merkle/root` (`MerkleRootResponse`) and
+# `GET /api/audit/rows/{id}/proof` (`MerkleProofResponse`) routes, so a
+# client can independently reconcile each audit row to one root.
+DASHBOARD_SCHEMA_VERSION = "1.5"
 
 # Directory holding the static Next.js export. Populated at wheel-build
 # time by the ``web/`` workspace's ``pnpm build`` output. At install
