@@ -16,13 +16,18 @@
   min-height: clamp(520px, 80vh, 920px);
   border-radius: var(--r-lg);
   overflow: hidden;
+  /* Handoff `#kgsky`: a faint violet sky top-centre over the neutral paper/
+   * glass base. Mixed in OKLAB (not OKLCH) so the violet→transparent ramp does
+   * NOT arc through the red/orange hue wedge — OKLCH hue-interpolated this to a
+   * peachy tint. Kept subtle, matching the handoff's 0.25-opacity sky. */
   background:
     radial-gradient(
-      120% 78% at 50% -8%,
-      color-mix(in oklch, var(--bg-1) 72%, var(--violet)) 0%,
-      transparent 58%
+      82% 80% at 50% 30%,
+      color-mix(in oklab, var(--violet) 15%, transparent) 0%,
+      transparent 70%
     ),
-    var(--bg-1);
+    var(--bg-grad),
+    var(--bg);
 }
 
 /* reactflow paints its own surface transparent so the gradient shows through. */
@@ -338,12 +343,28 @@
   }
 }
 
-/* reactflow MiniMap + Controls themed to the surface tokens */
+/* reactflow MiniMap + Controls themed to the surface tokens. Sized to the
+ * handoff `.kg-mini` panel (168×116) so the "Map" caption lines up. */
 .canvas :global(.react-flow__minimap) {
+  width: 168px;
+  height: 116px;
   background: var(--glass);
   border: 1px solid var(--glass-stroke);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow);
+}
+/* "Map" caption pinned over the minimap's top-left, like the handoff. */
+.miniCap {
+  position: absolute;
+  right: 28px;
+  bottom: 120px;
+  z-index: 11;
+  font-family: var(--f-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  pointer-events: none;
 }
 .canvas :global(.react-flow__controls) {
   box-shadow: var(--shadow);

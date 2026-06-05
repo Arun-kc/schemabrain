@@ -8,11 +8,12 @@ import {
 } from "./graphStyle";
 
 // Hidden connection anchors. The graph is a read-only projection — nodes are
-// never wired up by hand — so the handles are non-connectable and invisible;
-// they exist only to give reactflow a deterministic point to anchor each edge.
-// A target on the left and a source on the right keep edge beziers reading
-// left-to-right along the canonical-path backbone the layout lays down.
-const HANDLE_STYLE: React.CSSProperties = {
+// never wired up by hand — so the handles are non-connectable and invisible.
+// Both are pinned to the ORB CENTRE (not the node's left/right edge) so reactflow
+// anchors every straight edge centre-to-centre, giving the handoff's clean
+// radial spokes (the orb disc, painted in the nodes layer above the edges layer,
+// covers the line ends). `top` is set per-render to the orb radius.
+const HANDLE_BASE: React.CSSProperties = {
   opacity: 0,
   width: 1,
   height: 1,
@@ -21,6 +22,9 @@ const HANDLE_STYLE: React.CSSProperties = {
   border: 0,
   background: "transparent",
   pointerEvents: "none",
+  left: "50%",
+  right: "auto",
+  transform: "translate(-50%, -50%)",
 };
 
 export interface GraphNodeData {
@@ -45,9 +49,11 @@ export interface GraphNodeData {
 }
 
 /**
- * reactflow-ready entity node primitive (look only). Group colour via fill +
- * ring; catastrophic PII via the reserved alarm ring + glow + label; selection
- * via the green ring. Two PR-17b overlay treatments ride on the same node so
+ * reactflow-ready entity node primitive (look only). A neutral glass disc with
+ * a bright group-coloured core dot (the group colour lives ONLY in the dot, as
+ * in the handoff — the ring stays neutral glass); catastrophic PII via the
+ * reserved alarm ring + glow + label; selection via a separate outer green ring.
+ * Two PR-17b overlay treatments ride on the same node so
  * the graph has a single node renderer: a softer PII halo (PII-heat overlay,
  * `pii`-tier entities) and a refusal-hotspot badge + pulse ring (refusal
  * overlay, entities with attributed refusals). Both are gated by overlay-active
@@ -61,12 +67,15 @@ export interface GraphNodeData {
 export function GraphNode({ data, selected }: NodeProps<GraphNodeData>) {
   const { label, group, catastrophic = false, piiLevel = "none" } = data;
   const accent = GROUP_COLOR[group];
-  const ring = graphNodeRing(group, catastrophic);
+  const ring = graphNodeRing(catastrophic, selected);
   const emphasised = catastrophic || selected;
   // Handoff sizing: r 16/20 → 32/40 orb, r 3.5/4.5 → 7/9 core dot.
   const diameter = catastrophic ? 40 : 32;
   const coreColor = catastrophic ? "var(--alarm)" : accent;
   const coreDiameter = catastrophic ? 9 : 7;
+  // Pin the edge anchors to the orb centre (orb sits at the top of the node;
+  // the label/CATASTROPHIC stack below it).
+  const handleStyle: React.CSSProperties = { ...HANDLE_BASE, top: diameter / 2 };
 
   const haloColor = data.piiHeat ? graphPiiHaloColor(piiLevel) : null;
   const refusalCount = data.refusalCount ?? 0;
@@ -79,8 +88,8 @@ export function GraphNode({ data, selected }: NodeProps<GraphNodeData>) {
       data-catastrophic={catastrophic ? "true" : undefined}
       style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "var(--s1)" }}
     >
-      <Handle type="target" position={Position.Left} isConnectable={false} style={HANDLE_STYLE} />
-      <Handle type="source" position={Position.Right} isConnectable={false} style={HANDLE_STYLE} />
+      <Handle type="target" position={Position.Left} isConnectable={false} style={handleStyle} />
+      <Handle type="source" position={Position.Right} isConnectable={false} style={handleStyle} />
       <div style={{ position: "relative", width: diameter, height: diameter }}>
         {selected && (
           // Selection = a SEPARATE outer green ring (handoff `r+7`), drawn
@@ -128,7 +137,7 @@ export function GraphNode({ data, selected }: NodeProps<GraphNodeData>) {
             width: diameter,
             height: diameter,
             borderRadius: "50%",
-            background: `color-mix(in oklch, ${accent} 16%, var(--glass))`,
+            background: "var(--glass)",
             WebkitBackdropFilter: "blur(4px)",
             backdropFilter: "blur(4px)",
             border: `${catastrophic ? 2 : 1.4}px solid ${ring}`,

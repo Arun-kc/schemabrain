@@ -41,13 +41,17 @@ export function graphNodeColor(group: GraphNodeGroup, catastrophic = false): str
 }
 
 /**
- * Border colour of a node's orb. Catastrophic → the reserved alarm; else the
- * group accent so the cluster colour stays legible. Selection is NOT folded in
- * here — it renders as a separate outer green ring (so it stays visible even on
- * a catastrophic node, matching the handoff).
+ * Border colour of a node's orb. Matches the handoff: catastrophic → the
+ * reserved alarm; selected → green; otherwise a NEUTRAL glass stroke. The group
+ * colour does NOT live on the ring — it is carried solely by the bright core
+ * dot inside the orb (so the disc reads as neutral glass, not a coloured ring).
+ * A separate outer green ring is also drawn on selection (see GraphNode) so the
+ * pick stays visible even on a catastrophic node.
  */
-export function graphNodeRing(group: GraphNodeGroup, catastrophic = false): string {
-  return catastrophic ? "var(--alarm)" : GROUP_COLOR[group];
+export function graphNodeRing(catastrophic = false, selected = false): string {
+  if (catastrophic) return "var(--alarm)";
+  if (selected) return "var(--green)";
+  return "var(--glass-stroke)";
 }
 
 export interface GraphEdgeStyleInput {

@@ -27,10 +27,11 @@ describe("graphStyle", () => {
     expect(graphNodeColor("identity", true)).toBe("var(--alarm)");
   });
 
-  it("rings catastrophic over the group accent (selection is a separate outer ring)", () => {
-    expect(graphNodeRing("billing", true)).toBe("var(--alarm)");
-    expect(graphNodeRing("billing", false)).toBe("var(--cyan)");
-    expect(graphNodeRing("identity", false)).toBe("var(--green)");
+  it("rings catastrophic > selected > a NEUTRAL glass stroke (group colour lives in the core dot)", () => {
+    expect(graphNodeRing(true)).toBe("var(--alarm)");
+    expect(graphNodeRing(true, true)).toBe("var(--alarm)"); // catastrophic outranks selection
+    expect(graphNodeRing(false, true)).toBe("var(--green)");
+    expect(graphNodeRing(false, false)).toBe("var(--glass-stroke)");
   });
 
   it("styles edges by priority and reflects declared-vs-mined dashing", () => {

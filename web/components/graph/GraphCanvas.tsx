@@ -15,6 +15,7 @@ import ReactFlow, {
   Controls,
   MarkerType,
   MiniMap,
+  type MiniMapNodeProps,
   type NodeDragHandler,
   type NodeMouseHandler,
   useEdgesState,
@@ -59,6 +60,14 @@ const EDGE_TYPES = { [RELATIONSHIP_EDGE_TYPE]: GraphEdge };
 const NODE_ORIGIN: [number, number] = [0.5, 0.5];
 const FIT_VIEW_OPTIONS = { padding: 0.2 };
 const NO_OVERLAYS: OverlayState = { pii: false, refusals: false, mined: false };
+
+/** Minimap node renderer — a CIRCLE (matching the handoff "Map" panel), not
+ *  reactflow's default rect. Catastrophic entities read larger; the colour
+ *  comes from the MiniMap `nodeColor` callback below. */
+function MiniMapCircle({ x, y, width, height, color, className }: MiniMapNodeProps) {
+  const catastrophic = typeof className === "string" && className.includes("cat");
+  return <circle cx={x + width / 2} cy={y + height / 2} r={catastrophic ? 16 : 11} fill={color} />;
+}
 
 export interface GraphCanvasProps {
   graph: GraphResponse;
@@ -360,13 +369,20 @@ export default function GraphCanvas({
           pannable
           zoomable
           ariaLabel="Graph minimap"
+          nodeComponent={MiniMapCircle}
           nodeColor={(node) => {
             const data = node.data as GraphFlowNodeData | undefined;
             if (!data) return "var(--ink-3)";
             return data.catastrophic ? "var(--alarm)" : (GROUP_COLOR[data.group] ?? "var(--ink-3)");
           }}
-          maskColor="color-mix(in oklch, var(--bg-1) 70%, transparent)"
+          nodeClassName={(node) =>
+            (node.data as GraphFlowNodeData | undefined)?.catastrophic ? "cat" : ""
+          }
+          maskColor="color-mix(in oklab, var(--bg-1) 70%, transparent)"
         />
+        <span aria-hidden className={styles.miniCap}>
+          Map
+        </span>
         <Controls position="bottom-center" showInteractive={false} />
       </ReactFlow>
 
