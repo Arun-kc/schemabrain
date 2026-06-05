@@ -367,7 +367,7 @@ jobs:
         # Pinned to v4 (immutable major); pnpm version comes from
         # `web/package.json` engines.pnpm (>=9). Keep this in sync with
         # the engines field if it ever bumps.
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 9
 
