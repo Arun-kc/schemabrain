@@ -130,8 +130,15 @@ def test_graph_response_shape_is_stable(client: TestClient, store_path: Path) ->
     assert resp.status_code == 200
     body = resp.json()
     assert set(body) == {"source_connection_id", "nodes", "edges", "canonical_path"}
-    assert set(body["nodes"][0]) == {"id", "label", "group", "catastrophic", "row_count"}
-    assert set(body["edges"][0]) == {"id", "source", "target", "evidence", "canonical_path_rank"}
+    assert set(body["nodes"][0]) == {"id", "label", "group", "pii_level", "row_count"}
+    assert set(body["edges"][0]) == {
+        "id",
+        "source",
+        "target",
+        "evidence",
+        "canonical_path_rank",
+        "cardinality",
+    }
     assert set(body["canonical_path"]) == {"nodes", "edges", "hops"}
 
 
@@ -184,9 +191,10 @@ def test_graph_edges_carry_honest_evidence(client: TestClient, store_path: Path)
     assert edges["order_to_payment"]["canonical_path_rank"] == 0
 
 
-def test_graph_node_catastrophic_is_live(client: TestClient, store_path: Path) -> None:
-    """The floor is a LIVE overlay: a payment_card tag added AFTER the
-    projection was built still flags the node catastrophic (ADR 0010)."""
+def test_graph_node_pii_level_is_live(client: TestClient, store_path: Path) -> None:
+    """`pii_level` is a LIVE overlay: a payment_card tag added AFTER the
+    projection was built still flags the node catastrophic (ADR 0010/0011),
+    even though the persisted snapshot never saw it."""
     _seed_graph(store_path, with_card_tag=False)  # projection snapshot = not catastrophic
     # Simulate a `policy tag override` the projection never saw.
     with SQLiteStore(store_path) as store:
@@ -199,8 +207,51 @@ def test_graph_node_catastrophic_is_live(client: TestClient, store_path: Path) -
         n["id"]: n
         for n in client.get("/api/graph", params={"source_connection_id": SRC}).json()["nodes"]
     }
-    assert nodes["order"]["catastrophic"] is True  # live, despite stale snapshot
-    assert nodes["user"]["catastrophic"] is False
+    assert nodes["order"]["pii_level"] == "catastrophic"  # live, despite stale snapshot
+    assert nodes["user"]["pii_level"] == "none"
+
+
+def test_graph_node_pii_level_emits_non_catastrophic_tier(
+    client: TestClient, store_path: Path
+) -> None:
+    """The full 5-state level reaches the wire — a column with a
+    non-catastrophic PII category surfaces the middle tier (`pii`), not a
+    boolean collapse, so the surface can render the lighter halo (ADR 0011)."""
+    _seed_graph(store_path, with_card_tag=False)
+    with SQLiteStore(store_path) as store:
+        # `contact` is PII but not a catastrophic-leak category → middle tier.
+        # `card_number` is a real column on the seeded `orders` table.
+        store.write_column_pii_tags(
+            source_connection_id=SRC,
+            qualified_table="public.orders",
+            tags={"card_number": ("pii", frozenset({"contact"}))},
+        )
+    nodes = {
+        n["id"]: n
+        for n in client.get("/api/graph", params={"source_connection_id": SRC}).json()["nodes"]
+    }
+    assert nodes["order"]["pii_level"] == "pii"  # present, not catastrophic
+    assert nodes["tenant"]["pii_level"] == "none"
+
+
+def test_graph_edge_cardinality_declared_only(client: TestClient, store_path: Path) -> None:
+    """ADR 0011 honesty line: cardinality rides on declared FK edges only.
+    The seed authors `many_to_one` on every join, but the projection drops
+    it for the log-mined and inferred edges so an unverified shape never
+    reads as engine-derived."""
+    _seed_graph(store_path)
+    edges = {
+        e["id"]: e
+        for e in client.get("/api/graph", params={"source_connection_id": SRC}).json()["edges"]
+    }
+    # declared (fk_constraint) → the authored cardinality survives.
+    assert edges["order_to_user"]["evidence"] == "declared"
+    assert edges["order_to_user"]["cardinality"] == "many_to_one"
+    # log_mined / inferred → dropped to null despite the authored value.
+    assert edges["user_to_tenant"]["evidence"] == "log_mined"
+    assert edges["user_to_tenant"]["cardinality"] is None
+    assert edges["order_to_payment"]["evidence"] == "inferred"
+    assert edges["order_to_payment"]["cardinality"] is None
 
 
 def test_graph_canonical_path_is_ordered(client: TestClient, store_path: Path) -> None:
@@ -255,13 +306,14 @@ def test_graph_canonical_path_ignores_rank2_alternates(
 
 
 def test_graph_catastrophic_matches_pii_matrix(client: TestClient, store_path: Path) -> None:
-    """Cross-surface floor invariant (ADR 0010): every node's catastrophic
-    flag from /api/graph equals the PII matrix's `has_catastrophic` for the
-    same entity — the two surfaces can never disagree on the floor."""
+    """Cross-surface floor invariant (ADR 0010/0011): every node's
+    catastrophic floor from /api/graph (`pii_level == 'catastrophic'`)
+    equals the PII matrix's `has_catastrophic` for the same entity — the
+    two surfaces can never disagree on the floor."""
     _seed_graph(store_path)  # `order` carries payment_card; the rest do not
     graph = client.get("/api/graph", params={"source_connection_id": SRC}).json()
     matrix = client.get("/api/entities/pii-matrix", params={"source_connection_id": SRC}).json()
-    graph_catastrophic = {node["id"]: node["catastrophic"] for node in graph["nodes"]}
+    graph_catastrophic = {node["id"]: node["pii_level"] == "catastrophic" for node in graph["nodes"]}
     matrix_catastrophic = {e["name"]: e["has_catastrophic"] for e in matrix["entities"]}
     assert graph_catastrophic == matrix_catastrophic
     assert graph_catastrophic["order"] is True  # the floor actually fires

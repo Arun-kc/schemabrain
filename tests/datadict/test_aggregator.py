@@ -52,7 +52,7 @@ def _entity(model: DictionaryModel, name: str) -> DictEntity:
 
 def test_build_dictionary_single_source(tmp_path: Path) -> None:
     model = _saas_model(tmp_path)
-    assert model.schema_version == SCHEMA_VERSION == "15"
+    assert model.schema_version == SCHEMA_VERSION == "16"
     assert len(model.sources) == 1
     assert model.sources[0].source_connection_id == SOURCE_ID
     assert len(model.sources[0].entities) == 12
@@ -163,7 +163,7 @@ def test_on_clause_redacts_catastrophic_fk_column(tmp_path: Path) -> None:
 def test_empty_store_yields_empty_model(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "empty.db") as store:
         model = build_dictionary(store=store, source_connection_id=None)
-    assert model.schema_version == "15"
+    assert model.schema_version == "16"
     assert model.sources == ()
 
 

@@ -20,6 +20,7 @@ import pytest
 
 from schemabrain.audit.fingerprint import CostClass, RefusalReason
 from schemabrain.core.entity import BindConfidence
+from schemabrain.core.join import Cardinality
 from schemabrain.mcp.envelope import (
     Confidence,
     DegradationReason,
@@ -91,6 +92,7 @@ def _ts_array_values(ts_file: Path, const_name: str) -> set[str]:
         (InferenceMethod, "envelope.ts", "InferenceMethod"),
         (ValidationState, "envelope.ts", "ValidationState"),
         (BindConfidence, "meta.ts", "BindConfidence"),
+        (Cardinality, "meta.ts", "Cardinality"),
         (ProvenanceSource, "envelope.ts", "ProvenanceSource"),
         (ErrorKind, "envelope.ts", "ErrorKind"),
         (DegradationReason, "envelope.ts", "DegradationReason"),

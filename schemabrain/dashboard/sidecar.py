@@ -1585,18 +1585,23 @@ def _register_drift_route(app: FastAPI, config: SidecarConfig) -> None:
 def _register_graph_route(app: FastAPI, config: SidecarConfig) -> None:
     """GET /api/graph — read-only knowledge-graph projection (ADR 0010).
 
-    Serves the persisted v15 ``graph_nodes`` / ``graph_edges`` read-model:
-    one node per entity (cosmetic ``group`` + cached ``row_count``), one
-    edge per canonical join with honest ``evidence`` (declared FK /
-    log-mined / inferred — never inspected SQL), and the ordered canonical
-    path (the diameter spine) reconstructed from the rank-1 edges.
+    Serves the persisted ``graph_nodes`` / ``graph_edges`` read-model: one
+    node per entity (cosmetic ``group`` + cached ``row_count``), one edge
+    per canonical join with honest ``evidence`` (declared FK / log-mined /
+    inferred — never inspected SQL) and, for declared FK edges only, the
+    equi-join ``cardinality`` (v16; null for mined/inferred so an
+    unverified shape never reads as engine-derived), plus the ordered
+    canonical path (the diameter spine) reconstructed from the rank-1 edges.
 
-    The catastrophic floor is recomputed LIVE per node from the current
-    PII tags — via the SAME ``_entity_pii_level`` helper the PII matrix
-    uses — so the graph never disagrees with /pii, even after a tag
-    override the last projection did not see. A source that exists but has
-    no projection yields empty arrays at 200; no resolvable source is a
-    409. The route writes nothing.
+    ``pii_level`` is recomputed LIVE per node from the current PII tags —
+    via the SAME ``_entity_pii_level`` helper the PII matrix uses — so the
+    graph never disagrees with /pii, even after a tag override the last
+    projection did not see. It is the full 5-state severity
+    (catastrophic / pii / confidential / internal / none), not a collapsed
+    boolean, so the surface renders the catastrophic alarm and the lighter
+    halo from one source of truth. A source that exists but has no
+    projection yields empty arrays at 200; no resolvable source is a 409.
+    The route writes nothing.
     """
     from schemabrain.core.store import SQLiteStore
     from schemabrain.pii.categories import CATASTROPHIC_LEAK_CATEGORIES
@@ -1620,16 +1625,20 @@ def _register_graph_route(app: FastAPI, config: SidecarConfig) -> None:
                     "id": node.entity_name,
                     "label": node.entity_name,
                     "group": node.group,
-                    # LIVE floor overlay: identical predicate to the PII
-                    # matrix, so the catastrophic flag can never drift from
-                    # /pii. The node→entity FK guarantees the lookup hits.
-                    "catastrophic": _entity_pii_level(
+                    # LIVE PII-severity overlay: the SAME `_entity_pii_level`
+                    # the PII matrix uses, so the graph's floor can never
+                    # drift from /pii. The node→entity FK guarantees the
+                    # lookup hits. Emitting the full 5-state level (not a
+                    # collapsed boolean) lets the surface render the
+                    # catastrophic alarm AND the lighter non-catastrophic
+                    # halo from ONE source of truth — never a second
+                    # client-side re-derivation of catastrophic-ness.
+                    "pii_level": _entity_pii_level(
                         store,
                         entities_by_name[node.entity_name],
                         source_connection_id=safe_source,
                         catastrophic_categories=CATASTROPHIC_LEAK_CATEGORIES,
-                    )
-                    == "catastrophic",
+                    ),
                     "row_count": node.row_count,
                 }
                 for node in graph_nodes
@@ -1642,6 +1651,11 @@ def _register_graph_route(app: FastAPI, config: SidecarConfig) -> None:
                 "target": edge.target_entity,
                 "evidence": edge.edge_origin,
                 "canonical_path_rank": edge.canonical_path_rank,
+                # Equi-join shape, present ONLY on declared FK edges (the
+                # projection writer drops it for log_mined / inferred so an
+                # unverified shape never reads as engine-derived); null
+                # otherwise — never a guess. See ADR 0011.
+                "cardinality": edge.cardinality,
             }
             for edge in graph_edges
         ]

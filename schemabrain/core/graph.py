@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Literal, get_args
 
 from schemabrain.core.entity import Group, InferenceMethod
+from schemabrain.core.join import _VALID_CARDINALITIES, Cardinality
 
 # The honest edge-evidence vocabulary. `declared` = backed by a DB foreign
 # key; `log_mined` = recovered from query-log mining; `inferred` = an
@@ -54,14 +55,25 @@ class GraphNode:
 
 @dataclass(frozen=True)
 class GraphEdge:
-    """One projected canonical-join edge with honest provenance and its
-    canonical-path rank."""
+    """One projected canonical-join edge with honest provenance, its
+    canonical-path rank, and (for declared FK edges only) cardinality.
+
+    `cardinality` is the equi-join shape (`one_to_one` / `one_to_many` /
+    `many_to_one` / `many_to_many`), copied from the canonical join. It is
+    `None` for `log_mined` and `inferred` edges: the projection writer only
+    carries a cardinality when the edge is FK-backed (`declared`), so the
+    wire never shows an engine-verified shape for a join that was mined or
+    hand/dbt-asserted. `None` also covers declared joins authored before the
+    cardinality column existed and FKs whose uniqueness the connector could
+    not confirm — never a guess.
+    """
 
     join_name: str
     source_entity: str
     target_entity: str
     edge_origin: EdgeOrigin = "declared"
     canonical_path_rank: int = MIN_PATH_RANK
+    cardinality: Cardinality | None = None
 
     def __post_init__(self) -> None:
         if self.edge_origin not in _VALID_EDGE_ORIGINS:
@@ -73,6 +85,11 @@ class GraphEdge:
             raise ValueError(
                 f"canonical_path_rank must be in "
                 f"[{MIN_PATH_RANK}, {MAX_PATH_RANK}] (got {self.canonical_path_rank!r})"
+            )
+        if self.cardinality is not None and self.cardinality not in _VALID_CARDINALITIES:
+            raise ValueError(
+                f"cardinality must be None or one of "
+                f"{sorted(_VALID_CARDINALITIES)} (got {self.cardinality!r})"
             )
 
 

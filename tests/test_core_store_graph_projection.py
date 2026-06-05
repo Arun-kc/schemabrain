@@ -104,6 +104,7 @@ class TestWriteReadRoundTrip:
                         target_entity="customer",
                         edge_origin="declared",
                         canonical_path_rank=1,
+                        cardinality="many_to_one",
                     )
                 ],
             )
@@ -121,6 +122,26 @@ class TestWriteReadRoundTrip:
             assert edges[0].join_name == "order_to_customer"
             assert edges[0].edge_origin == "declared"
             assert edges[0].canonical_path_rank == 1
+            assert edges[0].cardinality == "many_to_one"
+
+    def test_cardinality_round_trips_each_value_and_none(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "s.db") as store:
+            _seed_two_entity_chain(store)
+            for value in ("one_to_one", "one_to_many", "many_to_one", "many_to_many", None):
+                store.write_graph_projection(
+                    source_connection_id=SOURCE_A,
+                    nodes=[GraphNode("customer"), GraphNode("order")],
+                    edges=[
+                        GraphEdge(
+                            "order_to_customer",
+                            source_entity="order",
+                            target_entity="customer",
+                            cardinality=value,  # type: ignore[arg-type]
+                        )
+                    ],
+                )
+                edges = store.list_graph_edges(source_connection_id=SOURCE_A)
+                assert edges[0].cardinality == value
 
     def test_empty_projection_on_fresh_store(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "s.db") as store:
@@ -224,3 +245,23 @@ class TestGraphModelValidation:
     def test_bad_group_rejected(self) -> None:
         with pytest.raises(ValueError, match="group"):
             GraphNode("e", group="bogus")  # type: ignore[arg-type]
+
+    def test_bad_cardinality_rejected(self) -> None:
+        with pytest.raises(ValueError, match="cardinality"):
+            GraphEdge("j", source_entity="a", target_entity="b", cardinality="N:1")  # type: ignore[arg-type]
+
+    def test_db_check_rejects_bogus_cardinality(self, tmp_path: Path) -> None:
+        """Belt-and-suspenders: the dataclass guard catches a bad value
+        first, but the v16 graph_edges CHECK is the DB-level backstop — a
+        raw INSERT that bypasses the dataclass still cannot persist a
+        cardinality outside the closed set."""
+        with SQLiteStore(tmp_path / "s.db") as store:
+            _seed_two_entity_chain(store)
+            conn = store._require_conn()  # type: ignore[attr-defined]
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO graph_edges (source_connection_id, join_name, "
+                    "source_entity, target_entity, edge_origin, canonical_path_rank, "
+                    "cardinality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (SOURCE_A, "order_to_customer", "order", "customer", "declared", 0, "N:1", 0),
+                )

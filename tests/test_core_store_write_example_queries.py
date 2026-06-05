@@ -60,16 +60,16 @@ def _eq(
     )
 
 
-class TestSchemaVersionBumpToV15:
-    """v15 schema contract.
+class TestSchemaVersionBumpToV16:
+    """v13→v16 migration-chain contract.
 
-    Fresh stores stamp `schema_version='15'`; v14 stores migrate
-    in-place via `_migrate_v14_to_v15`; v13 stores CHAIN 13→14→15
-    (Option B — `_migrate_v13_to_v14` then `_migrate_v14_to_v15` in a
-    single open, with `existing_version` reassigned between them);
-    pre-v13 stores still raise `SchemaVersionMismatchError` — the
-    pre-alpha cliff does NOT move under chaining. The v13→v14 in-place
-    behaviour is subsumed by the chaining test below.
+    Fresh stores stamp `schema_version='16'`; v15 stores migrate in-place
+    via `_migrate_v15_to_v16` (the `graph_edges.cardinality` ALTER); v14
+    stores chain 14→15→16; v13 stores chain 13→14→15→16 (Option B — each
+    `_migrate_vN_to_vN+1` in a single open, with `existing_version`
+    reassigned between legs); pre-v13 stores still raise
+    `SchemaVersionMismatchError` — the pre-alpha cliff does NOT move under
+    chaining.
     """
 
     # Columns/tables each version added — dropped here to fabricate an
@@ -174,22 +174,66 @@ class TestSchemaVersionBumpToV15:
             for table in ("entities", "metrics", "canonical_joins", "column_pii_tags")
         }
 
-    def test_fresh_store_has_schema_version_15(self, tmp_path: Path) -> None:
+    @classmethod
+    def _downgrade_to_v15(cls, conn: sqlite3.Connection) -> None:
+        """Strip only the v16 addition so the store looks like a v15 store
+        (graph_edges present, but WITHOUT the cardinality column)."""
+        conn.execute("ALTER TABLE graph_edges DROP COLUMN cardinality")
+
+    def test_fresh_store_has_schema_version_16(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "sb.db") as store:
             row = (
                 store._require_conn()
                 .execute("SELECT value FROM schemabrain_meta WHERE key = 'schema_version'")
                 .fetchone()
             )
-            assert row["value"] == "15"
+            assert row["value"] == "16"
 
-    def test_v14_store_migrates_in_place(self, tmp_path: Path) -> None:
+    def test_v15_store_migrates_to_v16(self, tmp_path: Path) -> None:
+        # Fabricate a genuine v15 store: graph_edges present but WITHOUT
+        # the v16 cardinality column, carrying a real projected edge.
+        # Re-open with v16 code and assert (a) version bumped to 16, (b)
+        # the ALTER added the cardinality column, (c) the pre-existing edge
+        # survived with a NULL cardinality (backfill, never fabricated).
+        db_path = tmp_path / "sb.db"
+        with SQLiteStore(db_path) as store:
+            conn = store._require_conn()
+            self._seed_semantic_rows(conn)  # entities + canonical_joins for the edge FK
+            self._downgrade_to_v15(conn)
+            conn.execute(
+                "INSERT INTO graph_edges (source_connection_id, join_name, source_entity, "
+                "target_entity, edge_origin, canonical_path_rank, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("src", "order_to_user", "order", "user", "declared", 1, 0),
+            )
+            conn.execute("UPDATE schemabrain_meta SET value = '15' WHERE key = 'schema_version'")
+            conn.commit()
+
+        with SQLiteStore(db_path) as store:
+            conn = store._require_conn()
+            assert (
+                conn.execute(
+                    "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
+                ).fetchone()["value"]
+                == "16"
+            )
+            edge_cols = {r["name"] for r in conn.execute("PRAGMA table_info(graph_edges)")}
+            assert "cardinality" in edge_cols
+            row = conn.execute(
+                "SELECT cardinality FROM graph_edges WHERE join_name = 'order_to_user'"
+            ).fetchone()
+            assert row["cardinality"] is None  # backfilled NULL, never fabricated
+
+    def test_v14_store_chains_to_v16(self, tmp_path: Path) -> None:
         # Fabricate a v14 store (drop the v15 columns + graph tables),
-        # seed all four semantic surfaces, re-open with v15 code, and
-        # verify (a) version bumped to 15, (b) the new columns exist and
+        # seed all four semantic surfaces, re-open with v16 code, and
+        # verify (a) version chained to 16, (b) the v15 columns exist and
         # carry the NULL/default backfill, (c) every seeded row across
         # entities / metrics / canonical_joins / column_pii_tags
-        # survives, (d) the graph tables were (re)created EMPTY.
+        # survives, (d) the graph tables were (re)created EMPTY by the DDL
+        # loop (the 15→16 leg's ALTER is skipped because graph_edges does
+        # not exist yet at migration time), already carrying the v16
+        # cardinality column.
         db_path = tmp_path / "sb.db"
         with SQLiteStore(db_path) as store:
             conn = store._require_conn()
@@ -204,7 +248,7 @@ class TestSchemaVersionBumpToV15:
                 conn.execute(
                     "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
                 ).fetchone()["value"]
-                == "15"
+                == "16"
             )
             # (b) new columns present + backfilled to NULL/default.
             ent = conn.execute(
@@ -238,14 +282,18 @@ class TestSchemaVersionBumpToV15:
                 "column_pii_tags": 1,
             }
             # (d) graph tables (re)exist + are EMPTY on a migrated store
-            # (the projection only runs on the next `index`).
+            # (the projection only runs on the next `index`), and the
+            # freshly-created graph_edges already carries the v16 column.
             assert conn.execute("SELECT count(*) AS n FROM graph_nodes").fetchone()["n"] == 0
             assert conn.execute("SELECT count(*) AS n FROM graph_edges").fetchone()["n"] == 0
+            assert "cardinality" in {
+                r["name"] for r in conn.execute("PRAGMA table_info(graph_edges)")
+            }
 
-    def test_v13_store_chains_to_v15(self, tmp_path: Path) -> None:
-        # Option B: a v13 store migrates 13→14 then 14→15 in one open.
+    def test_v13_store_chains_to_v16(self, tmp_path: Path) -> None:
+        # Option B: a v13 store migrates 13→14→15→16 in one open.
         # Fabricate a v13 shape (drop BOTH the v14 trust columns and the
-        # v15 columns), seed, re-open, and assert (a) version == 15,
+        # v15 columns), seed, re-open, and assert (a) version == 16,
         # (b) the v14 leg ran (origin backfill landed the trust signal),
         # (c) the v15 leg ran (the `group` column is present + default).
         db_path = tmp_path / "sb.db"
@@ -262,7 +310,7 @@ class TestSchemaVersionBumpToV15:
                 conn.execute(
                     "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
                 ).fetchone()["value"]
-                == "15"
+                == "16"
             )
             row = conn.execute(
                 'SELECT inference_method, validation_state, "group" FROM entities '
@@ -296,7 +344,7 @@ class TestSchemaVersionBumpToV15:
         )
         store._require_conn().commit()
         store.close()
-        with pytest.raises(SchemaVersionMismatchError, match=r"12.*15|15.*12"):
+        with pytest.raises(SchemaVersionMismatchError, match=r"12.*16|16.*12"):
             SQLiteStore(db_path)
 
     def test_graph_tables_and_index_exist(self, tmp_path: Path) -> None:
@@ -371,7 +419,7 @@ class TestSchemaVersionBumpToV15:
                 conn.execute(
                     "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
                 ).fetchone()["value"]
-                == "15"
+                == "16"
             )
             assert "group" in {r["name"] for r in conn.execute("PRAGMA table_info(entities)")}
             assert self._semantic_counts(conn) == {

@@ -23,6 +23,7 @@ from schemabrain.core.graph import (
     GraphNode,
     edge_origin_from_inference_method,
 )
+from schemabrain.core.join import CanonicalJoin
 from schemabrain.core.store_protocol import Store
 from schemabrain.pii.categories import has_catastrophic_category
 from schemabrain.semantic.compiler import longest_canonical_path
@@ -50,6 +51,27 @@ def _entity_is_catastrophic(store: Store, entity: Entity, *, source_connection_i
         columns=[column.name for column in table.columns],
     )
     return any(has_catastrophic_category(categories) for _sensitivity, categories in tags.values())
+
+
+def _graph_edge_from_join(join: CanonicalJoin, *, spine_edges: set[str]) -> GraphEdge:
+    """Project one canonical join onto a graph edge.
+
+    `cardinality` rides ONLY on `declared` (FK-backed) edges. A `log_mined`
+    or `inferred` join may still carry a human- or dbt-asserted `cardinality`
+    in its YAML, but the engine never validated it against a live DB
+    constraint — so the projection drops it rather than render an unverified
+    shape identically to an engine-derived one (ADR 0011, the same
+    source-or-drop honesty line as ADR 0009/0010).
+    """
+    origin = edge_origin_from_inference_method(join.inference_method)
+    return GraphEdge(
+        join_name=join.name,
+        source_entity=join.source_entity,
+        target_entity=join.target_entity,
+        edge_origin=origin,
+        canonical_path_rank=(_PRIMARY_PATH_RANK if join.name in spine_edges else MIN_PATH_RANK),
+        cardinality=join.cardinality if origin == "declared" else None,
+    )
 
 
 def rebuild_graph_projection(store: Store, *, source_connection_id: str) -> None:
@@ -81,16 +103,7 @@ def rebuild_graph_projection(store: Store, *, source_connection_id: str) -> None
     ]
 
     spine_edges = set(longest_canonical_path(joins=joins).edges)
-    edges = [
-        GraphEdge(
-            join_name=join.name,
-            source_entity=join.source_entity,
-            target_entity=join.target_entity,
-            edge_origin=edge_origin_from_inference_method(join.inference_method),
-            canonical_path_rank=(_PRIMARY_PATH_RANK if join.name in spine_edges else MIN_PATH_RANK),
-        )
-        for join in joins
-    ]
+    edges = [_graph_edge_from_join(join, spine_edges=spine_edges) for join in joins]
 
     store.write_graph_projection(
         source_connection_id=source_connection_id, nodes=nodes, edges=edges
