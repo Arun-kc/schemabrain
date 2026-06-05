@@ -32,9 +32,10 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-vi.mock("@/lib/api", () => ({ api: { meta: vi.fn() } }));
+vi.mock("@/lib/api", () => ({ api: { meta: vi.fn(), entityColumns: vi.fn() } }));
 
 import { api } from "@/lib/api";
+import type { EntityDrilldownResponse } from "@/lib/types/meta";
 import { useSourceStore } from "@/lib/sourceStore";
 import { AppShell } from "./AppShell";
 import { CommandPalette } from "./CommandPalette";
@@ -62,9 +63,31 @@ function renderWithClient(ui: ReactNode) {
   return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
 }
 
+const DRILLDOWN: EntityDrilldownResponse = {
+  entity: {
+    name: "customers",
+    description: "",
+    qualified_table: "public.customers",
+    identity: "id",
+    group: "identity",
+    origin: "suggested",
+    inference_method: "llm_suggested",
+    validation_state: "applied",
+    rows: 1000,
+    confidence: "high",
+    rationale: null,
+  },
+  columns: [],
+  metrics: [],
+  joins: [],
+  referenced_by: { metrics: 0, joins: 0 },
+};
+
 beforeEach(() => {
   vi.mocked(api.meta).mockReset();
   vi.mocked(api.meta).mockResolvedValue(META);
+  vi.mocked(api.entityColumns).mockReset();
+  vi.mocked(api.entityColumns).mockResolvedValue(DRILLDOWN);
   mockReplace.mockReset();
   mockPush.mockReset();
   mockPathname = "/pii";
@@ -85,11 +108,11 @@ describe("nav model", () => {
     expect(isNavItemActive(item, "/audit")).toBe(false);
   });
 
-  it("ships the eight handoff surfaces with graph/pii/refusals/audit/policy/drift built", () => {
+  it("ships the eight handoff surfaces with graph/entities/pii/refusals/audit/policy/drift built", () => {
     const ids = NAV.flatMap((g) => g.items.map((i) => i.id));
     expect(ids).toEqual(["graph", "entities", "dict", "pii", "refusals", "audit", "policy", "drift"]);
     const built = NAV.flatMap((g) => g.items).filter((i) => i.built).map((i) => i.id);
-    expect(built).toEqual(["graph", "pii", "refusals", "audit", "policy", "drift"]);
+    expect(built).toEqual(["graph", "entities", "pii", "refusals", "audit", "policy", "drift"]);
   });
 });
 
@@ -120,14 +143,16 @@ describe("NavRail", () => {
     expect(pii).toHaveAttribute("aria-current", "page");
     expect(pii).toHaveAttribute("href", "/pii");
 
-    // Graph now ships → it is a live link.
+    // Graph + Entities now ship → live links.
     const graph = await screen.findByRole("link", { name: /Knowledge graph/ });
     expect(graph).toHaveAttribute("href", "/graph");
+    const entities = await screen.findByRole("link", { name: /Entities/ });
+    expect(entities).toHaveAttribute("href", "/entities");
 
-    // Entities is not built yet → no link, marked disabled.
-    expect(screen.queryByRole("link", { name: /Entities/ })).toBeNull();
-    const entities = screen.getByText("Entities").closest(".sb-nav-item");
-    expect(entities).toHaveAttribute("aria-disabled", "true");
+    // Data dictionary is not built yet → no link, marked disabled.
+    expect(screen.queryByRole("link", { name: /Data dictionary/ })).toBeNull();
+    const dict = screen.getByText("Data dictionary").closest(".sb-nav-item");
+    expect(dict).toHaveAttribute("aria-disabled", "true");
   });
 });
 
@@ -165,7 +190,10 @@ describe("CommandPalette", () => {
 describe("DrilldownSheet", () => {
   it("opens when ?entity= is present and closes by dropping the param", () => {
     mockSearchParams = new URLSearchParams("entity=customers");
-    const { container } = render(<DrilldownSheet />);
+    // The body fetches lazily — render under a QueryClient. The header renders
+    // the entity name immediately (before the fetch resolves), so the assertion
+    // does not race the query.
+    const { container } = renderWithClient(<DrilldownSheet />);
 
     const sheet = container.querySelector(".sb-drill");
     expect(sheet).toHaveClass("show");
@@ -178,10 +206,12 @@ describe("DrilldownSheet", () => {
 
   it("is closed and inert without an ?entity= param", () => {
     mockSearchParams = new URLSearchParams("");
-    const { container } = render(<DrilldownSheet />);
+    const { container } = renderWithClient(<DrilldownSheet />);
     const sheet = container.querySelector(".sb-drill");
     expect(sheet).not.toHaveClass("show");
     expect(sheet).toHaveAttribute("inert");
+    // No body mounts while closed → no fetch fires.
+    expect(api.entityColumns).not.toHaveBeenCalled();
   });
 });
 

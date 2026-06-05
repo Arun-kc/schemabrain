@@ -688,7 +688,12 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                     }
                 )
         return {
-            "source_connection_id": resolved_source,
+            # Coerce a URL-shaped override to its canonical hashed id before
+            # echoing — `_resolve_source` returns an operator override verbatim,
+            # so a connection URL (carrying the DB password) must not reach the
+            # body. Mirrors /api/meta and /api/drift; the store queries above
+            # still use the real `resolved_source`.
+            "source_connection_id": _credential_safe_source_label(resolved_source),
             "items": items,
             "count": len(items),
             "summary": {

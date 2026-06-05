@@ -2,23 +2,24 @@
 
 import { Suspense, useCallback, useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Eyebrow, IconButton } from "@/components/kit";
 import { cn } from "@/lib/cn";
 import { useFocusTrap } from "@/lib/useFocusTrap";
+import { EntityDrilldownBody } from "@/components/entities/EntityDrilldownBody";
 
 /**
- * App-level entity drilldown sheet — the CONTAINER only.
+ * App-level entity drilldown sheet — the CONTAINER.
  *
  * Addressed by `?entity=<name>` (ADR 0005 §3): readable from the graph,
  * the Entities index, or a PII row, and shareable/deep-linkable. The
- * body is a slot — the structured physical/semantic panes land with the
- * entity-drilldown work in a later PR; this one ships the mount/slide/
- * scrim/focus-trap/return-focus mechanics.
+ * structured header + physical/semantic panes are the wsENT body
+ * (`EntityDrilldownBody`), rendered into this container's slide-over; the
+ * container owns only the mount/slide/scrim/focus-trap/return-focus
+ * mechanics, per the critic's "shell owns container, wsENT owns body" seam.
  *
  * Always mounted so it can slide; `inert` while closed keeps the
- * off-screen sheet out of the tab order + a11y tree. Closing replaces
- * the URL (drops ?entity= without a new history entry) — an open via
- * push() means Back also closes.
+ * off-screen sheet out of the tab order + a11y tree. The body mounts only
+ * while open (it fetches lazily). Closing replaces the URL (drops ?entity=
+ * without a new history entry) — an open via push() means Back also closes.
  */
 function DrilldownSheetInner() {
   const params = useSearchParams();
@@ -50,21 +51,7 @@ function DrilldownSheetInner() {
         aria-label={entity ? `Entity ${entity}` : "Entity detail"}
         inert={!open}
       >
-        <div className="sb-drill-head">
-          <Eyebrow>Entity</Eyebrow>
-          <h2>{entity ?? ""}</h2>
-          <IconButton
-            className="sb-drill-close"
-            icon="x"
-            label="Close entity detail"
-            onClick={close}
-          />
-        </div>
-        <div className="sb-drill-body">
-          <p className="sb-drill-slot">
-            Physical and semantic detail for this entity mounts here.
-          </p>
-        </div>
+        {entity && <EntityDrilldownBody entity={entity} onClose={close} />}
       </aside>
     </>
   );

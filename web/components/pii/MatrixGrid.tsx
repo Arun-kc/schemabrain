@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Icon, PiiChip, type PiiChipKind } from "@/components/kit";
 import { cn } from "@/lib/cn";
 import { isEmptyPolicyFilter } from "@/lib/policy";
@@ -84,12 +85,25 @@ export function MatrixGrid({
   const filterActive = !isEmptyPolicyFilter(filter);
   const [showAll, setShowAll] = useState(false);
 
+  // `?focus=<entity>` arrives from the entity sheet's "View in PII matrix"
+  // deep-link — scroll the entity's first rendered row into view + flash it.
+  // Read-only and best-effort: if the entity's columns are filtered out (or
+  // non-PII while the PII-only view is on), nothing scrolls rather than
+  // fabricating a target.
+  const focusEntity = useSearchParams().get("focus");
+
   const pii = useMemo(() => columns.filter(isPiiColumn), [columns]);
   const nonPiiCount = columns.length - pii.length;
   const base = showAll ? columns : pii;
 
   const filtered = useMemo(() => filterMatrixColumns(base, filter), [base, filter]);
   const rows = useMemo(() => sortFloorFirst(filtered), [filtered]);
+
+  const focusKey = useMemo(() => {
+    if (!focusEntity) return null;
+    const match = rows.find((col) => col.entity === focusEntity);
+    return match ? qualifiedColumn(match) : null;
+  }, [focusEntity, rows]);
 
   const catSet = useMemo(() => new Set(catastrophicCategories), [catastrophicCategories]);
   const presentCategories = useMemo(
@@ -158,6 +172,7 @@ export function MatrixGrid({
                   col={col}
                   categories={categories}
                   selected={selectedColumn === qualifiedColumn(col)}
+                  focused={focusKey !== null && qualifiedColumn(col) === focusKey}
                   onSelect={() => onSelect(col)}
                 />
               ))}
@@ -175,18 +190,29 @@ function ColumnRow({
   col,
   categories,
   selected,
+  focused,
   onSelect,
 }: {
   col: PiiMatrixColumn;
   categories: readonly PIICategory[];
   selected: boolean;
+  focused: boolean;
   onSelect: () => void;
 }) {
   const floor = isFloorColumn(col);
   const status = columnStatus(col);
+  const ref = useRef<HTMLTableRowElement>(null);
+
+  useEffect(() => {
+    if (focused && ref.current) {
+      ref.current.scrollIntoView({ block: "center" });
+    }
+  }, [focused]);
+
   return (
     <tr
-      className={cn(floor && styles.floorRow, selected && styles.selectedRow)}
+      ref={ref}
+      className={cn(floor && styles.floorRow, selected && styles.selectedRow, focused && styles.focusFlash)}
       onClick={onSelect}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {

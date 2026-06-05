@@ -456,6 +456,23 @@
   box-shadow: inset 4px 0 0 var(--ink), 1px 0 0 var(--hair-2);
 }
 
+/* transient highlight when arriving via ?focus= from the entity sheet's
+   "View in PII matrix" deep-link — a one-shot green wash that fades back to
+   the row's resting background. */
+.focusFlash td {
+  animation: focusFlash 1.8s var(--ease-out);
+}
+
+@keyframes focusFlash {
+  0%,
+  30% {
+    background-color: color-mix(in oklch, var(--green) 20%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
 /* cell dots — lit = filled square (band intensity); unlit = bare middot;
    null-band = em-dash. Lit-vs-unlit is shape + fill, not opacity-of-one-hue,
    so it survives grayscale + reduced motion. */
@@ -748,6 +765,9 @@
     animation: none;
   }
   .skeleton::before {
+    animation: none;
+  }
+  .focusFlash td {
     animation: none;
   }
 }
