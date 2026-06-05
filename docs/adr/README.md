@@ -22,6 +22,7 @@ function, a moved file) are corrected in place; the reasoning is left intact.
 | [0007](0007-policy-editor-control-model.md) | Policy editor control model — two levers (category block + per-column override) | Superseded by [0008](0008-policy-editor-handoff-verb-mapping.md) |
 | [0008](0008-policy-editor-handoff-verb-mapping.md) | Policy editor — handoff-exact per-column `block/redact/allow` grid as a client projection | Accepted |
 | [0009](0009-trust-surface-confidence-data-contract.md) | Trust-surface confidence data contract — cell-confidence (source), agent-quote (drop), refusal-confidence (drop) | Accepted |
+| [0010](0010-graph-projection-backend.md) | Knowledge-graph projection backend — persisted `graph_nodes`/`graph_edges` read-model, rebuild hooks, live catastrophic overlay, diameter canonical path, honest edge evidence | Accepted |
 
 ## By area
 
@@ -49,6 +50,11 @@ works:
 - [0009](0009-trust-surface-confidence-data-contract.md) — the per-column PII
   confidence band the matrix renders (deterministic, index-time, advisory), and
   why the Refusals quote + confidence meter are dropped rather than fabricated.
+- [0010](0010-graph-projection-backend.md) — the persisted v15 graph projection
+  (`graph_nodes`/`graph_edges`) the `GET /api/graph` route serves: where it is
+  rebuilt, why the catastrophic floor is a live overlay (never disagrees with the
+  PII matrix per [0001](0001-audit-row-and-pii-taxonomy.md)), how the canonical
+  path is chosen honestly, and the declared/log-mined/inferred edge vocabulary.
 
 **Project policy.**
 

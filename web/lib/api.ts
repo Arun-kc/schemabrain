@@ -7,6 +7,7 @@ import type {
   DriftResponse,
   EntityDrilldownResponse,
   EntityListResponse,
+  GraphResponse,
   HealthResponse,
   MerkleProofResponse,
   MerkleRootResponse,
@@ -72,6 +73,13 @@ export const api = {
   drift: (sourceId?: string) => {
     const qs = sourceId ? `?source_connection_id=${encodeURIComponent(sourceId)}` : "";
     return getJson<DriftResponse>(`/api/drift${qs}`);
+  },
+
+  /** The knowledge-graph projection (nodes / edges / canonical path) for
+   * a source — the backend half of the graph surface (ADR 0010). */
+  graph: (sourceId?: string) => {
+    const qs = sourceId ? `?source_connection_id=${encodeURIComponent(sourceId)}` : "";
+    return getJson<GraphResponse>(`/api/graph${qs}`);
   },
 
   /**

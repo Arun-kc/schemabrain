@@ -224,6 +224,7 @@ def create_sidecar(config: SidecarConfig) -> FastAPI:
     _register_audit_routes(app, config)
     _register_policy_route(app, config)
     _register_drift_route(app, config)
+    _register_graph_route(app, config)
     _register_stream_route(app, config)
 
     has_static_export = STATIC_DIR.exists() and any(
@@ -445,6 +446,47 @@ def _entity_pii_level(
         columns=column_names,
     )
     return _pii_level_from_tags(tags.values(), catastrophic_categories=catastrophic_categories)
+
+
+def _reconstruct_canonical_path(edges: list[Any]) -> dict[str, Any]:
+    """Order the rank-1 (primary canonical) edges into a hop sequence.
+
+    A trivial walk over the persisted spine edges — NOT a re-walk of the
+    full graph (ADR 0010). Only `canonical_path_rank == 1` (the primary
+    path) is used; rank-2 alternates (reserved for PR-17) are deliberately
+    excluded so they never fold the primary path into a cycle. The spine
+    is a simple path by construction (`longest_canonical_path`), so it has
+    exactly two degree-1 endpoints; the walk starts from the
+    lexicographically smaller one for determinism. Returns the empty path
+    when there is no spine.
+    """
+    spine = [edge for edge in edges if edge.canonical_path_rank == 1]
+    if not spine:
+        return {"nodes": [], "edges": [], "hops": 0}
+    adjacency: dict[str, list[tuple[str, str]]] = {}
+    degree: dict[str, int] = {}
+    for edge in spine:
+        adjacency.setdefault(edge.source_entity, []).append((edge.target_entity, edge.join_name))
+        adjacency.setdefault(edge.target_entity, []).append((edge.source_entity, edge.join_name))
+        degree[edge.source_entity] = degree.get(edge.source_entity, 0) + 1
+        degree[edge.target_entity] = degree.get(edge.target_entity, 0) + 1
+    endpoints = sorted(name for name, count in degree.items() if count == 1)
+    if len(endpoints) != 2:  # pragma: no cover — the spine is always a simple path
+        return {"nodes": [], "edges": [], "hops": 0}
+    nodes = [endpoints[0]]
+    edge_names: list[str] = []
+    visited = {endpoints[0]}
+    current = endpoints[0]
+    while True:
+        unvisited = [(nb, jn) for nb, jn in adjacency[current] if nb not in visited]
+        if not unvisited:
+            break
+        neighbor, join_name = unvisited[0]
+        nodes.append(neighbor)
+        edge_names.append(join_name)
+        visited.add(neighbor)
+        current = neighbor
+    return {"nodes": nodes, "edges": edge_names, "hops": len(edge_names)}
 
 
 def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
@@ -1537,6 +1579,77 @@ def _register_drift_route(app: FastAPI, config: SidecarConfig) -> None:
                 "prompt_version": PROMPT_VERSION,
             },
             "items": items,
+        }
+
+
+def _register_graph_route(app: FastAPI, config: SidecarConfig) -> None:
+    """GET /api/graph — read-only knowledge-graph projection (ADR 0010).
+
+    Serves the persisted v15 ``graph_nodes`` / ``graph_edges`` read-model:
+    one node per entity (cosmetic ``group`` + cached ``row_count``), one
+    edge per canonical join with honest ``evidence`` (declared FK /
+    log-mined / inferred — never inspected SQL), and the ordered canonical
+    path (the diameter spine) reconstructed from the rank-1 edges.
+
+    The catastrophic floor is recomputed LIVE per node from the current
+    PII tags — via the SAME ``_entity_pii_level`` helper the PII matrix
+    uses — so the graph never disagrees with /pii, even after a tag
+    override the last projection did not see. A source that exists but has
+    no projection yields empty arrays at 200; no resolvable source is a
+    409. The route writes nothing.
+    """
+    from schemabrain.core.store import SQLiteStore
+    from schemabrain.pii.categories import CATASTROPHIC_LEAK_CATEGORIES
+
+    @app.get("/api/graph")
+    def graph(source_connection_id: str | None = None) -> dict[str, Any]:
+        with SQLiteStore(config.store_path) as store:
+            resolved_source = _resolve_source(store, config, source_connection_id)
+            # Hash a URL-shaped override to its canonical id BEFORE it
+            # touches the store query or the response — never echo a raw
+            # connection URL (it carries the DB password).
+            safe_source = _credential_safe_source_label(resolved_source)
+            graph_nodes = store.list_graph_nodes(source_connection_id=safe_source)
+            graph_edges = store.list_graph_edges(source_connection_id=safe_source)
+            entities_by_name = {
+                entity.name: entity
+                for entity in store.list_entities(source_connection_id=safe_source)
+            }
+            nodes = [
+                {
+                    "id": node.entity_name,
+                    "label": node.entity_name,
+                    "group": node.group,
+                    # LIVE floor overlay: identical predicate to the PII
+                    # matrix, so the catastrophic flag can never drift from
+                    # /pii. The node→entity FK guarantees the lookup hits.
+                    "catastrophic": _entity_pii_level(
+                        store,
+                        entities_by_name[node.entity_name],
+                        source_connection_id=safe_source,
+                        catastrophic_categories=CATASTROPHIC_LEAK_CATEGORIES,
+                    )
+                    == "catastrophic",
+                    "row_count": node.row_count,
+                }
+                for node in graph_nodes
+            ]
+
+        edges = [
+            {
+                "id": edge.join_name,
+                "source": edge.source_entity,
+                "target": edge.target_entity,
+                "evidence": edge.edge_origin,
+                "canonical_path_rank": edge.canonical_path_rank,
+            }
+            for edge in graph_edges
+        ]
+        return {
+            "source_connection_id": safe_source,
+            "nodes": nodes,
+            "edges": edges,
+            "canonical_path": _reconstruct_canonical_path(graph_edges),
         }
 
 

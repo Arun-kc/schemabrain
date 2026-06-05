@@ -39,6 +39,7 @@ from schemabrain.core.entity import (
     SingleTableBinding,
 )
 from schemabrain.core.example_query import ExampleQuery
+from schemabrain.core.graph import GraphEdge, GraphNode
 from schemabrain.core.join import CanonicalJoin, JoinColumnPair
 from schemabrain.core.metric import (
     DbtOwnedMetricError,
@@ -2243,6 +2244,129 @@ class SQLiteStore:
             (source_connection_id,),
         ).fetchall()
         return {f"{row['schema_name']}.{row['name']}": row["estimated_row_count"] for row in rows}
+
+    # ----- v15 graph projection (ADR 0010) -----------------------------------
+
+    def write_graph_projection(
+        self,
+        *,
+        source_connection_id: str,
+        nodes: list[GraphNode],
+        edges: list[GraphEdge],
+    ) -> None:
+        """Replace the whole graph projection for a source atomically.
+
+        Idempotent DELETE+INSERT: every existing `graph_nodes` /
+        `graph_edges` row for the source is deleted, then the supplied
+        projection is inserted — both in ONE transaction. A re-projection
+        therefore never duplicates rows and never exposes a partial-state
+        read window (mirrors `write_column_pii_tags`).
+
+        Empty `nodes` / `edges` is a valid call: it wipes the projection
+        for the source (the structural "nothing to project yet" shape).
+
+        Edges are deleted BEFORE nodes and inserted AFTER nodes so the
+        `graph_edges → entities` FK is always satisfied within the
+        transaction. The caller is responsible for ordering that matches
+        the FK to `canonical_joins` (each edge's `join_name` must name a
+        live canonical join); an orphan edge raises `sqlite3.IntegrityError`
+        and rolls the whole projection back.
+        """
+        conn = self._require_conn()
+        now = int(time.time())
+        with conn:
+            conn.execute(
+                "DELETE FROM graph_edges WHERE source_connection_id = ?",
+                (source_connection_id,),
+            )
+            conn.execute(
+                "DELETE FROM graph_nodes WHERE source_connection_id = ?",
+                (source_connection_id,),
+            )
+            if nodes:
+                conn.executemany(
+                    "INSERT INTO graph_nodes "
+                    '(source_connection_id, entity_name, "group", '
+                    "is_catastrophic, row_count, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            source_connection_id,
+                            node.entity_name,
+                            node.group,
+                            1 if node.is_catastrophic else 0,
+                            node.row_count,
+                            now,
+                        )
+                        for node in nodes
+                    ],
+                )
+            if edges:
+                conn.executemany(
+                    "INSERT INTO graph_edges "
+                    "(source_connection_id, join_name, source_entity, "
+                    "target_entity, edge_origin, canonical_path_rank, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            source_connection_id,
+                            edge.join_name,
+                            edge.source_entity,
+                            edge.target_entity,
+                            edge.edge_origin,
+                            edge.canonical_path_rank,
+                            now,
+                        )
+                        for edge in edges
+                    ],
+                )
+
+    def list_graph_nodes(self, *, source_connection_id: str) -> list[GraphNode]:
+        """Read the projected nodes for a source, ordered by `entity_name`.
+
+        Pure read (no transaction wrap). `is_catastrophic` is coerced from
+        the stored 0/1 INTEGER back to a bool; `row_count` stays `None`
+        when the projection wrote no estimate. Empty source → empty list.
+        """
+        conn = self._require_conn()
+        rows = conn.execute(
+            'SELECT entity_name, "group", is_catastrophic, row_count '
+            "FROM graph_nodes WHERE source_connection_id = ? "
+            "ORDER BY entity_name",
+            (source_connection_id,),
+        ).fetchall()
+        return [
+            GraphNode(
+                entity_name=row["entity_name"],
+                group=row["group"],
+                is_catastrophic=bool(row["is_catastrophic"]),
+                row_count=row["row_count"],
+            )
+            for row in rows
+        ]
+
+    def list_graph_edges(self, *, source_connection_id: str) -> list[GraphEdge]:
+        """Read the projected edges for a source, ordered by `join_name`.
+
+        Pure read (no transaction wrap). Empty source → empty list.
+        """
+        conn = self._require_conn()
+        rows = conn.execute(
+            "SELECT join_name, source_entity, target_entity, edge_origin, "
+            "canonical_path_rank FROM graph_edges "
+            "WHERE source_connection_id = ? ORDER BY join_name",
+            (source_connection_id,),
+        ).fetchall()
+        return [
+            GraphEdge(
+                join_name=row["join_name"],
+                source_entity=row["source_entity"],
+                target_entity=row["target_entity"],
+                edge_origin=row["edge_origin"],
+                canonical_path_rank=row["canonical_path_rank"],
+            )
+            for row in rows
+        ]
 
     def list_distinct_source_connection_ids(self) -> list[str]:
         """Union of `source_connection_id` values across the four data

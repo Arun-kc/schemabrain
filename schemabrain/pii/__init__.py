@@ -28,6 +28,7 @@ from schemabrain.pii.categories import (
     PIICategory,
     PiiConfidenceBand,
     Sensitivity,
+    has_catastrophic_category,
 )
 from schemabrain.pii.classifier import RULE_COUNT, classify_column
 from schemabrain.pii.confidence import classify_pii_confidence
@@ -46,5 +47,6 @@ __all__ = [
     "Sensitivity",
     "classify_column",
     "classify_pii_confidence",
+    "has_catastrophic_category",
     "propagate",
 ]
