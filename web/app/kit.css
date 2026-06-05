@@ -205,3 +205,34 @@
   transform: translateX(-50%) translateY(0);
   opacity: 1;
 }
+
+/* knowledge-graph refusal-hotspot pulse ring (kit GraphNode, G4). Sits behind
+ * the orb and breathes to draw the eye to an entity with attributed refusals.
+ * Compositor-only (transform + opacity) per the perf budget; pointer-inert. */
+.sb-gnode-pulse {
+  position: absolute;
+  inset: -9px;
+  border-radius: 50%;
+  border: 1.6px solid var(--alarm);
+  pointer-events: none;
+  animation: sb-gnode-pulse 1.8s ease-in-out infinite;
+}
+@keyframes sb-gnode-pulse {
+  0%,
+  100% {
+    transform: scale(0.92);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scale(1.12);
+    opacity: 0.12;
+  }
+}
+/* Honour reduced motion: keep the ring as a static emphasis, drop the breath. */
+@media (prefers-reduced-motion: reduce) {
+  .sb-gnode-pulse {
+    animation: none;
+    transform: scale(1);
+    opacity: 0.5;
+  }
+}

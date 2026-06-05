@@ -7,6 +7,7 @@ import { GraphEdge, type GraphEdgeData } from "./GraphEdge";
 import { GraphNode, type GraphNodeData } from "./GraphNode";
 import {
   GROUP_COLOR,
+  graphEdgeLabel,
   graphEdgeStyle,
   graphNodeColor,
   graphNodeRing,
@@ -26,10 +27,11 @@ describe("graphStyle", () => {
     expect(graphNodeColor("identity", true)).toBe("var(--alarm)");
   });
 
-  it("rings catastrophic > selected > group", () => {
-    expect(graphNodeRing("billing", true, true)).toBe("var(--alarm)");
-    expect(graphNodeRing("billing", false, true)).toBe("var(--green)");
-    expect(graphNodeRing("billing", false, false)).toBe("var(--cyan)");
+  it("rings catastrophic > selected > a NEUTRAL glass stroke (group colour lives in the core dot)", () => {
+    expect(graphNodeRing(true)).toBe("var(--alarm)");
+    expect(graphNodeRing(true, true)).toBe("var(--alarm)"); // catastrophic outranks selection
+    expect(graphNodeRing(false, true)).toBe("var(--green)");
+    expect(graphNodeRing(false, false)).toBe("var(--glass-stroke)");
   });
 
   it("styles edges by priority and reflects declared-vs-mined dashing", () => {
@@ -56,6 +58,68 @@ describe("graphStyle", () => {
     expect(graphEdgeStyle({ declared: false, minedEmphasis: true, dimmed: true }).opacity).toBe(
       0.9,
     );
+  });
+
+  it("emphasises edges incident to the selected node (G3), below path/mined", () => {
+    const sel = graphEdgeStyle({ declared: true, selectedIncident: true });
+    expect(sel.strokeWidth).toBe(2);
+    expect(sel.opacity).toBe(0.95);
+    // A brighter NEUTRAL (ink, not green/cyan) — clearly visible without
+    // implying a relationship type.
+    expect(sel.stroke).toBe("var(--ink-2)");
+    // A selected incident edge ignores dimming (it is the focus).
+    expect(graphEdgeStyle({ declared: true, selectedIncident: true, dimmed: true }).opacity).toBe(
+      0.95,
+    );
+    // Priority: path > mined > selected.
+    expect(
+      graphEdgeStyle({ declared: true, highlighted: true, selectedIncident: true }).stroke,
+    ).toBe("var(--green)");
+    expect(
+      graphEdgeStyle({ declared: false, minedEmphasis: true, selectedIncident: true }).stroke,
+    ).toBe("var(--cyan)");
+  });
+
+  it("glows ONLY the highlighted canonical-path edge (G9)", () => {
+    expect(graphEdgeStyle({ declared: true, highlighted: true }).filter).toContain("drop-shadow");
+    // Resting, selected, and mined edges carry no glow.
+    expect(graphEdgeStyle({ declared: true }).filter).toBeUndefined();
+    expect(graphEdgeStyle({ declared: true, selectedIncident: true }).filter).toBeUndefined();
+    expect(graphEdgeStyle({ declared: false, minedEmphasis: true }).filter).toBeUndefined();
+  });
+});
+
+describe("graphEdgeLabel", () => {
+  it("labels the log-mined overlay 'mined' in cyan (no fabricated cardinality)", () => {
+    expect(graphEdgeLabel({ minedEmphasis: true, cardinality: null })).toEqual({
+      text: "mined",
+      color: "var(--cyan)",
+    });
+  });
+
+  it("labels a highlighted path edge with its declared cardinality in green", () => {
+    expect(graphEdgeLabel({ highlighted: true, cardinality: "one_to_many" })).toEqual({
+      text: "1:N",
+      color: "var(--green)",
+    });
+  });
+
+  it("labels a selected incident edge with its cardinality in the muted ink tone", () => {
+    expect(graphEdgeLabel({ selectedIncident: true, cardinality: "many_to_one" })).toEqual({
+      text: "N:1",
+      color: "var(--ink-2)",
+    });
+  });
+
+  it("shows NO label when the edge is at rest", () => {
+    expect(graphEdgeLabel({ cardinality: "one_to_one" })).toBeNull();
+  });
+
+  it("shows NO label when emphasised but the cardinality is unknown (honest)", () => {
+    // A selected/highlighted edge whose cardinality is null (e.g. a mined join
+    // off the overlay) must not invent a cardinality — it simply has no label.
+    expect(graphEdgeLabel({ selectedIncident: true, cardinality: null })).toBeNull();
+    expect(graphEdgeLabel({ highlighted: true, cardinality: null })).toBeNull();
   });
 
   it("halos only the real-PII tiers, never sensitivity bands", () => {
@@ -95,6 +159,35 @@ describe("GraphNode", () => {
     );
     expect(screen.getByText("CATASTROPHIC")).toBeInTheDocument();
     expect(screen.getByText("card_vault").closest(".sb-gnode")).toHaveAttribute(
+      "data-catastrophic",
+      "true",
+    );
+  });
+
+  it("renders a bright group-coloured core dot inside the orb", () => {
+    const { container } = renderNode(
+      <GraphNode {...nodeProps({ label: "users", group: "identity" })} />,
+    );
+    expect(container.querySelector('[data-core="true"]')).not.toBeNull();
+  });
+
+  it("draws a distinct OUTER selection ring on select — even on catastrophic nodes (G3)", () => {
+    const { container, rerender } = renderNode(
+      <GraphNode {...nodeProps({ label: "user", group: "billing", catastrophic: true }, false)} />,
+    );
+    expect(container.querySelector('[data-selected-ring="true"]')).toBeNull();
+
+    rerender(
+      <ReactFlowProvider>
+        <GraphNode
+          {...nodeProps({ label: "user", group: "billing", catastrophic: true }, true)}
+        />
+      </ReactFlowProvider>,
+    );
+    // The alarm ring still wins the orb border; the green selection ring is an
+    // additive OUTER ring so the pick is unmistakable on a catastrophic node.
+    expect(container.querySelector('[data-selected-ring="true"]')).not.toBeNull();
+    expect(screen.getByText("user").closest(".sb-gnode")).toHaveAttribute(
       "data-catastrophic",
       "true",
     );
@@ -167,6 +260,39 @@ describe("GraphNode", () => {
     );
     expect(container.querySelector('[data-refusal-badge="true"]')).toBeNull();
   });
+
+  it("renders the refusal pulse-ring alongside the badge when the hotspot is live (G4)", () => {
+    const { container, rerender } = renderNode(
+      <GraphNode
+        {...nodeProps({ label: "user", group: "identity", refusalCount: 2, refusalActive: true })}
+      />,
+    );
+    // The pulse ring (CSS-animated, reduced-motion gated) accompanies the badge.
+    expect(container.querySelector('[data-refusal-pulse="true"]')).not.toBeNull();
+
+    // Overlay off → no pulse (resting node is unchanged).
+    rerender(
+      <ReactFlowProvider>
+        <GraphNode {...nodeProps({ label: "user", group: "identity", refusalCount: 2 })} />
+      </ReactFlowProvider>,
+    );
+    expect(container.querySelector('[data-refusal-pulse="true"]')).toBeNull();
+
+    // Overlay on but zero refusals → no pulse.
+    rerender(
+      <ReactFlowProvider>
+        <GraphNode
+          {...nodeProps({
+            label: "user",
+            group: "identity",
+            refusalCount: 0,
+            refusalActive: true,
+          })}
+        />
+      </ReactFlowProvider>,
+    );
+    expect(container.querySelector('[data-refusal-pulse="true"]')).toBeNull();
+  });
 });
 
 function edgeProps(data: GraphEdgeData): EdgeProps<GraphEdgeData> {
@@ -204,5 +330,36 @@ describe("GraphEdge", () => {
     );
     const path = container.querySelector("path");
     expect(path?.getAttribute("style") ?? "").toContain("4 5");
+  });
+
+  it("draws the cardinality label on a highlighted path edge (G1)", () => {
+    const { container } = render(
+      <svg>
+        <GraphEdge
+          {...edgeProps({ declared: true, highlighted: true, cardinality: "many_to_one" })}
+        />
+      </svg>,
+    );
+    expect(container.querySelector("text")?.textContent).toBe("N:1");
+  });
+
+  it("labels a log-mined emphasised edge 'mined', never a fabricated cardinality", () => {
+    const { container } = render(
+      <svg>
+        <GraphEdge
+          {...edgeProps({ declared: false, minedEmphasis: true, cardinality: null })}
+        />
+      </svg>,
+    );
+    expect(container.querySelector("text")?.textContent).toBe("mined");
+  });
+
+  it("draws NO label on a resting edge", () => {
+    const { container } = render(
+      <svg>
+        <GraphEdge {...edgeProps({ declared: true, cardinality: "one_to_one" })} />
+      </svg>,
+    );
+    expect(container.querySelector("text")).toBeNull();
   });
 });

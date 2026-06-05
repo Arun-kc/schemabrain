@@ -11,8 +11,11 @@ import "reactflow/dist/style.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactFlow, {
   Background,
+  BackgroundVariant,
   Controls,
+  MarkerType,
   MiniMap,
+  type MiniMapNodeProps,
   type NodeDragHandler,
   type NodeMouseHandler,
   useEdgesState,
@@ -57,6 +60,14 @@ const EDGE_TYPES = { [RELATIONSHIP_EDGE_TYPE]: GraphEdge };
 const NODE_ORIGIN: [number, number] = [0.5, 0.5];
 const FIT_VIEW_OPTIONS = { padding: 0.2 };
 const NO_OVERLAYS: OverlayState = { pii: false, refusals: false, mined: false };
+
+/** Minimap node renderer — a CIRCLE (matching the handoff "Map" panel), not
+ *  reactflow's default rect. Catastrophic entities read larger; the colour
+ *  comes from the MiniMap `nodeColor` callback below. */
+function MiniMapCircle({ x, y, width, height, color, className }: MiniMapNodeProps) {
+  const catastrophic = typeof className === "string" && className.includes("cat");
+  return <circle cx={x + width / 2} cy={y + height / 2} r={catastrophic ? 16 : 11} fill={color} />;
+}
 
 export interface GraphCanvasProps {
   graph: GraphResponse;
@@ -224,17 +235,36 @@ export default function GraphCanvas({
 
   const displayEdges = useMemo<GraphFlowEdge[]>(() => {
     const focusActive = matched !== null || overlays.pii;
-    return edges.map((e) => ({
-      ...e,
-      data: e.data
-        ? {
-            ...e.data,
-            minedEmphasis: overlays.mined && !e.data.declared,
-            dimmed: focusActive && !e.data.highlighted,
-          }
-        : e.data,
-    }));
-  }, [edges, matched, overlays]);
+    return edges.map((e) => {
+      // G3: an edge touching the selected node is brightened + labelled.
+      const selectedIncident = selectedId !== null && (e.source === selectedId || e.target === selectedId);
+      const highlighted = e.data?.highlighted ?? false;
+      return {
+        ...e,
+        // G2: directional arrowhead — green + larger on the canonical path,
+        // muted ink elsewhere. `userSpaceOnUse` keeps a constant pixel size
+        // instead of scaling with the edge's stroke width. The arrow colour is
+        // applied via CSS `fill`/`stroke` (reactflow's ArrowClosedSymbol), so
+        // the theme tokens resolve through the cascade.
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          markerUnits: "userSpaceOnUse",
+          width: highlighted ? 16 : 13,
+          height: highlighted ? 16 : 13,
+          color: highlighted ? "var(--green)" : "var(--ink-3)",
+        },
+        data: e.data
+          ? {
+              ...e.data,
+              minedEmphasis: overlays.mined && !e.data.declared,
+              selectedIncident,
+              // A selected-incident edge is itself the focus → never dim it.
+              dimmed: focusActive && !e.data.highlighted && !selectedIncident,
+            }
+          : e.data,
+      };
+    });
+  }, [edges, matched, overlays, selectedId]);
 
   const pinTo = useCallback(
     (id: string, x: number, y: number) => {
@@ -334,18 +364,25 @@ export default function GraphCanvas({
         maxZoom={2}
         proOptions={{ hideAttribution: true }}
       >
-        <Background gap={34} color="var(--grid-line)" />
+        <Background variant={BackgroundVariant.Lines} gap={34} color="var(--grid-line)" />
         <MiniMap
           pannable
           zoomable
           ariaLabel="Graph minimap"
+          nodeComponent={MiniMapCircle}
           nodeColor={(node) => {
             const data = node.data as GraphFlowNodeData | undefined;
             if (!data) return "var(--ink-3)";
             return data.catastrophic ? "var(--alarm)" : (GROUP_COLOR[data.group] ?? "var(--ink-3)");
           }}
-          maskColor="color-mix(in oklch, var(--bg-1) 70%, transparent)"
+          nodeClassName={(node) =>
+            (node.data as GraphFlowNodeData | undefined)?.catastrophic ? "cat" : ""
+          }
+          maskColor="color-mix(in oklab, var(--bg-1) 70%, transparent)"
         />
+        <span aria-hidden className={styles.miniCap}>
+          Map
+        </span>
         <Controls position="bottom-center" showInteractive={false} />
       </ReactFlow>
 

@@ -345,3 +345,73 @@ test.describe("Knowledge graph panels + overlays (PR-17b)", () => {
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });
 });
+
+test.describe("Knowledge graph polish (PR-17c)", () => {
+  test("draws compact cardinality labels on the canonical-path edges (G1)", async ({ page }) => {
+    await routeGraph(page, GRAPH);
+    await page.goto("/graph");
+
+    // The two path edges (rank 1) are highlighted on load → labelled with their
+    // declared cardinality. user→order is 1:N, order→plan is N:1.
+    const edges = page.locator(".react-flow__edges");
+    await expect(edges).toContainText("1:N");
+    await expect(edges).toContainText("N:1");
+  });
+
+  test("labels a log-mined edge 'mined' under the overlay, never a fake cardinality (G1)", async ({
+    page,
+  }) => {
+    await routeGraph(page, GRAPH);
+    await page.goto("/graph");
+
+    const edges = page.locator(".react-flow__edges");
+    await expect(edges).not.toContainText("mined");
+    await page.getByRole("button", { name: "Log-mined joins" }).click();
+    // The single off-path mined edge (cardinality null) reads "mined".
+    await expect(edges).toContainText("mined");
+  });
+
+  test("renders directional arrowhead markers on the edges (G2)", async ({ page }) => {
+    await routeGraph(page, GRAPH);
+    await page.goto("/graph");
+
+    await expect(page.getByRole("region", { name: "Knowledge graph" })).toBeVisible();
+    // reactflow injects one <marker class="react-flow__arrowhead"> per distinct
+    // arrowhead config; our edges request green (path) + ink (rest).
+    expect(await page.locator("marker.react-flow__arrowhead").count()).toBeGreaterThan(0);
+  });
+
+  test("brightens edges incident to the selected node (G3)", async ({ page }) => {
+    await routeGraph(page, GRAPH);
+    await page.goto("/graph");
+
+    // The off-path mined edge rests at 0.5 opacity. reactflow tags the edge
+    // group with `data-testid` (not `data-id`, which only nodes carry).
+    const minedPath = page.locator(
+      '[data-testid="rf__edge-user_plan_mined"] .react-flow__edge-path',
+    );
+    await expect(minedPath).toHaveCSS("opacity", "0.5");
+
+    // Select `plan` via the URL — selection IS the URL (ADR 0005), so this
+    // exercises the exact same `selectedIncident` path as a click, without
+    // depending on the leftmost node settling under fitView (a node click there
+    // is flaky on slower CI). The click → ?entity= path is covered by the
+    // "clicking a node opens the entity drilldown" test above.
+    await page.goto("/graph?entity=plan");
+
+    // user→plan is now incident to the selection → brightened to 0.95.
+    await expect(minedPath).toHaveCSS("opacity", "0.95");
+  });
+
+  test("shows the refusal pulse-ring on the attributed hotspot (G4)", async ({ page }) => {
+    await routeGraph(page, GRAPH);
+    await page.goto("/graph");
+
+    const pulse = page.locator('.react-flow__node[data-id="user"] [data-refusal-pulse="true"]');
+    await expect(pulse).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Refusal hotspots" }).click();
+    // `user` carries 2 attributed refusals → the pulse ring accompanies its badge.
+    await expect(pulse).toBeVisible();
+  });
+});
