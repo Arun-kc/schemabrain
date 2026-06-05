@@ -49,6 +49,12 @@ export default defineConfig({
         "lib/merkle.ts",
         "lib/auditVerdict.ts",
         "lib/relativeTime.ts",
+        // Pure data-dictionary layer: the Markdown serialiser (byte-for-byte
+        // parity with the CLI golden), its label maps, and the browse-view
+        // presentation helpers. The DataDictionary component itself fetches +
+        // renders, so it is covered by the Playwright dict spec (PR-21), not
+        // this unit gate.
+        "lib/dict/**/*.ts",
       ],
       exclude: ["**/index.ts"],
       reporter: ["text", "html"],

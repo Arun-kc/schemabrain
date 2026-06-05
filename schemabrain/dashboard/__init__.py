@@ -53,7 +53,13 @@ from pathlib import Path
 # `status='refused'` rows grouped by the non-canonical `anchor_entity` column
 # (store v17). The attributed/unattributed split always reconciles with the
 # audit log; the chained audit columns are never read or touched.
-DASHBOARD_SCHEMA_VERSION = "1.8"
+# 1.9 adds the read-only `GET /api/dict` route — the full data-dictionary
+# model (schema version + every entity's binding, columns, semantic joins
+# with the catastrophic-redacted ON clause, and metrics) serialised from the
+# SAME `build_dictionary` aggregator the `schemabrain docs` CLI renders, so
+# the Data Dictionary surface and its client-side Markdown export stay
+# byte-for-byte aligned with the committed CLI golden.
+DASHBOARD_SCHEMA_VERSION = "1.9"
 
 # Directory holding the static Next.js export. Populated at wheel-build
 # time by the ``web/`` workspace's ``pnpm build`` output. At install
