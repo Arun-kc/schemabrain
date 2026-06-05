@@ -138,6 +138,7 @@ def _seed_store(store_path: Path) -> None:
                 description="A registered account.",
                 binding=SingleTableBinding(qualified_table="public.users"),
                 identity="id",
+                group="identity",
             ),
             source_connection_id=SOURCE_CONNECTION_ID,
         )
@@ -202,6 +203,7 @@ def _seed_store(store_path: Path) -> None:
                 description="A purchase by a user.",
                 binding=SingleTableBinding(qualified_table="public.orders"),
                 identity="id",
+                group="billing",
             ),
             source_connection_id=SOURCE_CONNECTION_ID,
         )

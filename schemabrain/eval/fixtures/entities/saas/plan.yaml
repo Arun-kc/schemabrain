@@ -4,3 +4,4 @@ description: A subscription plan in the catalog (tier, price, included seats, SL
 binding:
   single_table: public.plans
 identity: id
+group: billing

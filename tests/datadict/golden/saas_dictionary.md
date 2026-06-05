@@ -8,7 +8,7 @@ A programmatic API credential issued to a workspace.
 
 - **Table:** `public.api_keys`
 - **Identity:** `id`
-- **Group:** other
+- **Group:** identity
 
 ### Columns
 
@@ -28,7 +28,7 @@ A workspace's legal / tax identity used for invoicing.
 
 - **Table:** `public.billing_profiles`
 - **Identity:** `id`
-- **Group:** other
+- **Group:** billing
 
 ### Columns
 
@@ -48,7 +48,7 @@ A billing document issued to a workspace.
 
 - **Table:** `public.invoices`
 - **Identity:** `id`
-- **Group:** other
+- **Group:** billing
 
 ### Columns
 
@@ -82,7 +82,7 @@ A card on file for a workspace (tokenized last-4, brand, expiry).
 
 - **Table:** `public.payment_methods`
 - **Identity:** `id`
-- **Group:** other
+- **Group:** billing
 
 ### Columns
 
@@ -109,7 +109,7 @@ A subscription plan in the catalog (tier, price, included seats, SLA).
 
 - **Table:** `public.plans`
 - **Identity:** `id`
-- **Group:** other
+- **Group:** billing
 
 ### Columns
 
@@ -135,7 +135,7 @@ An authenticated login session for a user.
 
 - **Table:** `public.sessions`
 - **Identity:** `id`
-- **Group:** other
+- **Group:** identity
 
 ### Columns
 
@@ -160,7 +160,7 @@ A workspace's binding to a plan, with its lifecycle timestamps.
 
 - **Table:** `public.subscriptions`
 - **Identity:** `id`
-- **Group:** other
+- **Group:** billing
 
 ### Columns
 
@@ -196,7 +196,7 @@ A per-seat line item on a subscription (line-level revenue grain).
 
 - **Table:** `public.subscription_items`
 - **Identity:** `id`
-- **Group:** other
+- **Group:** billing
 
 ### Columns
 
@@ -226,7 +226,7 @@ A customer-filed support request (free-text body).
 
 - **Table:** `public.support_tickets`
 - **Identity:** `id`
-- **Group:** other
+- **Group:** activity
 
 ### Columns
 
@@ -246,7 +246,7 @@ A metered telemetry event (api_call / login / export).
 
 - **Table:** `public.usage_events`
 - **Identity:** `id`
-- **Group:** other
+- **Group:** activity
 
 ### Columns
 
@@ -271,7 +271,7 @@ A workspace member account (login credential + contact details).
 
 - **Table:** `public.users`
 - **Identity:** `id`
-- **Group:** other
+- **Group:** identity
 
 ### Columns
 
@@ -305,7 +305,7 @@ A tenant account — the org boundary that owns users, subscriptions, and billin
 
 - **Table:** `public.workspaces`
 - **Identity:** `id`
-- **Group:** other
+- **Group:** identity
 
 ### Columns
 

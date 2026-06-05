@@ -4,3 +4,4 @@ description: An authenticated login session for a user.
 binding:
   single_table: public.sessions
 identity: id
+group: identity
