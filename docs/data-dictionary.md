@@ -3,7 +3,7 @@ title: "Data dictionary"
 description: "A generated reference for the bundled SaaS demo — every entity, column, type, PII classification, semantic join, and metric, produced by the schemabrain docs command."
 ---
 
-Generated from the local SchemaBrain store (schema version 16). Every indexed table, column, type, PII classification, semantic join, and metric.
+Generated from the local SchemaBrain store (schema version 17). Every indexed table, column, type, PII classification, semantic join, and metric.
 
 ## api_key
 

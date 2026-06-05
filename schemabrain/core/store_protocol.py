@@ -27,7 +27,7 @@ from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
 from schemabrain.core.entity import Entity
 from schemabrain.core.example_query import ExampleQuery
-from schemabrain.core.graph import GraphEdge, GraphNode
+from schemabrain.core.graph import GraphEdge, GraphNode, RefusalHotspots
 from schemabrain.core.join import CanonicalJoin
 from schemabrain.core.metric import Metric
 from schemabrain.core.models import ForeignKey, IncomingForeignKey, Table
@@ -130,6 +130,17 @@ class Store(Protocol):  # pragma: no cover
     def list_graph_edges(self, *, source_connection_id: str) -> list[GraphEdge]:
         """Read the projected graph edges for a source, ordered by
         `join_name`. Empty source → empty list. Read-only."""
+        ...
+
+    def refusal_counts_by_entity(self, *, source_connection_id: str) -> RefusalHotspots:
+        """Live per-entity refusal tally + the unattributed remainder.
+
+        Aggregates append-only `mcp_audit` rows with `status='refused'` for
+        the source by their non-canonical `anchor_entity` column (v17).
+        Rows the engine could not pin to one entity (NULL `anchor_entity`)
+        sum into `RefusalHotspots.unattributed` rather than being dropped.
+        Read-only — never touches the chained columns. Empty / no audit
+        rows → empty map, 0 unattributed."""
         ...
 
     def list_distinct_source_connection_ids(self) -> list[str]:

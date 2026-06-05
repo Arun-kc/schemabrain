@@ -1599,9 +1599,23 @@ def _register_graph_route(app: FastAPI, config: SidecarConfig) -> None:
     projection did not see. It is the full 5-state severity
     (catastrophic / pii / confidential / internal / none), not a collapsed
     boolean, so the surface renders the catastrophic alarm and the lighter
-    halo from one source of truth. A source that exists but has no
-    projection yields empty arrays at 200; no resolvable source is a 409.
-    The route writes nothing.
+    halo from one source of truth.
+
+    ``refusal_count`` per node and the response's ``unattributed_refusals``
+    are a LIVE tally of append-only ``mcp_audit`` rows with
+    ``status='refused'``, grouped by the non-canonical ``anchor_entity``
+    column (store v17) — never persisted to the projection (refusals accrue
+    between rebuilds, so a snapshot would go stale). The split is honest and
+    EXHAUSTIVE: a refusal whose ``anchor_entity`` is a current entity
+    increments that node's count; one with a NULL anchor OR an anchor that is
+    no longer a current entity (renamed/dropped since the immutable row was
+    logged) increments ``unattributed_refusals`` instead. So the per-node
+    counts PLUS ``unattributed_refusals`` always equal the log's refused-row
+    count — a refusal is never silently dropped or misattributed. Pure read —
+    the chained audit columns are never touched.
+
+    A source that exists but has no projection yields empty arrays at 200; no
+    resolvable source is a 409. The route writes nothing.
     """
     from schemabrain.core.store import SQLiteStore
     from schemabrain.pii.categories import CATASTROPHIC_LEAK_CATEGORIES
@@ -1620,6 +1634,26 @@ def _register_graph_route(app: FastAPI, config: SidecarConfig) -> None:
                 entity.name: entity
                 for entity in store.list_entities(source_connection_id=safe_source)
             }
+            # LIVE refusal tally for the refusal-hotspot overlay (PR-17b).
+            # Aggregated per request from the append-only `mcp_audit` log
+            # (status='refused', grouped by the non-canonical `anchor_entity`
+            # column) — NOT persisted to the projection, since refusals accrue
+            # between rebuilds and a snapshot would go stale immediately. Reads
+            # only; the chained columns are never touched.
+            hotspots = store.refusal_counts_by_entity(source_connection_id=safe_source)
+            # Reconciliation guard: a refusal can carry an `anchor_entity` that
+            # is no longer a current entity — the row is immutable (append-only)
+            # but the entity may have been renamed/dropped and the projection
+            # rebuilt since. Such an anchor matches no node, so its count would
+            # be shown nowhere. Fold those "orphaned" refusals into the
+            # unattributed remainder so the per-node badges PLUS this figure
+            # always equal the audit log's refused-row count — never silently
+            # dropped (the honesty guarantee the surface asserts).
+            node_names = {node.entity_name for node in graph_nodes}
+            orphaned_refusals = sum(
+                count for name, count in hotspots.by_entity.items() if name not in node_names
+            )
+            unattributed_refusals = hotspots.unattributed + orphaned_refusals
             nodes = [
                 {
                     "id": node.entity_name,
@@ -1640,6 +1674,12 @@ def _register_graph_route(app: FastAPI, config: SidecarConfig) -> None:
                         catastrophic_categories=CATASTROPHIC_LEAK_CATEGORIES,
                     ),
                     "row_count": node.row_count,
+                    # LIVE per-entity refusal count (0 when none). Honest
+                    # aggregate of attributed `mcp_audit` refusals; entities
+                    # the engine could not attribute fall into the response's
+                    # top-level `unattributed_refusals` instead — never
+                    # silently folded into a node's count.
+                    "refusal_count": hotspots.by_entity.get(node.entity_name, 0),
                 }
                 for node in graph_nodes
             ]
@@ -1664,6 +1704,12 @@ def _register_graph_route(app: FastAPI, config: SidecarConfig) -> None:
             "nodes": nodes,
             "edges": edges,
             "canonical_path": _reconstruct_canonical_path(graph_edges),
+            # Refused `mcp_audit` rows not shown on any visible node: a NULL
+            # `anchor_entity` (the engine could not pin it to one entity) OR an
+            # orphaned anchor naming an entity no longer in the projection.
+            # Surfaced explicitly so the badges + this figure always reconcile
+            # with the audit log — a refusal is never silently dropped.
+            "unattributed_refusals": unattributed_refusals,
         }
 
 

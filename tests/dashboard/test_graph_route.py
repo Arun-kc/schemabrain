@@ -129,8 +129,21 @@ def test_graph_response_shape_is_stable(client: TestClient, store_path: Path) ->
     resp = client.get("/api/graph", params={"source_connection_id": SRC})
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body) == {"source_connection_id", "nodes", "edges", "canonical_path"}
-    assert set(body["nodes"][0]) == {"id", "label", "group", "pii_level", "row_count"}
+    assert set(body) == {
+        "source_connection_id",
+        "nodes",
+        "edges",
+        "canonical_path",
+        "unattributed_refusals",
+    }
+    assert set(body["nodes"][0]) == {
+        "id",
+        "label",
+        "group",
+        "pii_level",
+        "row_count",
+        "refusal_count",
+    }
     assert set(body["edges"][0]) == {
         "id",
         "source",
@@ -319,6 +332,124 @@ def test_graph_catastrophic_matches_pii_matrix(client: TestClient, store_path: P
     matrix_catastrophic = {e["name"]: e["has_catastrophic"] for e in matrix["entities"]}
     assert graph_catastrophic == matrix_catastrophic
     assert graph_catastrophic["order"] is True  # the floor actually fires
+
+
+def _seed_refusal(
+    store_path: Path,
+    *,
+    anchor_entity: str | None,
+    source: str = SRC,
+    status: str = "refused",
+) -> None:
+    """Append one `mcp_audit` row through the real writer.
+
+    Exercises the full attribution seam: a refused `ToolResponse` carries
+    `error.anchor_entity`, `build_audit_row` extracts it, and the writer
+    persists it to the non-canonical column. `status='error'` (with the same
+    anchor) is used to prove the aggregation counts ONLY refusals.
+    """
+    from schemabrain.audit.writer import AuditWriter, build_audit_row
+    from schemabrain.mcp.envelope import Recovery, ToolError, ToolResponse
+
+    kind = "pii_blocked" if status == "refused" else "unknown_metric"
+    error = ToolError(
+        kind=kind,  # type: ignore[arg-type]
+        message="blocked" if status == "refused" else "no such metric",
+        recovery=Recovery(suggested_tool="describe_entity"),
+        pii_categories=("payment_card",) if status == "refused" else (),
+        anchor_entity=anchor_entity,
+    )
+    response = ToolResponse(status=status, error=error)  # type: ignore[arg-type]
+    writer = AuditWriter(store_path)
+    try:
+        draft = build_audit_row(
+            tool_name="get_metric", source_connection_id=source, response=response
+        )
+        writer.write(draft)
+    finally:
+        writer.close()
+
+
+def test_graph_refusal_count_zero_without_refusals(client: TestClient, store_path: Path) -> None:
+    """No audit refusals → every node's `refusal_count` is 0 and the
+    response's `unattributed_refusals` is 0 (never a fabricated tally)."""
+    _seed_graph(store_path)
+    body = client.get("/api/graph", params={"source_connection_id": SRC}).json()
+    assert all(node["refusal_count"] == 0 for node in body["nodes"])
+    assert body["unattributed_refusals"] == 0
+
+
+def test_graph_refusal_counts_attributed_and_unattributed(
+    client: TestClient, store_path: Path
+) -> None:
+    """Refused rows are tallied per `anchor_entity`; rows the engine could
+    not attribute (NULL anchor) land in `unattributed_refusals`, never folded
+    into a node — so the badges + the figure reconcile with the audit log."""
+    _seed_graph(store_path)
+    _seed_refusal(store_path, anchor_entity="order")
+    _seed_refusal(store_path, anchor_entity="order")
+    _seed_refusal(store_path, anchor_entity="user")
+    _seed_refusal(store_path, anchor_entity=None)  # unattributable
+
+    body = client.get("/api/graph", params={"source_connection_id": SRC}).json()
+    counts = {node["id"]: node["refusal_count"] for node in body["nodes"]}
+    assert counts["order"] == 2
+    assert counts["user"] == 1
+    assert counts["tenant"] == 0
+    assert body["unattributed_refusals"] == 1
+    # Reconciliation invariant: attributed + unattributed == total refusals.
+    assert sum(counts.values()) + body["unattributed_refusals"] == 4
+
+
+def test_graph_orphaned_anchor_folds_into_unattributed(
+    client: TestClient, store_path: Path
+) -> None:
+    """An `anchor_entity` naming an entity that is NOT in the projection (the
+    append-only row outlived an entity rename/drop) matches no node. It must
+    fold into `unattributed_refusals`, NOT vanish — so per-node counts PLUS
+    the figure always equal the audit log's refused-row count. This is the
+    reconciliation invariant the surface promises; the happy-path test only
+    used anchors that match seeded nodes."""
+    _seed_graph(store_path)
+    _seed_refusal(store_path, anchor_entity="order")  # attributed, on a node
+    _seed_refusal(store_path, anchor_entity="ghost")  # entity not in projection
+    _seed_refusal(store_path, anchor_entity=None)  # genuinely unattributable
+
+    body = client.get("/api/graph", params={"source_connection_id": SRC}).json()
+    counts = {node["id"]: node["refusal_count"] for node in body["nodes"]}
+    assert counts["order"] == 1
+    assert "ghost" not in counts  # no phantom node is invented
+    # The ghost anchor + the NULL anchor BOTH land in the remainder.
+    assert body["unattributed_refusals"] == 2
+    # Reconciliation: shown-on-nodes + remainder == total refused (3).
+    assert sum(counts.values()) + body["unattributed_refusals"] == 3
+
+
+def test_graph_refusal_count_excludes_non_refused_rows(
+    client: TestClient, store_path: Path
+) -> None:
+    """Only `status='refused'` rows count. A non-refusal error row carrying
+    the same `anchor_entity` must NOT inflate the refusal hotspot."""
+    _seed_graph(store_path)
+    _seed_refusal(store_path, anchor_entity="order", status="refused")
+    _seed_refusal(store_path, anchor_entity="order", status="error")  # not a refusal
+
+    body = client.get("/api/graph", params={"source_connection_id": SRC}).json()
+    counts = {node["id"]: node["refusal_count"] for node in body["nodes"]}
+    assert counts["order"] == 1  # the error row is excluded
+    assert body["unattributed_refusals"] == 0
+
+
+def test_graph_refusal_counts_scoped_to_source(client: TestClient, store_path: Path) -> None:
+    """Refusals recorded against a different source never bleed into this
+    source's graph (the aggregation filters by `source_connection_id`)."""
+    _seed_graph(store_path)
+    _seed_refusal(store_path, anchor_entity="order", source="some-other-source")
+
+    body = client.get("/api/graph", params={"source_connection_id": SRC}).json()
+    counts = {node["id"]: node["refusal_count"] for node in body["nodes"]}
+    assert counts["order"] == 0
+    assert body["unattributed_refusals"] == 0
 
 
 def test_graph_never_echoes_raw_connection_url(

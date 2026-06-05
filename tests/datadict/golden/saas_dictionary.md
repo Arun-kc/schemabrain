@@ -1,6 +1,6 @@
 # Data dictionary
 
-Generated from the local SchemaBrain store (schema version 16). Every indexed table, column, type, PII classification, semantic join, and metric.
+Generated from the local SchemaBrain store (schema version 17). Every indexed table, column, type, PII classification, semantic join, and metric.
 
 ## api_key
 

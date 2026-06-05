@@ -1571,6 +1571,11 @@ def build_server(
                         suggested_args=recovery_args,
                     ),
                     pii_categories=exc.blocked_categories,
+                    # Attribute the refusal to the metric's entity so the
+                    # audit writer can persist it (non-canonically) and the
+                    # graph surface can light the refusal hotspot. None only
+                    # for callers that bypass `get_metric_impl`.
+                    anchor_entity=exc.anchor_entity,
                 ),
             )
         except UnknownMetricError as exc:

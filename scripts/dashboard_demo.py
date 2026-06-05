@@ -257,6 +257,14 @@ def _seed_store(store_path: Path) -> None:
             source_connection_id=SOURCE_CONNECTION_ID,
         )
 
+        # Build the v15 graph read-model so GET /api/graph (the knowledge-graph
+        # surface) is non-empty against the demo store — the real CLI does this
+        # from `index` / `entities apply` / `joins apply`. Without it the
+        # surface renders its empty state even though entities + joins exist.
+        from schemabrain.semantic.graph_projection import rebuild_graph_projection
+
+        rebuild_graph_projection(store, source_connection_id=SOURCE_CONNECTION_ID)
+
 
 def _seed_audit_chain(store_path: Path) -> None:
     """Append 3 representative audit rows so the chain has shape."""
@@ -275,7 +283,9 @@ def _seed_audit_chain(store_path: Path) -> None:
                 response=ToolResponse(status="success", data={"items": ["user", "order"]}),
             )
         )
-        # 2) A refusal — would touch payment_card.
+        # 2) A refusal — would touch payment_card on `order`. `anchor_entity`
+        #    attributes it to that entity so the graph lights its refusal
+        #    hotspot (v17; non-canonical, never enters the chain hash).
         writer.write(
             build_audit_row(
                 tool_name="get_metric",
@@ -287,11 +297,12 @@ def _seed_audit_chain(store_path: Path) -> None:
                         message="Refused: would touch payment_card",
                         recovery=Recovery(),
                         pii_categories=("payment_card",),
+                        anchor_entity="order",
                     ),
                 ),
             )
         )
-        # 3) A refusal — would touch credential.
+        # 3) A refusal — would touch credential on `user`.
         writer.write(
             build_audit_row(
                 tool_name="describe_entity",
@@ -303,6 +314,7 @@ def _seed_audit_chain(store_path: Path) -> None:
                         message="Refused: would touch credential",
                         recovery=Recovery(),
                         pii_categories=("credential",),
+                        anchor_entity="user",
                     ),
                 ),
             )

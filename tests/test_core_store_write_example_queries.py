@@ -60,16 +60,16 @@ def _eq(
     )
 
 
-class TestSchemaVersionBumpToV16:
-    """v13→v16 migration-chain contract.
+class TestSchemaVersionBumpToV17:
+    """v13→v17 migration-chain contract.
 
-    Fresh stores stamp `schema_version='16'`; v15 stores migrate in-place
-    via `_migrate_v15_to_v16` (the `graph_edges.cardinality` ALTER); v14
-    stores chain 14→15→16; v13 stores chain 13→14→15→16 (Option B — each
-    `_migrate_vN_to_vN+1` in a single open, with `existing_version`
-    reassigned between legs); pre-v13 stores still raise
-    `SchemaVersionMismatchError` — the pre-alpha cliff does NOT move under
-    chaining.
+    Fresh stores stamp `schema_version='17'`; v16 stores migrate in-place
+    via `_migrate_v16_to_v17` (the non-canonical `mcp_audit.anchor_entity`
+    ALTER); v15 stores chain 15→16→17; v14 stores chain 14→15→16→17; v13
+    stores chain 13→14→15→16→17 (Option B — each `_migrate_vN_to_vN+1` in a
+    single open, with `existing_version` reassigned between legs); pre-v13
+    stores still raise `SchemaVersionMismatchError` — the pre-alpha cliff
+    does NOT move under chaining.
     """
 
     # Columns/tables each version added — dropped here to fabricate an
@@ -82,8 +82,18 @@ class TestSchemaVersionBumpToV16:
     _V15_DESC_COLS = ("semantic_type", "meaning", "col_confidence")
 
     @classmethod
+    def _downgrade_to_v16(cls, conn: sqlite3.Connection) -> None:
+        """Strip the v17 addition so the store looks like a v16 store
+        (drop the non-canonical `mcp_audit.anchor_entity` column). The
+        fabricated stores were created by current code, whose audit DDL
+        already includes the column, so it must be dropped before re-open
+        or the 16→17 ALTER would hit a duplicate-column error."""
+        conn.execute("ALTER TABLE mcp_audit DROP COLUMN anchor_entity")
+
+    @classmethod
     def _downgrade_to_v14(cls, conn: sqlite3.Connection) -> None:
-        """Strip the v15 additions so the store looks like a v14 store."""
+        """Strip the v15 + v17 additions so the store looks like a v14 store."""
+        cls._downgrade_to_v16(conn)  # drop mcp_audit.anchor_entity (v17)
         conn.execute("DROP TABLE IF EXISTS graph_edges")
         conn.execute("DROP TABLE IF EXISTS graph_nodes")
         for col in cls._V15_ENTITY_COLS:
@@ -176,25 +186,60 @@ class TestSchemaVersionBumpToV16:
 
     @classmethod
     def _downgrade_to_v15(cls, conn: sqlite3.Connection) -> None:
-        """Strip only the v16 addition so the store looks like a v15 store
-        (graph_edges present, but WITHOUT the cardinality column)."""
+        """Strip the v16 + v17 additions so the store looks like a v15 store
+        (graph_edges present but WITHOUT cardinality; mcp_audit WITHOUT
+        anchor_entity)."""
+        cls._downgrade_to_v16(conn)  # drop mcp_audit.anchor_entity (v17)
         conn.execute("ALTER TABLE graph_edges DROP COLUMN cardinality")
 
-    def test_fresh_store_has_schema_version_16(self, tmp_path: Path) -> None:
+    def test_fresh_store_has_schema_version_17(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "sb.db") as store:
             row = (
                 store._require_conn()
                 .execute("SELECT value FROM schemabrain_meta WHERE key = 'schema_version'")
                 .fetchone()
             )
-            assert row["value"] == "16"
+            assert row["value"] == "17"
 
-    def test_v15_store_migrates_to_v16(self, tmp_path: Path) -> None:
-        # Fabricate a genuine v15 store: graph_edges present but WITHOUT
-        # the v16 cardinality column, carrying a real projected edge.
-        # Re-open with v16 code and assert (a) version bumped to 16, (b)
-        # the ALTER added the cardinality column, (c) the pre-existing edge
-        # survived with a NULL cardinality (backfill, never fabricated).
+    def test_v16_store_migrates_to_v17(self, tmp_path: Path) -> None:
+        # Fabricate a genuine v16 store: mcp_audit present but WITHOUT the
+        # non-canonical anchor_entity column. Re-open with v17 code and assert
+        # (a) version bumped to 17, (b) the ALTER added anchor_entity, (c) a
+        # pre-existing audit row survived with a NULL anchor (backfill).
+        db_path = tmp_path / "sb.db"
+        with SQLiteStore(db_path) as store:
+            conn = store._require_conn()
+            conn.execute(
+                "INSERT INTO mcp_audit (id, occurred_at, source_connection_id, caller_id, "
+                "tool_name, status, refusal_reason, cost_class, pii_categories, ast_shape_hash, "
+                "rule_id, fingerprint, fingerprint_version, chain_hash) "
+                "VALUES (1, '2026-01-01T00:00:00.000000Z', 'src', NULL, 'get_metric', 'refused', "
+                "'pii_blocked', 'refused', '', NULL, NULL, ?, 'fp-v1', ?)",
+                (b"\xaa" * 32, b"\x00" * 32),
+            )
+            self._downgrade_to_v16(conn)
+            conn.execute("UPDATE schemabrain_meta SET value = '16' WHERE key = 'schema_version'")
+            conn.commit()
+
+        with SQLiteStore(db_path) as store:
+            conn = store._require_conn()
+            assert (
+                conn.execute(
+                    "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
+                ).fetchone()["value"]
+                == "17"
+            )
+            audit_cols = {r["name"] for r in conn.execute("PRAGMA table_info(mcp_audit)")}
+            assert "anchor_entity" in audit_cols
+            row = conn.execute("SELECT anchor_entity FROM mcp_audit WHERE id = 1").fetchone()
+            assert row["anchor_entity"] is None  # backfilled NULL, row preserved
+
+    def test_v15_store_chains_to_v17(self, tmp_path: Path) -> None:
+        # Fabricate a genuine v15 store: graph_edges WITHOUT cardinality and
+        # mcp_audit WITHOUT anchor_entity, carrying a real projected edge.
+        # Re-open with v17 code and assert (a) version chained to 17, (b) the
+        # 15→16 leg added the cardinality column (NULL backfill on the edge),
+        # (c) the 16→17 leg added anchor_entity.
         db_path = tmp_path / "sb.db"
         with SQLiteStore(db_path) as store:
             conn = store._require_conn()
@@ -215,7 +260,7 @@ class TestSchemaVersionBumpToV16:
                 conn.execute(
                     "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
                 ).fetchone()["value"]
-                == "16"
+                == "17"
             )
             edge_cols = {r["name"] for r in conn.execute("PRAGMA table_info(graph_edges)")}
             assert "cardinality" in edge_cols
@@ -223,17 +268,19 @@ class TestSchemaVersionBumpToV16:
                 "SELECT cardinality FROM graph_edges WHERE join_name = 'order_to_user'"
             ).fetchone()
             assert row["cardinality"] is None  # backfilled NULL, never fabricated
+            audit_cols = {r["name"] for r in conn.execute("PRAGMA table_info(mcp_audit)")}
+            assert "anchor_entity" in audit_cols  # 16→17 leg ran
 
-    def test_v14_store_chains_to_v16(self, tmp_path: Path) -> None:
-        # Fabricate a v14 store (drop the v15 columns + graph tables),
-        # seed all four semantic surfaces, re-open with v16 code, and
-        # verify (a) version chained to 16, (b) the v15 columns exist and
-        # carry the NULL/default backfill, (c) every seeded row across
-        # entities / metrics / canonical_joins / column_pii_tags
+    def test_v14_store_chains_to_v17(self, tmp_path: Path) -> None:
+        # Fabricate a v14 store (drop the v15 columns + graph tables + the
+        # v17 audit column), seed all four semantic surfaces, re-open with
+        # v17 code, and verify (a) version chained to 17, (b) the v15 columns
+        # exist and carry the NULL/default backfill, (c) every seeded row
+        # across entities / metrics / canonical_joins / column_pii_tags
         # survives, (d) the graph tables were (re)created EMPTY by the DDL
         # loop (the 15→16 leg's ALTER is skipped because graph_edges does
         # not exist yet at migration time), already carrying the v16
-        # cardinality column.
+        # cardinality column, and (e) the 16→17 leg re-added anchor_entity.
         db_path = tmp_path / "sb.db"
         with SQLiteStore(db_path) as store:
             conn = store._require_conn()
@@ -248,7 +295,7 @@ class TestSchemaVersionBumpToV16:
                 conn.execute(
                     "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
                 ).fetchone()["value"]
-                == "16"
+                == "17"
             )
             # (b) new columns present + backfilled to NULL/default.
             ent = conn.execute(
@@ -289,11 +336,15 @@ class TestSchemaVersionBumpToV16:
             assert "cardinality" in {
                 r["name"] for r in conn.execute("PRAGMA table_info(graph_edges)")
             }
+            # (e) the 16→17 leg re-added the non-canonical audit column.
+            assert "anchor_entity" in {
+                r["name"] for r in conn.execute("PRAGMA table_info(mcp_audit)")
+            }
 
-    def test_v13_store_chains_to_v16(self, tmp_path: Path) -> None:
-        # Option B: a v13 store migrates 13→14→15→16 in one open.
+    def test_v13_store_chains_to_v17(self, tmp_path: Path) -> None:
+        # Option B: a v13 store migrates 13→14→15→16→17 in one open.
         # Fabricate a v13 shape (drop BOTH the v14 trust columns and the
-        # v15 columns), seed, re-open, and assert (a) version == 16,
+        # v15/v17 additions), seed, re-open, and assert (a) version == 17,
         # (b) the v14 leg ran (origin backfill landed the trust signal),
         # (c) the v15 leg ran (the `group` column is present + default).
         db_path = tmp_path / "sb.db"
@@ -310,7 +361,7 @@ class TestSchemaVersionBumpToV16:
                 conn.execute(
                     "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
                 ).fetchone()["value"]
-                == "16"
+                == "17"
             )
             row = conn.execute(
                 'SELECT inference_method, validation_state, "group" FROM entities '
@@ -344,7 +395,7 @@ class TestSchemaVersionBumpToV16:
         )
         store._require_conn().commit()
         store.close()
-        with pytest.raises(SchemaVersionMismatchError, match=r"12.*16|16.*12"):
+        with pytest.raises(SchemaVersionMismatchError, match=r"12.*17|17.*12"):
             SQLiteStore(db_path)
 
     def test_graph_tables_and_index_exist(self, tmp_path: Path) -> None:
@@ -382,9 +433,9 @@ class TestSchemaVersionBumpToV16:
             self._seed_semantic_rows(conn)
 
         # Inject a failure at the last step inside the transaction
-        # (`ensure_audit_schema`), AFTER the nine migration ALTERs have
-        # run. `_init_schema` imports it locally from `schemabrain.audit.
-        # ddl`, so patching the module attribute is picked up on open.
+        # (`ensure_audit_schema`), AFTER the 14→15→16→17 migration ALTERs
+        # have run. `_init_schema` imports it locally from `schemabrain.
+        # audit.ddl`, so patching the module attribute is picked up on open.
         def _boom(_conn: sqlite3.Connection) -> None:
             raise RuntimeError("simulated crash mid-init")
 
@@ -419,7 +470,7 @@ class TestSchemaVersionBumpToV16:
                 conn.execute(
                     "SELECT value FROM schemabrain_meta WHERE key = 'schema_version'"
                 ).fetchone()["value"]
-                == "16"
+                == "17"
             )
             assert "group" in {r["name"] for r in conn.execute("PRAGMA table_info(entities)")}
             assert self._semantic_counts(conn) == {

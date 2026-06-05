@@ -93,6 +93,27 @@ class GraphEdge:
             )
 
 
+@dataclass(frozen=True)
+class RefusalHotspots:
+    """Live refusal tally for the graph's refusal-hotspot overlay (PR-17b).
+
+    Built by aggregating append-only `mcp_audit` rows with `status='refused'`
+    by their non-canonical `anchor_entity` column (store schema v17), NOT
+    persisted to the projection (refusals change between projection rebuilds,
+    so the count must be live or it goes stale immediately).
+
+    `by_entity` maps an entity name → its attributed refusal count; entities
+    with zero refusals are simply absent. `unattributed` is the count of
+    refused rows the engine could not pin to a single entity (NULL
+    `anchor_entity`) — surfaced explicitly rather than dropped so a badge
+    total always reconciles with the audit log (a refusal is never silently
+    uncounted). Both are honest live reads, never a guess.
+    """
+
+    by_entity: dict[str, int]
+    unattributed: int
+
+
 def edge_origin_from_inference_method(inference_method: InferenceMethod) -> EdgeOrigin:
     """Project a canonical join's `inference_method` onto the edge-evidence band.
 

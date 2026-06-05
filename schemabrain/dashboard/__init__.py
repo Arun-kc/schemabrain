@@ -47,7 +47,13 @@ from pathlib import Path
 # gains `cardinality` (declared FK edges only; null for mined/inferred) and
 # each node replaces the `catastrophic` boolean with the full 5-state live
 # `pii_level` (catastrophic | pii | confidential | internal | none).
-DASHBOARD_SCHEMA_VERSION = "1.7"
+# 1.8 adds the live refusal tally to `GET /api/graph` for the refusal-hotspot
+# overlay (PR-17b): each node gains `refusal_count` and the response gains
+# `unattributed_refusals`, aggregated per request from append-only `mcp_audit`
+# `status='refused'` rows grouped by the non-canonical `anchor_entity` column
+# (store v17). The attributed/unattributed split always reconciles with the
+# audit log; the chained audit columns are never read or touched.
+DASHBOARD_SCHEMA_VERSION = "1.8"
 
 # Directory holding the static Next.js export. Populated at wheel-build
 # time by the ``web/`` workspace's ``pnpm build`` output. At install
