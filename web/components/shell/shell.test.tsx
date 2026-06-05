@@ -108,11 +108,11 @@ describe("nav model", () => {
     expect(isNavItemActive(item, "/audit")).toBe(false);
   });
 
-  it("ships the eight handoff surfaces with graph/entities/pii/refusals/audit/policy/drift built", () => {
+  it("ships all eight handoff surfaces, every one built", () => {
     const ids = NAV.flatMap((g) => g.items.map((i) => i.id));
     expect(ids).toEqual(["graph", "entities", "dict", "pii", "refusals", "audit", "policy", "drift"]);
     const built = NAV.flatMap((g) => g.items).filter((i) => i.built).map((i) => i.id);
-    expect(built).toEqual(["graph", "entities", "pii", "refusals", "audit", "policy", "drift"]);
+    expect(built).toEqual(["graph", "entities", "dict", "pii", "refusals", "audit", "policy", "drift"]);
   });
 });
 
@@ -136,23 +136,23 @@ describe("SourceSelector", () => {
 });
 
 describe("NavRail", () => {
-  it("marks the active built surface and disables unbuilt ones", async () => {
+  it("marks the active built surface and links every shipped surface", async () => {
     renderWithClient(<NavRail />);
 
     const pii = await screen.findByRole("link", { name: /PII matrix/ });
     expect(pii).toHaveAttribute("aria-current", "page");
     expect(pii).toHaveAttribute("href", "/pii");
 
-    // Graph + Entities now ship → live links.
+    // Graph + Entities ship → live links.
     const graph = await screen.findByRole("link", { name: /Knowledge graph/ });
     expect(graph).toHaveAttribute("href", "/graph");
     const entities = await screen.findByRole("link", { name: /Entities/ });
     expect(entities).toHaveAttribute("href", "/entities");
 
-    // Data dictionary is not built yet → no link, marked disabled.
-    expect(screen.queryByRole("link", { name: /Data dictionary/ })).toBeNull();
-    const dict = screen.getByText("Data dictionary").closest(".sb-nav-item");
-    expect(dict).toHaveAttribute("aria-disabled", "true");
+    // Data dictionary now ships → a live link, no longer disabled (PR-19).
+    const dict = await screen.findByRole("link", { name: /Data dictionary/ });
+    expect(dict).toHaveAttribute("href", "/dict");
+    expect(dict.closest(".sb-nav-item")).not.toHaveAttribute("aria-disabled", "true");
   });
 });
 

@@ -225,6 +225,7 @@ def create_sidecar(config: SidecarConfig) -> FastAPI:
     _register_policy_route(app, config)
     _register_drift_route(app, config)
     _register_graph_route(app, config)
+    _register_dict_route(app, config)
     _register_stream_route(app, config)
 
     has_static_export = STATIC_DIR.exists() and any(
@@ -1716,6 +1717,40 @@ def _register_graph_route(app: FastAPI, config: SidecarConfig) -> None:
             # with the audit log — a refusal is never silently dropped.
             "unattributed_refusals": unattributed_refusals,
         }
+
+
+def _register_dict_route(app: FastAPI, config: SidecarConfig) -> None:
+    """GET /api/dict — read-only Data Dictionary model for one source.
+
+    Serialises the SAME ``build_dictionary`` model the ``schemabrain docs``
+    CLI renders (schema version, every entity's binding, columns with
+    type/identity-role/PII tags, semantic joins with the catastrophic-
+    redacted ON clause, and entity-anchored metrics). The dashboard's
+    Data Dictionary surface browses this model and its "Export Markdown"
+    re-renders it client-side via a TypeScript port of the Python markdown
+    serialiser — so the exported bytes match the committed CLI golden.
+
+    The ON clause is redacted by the aggregator (a catastrophic-leak FK
+    column name becomes ``<redacted_column>``); column descriptions are
+    already enrichment-time redacted in the store. The route therefore
+    reads only already-safe stored data and writes nothing. A source with
+    no curated entities yields an empty ``entities`` array at 200; a store
+    with no resolvable source is a 409.
+    """
+    from schemabrain.core.store import SQLiteStore
+    from schemabrain.datadict.aggregator import build_dictionary
+    from schemabrain.datadict.model_json import dictionary_model_to_json
+
+    @app.get("/api/dict")
+    def data_dictionary(source_connection_id: str | None = None) -> dict[str, Any]:
+        with SQLiteStore(config.store_path) as store:
+            resolved_source = _resolve_source(store, config, source_connection_id)
+            # Hash a URL-shaped override to its canonical id BEFORE it
+            # reaches the store query or the response — a raw connection
+            # URL carries the DB password and must never be echoed.
+            safe_source = _credential_safe_source_label(resolved_source)
+            model = build_dictionary(store=store, source_connection_id=safe_source)
+        return dictionary_model_to_json(model)
 
 
 def _register_stream_route(app: FastAPI, config: SidecarConfig) -> None:

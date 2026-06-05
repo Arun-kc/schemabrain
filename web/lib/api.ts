@@ -4,6 +4,7 @@
 
 import type {
   AuditChainStatus,
+  DictionaryModel,
   DriftResponse,
   EntityDrilldownResponse,
   EntityListResponse,
@@ -80,6 +81,15 @@ export const api = {
   graph: (sourceId?: string) => {
     const qs = sourceId ? `?source_connection_id=${encodeURIComponent(sourceId)}` : "";
     return getJson<GraphResponse>(`/api/graph${qs}`);
+  },
+
+  /** The full data-dictionary model (schema version + every entity's
+   * columns / joins / metrics) for a source — the SAME model the
+   * `schemabrain docs` CLI renders. Drives the Data Dictionary surface
+   * and its byte-for-byte Markdown export (dashboard 1.9). */
+  dict: (sourceId?: string) => {
+    const qs = sourceId ? `?source_connection_id=${encodeURIComponent(sourceId)}` : "";
+    return getJson<DictionaryModel>(`/api/dict${qs}`);
   },
 
   /**

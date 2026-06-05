@@ -1,0 +1,1218 @@
+{
+  "schema_version": "17",
+  "sources": [
+    {
+      "source_connection_id": "6e04b1c8f8789f48",
+      "entities": [
+        {
+          "name": "api_key",
+          "description": "A programmatic API credential issued to a workspace.",
+          "qualified_table": "public.api_keys",
+          "identity": "id",
+          "group": "identity",
+          "columns": [
+            {
+              "name": "id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": true,
+              "is_identity": true,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "workspace_id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "key_prefix",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "api_key_hash",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "pii",
+              "pii_categories": [
+                "credential"
+              ]
+            },
+            {
+              "name": "scope",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "created_at",
+              "data_type": "timestamptz",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "revoked_at",
+              "data_type": "timestamptz",
+              "nullable": true,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            }
+          ],
+          "joins": [],
+          "metrics": []
+        },
+        {
+          "name": "billing_profile",
+          "description": "A workspace's legal / tax identity used for invoicing.",
+          "qualified_table": "public.billing_profiles",
+          "identity": "id",
+          "group": "billing",
+          "columns": [
+            {
+              "name": "id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": true,
+              "is_identity": true,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "workspace_id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "legal_entity",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "tax_id",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "pii",
+              "pii_categories": [
+                "government_id"
+              ]
+            },
+            {
+              "name": "national_id",
+              "data_type": "text",
+              "nullable": true,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "pii",
+              "pii_categories": [
+                "government_id"
+              ]
+            },
+            {
+              "name": "country_code",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "pii",
+              "pii_categories": [
+                "contact"
+              ]
+            },
+            {
+              "name": "created_at",
+              "data_type": "timestamptz",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            }
+          ],
+          "joins": [],
+          "metrics": []
+        },
+        {
+          "name": "invoice",
+          "description": "A billing document issued to a workspace.",
+          "qualified_table": "public.invoices",
+          "identity": "id",
+          "group": "billing",
+          "columns": [
+            {
+              "name": "id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": true,
+              "is_identity": true,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "workspace_id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "subscription_id",
+              "data_type": "bigint",
+              "nullable": true,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "invoice_number",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "status",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "invoice_total_cents",
+              "data_type": "integer",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "issued_at",
+              "data_type": "timestamptz",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "paid_at",
+              "data_type": "timestamptz",
+              "nullable": true,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            }
+          ],
+          "joins": [
+            {
+              "name": "invoice_subscription",
+              "description": "Links each invoice to the subscription it covers.",
+              "source_entity": "invoice",
+              "target_entity": "subscription",
+              "on_clause": "\"invoice\".\"subscription_id\" = \"subscription\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            },
+            {
+              "name": "invoice_workspace",
+              "description": "Links each invoice to the workspace it bills.",
+              "source_entity": "invoice",
+              "target_entity": "workspace",
+              "on_clause": "\"invoice\".\"workspace_id\" = \"workspace\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            }
+          ],
+          "metrics": [
+            {
+              "name": "total_revenue",
+              "description": "Sum of invoice totals (cents). One row per requested grain.",
+              "agg": "sum",
+              "measure": "invoice_total_cents",
+              "measure_is_expression": false,
+              "time_dimension": "invoice.issued_at",
+              "time_grains": [
+                "day",
+                "week",
+                "month"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "payment_method",
+          "description": "A card on file for a workspace (tokenized last-4, brand, expiry).",
+          "qualified_table": "public.payment_methods",
+          "identity": "id",
+          "group": "billing",
+          "columns": [
+            {
+              "name": "id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": true,
+              "is_identity": true,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "workspace_id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "card_number_last4",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "pii",
+              "pii_categories": [
+                "payment_card"
+              ]
+            },
+            {
+              "name": "card_brand",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "card_exp_month",
+              "data_type": "integer",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "card_exp_year",
+              "data_type": "integer",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "is_default",
+              "data_type": "boolean",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "created_at",
+              "data_type": "timestamptz",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            }
+          ],
+          "joins": [
+            {
+              "name": "workspace_payment_methods",
+              "description": "Links each payment method on file to its workspace.",
+              "source_entity": "payment_method",
+              "target_entity": "workspace",
+              "on_clause": "\"payment_method\".\"workspace_id\" = \"workspace\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            }
+          ],
+          "metrics": []
+        },
+        {
+          "name": "plan",
+          "description": "A subscription plan in the catalog (tier, price, included seats, SLA).",
+          "qualified_table": "public.plans",
+          "identity": "id",
+          "group": "billing",
+          "columns": [
+            {
+              "name": "id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": true,
+              "is_identity": true,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "plan_code",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "title",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "monthly_price_cents",
+              "data_type": "integer",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "included_seats",
+              "data_type": "integer",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "sla_tier",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "is_active",
+              "data_type": "boolean",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            }
+          ],
+          "joins": [
+            {
+              "name": "subscription_plan",
+              "description": "Links each subscription to the plan it is on (leaderboard dimension).",
+              "source_entity": "subscription",
+              "target_entity": "plan",
+              "on_clause": "\"subscription\".\"plan_id\" = \"plan\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            }
+          ],
+          "metrics": []
+        },
+        {
+          "name": "session",
+          "description": "An authenticated login session for a user.",
+          "qualified_table": "public.sessions",
+          "identity": "id",
+          "group": "identity",
+          "columns": [
+            {
+              "name": "id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": true,
+              "is_identity": true,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "user_id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "session_token",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "pii",
+              "pii_categories": [
+                "credential"
+              ]
+            },
+            {
+              "name": "last_login_ip",
+              "data_type": "text",
+              "nullable": true,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "pii",
+              "pii_categories": [
+                "online_identifier"
+              ]
+            },
+            {
+              "name": "created_at",
+              "data_type": "timestamptz",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "expires_at",
+              "data_type": "timestamptz",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            }
+          ],
+          "joins": [
+            {
+              "name": "user_sessions",
+              "description": "Links each login session to its user.",
+              "source_entity": "session",
+              "target_entity": "user",
+              "on_clause": "\"session\".\"user_id\" = \"user\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            }
+          ],
+          "metrics": []
+        },
+        {
+          "name": "subscription",
+          "description": "A workspace's binding to a plan, with its lifecycle timestamps.",
+          "qualified_table": "public.subscriptions",
+          "identity": "id",
+          "group": "billing",
+          "columns": [
+            {
+              "name": "id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": true,
+              "is_identity": true,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "workspace_id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "plan_id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "status",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "mrr_cents",
+              "data_type": "integer",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "started_at",
+              "data_type": "timestamptz",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "canceled_at",
+              "data_type": "timestamptz",
+              "nullable": true,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "trial_ends_at",
+              "data_type": "timestamptz",
+              "nullable": true,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            }
+          ],
+          "joins": [
+            {
+              "name": "invoice_subscription",
+              "description": "Links each invoice to the subscription it covers.",
+              "source_entity": "invoice",
+              "target_entity": "subscription",
+              "on_clause": "\"invoice\".\"subscription_id\" = \"subscription\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            },
+            {
+              "name": "subscription_items_subscription",
+              "description": "Links each subscription line item to its parent subscription.",
+              "source_entity": "subscription_item",
+              "target_entity": "subscription",
+              "on_clause": "\"subscription_item\".\"subscription_id\" = \"subscription\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            },
+            {
+              "name": "subscription_plan",
+              "description": "Links each subscription to the plan it is on (leaderboard dimension).",
+              "source_entity": "subscription",
+              "target_entity": "plan",
+              "on_clause": "\"subscription\".\"plan_id\" = \"plan\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            },
+            {
+              "name": "workspace_subscriptions",
+              "description": "Links each subscription to its workspace.",
+              "source_entity": "subscription",
+              "target_entity": "workspace",
+              "on_clause": "\"subscription\".\"workspace_id\" = \"workspace\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            }
+          ],
+          "metrics": [
+            {
+              "name": "active_subscriptions",
+              "description": "Number of subscriptions per requested grain.",
+              "agg": "count",
+              "measure": "id",
+              "measure_is_expression": false,
+              "time_dimension": "subscription.started_at",
+              "time_grains": [
+                "day",
+                "week",
+                "month"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "subscription_item",
+          "description": "A per-seat line item on a subscription (line-level revenue grain).",
+          "qualified_table": "public.subscription_items",
+          "identity": "id",
+          "group": "billing",
+          "columns": [
+            {
+              "name": "id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": true,
+              "is_identity": true,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "subscription_id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "plan_id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "seats",
+              "data_type": "integer",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "unit_price_cents",
+              "data_type": "integer",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            }
+          ],
+          "joins": [
+            {
+              "name": "subscription_items_subscription",
+              "description": "Links each subscription line item to its parent subscription.",
+              "source_entity": "subscription_item",
+              "target_entity": "subscription",
+              "on_clause": "\"subscription_item\".\"subscription_id\" = \"subscription\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            }
+          ],
+          "metrics": [
+            {
+              "name": "total_revenue_real",
+              "description": "SUM of line-item subscription revenue (unit_price_cents x seats, in cents).\nComputed per subscription_item, so multi-line subscriptions roll up\ncorrectly. Use instead of `total_revenue` for per-plan/per-seat rollups\nvia `group_by`.\n",
+              "agg": "sum",
+              "measure": "unit_price_cents * seats",
+              "measure_is_expression": true,
+              "time_dimension": null,
+              "time_grains": []
+            }
+          ]
+        },
+        {
+          "name": "support_ticket",
+          "description": "A customer-filed support request (free-text body).",
+          "qualified_table": "public.support_tickets",
+          "identity": "id",
+          "group": "activity",
+          "columns": [
+            {
+              "name": "id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": true,
+              "is_identity": true,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "workspace_id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "user_id",
+              "data_type": "bigint",
+              "nullable": true,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "subject",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "body",
+              "data_type": "text",
+              "nullable": true,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "status",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "created_at",
+              "data_type": "timestamptz",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            }
+          ],
+          "joins": [],
+          "metrics": []
+        },
+        {
+          "name": "usage_event",
+          "description": "A metered telemetry event (api_call / login / export).",
+          "qualified_table": "public.usage_events",
+          "identity": "id",
+          "group": "activity",
+          "columns": [
+            {
+              "name": "id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": true,
+              "is_identity": true,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "workspace_id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "event_type",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "quantity",
+              "data_type": "integer",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "occurred_at",
+              "data_type": "timestamptz",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "recorded_at",
+              "data_type": "timestamptz",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            }
+          ],
+          "joins": [],
+          "metrics": [
+            {
+              "name": "usage_volume",
+              "description": "Sum of usage-event quantity per requested grain.",
+              "agg": "sum",
+              "measure": "quantity",
+              "measure_is_expression": false,
+              "time_dimension": "usage_event.occurred_at",
+              "time_grains": [
+                "day",
+                "week",
+                "month"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "user",
+          "description": "A workspace member account (login credential + contact details).",
+          "qualified_table": "public.users",
+          "identity": "id",
+          "group": "identity",
+          "columns": [
+            {
+              "name": "id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": true,
+              "is_identity": true,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "workspace_id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "email",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "pii",
+              "pii_categories": [
+                "contact"
+              ]
+            },
+            {
+              "name": "full_name",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "pii",
+              "pii_categories": [
+                "contact"
+              ]
+            },
+            {
+              "name": "password_hash",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "pii",
+              "pii_categories": [
+                "credential"
+              ]
+            },
+            {
+              "name": "role",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "bio",
+              "data_type": "text",
+              "nullable": true,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "created_at",
+              "data_type": "timestamptz",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            }
+          ],
+          "joins": [
+            {
+              "name": "user_sessions",
+              "description": "Links each login session to its user.",
+              "source_entity": "session",
+              "target_entity": "user",
+              "on_clause": "\"session\".\"user_id\" = \"user\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            },
+            {
+              "name": "workspace_users",
+              "description": "Links each user to the workspace they belong to.",
+              "source_entity": "user",
+              "target_entity": "workspace",
+              "on_clause": "\"user\".\"workspace_id\" = \"workspace\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            }
+          ],
+          "metrics": [
+            {
+              "name": "user_count",
+              "description": "Number of user accounts. Demonstrates PII-aware refusal: grouping by\na credential column is refused, while grouping by a public column like\n`role` is allowed.\n",
+              "agg": "count",
+              "measure": "id",
+              "measure_is_expression": false,
+              "time_dimension": null,
+              "time_grains": []
+            }
+          ]
+        },
+        {
+          "name": "workspace",
+          "description": "A tenant account — the org boundary that owns users, subscriptions, and billing.",
+          "qualified_table": "public.workspaces",
+          "identity": "id",
+          "group": "identity",
+          "columns": [
+            {
+              "name": "id",
+              "data_type": "bigint",
+              "nullable": false,
+              "is_primary_key": true,
+              "is_identity": true,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "name",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "pii",
+              "pii_categories": [
+                "contact"
+              ]
+            },
+            {
+              "name": "slug",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "region",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "plan_tier",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "seat_count",
+              "data_type": "integer",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "created_at",
+              "data_type": "timestamptz",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            }
+          ],
+          "joins": [
+            {
+              "name": "invoice_workspace",
+              "description": "Links each invoice to the workspace it bills.",
+              "source_entity": "invoice",
+              "target_entity": "workspace",
+              "on_clause": "\"invoice\".\"workspace_id\" = \"workspace\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            },
+            {
+              "name": "workspace_payment_methods",
+              "description": "Links each payment method on file to its workspace.",
+              "source_entity": "payment_method",
+              "target_entity": "workspace",
+              "on_clause": "\"payment_method\".\"workspace_id\" = \"workspace\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            },
+            {
+              "name": "workspace_subscriptions",
+              "description": "Links each subscription to its workspace.",
+              "source_entity": "subscription",
+              "target_entity": "workspace",
+              "on_clause": "\"subscription\".\"workspace_id\" = \"workspace\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            },
+            {
+              "name": "workspace_users",
+              "description": "Links each user to the workspace they belong to.",
+              "source_entity": "user",
+              "target_entity": "workspace",
+              "on_clause": "\"user\".\"workspace_id\" = \"workspace\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            }
+          ],
+          "metrics": []
+        }
+      ]
+    }
+  ]
+}
