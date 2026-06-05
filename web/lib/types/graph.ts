@@ -32,6 +32,14 @@ export interface GraphNode {
   pii_level: PiiLevel;
   /** Cached row-count estimate; null when the backend can't estimate it. */
   row_count: number | null;
+  /**
+   * LIVE count of `mcp_audit` refusals attributed to this entity (v17 /
+   * dashboard 1.8). 0 when none. Honest aggregate — refusals the engine
+   * could not attribute to one entity are NOT folded in here; they live in
+   * `GraphResponse.unattributed_refusals`, so the two always reconcile with
+   * the audit log. Drives the refusal-hotspot overlay (PR-17b).
+   */
+  refusal_count: number;
 }
 
 export interface GraphEdge {
@@ -65,4 +73,12 @@ export interface GraphResponse {
   nodes: readonly GraphNode[];
   edges: readonly GraphEdge[];
   canonical_path: CanonicalPath;
+  /**
+   * LIVE count of refused `mcp_audit` rows not shown on any visible node: a
+   * NULL `anchor_entity` (the engine could not pin it to one entity) OR an
+   * orphaned anchor naming an entity no longer in the projection. Surfaced
+   * explicitly so the per-node `refusal_count` badges plus this figure always
+   * reconcile with the audit log — a refusal is never silently dropped (PR-17b).
+   */
+  unattributed_refusals: number;
 }

@@ -1,11 +1,13 @@
 /**
- * Knowledge-graph surface E2E smoke (/graph) — PR-17a.
+ * Knowledge-graph surface E2E smoke (/graph) — PR-17a canvas + PR-17b chrome.
  *
  * The signature surface reproduced on reactflow: kit GraphNode/GraphEdge
  * primitives, a deterministic generated layout, and the restore-to-seed force
  * sim driven by a PARKED rAF loop (it runs only while a drag has energy, then
  * stops). Selection is URL-driven (`?entity=`) and opens the shell's global
- * drilldown sheet.
+ * drilldown sheet. PR-17b adds the floating chrome (search, the three
+ * data-backed overlays, legend, path chip, MiniMap/Controls, tooltip), all
+ * exercised in the second describe block below.
  *
  * Graph state is injected via `page.route` on /api/graph only; /api/meta stays
  * live so the shell resolves a source. Prerequisite: a dashboard sidecar on
@@ -30,9 +32,30 @@ test.beforeEach(async ({ context }, testInfo) => {
 const GRAPH = {
   source_connection_id: "graph-smoke",
   nodes: [
-    { id: "user", label: "user", group: "identity", pii_level: "catastrophic", row_count: 1200 },
-    { id: "order", label: "order", group: "activity", pii_level: "none", row_count: 9000 },
-    { id: "plan", label: "plan", group: "billing", pii_level: "pii", row_count: 12 },
+    {
+      id: "user",
+      label: "user",
+      group: "identity",
+      pii_level: "catastrophic",
+      row_count: 1200,
+      refusal_count: 2,
+    },
+    {
+      id: "order",
+      label: "order",
+      group: "activity",
+      pii_level: "none",
+      row_count: 9000,
+      refusal_count: 0,
+    },
+    {
+      id: "plan",
+      label: "plan",
+      group: "billing",
+      pii_level: "pii",
+      row_count: 12,
+      refusal_count: 0,
+    },
   ],
   edges: [
     {
@@ -65,6 +88,7 @@ const GRAPH = {
     edges: ["user_order", "order_plan"],
     hops: 2,
   },
+  unattributed_refusals: 1,
 };
 
 async function routeGraph(page: Page, json: unknown): Promise<void> {
@@ -112,11 +136,15 @@ test.describe("Knowledge graph surface E2E smoke", () => {
     const region = page.getByRole("region", { name: "Knowledge graph" });
     await expect(region).toBeVisible();
 
-    // Every entity renders a node label; the catastrophic node is stamped.
-    await expect(region.getByText("user", { exact: true })).toBeVisible();
-    await expect(region.getByText("order", { exact: true })).toBeVisible();
-    await expect(region.getByText("plan", { exact: true })).toBeVisible();
-    await expect(region.getByText("CATASTROPHIC")).toBeVisible();
+    // Every entity renders a node. Scope to the reactflow node element — the
+    // names also appear in the canonical-path chip, so an unscoped getByText
+    // is ambiguous now that PR-17b draws the path hops.
+    for (const id of ["user", "order", "plan"]) {
+      await expect(page.locator(`.react-flow__node[data-id="${id}"]`)).toContainText(id);
+    }
+    // Exact match — the legend's "Catastrophic PII" row would otherwise
+    // collide with the node's uppercase stamp under substring matching.
+    await expect(region.getByText("CATASTROPHIC", { exact: true })).toBeVisible();
 
     // All three relationships render as edges.
     await expect(page.locator(".react-flow__edge")).toHaveCount(3);
@@ -193,7 +221,127 @@ test.describe("Knowledge graph surface E2E smoke", () => {
     await page.goto("/graph");
 
     await expect(page.getByRole("region", { name: "Knowledge graph" })).toBeVisible();
-    await expect(page.getByText("user", { exact: true })).toBeVisible();
+    // Scope to the node element — `user` also appears in the path chip.
+    await expect(page.locator('.react-flow__node[data-id="user"]')).toBeVisible();
+    expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
+  });
+});
+
+test.describe("Knowledge graph panels + overlays (PR-17b)", () => {
+  test("renders the floating chrome: search, overlays, legend, path chip", async ({ page }) => {
+    await routeGraph(page, GRAPH);
+    await page.goto("/graph");
+
+    await expect(page.getByRole("searchbox", { name: /search entities/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: "PII heat" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Refusal hotspots" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Log-mined joins" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /copy re-index command/i })).toBeVisible();
+    // Path chip renders the hop count straight off the wire (2 hops).
+    await expect(page.getByText("Canonical path · 2 hops")).toBeVisible();
+    // reactflow MiniMap + Controls present.
+    await expect(page.locator(".react-flow__minimap")).toBeVisible();
+    await expect(page.locator(".react-flow__controls")).toBeVisible();
+  });
+
+  test("the refusal overlay lights the attributed hotspot + reconciles the unattributed remainder", async ({
+    page,
+  }) => {
+    const writes = trackWrites(page);
+    await routeGraph(page, GRAPH);
+    await page.goto("/graph");
+
+    // Off by default — no badge.
+    await expect(page.locator('[data-refusal-badge="true"]')).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Refusal hotspots" }).click();
+
+    // `user` carries 2 attributed refusals → its badge shows the real count.
+    const badge = page.locator('.react-flow__node[data-id="user"] [data-refusal-badge="true"]');
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveText("2");
+    // The honest remainder is surfaced so badges + figure reconcile.
+    await expect(page.getByText(/1 refusal not attributed to a visible entity/i)).toBeVisible();
+
+    // Toggling an overlay is pure client state — never a write.
+    expect(writes, `unexpected non-GET /api calls: ${writes.join("; ")}`).toEqual([]);
+  });
+
+  test("the PII-heat overlay halos PII-bearing entities only", async ({ page }) => {
+    await routeGraph(page, GRAPH);
+    await page.goto("/graph");
+
+    await expect(page.locator('[data-pii-halo="true"]')).toHaveCount(0);
+    await page.getByRole("button", { name: "PII heat" }).click();
+    // user (catastrophic) + plan (pii) light; order (none) does not.
+    await expect(page.locator('[data-pii-halo="true"]')).toHaveCount(2);
+  });
+
+  test("search dims the non-matching nodes", async ({ page }) => {
+    await routeGraph(page, GRAPH);
+    await page.goto("/graph");
+
+    await page.getByRole("searchbox", { name: /search entities/i }).fill("plan");
+    // The matched node stays full opacity; a miss fades back.
+    await expect(page.locator('.react-flow__node[data-id="plan"]')).toHaveCSS("opacity", "1");
+    await expect(page.locator('.react-flow__node[data-id="user"]')).toHaveCSS("opacity", "0.32");
+  });
+
+  test("hovering a node shows its tooltip with row count + PII summary", async ({ page }) => {
+    await routeGraph(page, GRAPH);
+    await page.goto("/graph");
+
+    await page.locator('.react-flow__node[data-id="order"]').hover();
+    const tip = page.getByRole("tooltip");
+    await expect(tip).toBeVisible();
+    await expect(tip).toContainText("order");
+    await expect(tip).toContainText("9,000 rows · no PII");
+  });
+
+  test("a source reporting 'indexing' shows the genuine state-driven overlay (no crash)", async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+
+    // Override /api/meta to report a mid-index source — the SourceState the
+    // sidecar reserves but does not emit yet. Proves the overlay is genuinely
+    // state-driven (not a fabricated animation) and that the indexing branch
+    // renders without a Rules-of-Hooks crash.
+    await page.route(
+      (url) => url.pathname === "/api/meta",
+      (route) =>
+        route.fulfill({
+          json: {
+            charter_version: "1.2",
+            dashboard_schema_version: "1.8",
+            fingerprint_version: "fp-v1",
+            store_path: "/tmp/x",
+            default_source_connection_id: "idx-src",
+            source_connection_ids: ["idx-src"],
+            sources: [
+              {
+                source_id: "idx-src",
+                engine: "postgres",
+                state: "indexing",
+                last_indexed_at: null,
+                tables: 3,
+                entities: 0,
+              },
+            ],
+          },
+        }),
+    );
+    await routeGraph(page, GRAPH);
+    await page.goto("/graph");
+
+    // Scope to the indexing overlay's own status region — the shell mounts a
+    // global clipboard toast that also carries role="status".
+    const overlay = page.getByRole("status").filter({ hasText: /Indexing/i });
+    await expect(overlay).toBeVisible();
+    await expect(overlay).toContainText(/Indexing/i);
+    // No fabricated percentage in the honest indexing copy.
+    await expect(overlay).not.toContainText("%");
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });
 });

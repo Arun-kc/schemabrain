@@ -4,7 +4,24 @@
  * tested directly; the React components are thin renderers over these.
  */
 
+import type { PiiLevel } from "@/lib/types/meta";
+
 export type GraphNodeGroup = "identity" | "billing" | "activity" | "other";
+
+/**
+ * Halo colour for the PII-heat overlay. The catastrophic alarm is always on
+ * (the node's reserved ring); the overlay adds a softer halo to entities that
+ * actually carry PII. Only the real-PII tiers light: `catastrophic` → alarm,
+ * `pii` → the secondary PII token. `confidential` / `internal` are
+ * sensitivity bands, NOT PII categories, so they get no halo (mirrors the
+ * "map only pii" rule on the PII matrix); `none` is null. Returns null when
+ * no halo should render.
+ */
+export function graphPiiHaloColor(piiLevel: PiiLevel): string | null {
+  if (piiLevel === "catastrophic") return "var(--alarm)";
+  if (piiLevel === "pii") return "var(--pii-2)";
+  return null;
+}
 
 /** Group → accent colour token. Mirrors the handoff legend. */
 export const GROUP_COLOR: Record<GraphNodeGroup, string> = {
@@ -43,6 +60,12 @@ export interface GraphEdgeStyleInput {
   highlighted?: boolean;
   /** Log-mined emphasis overlay is active. */
   minedEmphasis?: boolean;
+  /**
+   * A focus overlay (search or PII-heat) is active and this edge is not the
+   * subject — fade it back so the highlighted/mined edges read clearly.
+   * Ignored for highlighted / mined-emphasis edges (they stay prominent).
+   */
+  dimmed?: boolean;
 }
 
 export interface GraphEdgeStyle {
@@ -61,6 +84,7 @@ export function graphEdgeStyle({
   declared,
   highlighted = false,
   minedEmphasis = false,
+  dimmed = false,
 }: GraphEdgeStyleInput): GraphEdgeStyle {
   const dash = declared ? undefined : "4 5";
   if (highlighted) {
@@ -69,5 +93,11 @@ export function graphEdgeStyle({
   if (minedEmphasis) {
     return { stroke: "var(--cyan)", strokeWidth: 2, strokeDasharray: dash, opacity: 0.9 };
   }
-  return { stroke: "var(--hair)", strokeWidth: 1.4, strokeDasharray: dash, opacity: 0.5 };
+  // Resting edge — faded under an active focus overlay, else the hairline rest.
+  return {
+    stroke: "var(--hair)",
+    strokeWidth: 1.4,
+    strokeDasharray: dash,
+    opacity: dimmed ? 0.16 : 0.5,
+  };
 }

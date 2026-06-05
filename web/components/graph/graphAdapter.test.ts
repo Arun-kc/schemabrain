@@ -11,7 +11,15 @@ import {
 } from "./graphAdapter";
 
 function apiNode(over: Partial<GraphResponse["nodes"][number]> = {}): GraphResponse["nodes"][number] {
-  return { id: "user", label: "user", group: "identity", pii_level: "none", row_count: null, ...over };
+  return {
+    id: "user",
+    label: "user",
+    group: "identity",
+    pii_level: "none",
+    row_count: null,
+    refusal_count: 0,
+    ...over,
+  };
 }
 
 function apiEdge(over: Partial<GraphResponse["edges"][number]> = {}): GraphResponse["edges"][number] {
@@ -43,6 +51,11 @@ describe("adaptNode", () => {
     const n = adaptNode(apiNode({ group: "billing", row_count: null }));
     expect(n.data.rowCount).toBeNull();
     expect(n.data.group).toBe("billing");
+  });
+
+  it("carries the live refusal_count through for the hotspot overlay", () => {
+    expect(adaptNode(apiNode({ refusal_count: 4 })).data.refusalCount).toBe(4);
+    expect(adaptNode(apiNode({ refusal_count: 0 })).data.refusalCount).toBe(0);
   });
 
   it("emits the entity node type with a placeholder position for the layout pass", () => {
@@ -87,6 +100,7 @@ describe("adaptGraph", () => {
       nodes: [apiNode({ id: "user" }), apiNode({ id: "order", group: "activity" })],
       edges: [apiEdge()],
       canonical_path: { nodes: [], edges: [], hops: 0 },
+      unattributed_refusals: 0,
     };
     const out = adaptGraph(graph);
     expect(out.nodes.map((n) => n.id)).toEqual(["user", "order"]);
@@ -99,6 +113,7 @@ describe("adaptGraph", () => {
       nodes: [],
       edges: [],
       canonical_path: { nodes: [], edges: [], hops: 0 },
+      unattributed_refusals: 0,
     });
     expect(out.nodes).toEqual([]);
     expect(out.edges).toEqual([]);
