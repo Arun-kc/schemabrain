@@ -14,6 +14,7 @@ runtime views fails CI.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Literal
 
 # Layer 1 — sensitivity. Ordered `public < internal < confidential <
@@ -109,3 +110,15 @@ PII_CONFIDENCE_BANDS: tuple[PiiConfidenceBand, ...] = (
     "medium",
     "low",
 )
+
+
+def has_catastrophic_category(categories: Iterable[str]) -> bool:
+    """True iff any category is a catastrophic-leak floor category.
+
+    The single floor predicate shared by the entity PII-severity rollup,
+    the PII matrix, and the v15 graph projection (ADR 0010) so the
+    surfaces can never disagree on what counts as catastrophic. The floor
+    is CATEGORY membership, not sensitivity level — a column is
+    catastrophic regardless of its band.
+    """
+    return any(category in CATASTROPHIC_LEAK_CATEGORIES for category in categories)

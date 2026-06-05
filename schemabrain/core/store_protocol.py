@@ -27,6 +27,7 @@ from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
 from schemabrain.core.entity import Entity
 from schemabrain.core.example_query import ExampleQuery
+from schemabrain.core.graph import GraphEdge, GraphNode
 from schemabrain.core.join import CanonicalJoin
 from schemabrain.core.metric import Metric
 from schemabrain.core.models import ForeignKey, IncomingForeignKey, Table
@@ -100,6 +101,35 @@ class Store(Protocol):  # pragma: no cover
         can't cheaply estimate row counts (SQLite, or a never-analyzed
         Postgres table). Read-only.
         """
+        ...
+
+    def write_graph_projection(
+        self,
+        *,
+        source_connection_id: str,
+        nodes: list[GraphNode],
+        edges: list[GraphEdge],
+    ) -> None:
+        """Replace the whole v15 graph projection for a source atomically.
+
+        Idempotent DELETE+INSERT in one transaction (mirrors
+        `write_column_pii_tags`); empty inputs wipe the source's
+        projection. An edge whose `join_name` names no live canonical
+        join raises `sqlite3.IntegrityError` and rolls the projection
+        back. See ADR 0010.
+        """
+        ...
+
+    def list_graph_nodes(self, *, source_connection_id: str) -> list[GraphNode]:
+        """Read the projected graph nodes for a source, ordered by
+        `entity_name`. `is_catastrophic` is a bool; `row_count` is `None`
+        when no estimate was projected. Empty source → empty list.
+        Read-only."""
+        ...
+
+    def list_graph_edges(self, *, source_connection_id: str) -> list[GraphEdge]:
+        """Read the projected graph edges for a source, ordered by
+        `join_name`. Empty source → empty list. Read-only."""
         ...
 
     def list_distinct_source_connection_ids(self) -> list[str]:

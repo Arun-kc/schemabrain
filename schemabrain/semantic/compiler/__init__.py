@@ -49,12 +49,18 @@ from schemabrain.semantic.compiler.plan import (
     UnknownViaJoinError,
     UnreachableEntityError,
 )
-from schemabrain.semantic.compiler.resolve import resolve_metric_plan
+from schemabrain.semantic.compiler.resolve import (
+    CanonicalPath,
+    build_canonical_path,
+    longest_canonical_path,
+    resolve_metric_plan,
+)
 
 __all__ = [
     "AmbiguousJoinError",
     "AmbiguousPathError",
     "AmbiguousTimeDimensionError",
+    "CanonicalPath",
     "GrainMismatchError",
     "InvalidTimeGrainError",
     "MalformedColumnError",
@@ -77,6 +83,8 @@ __all__ = [
     "UnknownOrderByColumnError",
     "UnknownViaJoinError",
     "UnreachableEntityError",
+    "build_canonical_path",
     "emit_sql",
+    "longest_canonical_path",
     "resolve_metric_plan",
 ]

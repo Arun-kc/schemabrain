@@ -40,7 +40,10 @@ from pathlib import Path
 # read-only `GET /api/audit/merkle/root` (`MerkleRootResponse`) and
 # `GET /api/audit/rows/{id}/proof` (`MerkleProofResponse`) routes, so a
 # client can independently reconcile each audit row to one root.
-DASHBOARD_SCHEMA_VERSION = "1.5"
+# 1.6 adds the read-only `GET /api/graph` route + its `GraphResponse`
+# contract (nodes / edges / canonical_path) — the backend half of the
+# knowledge-graph surface, served from the v15 graph projection (ADR 0010).
+DASHBOARD_SCHEMA_VERSION = "1.6"
 
 # Directory holding the static Next.js export. Populated at wheel-build
 # time by the ``web/`` workspace's ``pnpm build`` output. At install

@@ -2684,6 +2684,20 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _refresh_graph_projection(store: SQLiteStore, source_id: str) -> None:
+    """Rebuild the v15 graph read-model after a semantic-layer change.
+
+    Idempotent and cheap; safe to call whenever a source's entities /
+    joins / PII tags / row-count estimates may have changed (ADR 0010), so
+    `GET /api/graph` serves a current projection. Lazy import keeps the
+    projection + compiler off the import path of CLI commands that never
+    touch the graph.
+    """
+    from schemabrain.semantic.graph_projection import rebuild_graph_projection
+
+    rebuild_graph_projection(store, source_connection_id=source_id)
+
+
 def _cmd_index(
     *,
     positional_url: str | None,
@@ -2861,6 +2875,11 @@ def _cmd_index(
                     reporter=reporter,
                     no_pii_classify=no_pii_classify,
                 )
+                # Refresh the v15 graph read-model so GET /api/graph picks
+                # up the freshly-indexed row-counts + PII snapshot (ADR
+                # 0010). Entities/joins are written by `apply`, not `index`,
+                # so this is an empty projection until a project is applied.
+                _refresh_graph_projection(store, source_id)
         finally:
             reporter.close()
     except CostCapExceeded as e:
@@ -4573,6 +4592,11 @@ def _cmd_entities_apply(
                         )
                     )
                     return 2
+            # Refresh the v15 graph read-model so GET /api/graph reflects
+            # the applied entities (ADR 0010). Idempotent; only when at
+            # least one entity landed.
+            if applied:
+                _refresh_graph_projection(store, source_id)
     except OSError as e:
         _render_guided(store_path_unwritable(store_path, e))
         return 2
@@ -5767,6 +5791,11 @@ def _cmd_joins_apply(
                             f"`schemabrain entities apply` first.",
                         )
                     )
+            # Refresh the v15 graph read-model so GET /api/graph reflects
+            # the applied joins (ADR 0010). Idempotent; only when at least
+            # one join landed.
+            if applied:
+                _refresh_graph_projection(store, source_id)
     except OSError as e:  # pragma: no cover — store-path-unwritable variant covered via `joins list` OSError test
         _render_guided(store_path_unwritable(store_path, e))
         return 2
