@@ -27,10 +27,10 @@ describe("graphStyle", () => {
     expect(graphNodeColor("identity", true)).toBe("var(--alarm)");
   });
 
-  it("rings catastrophic > selected > group", () => {
-    expect(graphNodeRing("billing", true, true)).toBe("var(--alarm)");
-    expect(graphNodeRing("billing", false, true)).toBe("var(--green)");
-    expect(graphNodeRing("billing", false, false)).toBe("var(--cyan)");
+  it("rings catastrophic over the group accent (selection is a separate outer ring)", () => {
+    expect(graphNodeRing("billing", true)).toBe("var(--alarm)");
+    expect(graphNodeRing("billing", false)).toBe("var(--cyan)");
+    expect(graphNodeRing("identity", false)).toBe("var(--green)");
   });
 
   it("styles edges by priority and reflects declared-vs-mined dashing", () => {
@@ -61,13 +61,14 @@ describe("graphStyle", () => {
 
   it("emphasises edges incident to the selected node (G3), below path/mined", () => {
     const sel = graphEdgeStyle({ declared: true, selectedIncident: true });
-    expect(sel.strokeWidth).toBe(1.8);
-    expect(sel.opacity).toBe(0.9);
-    // Stays the hairline colour — selection brightens, it never recolours.
-    expect(sel.stroke).toBe("var(--hair)");
+    expect(sel.strokeWidth).toBe(2);
+    expect(sel.opacity).toBe(0.95);
+    // A brighter NEUTRAL (ink, not green/cyan) — clearly visible without
+    // implying a relationship type.
+    expect(sel.stroke).toBe("var(--ink-2)");
     // A selected incident edge ignores dimming (it is the focus).
     expect(graphEdgeStyle({ declared: true, selectedIncident: true, dimmed: true }).opacity).toBe(
-      0.9,
+      0.95,
     );
     // Priority: path > mined > selected.
     expect(
@@ -76,6 +77,14 @@ describe("graphStyle", () => {
     expect(
       graphEdgeStyle({ declared: false, minedEmphasis: true, selectedIncident: true }).stroke,
     ).toBe("var(--cyan)");
+  });
+
+  it("glows ONLY the highlighted canonical-path edge (G9)", () => {
+    expect(graphEdgeStyle({ declared: true, highlighted: true }).filter).toContain("drop-shadow");
+    // Resting, selected, and mined edges carry no glow.
+    expect(graphEdgeStyle({ declared: true }).filter).toBeUndefined();
+    expect(graphEdgeStyle({ declared: true, selectedIncident: true }).filter).toBeUndefined();
+    expect(graphEdgeStyle({ declared: false, minedEmphasis: true }).filter).toBeUndefined();
   });
 });
 
@@ -149,6 +158,35 @@ describe("GraphNode", () => {
     );
     expect(screen.getByText("CATASTROPHIC")).toBeInTheDocument();
     expect(screen.getByText("card_vault").closest(".sb-gnode")).toHaveAttribute(
+      "data-catastrophic",
+      "true",
+    );
+  });
+
+  it("renders a bright group-coloured core dot inside the orb", () => {
+    const { container } = renderNode(
+      <GraphNode {...nodeProps({ label: "users", group: "identity" })} />,
+    );
+    expect(container.querySelector('[data-core="true"]')).not.toBeNull();
+  });
+
+  it("draws a distinct OUTER selection ring on select — even on catastrophic nodes (G3)", () => {
+    const { container, rerender } = renderNode(
+      <GraphNode {...nodeProps({ label: "user", group: "billing", catastrophic: true }, false)} />,
+    );
+    expect(container.querySelector('[data-selected-ring="true"]')).toBeNull();
+
+    rerender(
+      <ReactFlowProvider>
+        <GraphNode
+          {...nodeProps({ label: "user", group: "billing", catastrophic: true }, true)}
+        />
+      </ReactFlowProvider>,
+    );
+    // The alarm ring still wins the orb border; the green selection ring is an
+    // additive OUTER ring so the pick is unmistakable on a catastrophic node.
+    expect(container.querySelector('[data-selected-ring="true"]')).not.toBeNull();
+    expect(screen.getByText("user").closest(".sb-gnode")).toHaveAttribute(
       "data-catastrophic",
       "true",
     );

@@ -11,6 +11,7 @@ import "reactflow/dist/style.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactFlow, {
   Background,
+  BackgroundVariant,
   Controls,
   MarkerType,
   MiniMap,
@@ -354,7 +355,7 @@ export default function GraphCanvas({
         maxZoom={2}
         proOptions={{ hideAttribution: true }}
       >
-        <Background gap={34} color="var(--grid-line)" />
+        <Background variant={BackgroundVariant.Lines} gap={34} color="var(--grid-line)" />
         <MiniMap
           pannable
           zoomable

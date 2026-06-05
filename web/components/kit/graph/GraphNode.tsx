@@ -61,9 +61,12 @@ export interface GraphNodeData {
 export function GraphNode({ data, selected }: NodeProps<GraphNodeData>) {
   const { label, group, catastrophic = false, piiLevel = "none" } = data;
   const accent = GROUP_COLOR[group];
-  const ring = graphNodeRing(group, catastrophic, selected);
+  const ring = graphNodeRing(group, catastrophic);
   const emphasised = catastrophic || selected;
-  const diameter = catastrophic ? 30 : 22;
+  // Handoff sizing: r 16/20 → 32/40 orb, r 3.5/4.5 → 7/9 core dot.
+  const diameter = catastrophic ? 40 : 32;
+  const coreColor = catastrophic ? "var(--alarm)" : accent;
+  const coreDiameter = catastrophic ? 9 : 7;
 
   const haloColor = data.piiHeat ? graphPiiHaloColor(piiLevel) : null;
   const refusalCount = data.refusalCount ?? 0;
@@ -79,6 +82,22 @@ export function GraphNode({ data, selected }: NodeProps<GraphNodeData>) {
       <Handle type="target" position={Position.Left} isConnectable={false} style={HANDLE_STYLE} />
       <Handle type="source" position={Position.Right} isConnectable={false} style={HANDLE_STYLE} />
       <div style={{ position: "relative", width: diameter, height: diameter }}>
+        {selected && (
+          // Selection = a SEPARATE outer green ring (handoff `r+7`), drawn
+          // regardless of catastrophic so the pick is always unmistakable.
+          <span
+            aria-hidden
+            data-selected-ring="true"
+            style={{
+              position: "absolute",
+              inset: "-7px",
+              borderRadius: "50%",
+              border: "2px solid var(--green)",
+              boxShadow: "var(--glow-green)",
+              pointerEvents: "none",
+            }}
+          />
+        )}
         {haloColor && (
           // Soft PII halo behind the orb. `pointerEvents: none` so it never
           // intercepts the node drag/click.
@@ -116,6 +135,22 @@ export function GraphNode({ data, selected }: NodeProps<GraphNodeData>) {
             boxShadow: emphasised ? "var(--glow-green)" : "none",
           }}
         />
+        <span
+          aria-hidden
+          data-core="true"
+          style={{
+            position: "absolute",
+            top: "50%",
+            left: "50%",
+            width: coreDiameter,
+            height: coreDiameter,
+            marginTop: -coreDiameter / 2,
+            marginLeft: -coreDiameter / 2,
+            borderRadius: "50%",
+            background: coreColor,
+            pointerEvents: "none",
+          }}
+        />
         {showRefusal && (
           <span
             className="sb-gnode-refusal"
@@ -147,7 +182,7 @@ export function GraphNode({ data, selected }: NodeProps<GraphNodeData>) {
       <span
         style={{
           fontFamily: "var(--f-mono)",
-          fontSize: 11,
+          fontSize: 12,
           fontWeight: 600,
           color: "var(--ink)",
           whiteSpace: "nowrap",

@@ -392,10 +392,10 @@ test.describe("Knowledge graph polish (PR-17c)", () => {
     );
     await expect(minedPath).toHaveCSS("opacity", "0.5");
 
-    // Selecting `plan` makes user→plan incident → brightened to 0.9.
+    // Selecting `plan` makes user→plan incident → brightened to 0.95.
     await page.locator('.react-flow__node[data-id="plan"]').click();
     await expect(page).toHaveURL(/[?&]entity=plan\b/);
-    await expect(minedPath).toHaveCSS("opacity", "0.9");
+    await expect(minedPath).toHaveCSS("opacity", "0.95");
   });
 
   test("shows the refusal pulse-ring on the attributed hotspot (G4)", async ({ page }) => {

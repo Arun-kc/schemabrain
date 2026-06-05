@@ -41,17 +41,13 @@ export function graphNodeColor(group: GraphNodeGroup, catastrophic = false): str
 }
 
 /**
- * Ring colour around a node. Catastrophic → alarm; selected → green; else the
- * group accent so the cluster colour stays legible.
+ * Border colour of a node's orb. Catastrophic → the reserved alarm; else the
+ * group accent so the cluster colour stays legible. Selection is NOT folded in
+ * here — it renders as a separate outer green ring (so it stays visible even on
+ * a catastrophic node, matching the handoff).
  */
-export function graphNodeRing(
-  group: GraphNodeGroup,
-  catastrophic = false,
-  selected = false,
-): string {
-  if (catastrophic) return "var(--alarm)";
-  if (selected) return "var(--green)";
-  return GROUP_COLOR[group];
+export function graphNodeRing(group: GraphNodeGroup, catastrophic = false): string {
+  return catastrophic ? "var(--alarm)" : GROUP_COLOR[group];
 }
 
 export interface GraphEdgeStyleInput {
@@ -81,11 +77,16 @@ export interface GraphEdgeStyle {
   strokeWidth: number;
   strokeDasharray: string | undefined;
   opacity: number;
+  /** SVG filter (the canonical-path glow); undefined for every other edge. */
+  filter?: string;
 }
+
+/** Soft green halo on the canonical-path edge (the handoff's `#kgglow`). */
+const PATH_GLOW = "drop-shadow(0 0 3px var(--green))";
 
 /**
  * Edge stroke styling, in priority order: highlighted path (green, glowing) >
- * log-mined emphasis (cyan) > selected-incident (brightened hairline) >
+ * log-mined emphasis (cyan) > selected-incident (brightened neutral) >
  * resting (hairline). The solid/dashed distinction is independent and always
  * reflects declared-vs-mined.
  */
@@ -98,15 +99,21 @@ export function graphEdgeStyle({
 }: GraphEdgeStyleInput): GraphEdgeStyle {
   const dash = declared ? undefined : "4 5";
   if (highlighted) {
-    return { stroke: "var(--green)", strokeWidth: 2.6, strokeDasharray: dash, opacity: 0.95 };
+    return {
+      stroke: "var(--green)",
+      strokeWidth: 2.6,
+      strokeDasharray: dash,
+      opacity: 0.95,
+      filter: PATH_GLOW,
+    };
   }
   if (minedEmphasis) {
     return { stroke: "var(--cyan)", strokeWidth: 2, strokeDasharray: dash, opacity: 0.9 };
   }
   if (selectedIncident) {
-    // Same hairline colour, brought forward — selection brightens, it never
-    // recolours (recolouring would imply a relationship type it doesn't have).
-    return { stroke: "var(--hair)", strokeWidth: 1.8, strokeDasharray: dash, opacity: 0.9 };
+    // A brighter NEUTRAL ink — clearly forward, but never green/cyan (which
+    // would imply a relationship type this edge doesn't have).
+    return { stroke: "var(--ink-2)", strokeWidth: 2, strokeDasharray: dash, opacity: 0.95 };
   }
   // Resting edge — faded under an active focus overlay, else the hairline rest.
   return {

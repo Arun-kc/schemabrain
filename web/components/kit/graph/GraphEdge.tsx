@@ -1,4 +1,4 @@
-import { BaseEdge, getBezierPath, type EdgeProps } from "reactflow";
+import { BaseEdge, getStraightPath, type EdgeProps } from "reactflow";
 import type { Cardinality } from "@/lib/types/meta";
 import { graphEdgeLabel, graphEdgeStyle } from "./graphStyle";
 
@@ -18,33 +18,29 @@ export interface GraphEdgeData {
 }
 
 /**
- * reactflow-ready relationship edge primitive (look only). Solid for declared
- * FKs, dashed for log-mined joins; green+glow on the canonical path, cyan under
- * the log-mined overlay, brightened hairline when incident to the selected
- * node, hairline at rest. Emphasised edges carry a midpoint label — the compact
- * cardinality ("N:1") for declared edges, "mined" under the log-mined overlay —
- * drawn as SVG text in reactflow's own edge layer (no portal needed). Typed
- * against reactflow's EdgeProps.
+ * reactflow-ready relationship edge primitive (look only). Straight spokes
+ * (matching the handoff) — solid for declared FKs, dashed for log-mined joins;
+ * green+glow on the canonical path, cyan under the log-mined overlay, brightened
+ * neutral when incident to the selected node, hairline at rest. Emphasised edges
+ * carry a midpoint label — the compact cardinality ("N:1") for declared edges,
+ * "mined" under the log-mined overlay — drawn as SVG text in reactflow's own
+ * edge layer (no portal needed). Typed against reactflow's EdgeProps.
  */
 export function GraphEdge({
   sourceX,
   sourceY,
-  sourcePosition,
   targetX,
   targetY,
-  targetPosition,
   markerEnd,
   data,
 }: EdgeProps<GraphEdgeData>) {
-  const [edgePath, labelX, labelY] = getBezierPath({
+  const [edgePath, labelX, labelY] = getStraightPath({
     sourceX,
     sourceY,
-    sourcePosition,
     targetX,
     targetY,
-    targetPosition,
   });
-  const { stroke, strokeWidth, strokeDasharray, opacity } = graphEdgeStyle({
+  const { stroke, strokeWidth, strokeDasharray, opacity, filter } = graphEdgeStyle({
     declared: data?.declared ?? true,
     highlighted: data?.highlighted,
     minedEmphasis: data?.minedEmphasis,
@@ -63,7 +59,7 @@ export function GraphEdge({
       <BaseEdge
         path={edgePath}
         markerEnd={markerEnd}
-        style={{ stroke, strokeWidth, strokeDasharray, opacity }}
+        style={{ stroke, strokeWidth, strokeDasharray, opacity, filter }}
       />
       {label && (
         <text
