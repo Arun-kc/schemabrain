@@ -157,9 +157,18 @@
 .toggleOn .swatch {
   background: var(--accent, var(--green));
 }
+/* one-line definition of the refusal-hotspot overlay (shown when it's on) */
+.hotspotDef {
+  margin-top: 9px;
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+
 /* honest reconciliation note shown under the refusal toggle */
 .unattributed {
-  margin-top: 8px;
+  margin-top: 7px;
   font-family: var(--f-mono);
   font-size: 10.5px;
   color: var(--ink-3);

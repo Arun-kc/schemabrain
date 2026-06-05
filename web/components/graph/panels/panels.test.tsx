@@ -109,6 +109,33 @@ describe("GraphTools", () => {
     );
     expect(screen.getByText(/1 refusal not attributed to a visible entity/i)).toBeInTheDocument();
   });
+
+  it("defines what a refusal hotspot IS only while the overlay is on", () => {
+    const { rerender } = render(
+      <GraphTools
+        search=""
+        onSearchChange={() => {}}
+        overlays={NO_OVERLAYS}
+        onToggle={() => {}}
+        unattributedRefusals={0}
+      />,
+    );
+    // Off → no definition (resting panel stays compact).
+    expect(screen.queryByText(/firewall/i)).toBeNull();
+
+    rerender(
+      <GraphTools
+        search=""
+        onSearchChange={() => {}}
+        overlays={{ pii: false, refusals: true, mined: false }}
+        onToggle={() => {}}
+        unattributedRefusals={0}
+      />,
+    );
+    // On → a one-line, honest definition (the badge is blocked-call evidence,
+    // distinct from the static catastrophic-PII ring).
+    expect(screen.getByText(/firewall blocked an agent/i)).toBeInTheDocument();
+  });
 });
 
 describe("GraphLegend", () => {
@@ -132,6 +159,14 @@ describe("GraphLegend", () => {
     expect(screen.queryByText(/recovered from query logs/i)).toBeNull();
     rerender(<GraphLegend hasMinedEdges={true} />);
     expect(screen.getByText(/recovered from query logs/i)).toBeInTheDocument();
+  });
+
+  it("documents the refusal-hotspot badge alongside catastrophic PII", () => {
+    render(<GraphLegend hasMinedEdges={false} />);
+    // The two red signals are disambiguated: a static catastrophic-PII ring vs
+    // the behavioural refusal-hotspot badge.
+    expect(screen.getByText("Catastrophic PII")).toBeInTheDocument();
+    expect(screen.getByText("Refusal hotspot")).toBeInTheDocument();
   });
 });
 

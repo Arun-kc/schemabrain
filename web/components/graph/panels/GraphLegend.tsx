@@ -43,6 +43,16 @@ export function GraphLegend({ hasMinedEdges }: GraphLegendProps) {
       </div>
       <div className={styles.legendRow}>
         <span className={styles.legendKey}>
+          {/* Solid badge (vs the hollow ring above): the firewall has actually
+              refused agent calls here. Behavioural evidence, not static risk. */}
+          <svg width="14" height="14" aria-hidden>
+            <circle cx="7" cy="7" r="5.5" fill="var(--alarm)" />
+          </svg>
+        </span>
+        Refusal hotspot
+      </div>
+      <div className={styles.legendRow}>
+        <span className={styles.legendKey}>
           <svg width="22" height="6" aria-hidden>
             <line x1="0" y1="3" x2="22" y2="3" stroke="var(--ink-2)" strokeWidth="2" />
           </svg>

@@ -79,11 +79,19 @@ export function GraphTools({
           );
         })}
       </div>
-      {overlays.refusals && unattributedRefusals > 0 && (
-        <p className={styles.unattributed}>
-          + {unattributedRefusals} refusal{unattributedRefusals === 1 ? "" : "s"} not attributed to
-          a visible entity
-        </p>
+      {overlays.refusals && (
+        <>
+          <p className={styles.hotspotDef}>
+            Where the firewall blocked an agent&rsquo;s call — the badge counts refusals logged for
+            that entity (not the same as the catastrophic-PII ring).
+          </p>
+          {unattributedRefusals > 0 && (
+            <p className={styles.unattributed}>
+              + {unattributedRefusals} refusal{unattributedRefusals === 1 ? "" : "s"} not attributed
+              to a visible entity
+            </p>
+          )}
+        </>
       )}
     </div>
   );
