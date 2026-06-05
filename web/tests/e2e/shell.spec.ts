@@ -29,8 +29,13 @@ test.describe("app shell", () => {
     const piiLink = page.getByRole("link", { name: /PII matrix/ });
     await expect(piiLink).toHaveAttribute("aria-current", "page");
 
-    // Unbuilt surfaces render disabled (no dead 404 link) until their PR.
-    await expect(page.getByRole("link", { name: /Knowledge graph/ })).toHaveCount(0);
+    // Graph now ships → it is a live link.
+    await expect(page.getByRole("link", { name: /Knowledge graph/ })).toHaveAttribute(
+      "href",
+      "/graph",
+    );
+    // Still-unbuilt surfaces render disabled (no dead 404 link) until their PR.
+    await expect(page.getByRole("link", { name: /Entities/ })).toHaveCount(0);
 
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });

@@ -118,11 +118,12 @@ jobs:
             || { echo "BLOCKED: wheel ships no dashboard/static/_next/* assets"; exit 1; }
           # Per-route sentinels — a PARTIAL export (index.html present but a
           # surface route missing) would otherwise pass the index-only check.
-          for route in pii audit refusals; do
+          # Every built surface (nav.ts `built: true`) must export its route.
+          for route in graph pii audit refusals policy drift; do
             echo "$listing" | grep -q "schemabrain/dashboard/static/$route.html" \
               || { echo "BLOCKED: wheel missing dashboard surface route '$route.html' (partial export)"; exit 1; }
           done
-          echo "OK: dashboard bundled — index.html + pii/audit/refusals routes + $next_count _next assets"
+          echo "OK: dashboard bundled — index.html + graph/pii/audit/refusals/policy/drift routes + $next_count _next assets"
 
       - name: Show built artifacts
         run: ls -la dist/

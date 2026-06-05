@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
+import type { ReactElement } from "react";
 import type { EdgeProps, NodeProps } from "reactflow";
-import { Position } from "reactflow";
+import { Position, ReactFlowProvider } from "reactflow";
 import { GraphEdge, type GraphEdgeData } from "./GraphEdge";
 import { GraphNode, type GraphNodeData } from "./GraphNode";
 import {
@@ -52,16 +53,23 @@ function nodeProps(data: GraphNodeData, selected = false): NodeProps<GraphNodeDa
   return { data, selected } as unknown as NodeProps<GraphNodeData>;
 }
 
+// GraphNode now renders reactflow <Handle>s, which read the reactflow store —
+// so the node must mount inside a ReactFlowProvider (the same context the real
+// graph surface supplies). Standalone renders would throw without it.
+function renderNode(ui: ReactElement) {
+  return render(<ReactFlowProvider>{ui}</ReactFlowProvider>);
+}
+
 describe("GraphNode", () => {
   it("renders the entity label and group attribute", () => {
-    render(<GraphNode {...nodeProps({ label: "users", group: "identity" })} />);
+    renderNode(<GraphNode {...nodeProps({ label: "users", group: "identity" })} />);
     const node = screen.getByText("users").closest(".sb-gnode");
     expect(node).toHaveAttribute("data-group", "identity");
     expect(node).not.toHaveAttribute("data-catastrophic");
   });
 
   it("flags catastrophic entities distinctly", () => {
-    render(
+    renderNode(
       <GraphNode
         {...nodeProps({ label: "card_vault", group: "billing", catastrophic: true })}
       />,

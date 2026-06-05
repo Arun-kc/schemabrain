@@ -29,7 +29,12 @@ export default defineConfig({
       provider: "v8",
       include: [
         "components/kit/**/*.{ts,tsx}",
+        // Pure graph data layer (the reactflow canvas itself is DOM-only and
+        // is covered by the Playwright graph spec, not this unit gate).
+        "components/graph/graphAdapter.ts",
+        "components/graph/graphLayout.ts",
         "lib/useTheme.ts",
+        "lib/useReducedMotion.ts",
         "lib/policy.ts",
         "lib/piiMatrix.ts",
         "lib/refusals.ts",

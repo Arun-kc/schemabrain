@@ -85,11 +85,11 @@ describe("nav model", () => {
     expect(isNavItemActive(item, "/audit")).toBe(false);
   });
 
-  it("ships the eight handoff surfaces with pii/refusals/audit/policy/drift built", () => {
+  it("ships the eight handoff surfaces with graph/pii/refusals/audit/policy/drift built", () => {
     const ids = NAV.flatMap((g) => g.items.map((i) => i.id));
     expect(ids).toEqual(["graph", "entities", "dict", "pii", "refusals", "audit", "policy", "drift"]);
     const built = NAV.flatMap((g) => g.items).filter((i) => i.built).map((i) => i.id);
-    expect(built).toEqual(["pii", "refusals", "audit", "policy", "drift"]);
+    expect(built).toEqual(["graph", "pii", "refusals", "audit", "policy", "drift"]);
   });
 });
 
@@ -120,10 +120,14 @@ describe("NavRail", () => {
     expect(pii).toHaveAttribute("aria-current", "page");
     expect(pii).toHaveAttribute("href", "/pii");
 
-    // Graph is not built yet → no link, marked disabled.
-    expect(screen.queryByRole("link", { name: /Knowledge graph/ })).toBeNull();
-    const graph = screen.getByText("Knowledge graph").closest(".sb-nav-item");
-    expect(graph).toHaveAttribute("aria-disabled", "true");
+    // Graph now ships → it is a live link.
+    const graph = await screen.findByRole("link", { name: /Knowledge graph/ });
+    expect(graph).toHaveAttribute("href", "/graph");
+
+    // Entities is not built yet → no link, marked disabled.
+    expect(screen.queryByRole("link", { name: /Entities/ })).toBeNull();
+    const entities = screen.getByText("Entities").closest(".sb-nav-item");
+    expect(entities).toHaveAttribute("aria-disabled", "true");
   });
 });
 
