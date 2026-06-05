@@ -30,7 +30,7 @@ export const NAV: readonly NavGroup[] = [
     title: "Explore",
     items: [
       { id: "graph", href: "/graph", label: "Knowledge graph", icon: "waypoints", built: true },
-      { id: "entities", href: "/entities", label: "Entities", icon: "boxes", built: false },
+      { id: "entities", href: "/entities", label: "Entities", icon: "boxes", built: true },
       { id: "dict", href: "/dict", label: "Data dictionary", icon: "book-open", built: false },
     ],
   },

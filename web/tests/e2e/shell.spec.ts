@@ -29,13 +29,14 @@ test.describe("app shell", () => {
     const piiLink = page.getByRole("link", { name: /PII matrix/ });
     await expect(piiLink).toHaveAttribute("aria-current", "page");
 
-    // Graph now ships → it is a live link.
+    // Graph + Entities now ship → live links.
     await expect(page.getByRole("link", { name: /Knowledge graph/ })).toHaveAttribute(
       "href",
       "/graph",
     );
+    await expect(page.getByRole("link", { name: /Entities/ })).toHaveAttribute("href", "/entities");
     // Still-unbuilt surfaces render disabled (no dead 404 link) until their PR.
-    await expect(page.getByRole("link", { name: /Entities/ })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: /Data dictionary/ })).toHaveCount(0);
 
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });

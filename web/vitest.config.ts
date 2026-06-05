@@ -41,6 +41,11 @@ export default defineConfig({
         "lib/policy.ts",
         "lib/piiMatrix.ts",
         "lib/refusals.ts",
+        // Pure entity-surface view logic (the EntityDrilldownBody / EntitiesIndex
+        // components themselves fetch + render, so — like the /pii Matrix and
+        // /refusals Timeline — they are covered by RTL regression tests +
+        // the Playwright entities spec, not this unit gate).
+        "lib/entities.ts",
         "lib/merkle.ts",
         "lib/auditVerdict.ts",
         "lib/relativeTime.ts",

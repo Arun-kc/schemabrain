@@ -417,10 +417,13 @@
   flex: 1;
   padding: 18px 22px 28px;
 }
-.sb-drill-slot {
-  color: var(--ink-2);
-  font-size: 13px;
-  line-height: 1.55;
+/* fixed footer below the scroll region — the entity sheet's deep-link actions */
+.sb-drill-foot {
+  flex: none;
+  padding: 14px 22px;
+  border-top: 1px solid var(--hair);
+  display: flex;
+  gap: 9px;
 }
 
 /* responsive: collapse the rail above the content on narrow widths */

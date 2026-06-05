@@ -1,0 +1,397 @@
+/*
+ * THE INDEX — the Entities table (/entities).
+ *
+ * The sortable companion to the knowledge graph. Shares the reskin surface
+ * vocabulary with /refusals + /pii (shell · titleStrip · summaryStrip · stat ·
+ * skeleton · errorCard · emptyState) and ports the handoff `.en-table` (sortable
+ * headers, status dot, open arrow) onto the kit tokens. Token-driven, both
+ * themes, AA contrast; transform/opacity motion only (reduced-motion clamped).
+ */
+
+/* ---------- Surface shell ---------- */
+
+.shell {
+  margin: 0 auto;
+  max-width: 78rem;
+  padding-inline: 2.5rem;
+  padding-block: 2.5rem 4rem;
+}
+
+/* ---------- Title strip + lede ---------- */
+
+.titleStrip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--hair-2);
+}
+
+.surfaceTitle {
+  font-family: var(--font-display);
+  font-size: 1.375rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.titleMeta {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+}
+
+.lede {
+  margin-top: 1rem;
+  margin-bottom: 1.75rem;
+  max-width: 46rem;
+  font-family: var(--font-body);
+  font-size: 1.0625rem;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+
+/* ---------- Stat strip ---------- */
+
+.summaryStrip {
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: 1.5rem;
+  border: 1px solid var(--hair-2);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.stat {
+  flex: 1 1 9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 1rem 1.25rem;
+  border-left: 1px solid var(--hair-2);
+}
+
+.stat:first-child {
+  border-left: none;
+}
+
+.statNum {
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.statNum[data-tone="alarm"] {
+  color: var(--alarm);
+}
+
+.statLabel {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
+}
+
+/* ---------- Table ---------- */
+
+.tableWrap {
+  border: 1px solid var(--hair);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.th {
+  text-align: left;
+  border-bottom: 1px solid var(--hair);
+  padding: 0;
+  white-space: nowrap;
+}
+
+.thNum {
+  text-align: right;
+}
+
+.thNum .sortBtn {
+  margin-left: auto;
+}
+
+/* the header label is a real button so sorting is keyboard-operable + AA */
+.sortBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 12px 16px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--ink-3);
+  transition: color var(--dur-2) var(--ease);
+}
+
+.thNum .sortBtn {
+  justify-content: flex-end;
+}
+
+.sortBtn:hover {
+  color: var(--ink-2);
+}
+
+.sortBtn:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: -2px;
+}
+
+.arrow {
+  opacity: 0.7;
+}
+
+.row {
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease);
+}
+
+.row:hover td {
+  background: var(--panel-2);
+}
+
+.table td {
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--hair-2);
+  font-size: 13.5px;
+  color: var(--ink);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.num {
+  text-align: right;
+  font-family: var(--font-mono);
+  color: var(--ink-2);
+}
+
+.entBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink);
+}
+
+.entBtn:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.entName {
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.entBtn:hover .entName {
+  color: var(--green);
+}
+
+.groupCell {
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-family: var(--font-mono);
+}
+
+.dash {
+  color: var(--ink-3);
+}
+
+.openArrow {
+  color: var(--ink-3);
+  display: inline-flex;
+}
+
+.row:hover .openArrow {
+  color: var(--green);
+}
+
+/* ---------- Empty state ---------- */
+
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 4rem 2rem;
+  border: 1px dashed var(--hair);
+  border-radius: var(--r-lg);
+  gap: 0.75rem;
+}
+
+.emptyIcon {
+  color: var(--ink-3);
+}
+
+.emptyTitle {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 500;
+  color: var(--ink);
+  letter-spacing: 0.02em;
+}
+
+.emptyText {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+  max-width: 32rem;
+  line-height: 1.6;
+}
+
+/* ---------- Error card ---------- */
+
+.errorCard {
+  margin-top: 2rem;
+  border: 1px solid var(--hair);
+  background: var(--panel);
+  padding: 2rem 2.5rem;
+  display: grid;
+  grid-template-columns: 1.5rem 1fr;
+  column-gap: 1rem;
+  max-width: 56rem;
+  border-radius: var(--r-lg);
+}
+
+.errorIcon {
+  color: var(--ink-2);
+  line-height: 1.2;
+}
+
+.errorBody h2 {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 500;
+  color: var(--ink);
+  margin-bottom: 0.75rem;
+  letter-spacing: 0.02em;
+}
+
+.errorBody p {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--ink-2);
+  line-height: 1.6;
+  margin-bottom: 0.75rem;
+}
+
+.errorBody code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--green);
+  background: var(--panel-2);
+  border: 1px solid var(--hair-2);
+  padding: 0.5rem 0.75rem;
+  margin-block: 0.25rem;
+  border-radius: var(--r-sm);
+}
+
+/* ---------- Skeleton ---------- */
+
+.skeleton {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+  padding-block: 2rem;
+}
+
+.skeleton::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--ink-3);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---------- Accessibility ---------- */
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- Responsive ---------- */
+
+@media (max-width: 760px) {
+  .shell {
+    padding-inline: 1.25rem;
+  }
+  .tableWrap {
+    overflow-x: auto;
+  }
+}
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .row,
+  .sortBtn {
+    transition: none;
+  }
+  .skeleton::before {
+    animation: none;
+  }
+}
