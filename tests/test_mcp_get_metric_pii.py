@@ -430,6 +430,10 @@ class TestRefusalAttemptedBlockedAsymmetry:
             # `financial` stays out of the wire.
             assert tuple(envelope.error.pii_categories) == ("contact",)
             assert "financial" not in envelope.error.message
+            # The refusal attributes itself to the metric's entity so the
+            # audit writer can persist it (non-canonically) and the graph
+            # surface can light the refusal hotspot (PR-17b).
+            assert envelope.error.anchor_entity == "user"
         finally:
             store.close()
 

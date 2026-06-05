@@ -4,3 +4,4 @@ description: A programmatic API credential issued to a workspace.
 binding:
   single_table: public.api_keys
 identity: id
+group: identity

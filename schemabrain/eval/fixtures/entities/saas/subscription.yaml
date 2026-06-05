@@ -4,3 +4,4 @@ description: A workspace's binding to a plan, with its lifecycle timestamps.
 binding:
   single_table: public.subscriptions
 identity: id
+group: billing

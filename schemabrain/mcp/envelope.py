@@ -404,6 +404,16 @@ class ToolError(BaseModel):
     # (`policy_blocked`, `allowlist_violation`) and every non-refusal
     # kind keep `()`.
     pii_categories: tuple[PIICategory, ...] = ()
+    # Best-effort attribution of this error/refusal to a single entity
+    # (additive v1.x field; optional, defaults None — pre-existing call
+    # sites construct unchanged). It carries the same entity name the
+    # `recovery.suggested_args` already point at (e.g. the metric's entity
+    # on a `pii_blocked` refusal), surfaced explicitly so an agent need not
+    # parse recovery args, AND so `audit/writer.py` can persist it to the
+    # NON-CANONICAL `mcp_audit.anchor_entity` column that powers the graph
+    # surface's refusal-hotspot overlay. Allowed on any kind; valid on
+    # non-refusal kinds (it is not gated by `_validate_recovery_fields_match_kind`).
+    anchor_entity: str | None = None
 
     @model_validator(mode="after")
     def _validate_recovery_fields_match_kind(self) -> ToolError:

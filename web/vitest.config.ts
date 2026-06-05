@@ -33,6 +33,9 @@ export default defineConfig({
         // is covered by the Playwright graph spec, not this unit gate).
         "components/graph/graphAdapter.ts",
         "components/graph/graphLayout.ts",
+        // The floating chrome panels pull no reactflow runtime, so they are
+        // unit-gated here; GraphCanvas/Graph (which do) stay e2e-covered.
+        "components/graph/panels/**/*.{ts,tsx}",
         "lib/useTheme.ts",
         "lib/useReducedMotion.ts",
         "lib/policy.ts",

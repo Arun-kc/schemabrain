@@ -10,6 +10,7 @@ import {
   graphEdgeStyle,
   graphNodeColor,
   graphNodeRing,
+  graphPiiHaloColor,
 } from "./graphStyle";
 
 describe("graphStyle", () => {
@@ -47,6 +48,24 @@ describe("graphStyle", () => {
     expect(resting.stroke).toBe("var(--hair)");
     expect(resting.opacity).toBe(0.5);
   });
+
+  it("fades a resting edge under a focus overlay, but never an emphasised one", () => {
+    expect(graphEdgeStyle({ declared: true, dimmed: true }).opacity).toBeLessThan(0.5);
+    // Highlighted / mined edges stay prominent even when dimming is requested.
+    expect(graphEdgeStyle({ declared: true, highlighted: true, dimmed: true }).opacity).toBe(0.95);
+    expect(graphEdgeStyle({ declared: false, minedEmphasis: true, dimmed: true }).opacity).toBe(
+      0.9,
+    );
+  });
+
+  it("halos only the real-PII tiers, never sensitivity bands", () => {
+    expect(graphPiiHaloColor("catastrophic")).toBe("var(--alarm)");
+    expect(graphPiiHaloColor("pii")).toBe("var(--pii-2)");
+    // confidential / internal are sensitivity, not PII → no halo.
+    expect(graphPiiHaloColor("confidential")).toBeNull();
+    expect(graphPiiHaloColor("internal")).toBeNull();
+    expect(graphPiiHaloColor("none")).toBeNull();
+  });
 });
 
 function nodeProps(data: GraphNodeData, selected = false): NodeProps<GraphNodeData> {
@@ -79,6 +98,74 @@ describe("GraphNode", () => {
       "data-catastrophic",
       "true",
     );
+  });
+
+  it("renders the PII halo only when the heat overlay is on AND the entity carries PII", () => {
+    const { container, rerender } = renderNode(
+      <GraphNode {...nodeProps({ label: "users", group: "identity", piiLevel: "pii" })} />,
+    );
+    // Overlay off → no halo even though the entity carries PII.
+    expect(container.querySelector('[data-pii-halo="true"]')).toBeNull();
+
+    rerender(
+      <ReactFlowProvider>
+        <GraphNode
+          {...nodeProps({ label: "users", group: "identity", piiLevel: "pii", piiHeat: true })}
+        />
+      </ReactFlowProvider>,
+    );
+    expect(container.querySelector('[data-pii-halo="true"]')).not.toBeNull();
+
+    // Heat on but a non-PII tier → still no halo.
+    rerender(
+      <ReactFlowProvider>
+        <GraphNode
+          {...nodeProps({
+            label: "users",
+            group: "identity",
+            piiLevel: "internal",
+            piiHeat: true,
+          })}
+        />
+      </ReactFlowProvider>,
+    );
+    expect(container.querySelector('[data-pii-halo="true"]')).toBeNull();
+  });
+
+  it("renders the refusal badge only when the overlay is on AND the count is positive", () => {
+    const { container, rerender } = renderNode(
+      <GraphNode
+        {...nodeProps({ label: "order", group: "activity", refusalCount: 3, refusalActive: true })}
+      />,
+    );
+    const badge = container.querySelector('[data-refusal-badge="true"]');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toBe("3");
+
+    // Overlay on but zero refusals → no badge.
+    rerender(
+      <ReactFlowProvider>
+        <GraphNode
+          {...nodeProps({
+            label: "order",
+            group: "activity",
+            refusalCount: 0,
+            refusalActive: true,
+          })}
+        />
+      </ReactFlowProvider>,
+    );
+    expect(container.querySelector('[data-refusal-badge="true"]')).toBeNull();
+
+    // Refusals present but overlay off → no badge.
+    rerender(
+      <ReactFlowProvider>
+        <GraphNode
+          {...nodeProps({ label: "order", group: "activity", refusalCount: 3 })}
+        />
+      </ReactFlowProvider>,
+    );
+    expect(container.querySelector('[data-refusal-badge="true"]')).toBeNull();
   });
 });
 

@@ -61,3 +61,311 @@
   font-size: 12px;
   color: var(--ink-3);
 }
+
+/* ── PR-17b floating chrome — the `.kg*` port, module-scoped ────────────── */
+
+/* Base glass panel. Floats over the canvas; pointer-events stay on so the
+ * search input + toggles + actions are interactive without panning the pane. */
+.panel {
+  position: absolute;
+  z-index: 10;
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--glass-stroke);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+}
+
+/* top-left: search + overlay toggles */
+.tools {
+  top: 16px;
+  left: 16px;
+  width: 312px;
+  max-width: calc(100% - 32px);
+  padding: 12px;
+}
+.search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+.search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  outline: none;
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 13px;
+}
+.search input::placeholder {
+  color: var(--ink-3);
+}
+.overlays {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--hair);
+  background: var(--panel);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition:
+    color var(--dur-2),
+    border-color var(--dur-2),
+    background var(--dur-2);
+}
+.toggle:hover {
+  color: var(--ink);
+}
+.toggle:focus-visible {
+  outline: 2px solid var(--accent, var(--green));
+  outline-offset: 2px;
+}
+.toggle .swatch {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-3);
+}
+.toggleOn {
+  color: var(--ink);
+  border-color: color-mix(in oklch, var(--accent, var(--green)) 55%, transparent);
+  background: color-mix(in oklch, var(--accent, var(--green)) 13%, transparent);
+}
+.toggleOn .swatch {
+  background: var(--accent, var(--green));
+}
+/* honest reconciliation note shown under the refusal toggle */
+.unattributed {
+  margin-top: 8px;
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  line-height: 1.4;
+}
+
+/* top-right: legend + actions */
+.legend {
+  top: 16px;
+  right: 16px;
+  width: 232px;
+  max-width: calc(100% - 32px);
+  padding: 13px 14px;
+}
+.legend h4 {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
+  font-weight: 600;
+  margin: 0 0 10px;
+}
+.legendRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  padding: 4px 0;
+  white-space: nowrap;
+}
+.legendKey {
+  width: 26px;
+  display: flex;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.legendNote {
+  margin: 9px 0 0;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--hair);
+}
+.reindex {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 7px 10px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--hair);
+  background: var(--panel);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition:
+    color var(--dur-2),
+    border-color var(--dur-2);
+}
+.reindex:hover {
+  color: var(--ink);
+  border-color: color-mix(in oklch, var(--green) 45%, var(--hair));
+}
+.reindex:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+/* bottom-left: canonical path chip */
+.path {
+  bottom: 16px;
+  left: 16px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  max-width: min(440px, calc(100% - 32px));
+}
+.pathLabel {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  color: var(--ink-3);
+}
+.hops {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.hop {
+  font-family: var(--f-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green);
+}
+.arrow {
+  color: var(--ink-3);
+}
+
+/* node tooltip */
+.tip {
+  position: absolute;
+  z-index: 15;
+  pointer-events: none;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-pop);
+  padding: 9px 11px;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  transform: translate(-50%, -120%);
+  white-space: nowrap;
+}
+.tipTitle {
+  font-weight: 700;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.tipSub {
+  color: var(--ink-3);
+  margin-top: 3px;
+}
+
+/* state-driven indexing overlay (renders only on a real 'indexing' source
+ * state — reserved; not emitted today). No fabricated progress bar: an
+ * indeterminate ring + honest phase copy, matching the parked-motion ethos. */
+.indexing {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  text-align: center;
+  background: color-mix(in oklch, var(--bg-1) 60%, transparent);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+.indexingRing {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 2.5px solid var(--hair);
+  border-top-color: var(--green);
+  animation: kg-spin 0.9s linear infinite;
+}
+.indexingTitle {
+  font-family: var(--f-mono);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.indexingBody {
+  max-width: 40ch;
+  font-family: var(--f-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+@keyframes kg-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* reactflow MiniMap + Controls themed to the surface tokens */
+.canvas :global(.react-flow__minimap) {
+  background: var(--glass);
+  border: 1px solid var(--glass-stroke);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+}
+.canvas :global(.react-flow__controls) {
+  box-shadow: var(--shadow);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.canvas :global(.react-flow__controls-button) {
+  background: var(--panel);
+  border-bottom: 1px solid var(--hair);
+  color: var(--ink-2);
+  fill: var(--ink-2);
+}
+.canvas :global(.react-flow__controls-button:hover) {
+  background: color-mix(in oklch, var(--green) 10%, var(--panel));
+  color: var(--ink);
+  fill: var(--ink);
+}
+
+/* Reduced motion: stop the indexing ring spinning (the parked force sim is
+ * already gated in GraphCanvas; this covers the only other animated chrome). */
+@media (prefers-reduced-motion: reduce) {
+  .indexingRing {
+    animation: none;
+  }
+}

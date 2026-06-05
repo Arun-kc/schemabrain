@@ -72,6 +72,13 @@ class AuditRow:
     fingerprint: bytes
     fingerprint_version: str
     chain_hash: bytes
+    # NON-CANONICAL metadata (store schema v17). Best-effort attribution of
+    # an error/refusal row to a single entity; powers the graph surface's
+    # refusal-hotspot overlay. NOT a member of `AUDIT_ROW_FIELDS` and never
+    # fed into `canonical_audit_row`, so it does not enter the chain hash —
+    # `compute_chain_hash` sees the identical 13-field preimage as before.
+    # Default None keeps existing constructors source-compatible.
+    anchor_entity: str | None = None
 
     @property
     def fingerprint_hex(self) -> str:
@@ -116,6 +123,7 @@ def build_audit_row(
 
     pii_categories = _extract_pii_categories(response)
     refusal_reason = _extract_refusal_reason(response, status)
+    anchor_entity = _extract_anchor_entity(response)
 
     return {
         "source_connection_id": source_connection_id,
@@ -128,6 +136,10 @@ def build_audit_row(
         "ast_shape_hash": None,
         "rule_id": None,
         "fingerprint_version": FINGERPRINT_VERSION,
+        # NON-CANONICAL — persisted to the `mcp_audit.anchor_entity` column
+        # (v17) but deliberately ABSENT from the canonical preimage `write`
+        # builds below, so it never enters the chain hash.
+        "anchor_entity": anchor_entity,
     }
 
 
@@ -193,6 +205,25 @@ def _extract_refusal_reason(response: Any, status: str) -> str | None:
     if kind == "pii_blocked":
         return "pii_blocked"
     return None
+
+
+def _extract_anchor_entity(response: Any) -> str | None:
+    """Read the optional `anchor_entity` off a response's error envelope.
+
+    Refusal/error responses carry `response.error.anchor_entity` (the
+    `ToolError` field) when the tool could attribute the outcome to a single
+    entity — e.g. a `pii_blocked` refusal names the metric's entity. Success
+    responses have no `error`, so this returns None. Persisted verbatim to the
+    NON-CANONICAL `mcp_audit.anchor_entity` column; the graph surface's
+    refusal overlay groups `status='refused'` rows by it. `getattr` keeps the
+    audit module decoupled from the pydantic envelope type (mirrors
+    `_extract_pii_categories` / `_extract_refusal_reason`).
+    """
+    error = getattr(response, "error", None)
+    if error is None:
+        return None
+    anchor = getattr(error, "anchor_entity", None)
+    return anchor if isinstance(anchor, str) else None
 
 
 def _now_iso_utc() -> str:
@@ -344,6 +375,12 @@ class AuditWriter:
             canonical = canonical_audit_row(canonical_dict)
             chain_hash = compute_chain_hash(self._last_chain_hash, canonical)
 
+            # `anchor_entity` is NON-CANONICAL: it is read from the draft and
+            # written to the column, but is NOT part of `canonical_dict`
+            # above, so `canonical_audit_row` / `compute_chain_hash` never see
+            # it and the chain stays byte-identical. `.get` tolerates a draft
+            # built by an older code path that omitted the key.
+            anchor_entity = draft.get("anchor_entity")
             with conn:
                 conn.execute(
                     """
@@ -351,8 +388,9 @@ class AuditWriter:
                         id, occurred_at, source_connection_id, caller_id,
                         tool_name, status, refusal_reason, cost_class,
                         pii_categories, ast_shape_hash, rule_id,
-                        fingerprint, fingerprint_version, chain_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        fingerprint, fingerprint_version, chain_hash,
+                        anchor_entity
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         next_id,
@@ -369,6 +407,7 @@ class AuditWriter:
                         fingerprint,
                         draft["fingerprint_version"],
                         chain_hash,
+                        anchor_entity,
                     ),
                 )
 
@@ -395,6 +434,7 @@ class AuditWriter:
                 fingerprint=fingerprint,
                 fingerprint_version=draft["fingerprint_version"],
                 chain_hash=chain_hash,
+                anchor_entity=anchor_entity,
             )
 
     def _require_conn(self) -> sqlite3.Connection:

@@ -8,6 +8,8 @@ export interface GraphEdgeData {
   highlighted?: boolean;
   /** Log-mined emphasis overlay active. */
   minedEmphasis?: boolean;
+  /** Faded back because a focus overlay (search / PII heat) is active. */
+  dimmed?: boolean;
 }
 
 /**
@@ -37,6 +39,7 @@ export function GraphEdge({
     declared: data?.declared ?? true,
     highlighted: data?.highlighted,
     minedEmphasis: data?.minedEmphasis,
+    dimmed: data?.dimmed,
   });
 
   return (

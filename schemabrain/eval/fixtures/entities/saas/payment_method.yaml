@@ -4,3 +4,4 @@ description: A card on file for a workspace (tokenized last-4, brand, expiry).
 binding:
   single_table: public.payment_methods
 identity: id
+group: billing

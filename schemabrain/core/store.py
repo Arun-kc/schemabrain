@@ -39,7 +39,7 @@ from schemabrain.core.entity import (
     SingleTableBinding,
 )
 from schemabrain.core.example_query import ExampleQuery
-from schemabrain.core.graph import GraphEdge, GraphNode
+from schemabrain.core.graph import GraphEdge, GraphNode, RefusalHotspots
 from schemabrain.core.join import CanonicalJoin, JoinColumnPair
 from schemabrain.core.metric import (
     DbtOwnedMetricError,
@@ -206,10 +206,21 @@ __all__ = [
 #         by the next `index` / `joins apply` projection-write — no data
 #         migration beyond the ALTER. `_migrate_v15_to_v16` ALTERs an
 #         existing v15 store; a fresh store gets the column from the DDL.
+#   v17 — `mcp_audit.anchor_entity` (TEXT, NULL otherwise): a best-effort
+#         attribution of an error/refusal row to a single entity, used by
+#         the graph surface's refusal-hotspot overlay (PR-17b). NON-CANONICAL
+#         by construction — it is NOT in `audit/canonical.py::AUDIT_ROW_FIELDS`
+#         and the writer never feeds it into `canonical_audit_row`, so the
+#         per-row chain hash (and the derived Merkle root) is provably
+#         unchanged; existing chained rows keep verifying. `ALTER TABLE ADD
+#         COLUMN` is not an UPDATE/DELETE, so the append-only triggers do not
+#         fire. Backfills to NULL ("unattributed"); the writer populates it
+#         going forward. `_migrate_v16_to_v17` ALTERs an existing store; a
+#         fresh store gets the column from the audit DDL.
 # Pre-v13 stores raise SchemaVersionMismatchError; v13 stores chain to
-# v16 (13→14→15→16); v14/v15 stores migrate in-place via the
+# v17 (13→14→15→16→17); v14/v15/v16 stores migrate in-place via the
 # `_migrate_vN_to_vN+1` chain.
-SCHEMA_VERSION = "16"
+SCHEMA_VERSION = "17"
 _MEMORY_PATH = ":memory:"
 
 # 1 USD = 1_000_000 micros. Storing the ledger as INTEGER micros avoids
@@ -436,6 +447,48 @@ def _migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
     conn.execute(
         "UPDATE schemabrain_meta SET value = ? WHERE key = ?",
         ("16", "schema_version"),
+    )
+
+
+def _migrate_v16_to_v17(conn: sqlite3.Connection) -> None:
+    """Add the non-canonical `mcp_audit.anchor_entity` column (v17).
+
+    One additive metadata column on the append-only audit log: a best-effort
+    attribution of an error/refusal row to a single entity name (the graph
+    surface's refusal-hotspot overlay groups refused rows by it; PR-17b).
+    Backfills to NULL — pre-existing rows are "unattributed" and the writer
+    populates the column going forward, so there is no data migration beyond
+    the ALTER.
+
+    SAFETY — the column is NON-CANONICAL by construction:
+      - It is NOT a member of `audit/canonical.py::AUDIT_ROW_FIELDS`, and the
+        writer builds the canonical preimage from an explicit 13-field dict
+        (never by spreading the draft), so `canonical_audit_row` never sees
+        `anchor_entity`. The per-row chain hash and the derived Merkle root
+        are therefore byte-identical to before; every previously chained row
+        keeps verifying.
+      - `ALTER TABLE ... ADD COLUMN` is a schema change, not a row UPDATE or
+        DELETE, so the `mcp_audit_no_update` / `mcp_audit_no_delete`
+        append-only triggers do not fire.
+
+    `mcp_audit` has existed since v16, so a real v16 store has the table to
+    ALTER; the existence guard mirrors `_migrate_v15_to_v16` and covers a
+    store chaining up from v13 (which also has `mcp_audit`, added at v11) and
+    the impossible-in-practice case where the audit DDL has not yet run (the
+    DDL would then create the column directly). Crash-atomicity: same
+    contract as the rest of the chain — the caller guards on
+    `existing_version == "16"` and wraps the whole chain in one
+    `BEGIN`/`COMMIT`. Literal SQL, no interpolation, so bandit B608 cannot
+    fire.
+    """
+    mcp_audit_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mcp_audit'"
+    ).fetchone()
+    if mcp_audit_exists is not None:
+        conn.execute("ALTER TABLE mcp_audit ADD COLUMN anchor_entity TEXT")
+    conn.execute(
+        "UPDATE schemabrain_meta SET value = ? WHERE key = ?",
+        ("17", "schema_version"),
     )
 
 
@@ -2430,6 +2483,40 @@ class SQLiteStore:
             for row in rows
         ]
 
+    def refusal_counts_by_entity(self, *, source_connection_id: str) -> RefusalHotspots:
+        """Live per-entity refusal tally + the unattributed remainder.
+
+        Aggregates append-only `mcp_audit` rows with ``status='refused'`` for
+        the source by the non-canonical ``anchor_entity`` column (v17), in one
+        grouped round-trip. A refused row with a NULL ``anchor_entity`` (the
+        engine could not pin it to one entity) is summed into
+        ``RefusalHotspots.unattributed`` rather than dropped, so a graph badge
+        total always reconciles with the audit log — a refusal is never
+        silently uncounted.
+
+        Pure read (no transaction wrap, no DDL). `mcp_audit` and its
+        ``anchor_entity`` column are guaranteed present by `_init_schema`
+        (`ensure_audit_schema` + the v16→v17 migration both run at open), so
+        no missing-table/column guard is needed and the route stays
+        write-free. A source with no refused rows yields an empty map and 0.
+        """
+        conn = self._require_conn()
+        rows = conn.execute(
+            "SELECT anchor_entity, count(*) AS c FROM mcp_audit "
+            "WHERE source_connection_id = ? AND status = 'refused' "
+            "GROUP BY anchor_entity",
+            (source_connection_id,),
+        ).fetchall()
+        by_entity: dict[str, int] = {}
+        unattributed = 0
+        for row in rows:
+            entity = row["anchor_entity"]
+            if entity is None:
+                unattributed += row["c"]
+            else:
+                by_entity[entity] = row["c"]
+        return RefusalHotspots(by_entity=by_entity, unattributed=unattributed)
+
     def list_distinct_source_connection_ids(self) -> list[str]:
         """Union of `source_connection_id` values across the four data
         tables (`tables`, `entities`, `metrics`, `canonical_joins`).
@@ -3403,9 +3490,10 @@ class SQLiteStore:
                 # rather than fighting `CREATE TABLE IF NOT EXISTS` (a
                 # no-op when the table exists). The guards CHAIN via the
                 # `existing_version` reassignment: a v13 store migrates
-                # 13→14→15→16 in a single open; a v14 store runs 14→15→16;
-                # a v15 store runs only 15→16. Pre-v13 stores match no
-                # guard and hit the mismatch-error path below.
+                # 13→14→15→16→17 in a single open; a v14 store runs
+                # 14→15→16→17; a v15 store runs 15→16→17; a v16 store runs
+                # only 16→17. Pre-v13 stores match no guard and hit the
+                # mismatch-error path below.
                 if existing_version == "13":
                     _migrate_v13_to_v14(conn)
                     existing_version = "14"
@@ -3414,6 +3502,9 @@ class SQLiteStore:
                     existing_version = "15"
                 if existing_version == "15":
                     _migrate_v15_to_v16(conn)
+                    existing_version = "16"
+                if existing_version == "16":
+                    _migrate_v16_to_v17(conn)
 
                 for stmt in _DDL_STATEMENTS:
                     conn.execute(stmt)
@@ -3444,10 +3535,10 @@ class SQLiteStore:
                 f"and do not have a migration path — delete or move the "
                 f"store file (path passed to SQLiteStore) and re-run "
                 f"`schemabrain index` to rebuild from scratch. v13 stores "
-                f"chain to v16 (13→14→15→16) and v14/v15 stores migrate "
-                f"in-place; if you're seeing this message with a v13-v15 "
-                f"store the migration itself failed and the rollback left "
-                f"the version unchanged."
+                f"chain to v17 (13→14→15→16→17) and v14/v15/v16 stores "
+                f"migrate in-place; if you're seeing this message with a "
+                f"v13-v16 store the migration itself failed and the rollback "
+                f"left the version unchanged."
             )
 
     def _require_conn(self) -> sqlite3.Connection:

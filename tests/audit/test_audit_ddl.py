@@ -42,10 +42,11 @@ class TestEnsureAuditSchema:
 
 
 class TestTableShape:
-    def test_has_fourteen_columns(self, conn: sqlite3.Connection) -> None:
+    def test_has_fifteen_columns(self, conn: sqlite3.Connection) -> None:
+        # 14 ADR-0001 columns + the non-canonical `anchor_entity` (store v17).
         ensure_audit_schema(conn)
         cols = conn.execute("PRAGMA table_info(mcp_audit)").fetchall()
-        assert len(cols) == 14
+        assert len(cols) == 15
 
     def test_column_names_match_adr(self, conn: sqlite3.Connection) -> None:
         ensure_audit_schema(conn)
@@ -65,7 +66,19 @@ class TestTableShape:
             "fingerprint",
             "fingerprint_version",
             "chain_hash",
+            # Non-canonical metadata (store v17) — NOT an AUDIT_ROW_FIELDS
+            # member; never enters the chain hash. See `audit/ddl.py`.
+            "anchor_entity",
         }
+
+    def test_anchor_entity_is_not_a_canonical_field(self, conn: sqlite3.Connection) -> None:
+        """The new column must NOT leak into the chained preimage: the
+        canonical field set is unchanged at exactly the 13 ADR-0001 content
+        fields, so every previously chained row keeps the identical leaf."""
+        from schemabrain.audit.canonical import AUDIT_ROW_FIELDS
+
+        assert "anchor_entity" not in AUDIT_ROW_FIELDS
+        assert len(AUDIT_ROW_FIELDS) == 13
 
     def test_id_is_primary_key(self, conn: sqlite3.Connection) -> None:
         ensure_audit_schema(conn)

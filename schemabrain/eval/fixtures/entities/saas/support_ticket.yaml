@@ -4,3 +4,4 @@ description: A customer-filed support request (free-text body).
 binding:
   single_table: public.support_tickets
 identity: id
+group: activity

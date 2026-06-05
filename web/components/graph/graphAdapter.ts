@@ -24,8 +24,14 @@ import type {
 
 /** Node data carried on the reactflow node: the kit primitive's fields plus
  *  the full live PII level (the kit node only reads `catastrophic`; `piiLevel`
- *  drives the PR-17b non-catastrophic halo without a second source of truth). */
-export type GraphFlowNodeData = GraphNodeData & { piiLevel: PiiLevel };
+ *  drives the PR-17b non-catastrophic halo without a second source of truth)
+ *  and the live `refusalCount` for the refusal-hotspot overlay. The overlay
+ *  *toggles* (`piiHeat` / `refusalActive` / dimming) are layered on at render
+ *  time by GraphCanvas — they are interaction state, not projection data. */
+export type GraphFlowNodeData = GraphNodeData & {
+  piiLevel: PiiLevel;
+  refusalCount: number;
+};
 
 /** Edge data: the kit primitive's fields plus the declared-only cardinality. */
 export type GraphFlowEdgeData = GraphEdgeData & { cardinality: Cardinality | null };
@@ -49,6 +55,7 @@ export function adaptNode(node: ApiGraphNode): GraphFlowNode {
       catastrophic: node.pii_level === "catastrophic",
       rowCount: node.row_count,
       piiLevel: node.pii_level,
+      refusalCount: node.refusal_count,
     },
   };
 }

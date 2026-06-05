@@ -43,6 +43,9 @@ class TestBuildAuditRow:
             "ast_shape_hash": None,
             "rule_id": None,
             "fingerprint_version": FINGERPRINT_VERSION,
+            # Non-canonical (store v17): None when the response carries no
+            # error envelope. Persisted to the column, never to the chain.
+            "anchor_entity": None,
         }
 
     def test_unknown_status_falls_back_to_error(self) -> None:
