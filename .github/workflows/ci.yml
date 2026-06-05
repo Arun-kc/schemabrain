@@ -400,7 +400,7 @@ jobs:
       - name: Cache Playwright browsers
         if: steps.filter.outputs.dashboard == 'true'
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           # Browser binaries live under ~/.cache/ms-playwright; cache
           # key is bound to the Playwright version so a bump
