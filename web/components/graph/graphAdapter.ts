@@ -15,7 +15,7 @@ import type { Edge, Node } from "reactflow";
 
 import type { GraphEdgeData } from "@/components/kit/graph/GraphEdge";
 import type { GraphNodeData } from "@/components/kit/graph/GraphNode";
-import type { Cardinality, PiiLevel } from "@/lib/types/meta";
+import type { PiiLevel } from "@/lib/types/meta";
 import type {
   GraphEdge as ApiGraphEdge,
   GraphNode as ApiGraphNode,
@@ -33,8 +33,11 @@ export type GraphFlowNodeData = GraphNodeData & {
   refusalCount: number;
 };
 
-/** Edge data: the kit primitive's fields plus the declared-only cardinality. */
-export type GraphFlowEdgeData = GraphEdgeData & { cardinality: Cardinality | null };
+/** Edge data carried on the reactflow edge. The kit primitive already owns the
+ *  declared-only `cardinality` (it renders the midpoint label); the overlay
+ *  toggles (`minedEmphasis` / `selectedIncident` / `dimmed`) are layered on at
+ *  render time by GraphCanvas — interaction state, not projection data. */
+export type GraphFlowEdgeData = GraphEdgeData;
 
 export type GraphFlowNode = Node<GraphFlowNodeData>;
 export type GraphFlowEdge = Edge<GraphFlowEdgeData>;

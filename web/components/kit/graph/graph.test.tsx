@@ -7,6 +7,7 @@ import { GraphEdge, type GraphEdgeData } from "./GraphEdge";
 import { GraphNode, type GraphNodeData } from "./GraphNode";
 import {
   GROUP_COLOR,
+  graphEdgeLabel,
   graphEdgeStyle,
   graphNodeColor,
   graphNodeRing,
@@ -56,6 +57,59 @@ describe("graphStyle", () => {
     expect(graphEdgeStyle({ declared: false, minedEmphasis: true, dimmed: true }).opacity).toBe(
       0.9,
     );
+  });
+
+  it("emphasises edges incident to the selected node (G3), below path/mined", () => {
+    const sel = graphEdgeStyle({ declared: true, selectedIncident: true });
+    expect(sel.strokeWidth).toBe(1.8);
+    expect(sel.opacity).toBe(0.9);
+    // Stays the hairline colour — selection brightens, it never recolours.
+    expect(sel.stroke).toBe("var(--hair)");
+    // A selected incident edge ignores dimming (it is the focus).
+    expect(graphEdgeStyle({ declared: true, selectedIncident: true, dimmed: true }).opacity).toBe(
+      0.9,
+    );
+    // Priority: path > mined > selected.
+    expect(
+      graphEdgeStyle({ declared: true, highlighted: true, selectedIncident: true }).stroke,
+    ).toBe("var(--green)");
+    expect(
+      graphEdgeStyle({ declared: false, minedEmphasis: true, selectedIncident: true }).stroke,
+    ).toBe("var(--cyan)");
+  });
+});
+
+describe("graphEdgeLabel", () => {
+  it("labels the log-mined overlay 'mined' in cyan (no fabricated cardinality)", () => {
+    expect(graphEdgeLabel({ minedEmphasis: true, cardinality: null })).toEqual({
+      text: "mined",
+      color: "var(--cyan)",
+    });
+  });
+
+  it("labels a highlighted path edge with its declared cardinality in green", () => {
+    expect(graphEdgeLabel({ highlighted: true, cardinality: "one_to_many" })).toEqual({
+      text: "1:N",
+      color: "var(--green)",
+    });
+  });
+
+  it("labels a selected incident edge with its cardinality in the muted ink tone", () => {
+    expect(graphEdgeLabel({ selectedIncident: true, cardinality: "many_to_one" })).toEqual({
+      text: "N:1",
+      color: "var(--ink-2)",
+    });
+  });
+
+  it("shows NO label when the edge is at rest", () => {
+    expect(graphEdgeLabel({ cardinality: "one_to_one" })).toBeNull();
+  });
+
+  it("shows NO label when emphasised but the cardinality is unknown (honest)", () => {
+    // A selected/highlighted edge whose cardinality is null (e.g. a mined join
+    // off the overlay) must not invent a cardinality — it simply has no label.
+    expect(graphEdgeLabel({ selectedIncident: true, cardinality: null })).toBeNull();
+    expect(graphEdgeLabel({ highlighted: true, cardinality: null })).toBeNull();
   });
 
   it("halos only the real-PII tiers, never sensitivity bands", () => {
@@ -167,6 +221,39 @@ describe("GraphNode", () => {
     );
     expect(container.querySelector('[data-refusal-badge="true"]')).toBeNull();
   });
+
+  it("renders the refusal pulse-ring alongside the badge when the hotspot is live (G4)", () => {
+    const { container, rerender } = renderNode(
+      <GraphNode
+        {...nodeProps({ label: "user", group: "identity", refusalCount: 2, refusalActive: true })}
+      />,
+    );
+    // The pulse ring (CSS-animated, reduced-motion gated) accompanies the badge.
+    expect(container.querySelector('[data-refusal-pulse="true"]')).not.toBeNull();
+
+    // Overlay off → no pulse (resting node is unchanged).
+    rerender(
+      <ReactFlowProvider>
+        <GraphNode {...nodeProps({ label: "user", group: "identity", refusalCount: 2 })} />
+      </ReactFlowProvider>,
+    );
+    expect(container.querySelector('[data-refusal-pulse="true"]')).toBeNull();
+
+    // Overlay on but zero refusals → no pulse.
+    rerender(
+      <ReactFlowProvider>
+        <GraphNode
+          {...nodeProps({
+            label: "user",
+            group: "identity",
+            refusalCount: 0,
+            refusalActive: true,
+          })}
+        />
+      </ReactFlowProvider>,
+    );
+    expect(container.querySelector('[data-refusal-pulse="true"]')).toBeNull();
+  });
 });
 
 function edgeProps(data: GraphEdgeData): EdgeProps<GraphEdgeData> {
@@ -204,5 +291,36 @@ describe("GraphEdge", () => {
     );
     const path = container.querySelector("path");
     expect(path?.getAttribute("style") ?? "").toContain("4 5");
+  });
+
+  it("draws the cardinality label on a highlighted path edge (G1)", () => {
+    const { container } = render(
+      <svg>
+        <GraphEdge
+          {...edgeProps({ declared: true, highlighted: true, cardinality: "many_to_one" })}
+        />
+      </svg>,
+    );
+    expect(container.querySelector("text")?.textContent).toBe("N:1");
+  });
+
+  it("labels a log-mined emphasised edge 'mined', never a fabricated cardinality", () => {
+    const { container } = render(
+      <svg>
+        <GraphEdge
+          {...edgeProps({ declared: false, minedEmphasis: true, cardinality: null })}
+        />
+      </svg>,
+    );
+    expect(container.querySelector("text")?.textContent).toBe("mined");
+  });
+
+  it("draws NO label on a resting edge", () => {
+    const { container } = render(
+      <svg>
+        <GraphEdge {...edgeProps({ declared: true, cardinality: "one_to_one" })} />
+      </svg>,
+    );
+    expect(container.querySelector("text")).toBeNull();
   });
 });

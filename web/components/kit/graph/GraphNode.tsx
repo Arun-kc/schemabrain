@@ -96,6 +96,13 @@ export function GraphNode({ data, selected }: NodeProps<GraphNodeData>) {
             }}
           />
         )}
+        {showRefusal && (
+          // Refusal-hotspot pulse ring behind the orb. The animation lives in
+          // kit.css (`.sb-gnode-pulse`) — compositor-only (transform+opacity)
+          // and disabled under `prefers-reduced-motion`, so it never intercepts
+          // input and respects the parked-motion ethos.
+          <span aria-hidden data-refusal-pulse="true" className="sb-gnode-pulse" />
+        )}
         <div
           style={{
             position: "relative",

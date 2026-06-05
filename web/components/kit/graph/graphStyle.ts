@@ -4,7 +4,8 @@
  * tested directly; the React components are thin renderers over these.
  */
 
-import type { PiiLevel } from "@/lib/types/meta";
+import { cardinalityLabel } from "@/lib/entities";
+import type { Cardinality, PiiLevel } from "@/lib/types/meta";
 
 export type GraphNodeGroup = "identity" | "billing" | "activity" | "other";
 
@@ -61,9 +62,16 @@ export interface GraphEdgeStyleInput {
   /** Log-mined emphasis overlay is active. */
   minedEmphasis?: boolean;
   /**
+   * Incident to the currently selected node — brightened so the picked
+   * entity's relationships read at a glance. Ranks below the path / mined
+   * emphasis (those keep their colour) but above the resting + dimmed states.
+   */
+  selectedIncident?: boolean;
+  /**
    * A focus overlay (search or PII-heat) is active and this edge is not the
    * subject — fade it back so the highlighted/mined edges read clearly.
-   * Ignored for highlighted / mined-emphasis edges (they stay prominent).
+   * Ignored for highlighted / mined-emphasis / selected-incident edges (they
+   * stay prominent).
    */
   dimmed?: boolean;
 }
@@ -77,13 +85,15 @@ export interface GraphEdgeStyle {
 
 /**
  * Edge stroke styling, in priority order: highlighted path (green, glowing) >
- * log-mined emphasis (cyan) > resting (hairline). The solid/dashed distinction
- * is independent and always reflects declared-vs-mined.
+ * log-mined emphasis (cyan) > selected-incident (brightened hairline) >
+ * resting (hairline). The solid/dashed distinction is independent and always
+ * reflects declared-vs-mined.
  */
 export function graphEdgeStyle({
   declared,
   highlighted = false,
   minedEmphasis = false,
+  selectedIncident = false,
   dimmed = false,
 }: GraphEdgeStyleInput): GraphEdgeStyle {
   const dash = declared ? undefined : "4 5";
@@ -93,6 +103,11 @@ export function graphEdgeStyle({
   if (minedEmphasis) {
     return { stroke: "var(--cyan)", strokeWidth: 2, strokeDasharray: dash, opacity: 0.9 };
   }
+  if (selectedIncident) {
+    // Same hairline colour, brought forward — selection brightens, it never
+    // recolours (recolouring would imply a relationship type it doesn't have).
+    return { stroke: "var(--hair)", strokeWidth: 1.8, strokeDasharray: dash, opacity: 0.9 };
+  }
   // Resting edge — faded under an active focus overlay, else the hairline rest.
   return {
     stroke: "var(--hair)",
@@ -100,4 +115,39 @@ export function graphEdgeStyle({
     strokeDasharray: dash,
     opacity: dimmed ? 0.16 : 0.5,
   };
+}
+
+export interface GraphEdgeLabel {
+  text: string;
+  color: string;
+}
+
+export interface GraphEdgeLabelInput {
+  highlighted?: boolean;
+  selectedIncident?: boolean;
+  minedEmphasis?: boolean;
+  /** Declared-FK-only cardinality; null for mined / pre-existing edges. */
+  cardinality: Cardinality | null;
+}
+
+/**
+ * The midpoint label an edge should carry, or null for none. Only emphasised
+ * edges are labelled (path, selected-incident, or the log-mined overlay) —
+ * resting edges stay clean. A mined-emphasis edge reads "mined" (it has no
+ * declared cardinality by contract); an emphasised declared edge reads its
+ * compact cardinality ("N:1"). An emphasised edge whose cardinality is unknown
+ * gets NO label rather than a fabricated one. Colour mirrors the stroke
+ * emphasis: green on the path, cyan when mined, muted ink when selected.
+ */
+export function graphEdgeLabel({
+  highlighted = false,
+  selectedIncident = false,
+  minedEmphasis = false,
+  cardinality,
+}: GraphEdgeLabelInput): GraphEdgeLabel | null {
+  if (minedEmphasis) return { text: "mined", color: "var(--cyan)" };
+  if (!highlighted && !selectedIncident) return null;
+  const text = cardinalityLabel(cardinality);
+  if (text === null) return null;
+  return { text, color: highlighted ? "var(--green)" : "var(--ink-2)" };
 }

@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactFlow, {
   Background,
   Controls,
+  MarkerType,
   MiniMap,
   type NodeDragHandler,
   type NodeMouseHandler,
@@ -224,17 +225,36 @@ export default function GraphCanvas({
 
   const displayEdges = useMemo<GraphFlowEdge[]>(() => {
     const focusActive = matched !== null || overlays.pii;
-    return edges.map((e) => ({
-      ...e,
-      data: e.data
-        ? {
-            ...e.data,
-            minedEmphasis: overlays.mined && !e.data.declared,
-            dimmed: focusActive && !e.data.highlighted,
-          }
-        : e.data,
-    }));
-  }, [edges, matched, overlays]);
+    return edges.map((e) => {
+      // G3: an edge touching the selected node is brightened + labelled.
+      const selectedIncident = selectedId !== null && (e.source === selectedId || e.target === selectedId);
+      const highlighted = e.data?.highlighted ?? false;
+      return {
+        ...e,
+        // G2: directional arrowhead — green + larger on the canonical path,
+        // muted ink elsewhere. `userSpaceOnUse` keeps a constant pixel size
+        // instead of scaling with the edge's stroke width. The arrow colour is
+        // applied via CSS `fill`/`stroke` (reactflow's ArrowClosedSymbol), so
+        // the theme tokens resolve through the cascade.
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          markerUnits: "userSpaceOnUse",
+          width: highlighted ? 16 : 13,
+          height: highlighted ? 16 : 13,
+          color: highlighted ? "var(--green)" : "var(--ink-3)",
+        },
+        data: e.data
+          ? {
+              ...e.data,
+              minedEmphasis: overlays.mined && !e.data.declared,
+              selectedIncident,
+              // A selected-incident edge is itself the focus → never dim it.
+              dimmed: focusActive && !e.data.highlighted && !selectedIncident,
+            }
+          : e.data,
+      };
+    });
+  }, [edges, matched, overlays, selectedId]);
 
   const pinTo = useCallback(
     (id: string, x: number, y: number) => {
