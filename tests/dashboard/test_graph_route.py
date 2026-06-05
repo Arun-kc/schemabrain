@@ -313,7 +313,9 @@ def test_graph_catastrophic_matches_pii_matrix(client: TestClient, store_path: P
     _seed_graph(store_path)  # `order` carries payment_card; the rest do not
     graph = client.get("/api/graph", params={"source_connection_id": SRC}).json()
     matrix = client.get("/api/entities/pii-matrix", params={"source_connection_id": SRC}).json()
-    graph_catastrophic = {node["id"]: node["pii_level"] == "catastrophic" for node in graph["nodes"]}
+    graph_catastrophic = {
+        node["id"]: node["pii_level"] == "catastrophic" for node in graph["nodes"]
+    }
     matrix_catastrophic = {e["name"]: e["has_catastrophic"] for e in matrix["entities"]}
     assert graph_catastrophic == matrix_catastrophic
     assert graph_catastrophic["order"] is True  # the floor actually fires
