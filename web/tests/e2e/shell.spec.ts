@@ -35,8 +35,11 @@ test.describe("app shell", () => {
       "/graph",
     );
     await expect(page.getByRole("link", { name: /Entities/ })).toHaveAttribute("href", "/entities");
-    // Still-unbuilt surfaces render disabled (no dead 404 link) until their PR.
-    await expect(page.getByRole("link", { name: /Data dictionary/ })).toHaveCount(0);
+    // Data dictionary now ships → a live link too (PR-19); all eight surfaces are built.
+    await expect(page.getByRole("link", { name: /Data dictionary/ })).toHaveAttribute(
+      "href",
+      "/dict",
+    );
 
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });
