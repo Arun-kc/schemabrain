@@ -121,6 +121,12 @@ describe("stepSim — the parked simulation", () => {
     expect(steps).toBeLessThan(60);
   });
 
+  it("returns the cap when it cannot reach rest within maxSteps", () => {
+    const nodes = createSimNodes(computeSeedPositions(SAMPLE));
+    nodes[0].x += 220; // perturbed, but only one step allowed → can't park yet
+    expect(settle(nodes, 1)).toBe(1);
+  });
+
   it("is deterministic — two identical sims step to identical state", () => {
     const a = createSimNodes(computeSeedPositions(SAMPLE));
     const b = createSimNodes(computeSeedPositions(SAMPLE));

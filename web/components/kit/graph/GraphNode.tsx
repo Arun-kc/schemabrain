@@ -1,9 +1,25 @@
-import type { NodeProps } from "reactflow";
+import { Handle, type NodeProps, Position } from "reactflow";
 import {
   GROUP_COLOR,
   graphNodeRing,
   type GraphNodeGroup,
 } from "./graphStyle";
+
+// Hidden connection anchors. The graph is a read-only projection — nodes are
+// never wired up by hand — so the handles are non-connectable and invisible;
+// they exist only to give reactflow a deterministic point to anchor each edge.
+// A target on the left and a source on the right keep edge beziers reading
+// left-to-right along the canonical-path backbone the layout lays down.
+const HANDLE_STYLE: React.CSSProperties = {
+  opacity: 0,
+  width: 1,
+  height: 1,
+  minWidth: 1,
+  minHeight: 1,
+  border: 0,
+  background: "transparent",
+  pointerEvents: "none",
+};
 
 export interface GraphNodeData {
   label: string;
@@ -34,6 +50,8 @@ export function GraphNode({ data, selected }: NodeProps<GraphNodeData>) {
       data-catastrophic={catastrophic ? "true" : undefined}
       style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "var(--s1)" }}
     >
+      <Handle type="target" position={Position.Left} isConnectable={false} style={HANDLE_STYLE} />
+      <Handle type="source" position={Position.Right} isConnectable={false} style={HANDLE_STYLE} />
       <div
         style={{
           width: diameter,
