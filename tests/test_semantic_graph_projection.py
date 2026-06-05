@@ -147,6 +147,23 @@ class TestRebuildGraphProjection:
             assert edges["order_to_user"].edge_origin == "log_mined"  # observed_in_query_log
             assert edges["user_to_tenant"].edge_origin == "inferred"  # llm_suggested
 
+    def test_cardinality_carried_on_declared_edges_only(self, tmp_path: Path) -> None:
+        """ADR 0011: every seeded join authors `many_to_one`, but the
+        projection keeps cardinality only on FK-backed (declared) edges and
+        drops it for log-mined / inferred ones — the engine never verified
+        their shape, so it is not rendered as engine-derived fact."""
+        with SQLiteStore(tmp_path / "s.db") as store:
+            _seed_saas(store)
+            rebuild_graph_projection(store, source_connection_id=SOURCE)
+            edges = {e.join_name: e for e in store.list_graph_edges(source_connection_id=SOURCE)}
+
+            # declared (fk_constraint) → authored cardinality survives
+            assert edges["order_item_to_order"].cardinality == "many_to_one"
+            assert edges["order_to_payment"].cardinality == "many_to_one"
+            # log_mined / inferred → dropped despite the authored value
+            assert edges["order_to_user"].cardinality is None  # observed_in_query_log
+            assert edges["user_to_tenant"].cardinality is None  # llm_suggested
+
     def test_canonical_path_rank_marks_the_diameter_spine(self, tmp_path: Path) -> None:
         with SQLiteStore(tmp_path / "s.db") as store:
             _seed_saas(store)

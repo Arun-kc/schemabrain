@@ -197,10 +197,19 @@ __all__ = [
 #         `col_confidence` (may be empty at launch). v13 stores chain
 #         13→14→15; v14 stores migrate in-place via `_migrate_v14_to_v15`.
 #         Pre-v13 still raises.
+#   v16 — `graph_edges.cardinality` (TEXT one_to_one|one_to_many|
+#         many_to_one|many_to_many, NULL otherwise): the equi-join shape,
+#         copied from the canonical join but carried ONLY for declared
+#         (FK-backed) edges so an unverified mined/inferred shape is never
+#         rendered as engine-derived (ADR 0011). Additive read-model column
+#         on the v15 graph projection; backfills to NULL and is repopulated
+#         by the next `index` / `joins apply` projection-write — no data
+#         migration beyond the ALTER. `_migrate_v15_to_v16` ALTERs an
+#         existing v15 store; a fresh store gets the column from the DDL.
 # Pre-v13 stores raise SchemaVersionMismatchError; v13 stores chain to
-# v15 (13→14→15); v14 stores migrate in-place to v15 via
-# `_migrate_v14_to_v15`.
-SCHEMA_VERSION = "15"
+# v16 (13→14→15→16); v14/v15 stores migrate in-place via the
+# `_migrate_vN_to_vN+1` chain.
+SCHEMA_VERSION = "16"
 _MEMORY_PATH = ":memory:"
 
 # 1 USD = 1_000_000 micros. Storing the ledger as INTEGER micros avoids
@@ -384,6 +393,49 @@ def _migrate_v14_to_v15(conn: sqlite3.Connection) -> None:
     conn.execute(
         "UPDATE schemabrain_meta SET value = ? WHERE key = ?",
         ("15", "schema_version"),
+    )
+
+
+def _migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
+    """Add `graph_edges.cardinality` in a single in-place ALTER (v16).
+
+    One additive read-model column on the v15 graph projection: the
+    declared-FK equi-join cardinality (one_to_one / one_to_many /
+    many_to_one / many_to_many; NULL otherwise). Backfills to NULL — the
+    projection is a denormalised read-model rebuilt by the next `index` /
+    `joins apply`, which repopulates the column for declared edges, so
+    there is no data migration beyond the ALTER. The CHECK admits NULL, so
+    it evaluates true for every pre-existing row (SQLite ADD COLUMN with a
+    self-referential CHECK is permitted; mirrors the `bind_confidence` /
+    `pii_confidence` ALTERs in `_migrate_v14_to_v15`).
+
+    `graph_edges` is a v15 table created by the `_DDL_STATEMENTS` loop,
+    NOT by a migration — and that loop runs AFTER this function. So a
+    genuine v15 store HAS the table (ALTER it), but a store CHAINING up
+    from v13/v14 does not yet (the v14→v15 leg only ALTERs pre-existing
+    tables); for that store the DDL loop will shortly CREATE graph_edges
+    already carrying the column. The existence guard covers both: ALTER
+    when present, otherwise leave it to the DDL. Skipping the version
+    constant string here would bump from a name out of step with the
+    column set, so the bump stays unconditional.
+
+    Crash-atomicity: same contract as `_migrate_v14_to_v15` — the caller
+    guards on `existing_version == "15"` and wraps the whole chain in one
+    `BEGIN`/`COMMIT`. Literal SQL, no interpolation, so bandit B608 cannot
+    fire.
+    """
+    graph_edges_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'graph_edges'"
+    ).fetchone()
+    if graph_edges_exists is not None:
+        conn.execute(
+            "ALTER TABLE graph_edges ADD COLUMN cardinality TEXT "
+            "CHECK (cardinality IS NULL OR cardinality IN "
+            "('one_to_one', 'one_to_many', 'many_to_one', 'many_to_many'))"
+        )
+    conn.execute(
+        "UPDATE schemabrain_meta SET value = ? WHERE key = ?",
+        ("16", "schema_version"),
     )
 
 
@@ -889,6 +941,13 @@ _DDL_STATEMENTS: tuple[str, ...] = (
             CHECK (edge_origin IN ('declared', 'log_mined', 'inferred')),
         canonical_path_rank INTEGER NOT NULL DEFAULT 0
             CHECK (canonical_path_rank IN (0, 1, 2)),
+        -- v16: equi-join cardinality, carried ONLY for declared (FK-backed)
+        -- edges (the projection writer drops it for log_mined / inferred so
+        -- an unverified shape is never rendered as engine-derived). NULL =
+        -- not declared, not yet projected, or uniqueness unconfirmed.
+        cardinality TEXT
+            CHECK (cardinality IS NULL OR cardinality IN
+                ('one_to_one', 'one_to_many', 'many_to_one', 'many_to_many')),
         created_at INTEGER NOT NULL,
         PRIMARY KEY (source_connection_id, join_name),
         FOREIGN KEY (source_connection_id, join_name)
@@ -2305,8 +2364,9 @@ class SQLiteStore:
                 conn.executemany(
                     "INSERT INTO graph_edges "
                     "(source_connection_id, join_name, source_entity, "
-                    "target_entity, edge_origin, canonical_path_rank, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "target_entity, edge_origin, canonical_path_rank, "
+                    "cardinality, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         (
                             source_connection_id,
@@ -2315,6 +2375,7 @@ class SQLiteStore:
                             edge.target_entity,
                             edge.edge_origin,
                             edge.canonical_path_rank,
+                            edge.cardinality,
                             now,
                         )
                         for edge in edges
@@ -2353,7 +2414,7 @@ class SQLiteStore:
         conn = self._require_conn()
         rows = conn.execute(
             "SELECT join_name, source_entity, target_entity, edge_origin, "
-            "canonical_path_rank FROM graph_edges "
+            "canonical_path_rank, cardinality FROM graph_edges "
             "WHERE source_connection_id = ? ORDER BY join_name",
             (source_connection_id,),
         ).fetchall()
@@ -2364,6 +2425,7 @@ class SQLiteStore:
                 target_entity=row["target_entity"],
                 edge_origin=row["edge_origin"],
                 canonical_path_rank=row["canonical_path_rank"],
+                cardinality=row["cardinality"],
             )
             for row in rows
         ]
@@ -3339,16 +3401,19 @@ class SQLiteStore:
                 # In-place migrations run BEFORE the DDL block so the
                 # ALTER TABLE statements land on the existing tables
                 # rather than fighting `CREATE TABLE IF NOT EXISTS` (a
-                # no-op when the table exists). The two guards CHAIN via
-                # the `existing_version` reassignment: a v13 store
-                # migrates 13→14 then falls through to 14→15 in a single
-                # open; a v14 store runs only 14→15. Pre-v13 stores match
-                # neither guard and hit the mismatch-error path below.
+                # no-op when the table exists). The guards CHAIN via the
+                # `existing_version` reassignment: a v13 store migrates
+                # 13→14→15→16 in a single open; a v14 store runs 14→15→16;
+                # a v15 store runs only 15→16. Pre-v13 stores match no
+                # guard and hit the mismatch-error path below.
                 if existing_version == "13":
                     _migrate_v13_to_v14(conn)
                     existing_version = "14"
                 if existing_version == "14":
                     _migrate_v14_to_v15(conn)
+                    existing_version = "15"
+                if existing_version == "15":
+                    _migrate_v15_to_v16(conn)
 
                 for stmt in _DDL_STATEMENTS:
                     conn.execute(stmt)
@@ -3379,8 +3444,8 @@ class SQLiteStore:
                 f"and do not have a migration path — delete or move the "
                 f"store file (path passed to SQLiteStore) and re-run "
                 f"`schemabrain index` to rebuild from scratch. v13 stores "
-                f"chain to v15 (13→14→15) and v14 stores migrate in-place "
-                f"to v15; if you're seeing this message with a v13 or v14 "
+                f"chain to v16 (13→14→15→16) and v14/v15 stores migrate "
+                f"in-place; if you're seeing this message with a v13-v15 "
                 f"store the migration itself failed and the rollback left "
                 f"the version unchanged."
             )

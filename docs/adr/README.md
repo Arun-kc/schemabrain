@@ -55,6 +55,12 @@ works:
   rebuilt, why the catastrophic floor is a live overlay (never disagrees with the
   PII matrix per [0001](0001-audit-row-and-pii-taxonomy.md)), how the canonical
   path is chosen honestly, and the declared/log-mined/inferred edge vocabulary.
+- [0011](0011-graph-projection-enrichment.md) — enriches `/api/graph` for the
+  graph surface (extends [0010](0010-graph-projection-backend.md)): edge
+  `cardinality` as a snapshot on declared FK edges only (null for mined/inferred —
+  never an unverified shape as fact), node `pii_level` as the full 5-state live
+  value replacing the `catastrophic` boolean (one source of truth + the middle-tier
+  wording rule), and why per-node `refusal_count` is deferred.
 
 **Project policy.**
 

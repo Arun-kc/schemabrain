@@ -43,7 +43,11 @@ from pathlib import Path
 # 1.6 adds the read-only `GET /api/graph` route + its `GraphResponse`
 # contract (nodes / edges / canonical_path) — the backend half of the
 # knowledge-graph surface, served from the v15 graph projection (ADR 0010).
-DASHBOARD_SCHEMA_VERSION = "1.6"
+# 1.7 enriches `GET /api/graph` for the graph surface (ADR 0011): each edge
+# gains `cardinality` (declared FK edges only; null for mined/inferred) and
+# each node replaces the `catastrophic` boolean with the full 5-state live
+# `pii_level` (catastrophic | pii | confidential | internal | none).
+DASHBOARD_SCHEMA_VERSION = "1.7"
 
 # Directory holding the static Next.js export. Populated at wheel-build
 # time by the ``web/`` workspace's ``pnpm build`` output. At install

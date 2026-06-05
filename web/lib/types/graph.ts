@@ -3,10 +3,11 @@
 //
 // The persisted knowledge-graph read-model: one node per entity, one
 // edge per canonical join, plus the ordered canonical path (the diameter
-// spine). `catastrophic` is a LIVE flag the route recomputes from current
-// PII tags, so it never disagrees with the PII matrix.
+// spine). `pii_level` is a LIVE value the route recomputes from current
+// PII tags, so it never disagrees with the PII matrix. `cardinality`
+// rides on declared FK edges only (ADR 0011).
 
-import type { Group } from "./meta";
+import type { Cardinality, Group, PiiLevel } from "./meta";
 
 /**
  * Honest edge provenance. `declared` = backed by a DB foreign key;
@@ -22,8 +23,13 @@ export interface GraphNode {
   label: string;
   /** Cosmetic clustering group (node colour); not a trust signal. */
   group: Group;
-  /** Catastrophic-floor PII present — LIVE, consistent with the PII matrix. */
-  catastrophic: boolean;
+  /**
+   * LIVE PII severity, consistent with the PII matrix (one source of
+   * truth). `catastrophic` drives the alarm node; the non-catastrophic
+   * tiers drive the lighter halo. Do NOT re-derive catastrophic-ness
+   * client-side from a chip-kind helper — gate on this string.
+   */
+  pii_level: PiiLevel;
   /** Cached row-count estimate; null when the backend can't estimate it. */
   row_count: number | null;
 }
@@ -36,6 +42,12 @@ export interface GraphEdge {
   evidence: GraphEdgeEvidence;
   /** 0 = off the highlighted path, 1 = primary canonical path, 2 = alternate. */
   canonical_path_rank: 0 | 1 | 2;
+  /**
+   * Equi-join cardinality — present on declared FK edges only; null for
+   * log-mined / inferred edges (the engine never verified their shape) and
+   * for FKs whose uniqueness the connector could not confirm. Never a guess.
+   */
+  cardinality: Cardinality | null;
 }
 
 /** The single canonical path of the schema — its longest join chain. */
