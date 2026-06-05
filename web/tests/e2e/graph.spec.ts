@@ -392,9 +392,14 @@ test.describe("Knowledge graph polish (PR-17c)", () => {
     );
     await expect(minedPath).toHaveCSS("opacity", "0.5");
 
-    // Selecting `plan` makes user→plan incident → brightened to 0.95.
-    await page.locator('.react-flow__node[data-id="plan"]').click();
-    await expect(page).toHaveURL(/[?&]entity=plan\b/);
+    // Select `plan` via the URL — selection IS the URL (ADR 0005), so this
+    // exercises the exact same `selectedIncident` path as a click, without
+    // depending on the leftmost node settling under fitView (a node click there
+    // is flaky on slower CI). The click → ?entity= path is covered by the
+    // "clicking a node opens the entity drilldown" test above.
+    await page.goto("/graph?entity=plan");
+
+    // user→plan is now incident to the selection → brightened to 0.95.
     await expect(minedPath).toHaveCSS("opacity", "0.95");
   });
 
