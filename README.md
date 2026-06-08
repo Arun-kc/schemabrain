@@ -5,7 +5,13 @@
   </picture>
 </p>
 
-<!-- <h1 align="center">schemabrain</h1> -->
+<h1 align="center">
+  <strong>Stop giving AI agents raw database connection strings.</strong>
+</h1>
+
+<h2 align="center">
+  Give them SchemaBrain instead — a read-only trust and intelligence layer where the agent never writes SQL, PII is refused before the query runs, and every call lands in a tamper-evident audit log.
+</h2>
 
 <p align="center">
   <a href="https://github.com/Arun-kc/schemabrain/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Arun-kc/schemabrain/ci.yml?style=flat-square&label=CI&labelColor=0A0A0A&color=3ECF8E" alt="CI"></a>
@@ -20,17 +26,12 @@
   <em>Works with Claude Desktop · Claude Code · Cursor · Windsurf · any MCP host</em>
 </p>
 
-<p align="center">
-  <strong>Stop giving AI agents raw database connection strings.</strong><br>
-  SchemaBrain is the trust and intelligence layer between AI agents and your production database — twelve read-only tools, validated metrics, tamper-evident audit.
-</p>
-
-> **The agent never writes SQL. SchemaBrain does, from definitions you control.**
+SchemaBrain compiles every query from definitions you control — no path from a prompt to raw SQL at your database.
 
 Three guarantees that close the trust gap between AI agents and your database:
 
 - **[Read-only by architecture](#1-read-only-by-architecture-not-configuration)** — twelve MCP tools, none of which can write. No `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database.
-- **[PII refusal at retrieval](#2-pii-aware-refusal-at-the-get_metric-tool-boundary)** — PII tags propagate from the physical schema through joins and metrics. If a query touches a blocked category, SchemaBrain refuses *before* the database is queried.
+- **[PII refusal at retrieval](#2-pii-aware-refusal-at-the-get_metric-tool-boundary)** — PII tags propagate from the physical schema through joins and metrics. If a query touches a blocked category, SchemaBrain refuses before the database is queried.
 - **[Cryptographic audit chain](#3-tamper-evident-audit-log)** — every call, refusal, and recovery lands in a SHA256-hashed append-only log. `audit verify` exits non-zero if any past row was rewritten.
 
 **See it in action** — ask for something the schema can't answer, and it refuses instead of fabricating a join:
@@ -248,7 +249,7 @@ SchemaBrain speaks the [Model Context Protocol](https://modelcontextprotocol.io)
 - **Continue** — paste into `~/.continue/config.json`
 - **Your own agent loop** — see [`examples/anthropic_demo.py`](examples/anthropic_demo.py) for a ~250-LOC Anthropic-SDK reference
 
-The 12-tool surface, PII firewall, audit chain, and recovery contracts are transport-agnostic — any compliant stdio MCP client gets the same guarantees.
+The 12-tool surface, PII-aware refusal, audit chain, and recovery contracts are transport-agnostic — any compliant stdio MCP client gets the same guarantees.
 
 ### Agent frameworks
 
