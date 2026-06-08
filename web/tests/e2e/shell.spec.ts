@@ -35,11 +35,13 @@ test.describe("app shell", () => {
       "/graph",
     );
     await expect(page.getByRole("link", { name: /Entities/ })).toHaveAttribute("href", "/entities");
-    // Data dictionary now ships → a live link too (PR-19); all eight surfaces are built.
+    // Data dictionary now ships → a live link too (PR-19).
     await expect(page.getByRole("link", { name: /Data dictionary/ })).toHaveAttribute(
       "href",
       "/dict",
     );
+    // Overview is the dashboard home (Home group) → a live link; all nine surfaces are built.
+    await expect(page.getByRole("link", { name: /Overview/ })).toHaveAttribute("href", "/overview");
 
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });

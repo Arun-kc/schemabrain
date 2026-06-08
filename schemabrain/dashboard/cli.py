@@ -23,6 +23,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from schemabrain.dashboard import STATIC_DIR
 from schemabrain.dashboard.sidecar import (
     BIND_HOST,
     DEFAULT_PORT,
@@ -131,13 +132,21 @@ def run_dashboard(
     print("  press Ctrl+C to stop", file=sys.stderr)
 
     if open_browser:
+        # Open the dashboard's own home (the Overview surface) rather than
+        # the marketing landing at `/`. Only when the static export is
+        # present, though — without it the sidecar serves the minimal dev
+        # fallback at `/` and `/overview` would 404, so fall back to root.
+        has_static_export = STATIC_DIR.exists() and any(
+            p.name not in {".gitkeep", "README.md"} for p in STATIC_DIR.iterdir()
+        )
+        open_url = f"{url}overview" if has_static_export else url
         # ``webbrowser.open`` is best-effort across platforms; a
         # headless box without a browser silently no-ops, which is the
         # right behaviour. CI runs always pass ``--no-open``. The
         # platform surface is a grab-bag (XDG/Win32/Apple Events) so
         # we suppress any exception rather than guess the union shape.
         with contextlib.suppress(Exception):
-            webbrowser.open(url)
+            webbrowser.open(open_url)
 
     # uvicorn binds and serves until interrupted. Log level intentionally
     # ``warning`` to keep stderr quiet — the sidecar boot message above

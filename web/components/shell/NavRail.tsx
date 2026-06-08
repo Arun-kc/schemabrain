@@ -10,7 +10,7 @@ import { NAV, isNavItemActive } from "./nav";
 /**
  * Shell navigation rail (handoff app/shell.jsx `NavRail`).
  *
- * Renders all eight surfaces for layout fidelity. Built surfaces are
+ * Renders all nine surfaces for layout fidelity. Built surfaces are
  * live `next/link`s (soft navigation keeps the shell mounted — ADR
  * 0005); not-yet-built surfaces render disabled (dimmed, non-focusable,
  * no dead 404 link, no fabricated badge). The active link carries
