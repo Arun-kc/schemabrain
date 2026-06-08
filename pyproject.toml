@@ -47,7 +47,7 @@ dependencies = [
     # contract durable: a future upstream drop can't silently break
     # the entity loader. Same pin previously held in dev-deps for
     # `tests/test_dependabot_config.py`; now lifted to runtime.
-    "pyyaml>=6.0,<7.0",
+    "pyyaml>=6.0.3,<7.0",
 ]
 
 [project.optional-dependencies]
