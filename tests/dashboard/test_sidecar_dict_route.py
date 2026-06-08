@@ -135,4 +135,4 @@ def test_dict_route_carries_dashboard_schema_header(dict_client: TestClient) -> 
     from schemabrain.datadict.demo_store import SOURCE_ID
 
     response = dict_client.get("/api/dict", params={"source_connection_id": SOURCE_ID})
-    assert response.headers["X-Schemabrain-Dashboard-Schema"] == "1.9"
+    assert response.headers["X-Schemabrain-Dashboard-Schema"] == "1.10"

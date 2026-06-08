@@ -3,12 +3,12 @@ import type { IconName } from "@/components/kit";
 /**
  * Shell navigation model (handoff app/shell.jsx `NAV`).
  *
- * Eight app surfaces across three groups. `built` gates whether the item
- * is a live link in THIS release — graph/entities/dict/policy/drift land
- * in later PRs, so they render disabled (dimmed, non-navigable, no dead
- * 404 link) until their route exists. Each surface PR flips its own
- * item's `built` to true. The marketing landing (`/`) is intentionally
- * NOT in this rail — it has its own top nav.
+ * Nine app surfaces across four groups (Home / Explore / Trust / Health).
+ * `built` gates whether the item is a live link in THIS release — it renders
+ * disabled (dimmed, non-navigable, no dead 404 link) until its route exists.
+ * Each surface PR flips its own item's `built` to true. The marketing landing
+ * (`/`) is intentionally NOT in this rail — it has its own top nav; the
+ * dashboard's own home is Overview (`/overview`).
  */
 export interface NavItem {
   /** Route key, also the active-match segment (e.g. "pii" ⇒ /pii). */
@@ -26,6 +26,12 @@ export interface NavGroup {
 }
 
 export const NAV: readonly NavGroup[] = [
+  {
+    title: "Home",
+    items: [
+      { id: "overview", href: "/overview", label: "Overview", icon: "layout-dashboard", built: true },
+    ],
+  },
   {
     title: "Explore",
     items: [

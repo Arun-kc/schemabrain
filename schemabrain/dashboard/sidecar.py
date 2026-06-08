@@ -297,6 +297,7 @@ def create_sidecar(config: SidecarConfig) -> FastAPI:
     _register_drift_route(app, config)
     _register_graph_route(app, config)
     _register_dict_route(app, config)
+    _register_overview_route(app, config)
     _register_stream_route(app, config)
 
     has_static_export = STATIC_DIR.exists() and any(
@@ -1828,6 +1829,221 @@ def _register_dict_route(app: FastAPI, config: SidecarConfig) -> None:
             safe_source = _credential_safe_source_label(resolved_source)
             model = build_dictionary(store=store, source_connection_id=safe_source)
         return dictionary_model_to_json(model)
+
+
+def _register_overview_route(app: FastAPI, config: SidecarConfig) -> None:
+    """GET /api/overview — read-only system-status summary for the home surface.
+
+    One server-computed aggregate behind the Overview ("home") surface: the
+    same honest, store-only signals the per-surface routes expose, rolled
+    into a single read so the home page renders the whole boundary in one
+    round trip. Every figure is derived LIVE from persisted state — the
+    design prototype's hardcoded totals / literal timestamps / always-stale
+    pill are replaced by real store queries; an absent value surfaces as
+    ``null`` so the UI renders "—" rather than a fabricated 0.
+
+    Read-only: opens the store + audit log read-only (``PRAGMA query_only``)
+    and writes nothing. Every store query uses the credential-safe ``safe_source``
+    (a URL-shaped override is hashed to its canonical id before it reaches any
+    query or the response — a raw connection URL carries the DB password).
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from schemabrain.core.store import SQLiteStore
+    from schemabrain.enrichment.prompts import PROMPT_VERSION
+    from schemabrain.pii.categories import CATASTROPHIC_LEAK_CATEGORIES
+    from schemabrain.pii.policy_yaml import PolicyYamlError, parse_policy_yaml_file
+
+    def _active_block() -> frozenset[Any]:
+        """The operator's active policy block, or the catastrophic floor when
+        no YAML exists — identical resolution to the policy route's
+        ``_load_active_block`` so the posture tally can never diverge."""
+        if not DEFAULT_POLICY_YAML_PATH.exists():
+            return CATASTROPHIC_LEAK_CATEGORIES
+        try:
+            return parse_policy_yaml_file(DEFAULT_POLICY_YAML_PATH).block
+        except PolicyYamlError:
+            return CATASTROPHIC_LEAK_CATEGORIES
+
+    def _iso_to_epoch(value: str | None) -> float | None:
+        """``mcp_audit.occurred_at`` is ISO-8601 UTC TEXT (trailing Z); the UI
+        formats epoch seconds via ``relativeTime`` — normalise here. None-safe;
+        returns null on a malformed row rather than fabricating a time."""
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:  # pragma: no cover - defensive against a malformed row
+            return None
+
+    @app.get("/api/overview")
+    def overview(source_connection_id: str | None = None) -> dict[str, Any]:
+        active_block = _active_block()
+
+        with SQLiteStore(config.store_path) as store:
+            resolved_source = _resolve_source(store, config, source_connection_id)
+            # Hash a URL-shaped override to its canonical id BEFORE it reaches
+            # any query or the response — a raw connection URL carries the DB
+            # password and must never be echoed. The store persists hashed ids,
+            # so every query below uses safe_source (a no-op for an already-
+            # hashed override; correct for a URL one).
+            safe_source = _credential_safe_source_label(resolved_source)
+
+            # --- bound entities: count, catastrophic, by-group, confidence ---
+            entities = store.list_entities(source_connection_id=safe_source)
+            by_group = {"identity": 0, "billing": 0, "activity": 0, "other": 0}
+            confidence = {"high": 0, "medium": 0, "low": 0, "unrated": 0}
+            catastrophic_entities = 0
+            for entity in entities:
+                group = entity.group if entity.group in by_group else "other"
+                by_group[group] += 1
+                band = entity.bind_confidence
+                confidence[band if band in confidence else "unrated"] += 1
+                if (
+                    _entity_pii_level(
+                        store,
+                        entity,
+                        source_connection_id=safe_source,
+                        catastrophic_categories=CATASTROPHIC_LEAK_CATEGORIES,
+                    )
+                    == "catastrophic"
+                ):
+                    catastrophic_entities += 1
+
+            # --- protection posture: per-column severity partition (Option A) ---
+            # catastrophic = carries a catastrophic-floor category (always
+            # hard-blocked at every read gate — the lead number + the `--alarm`
+            # segment); policy_blocked = blocked by the operator's active policy
+            # but NOT catastrophic; allowed = neither. This is a severity-FIRST
+            # partition for the home card (catastrophic always wins), which is
+            # deliberately NOT the policy route's attribution verdict (that one
+            # is operator-block-first, so a catastrophic column the operator
+            # also lists reads as "blocked" there, "catastrophic" here). Same
+            # underlying enforcement state; `--alarm` lands only on the
+            # genuinely catastrophic share, never decoratively.
+            posture = {"catastrophic": 0, "policy_blocked": 0, "allowed": 0}
+            for _qt, _col, _sens, cats, _origin in store.list_column_pii_tags_with_origin(
+                source_connection_id=safe_source
+            ):
+                if cats & CATASTROPHIC_LEAK_CATEGORIES:
+                    posture["catastrophic"] += 1
+                elif cats & active_block:
+                    posture["policy_blocked"] += 1
+                else:
+                    posture["allowed"] += 1
+            posture["columns"] = (
+                posture["catastrophic"] + posture["policy_blocked"] + posture["allowed"]
+            )
+
+            # --- semantic layer: metrics + canonical joins + log-mined edges ---
+            metrics = store.list_metrics(source_connection_id=safe_source)
+            joins = store.list_canonical_joins(source_connection_id=safe_source)
+            mined_count = sum(
+                1
+                for edge in store.list_graph_edges(source_connection_id=safe_source)
+                if edge.edge_origin == "log_mined"
+            )
+
+            # --- freshness: the SAME two drift kinds /api/drift reports ---
+            last_enriched = store.latest_enriched_at(source_connection_id=safe_source)
+            enrichment_stale = store.has_stale_prompt_version(
+                source_connection_id=safe_source,
+                current_prompt_version=PROMPT_VERSION,
+            )
+            indexed_by_source = {
+                summary.source_connection_id: (summary.last_indexed_at, summary.table_count)
+                for summary in store.summarize_sources()
+            }
+
+        risk = {"high": 0, "med": 0, "low": 0}
+        drift_count = 0
+        # config drift (policy YAML edited since serve) is global, not per-source
+        if _compute_policy_drift(DEFAULT_POLICY_YAML_PATH)["detected"]:
+            drift_count += 1
+            risk["med"] += 1
+        if enrichment_stale:
+            drift_count += 1
+            risk["med"] += 1
+
+        # --- audit: total tool calls + 24h refusals + recent rows ---
+        # occurred_at is ISO-8601 UTC TEXT; build the cutoff in the SAME
+        # microsecond-precision-with-Z shape the writer persists so the
+        # lexicographic comparison is an exact chronological one.
+        cutoff = (datetime.now(tz=UTC) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        with _open_audit_conn(config) as conn:
+            audit_total = _count_audit_rows(conn, after_id=None, status_filter=None)
+            refusals_24h = int(
+                conn.execute(
+                    "SELECT count(*) AS c FROM mcp_audit "  # nosec B608 - static SQL, bound param
+                    "WHERE status = 'refused' AND occurred_at >= ?",
+                    (cutoff,),
+                ).fetchone()["c"]
+            )
+            recent_refusals = _select_audit_rows(
+                conn, limit=3, offset=0, after_id=None, status_filter="refused"
+            )
+            recent_rows = _select_audit_rows(
+                conn, limit=2, offset=0, after_id=None, status_filter=None
+            )
+
+        last_indexed, table_count = indexed_by_source.get(safe_source, (None, None))
+        return {
+            "source_connection_id": safe_source,
+            "source": {
+                "label": safe_source,
+                "tables": table_count,
+                "last_indexed_at": last_indexed,
+            },
+            "entities": {
+                "count": len(entities),
+                "catastrophic_count": catastrophic_entities,
+                "by_group": by_group,
+                "confidence": confidence,
+            },
+            "protection": posture,
+            "freshness": {
+                "fresh": drift_count == 0,
+                "change_count": drift_count,
+                "risk": risk,
+                "last_enriched": last_enriched,
+            },
+            "refusals": {
+                "count_24h": refusals_24h,
+                "recent": [
+                    {
+                        "tool": row["tool_name"],
+                        "category": (
+                            row["pii_categories"].split(",")[0] if row["pii_categories"] else None
+                        ),
+                        "occurred_at": _iso_to_epoch(row["occurred_at"]),
+                    }
+                    for row in recent_refusals
+                ],
+            },
+            "audit": {
+                "total": audit_total,
+                "recent": [
+                    {
+                        "tool": row["tool_name"],
+                        "seq": row["id"],
+                        "refused": row["status"] == "refused",
+                        # Honest derived summary from structured columns — the
+                        # full request text is never persisted (privacy-by-
+                        # construction); a refusal shows its reason, otherwise
+                        # the status verb. Never the agent's prompt.
+                        "summary": (row["refusal_reason"] or row["status"]),
+                        "occurred_at": _iso_to_epoch(row["occurred_at"]),
+                    }
+                    for row in recent_rows
+                ],
+            },
+            "semantic": {
+                "metrics_count": len(metrics),
+                "joins_count": len(joins),
+                "mined_count": mined_count,
+                "metric_names": [metric.name for metric in metrics],
+            },
+        }
 
 
 def _register_stream_route(app: FastAPI, config: SidecarConfig) -> None:

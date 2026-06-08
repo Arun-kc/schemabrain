@@ -55,6 +55,10 @@ export default defineConfig({
         // renders, so it is covered by the Playwright dict spec (PR-21), not
         // this unit gate.
         "lib/dict/**/*.ts",
+        // Pure Overview stat helpers (percentage / scaling / is-rated). The
+        // Overview component itself fetches + renders, so it is covered by the
+        // Playwright overview spec, not this unit gate.
+        "lib/overview/**/*.ts",
       ],
       exclude: ["**/index.ts"],
       reporter: ["text", "html"],

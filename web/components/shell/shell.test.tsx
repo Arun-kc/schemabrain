@@ -108,11 +108,12 @@ describe("nav model", () => {
     expect(isNavItemActive(item, "/audit")).toBe(false);
   });
 
-  it("ships all eight handoff surfaces, every one built", () => {
+  it("ships all nine handoff surfaces, every one built", () => {
+    const surfaces = ["overview", "graph", "entities", "dict", "pii", "refusals", "audit", "policy", "drift"];
     const ids = NAV.flatMap((g) => g.items.map((i) => i.id));
-    expect(ids).toEqual(["graph", "entities", "dict", "pii", "refusals", "audit", "policy", "drift"]);
+    expect(ids).toEqual(surfaces);
     const built = NAV.flatMap((g) => g.items).filter((i) => i.built).map((i) => i.id);
-    expect(built).toEqual(["graph", "entities", "dict", "pii", "refusals", "audit", "policy", "drift"]);
+    expect(built).toEqual(surfaces);
   });
 });
 

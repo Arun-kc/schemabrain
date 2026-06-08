@@ -13,6 +13,7 @@ import type {
   MerkleProofResponse,
   MerkleRootResponse,
   Meta,
+  OverviewResponse,
   PaginatedAuditResponse,
   PiiMatrixResponse,
   PolicyPreviewResponse,
@@ -90,6 +91,14 @@ export const api = {
   dict: (sourceId?: string) => {
     const qs = sourceId ? `?source_connection_id=${encodeURIComponent(sourceId)}` : "";
     return getJson<DictionaryModel>(`/api/dict${qs}`);
+  },
+
+  /** Server-computed system-status summary for the Overview ("home")
+   * surface — the whole boundary (entities, protection posture, freshness,
+   * refusals, audit, semantic layer) in one read (dashboard 1.10). */
+  overview: (sourceId?: string) => {
+    const qs = sourceId ? `?source_connection_id=${encodeURIComponent(sourceId)}` : "";
+    return getJson<OverviewResponse>(`/api/overview${qs}`);
   },
 
   /**

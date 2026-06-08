@@ -59,7 +59,14 @@ from pathlib import Path
 # SAME `build_dictionary` aggregator the `schemabrain docs` CLI renders, so
 # the Data Dictionary surface and its client-side Markdown export stay
 # byte-for-byte aligned with the committed CLI golden.
-DASHBOARD_SCHEMA_VERSION = "1.9"
+# 1.10 adds the read-only `GET /api/overview` route — a single server-computed
+# system-status summary behind the Overview ("home") surface. It rolls the
+# honest, store-only signals the per-surface routes already expose (bound
+# entities by group + confidence band, the per-column protection verdict
+# reused from `/api/pii/policy`, drift freshness, 24h refusals, audit totals,
+# semantic-layer counts) into one read so the home page renders in a single
+# round trip. Every figure is derived live; absent values surface as null.
+DASHBOARD_SCHEMA_VERSION = "1.10"
 
 # Directory holding the static Next.js export. Populated at wheel-build
 # time by the ``web/`` workspace's ``pnpm build`` output. At install
