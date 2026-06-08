@@ -495,9 +495,11 @@ def index(
     return result
 
 
-# Measured anchor for per-column LLM cost on Haiku 4.5 with the current
-# enrichment prompt (PROMPT_VERSION 2026-05-11-1). Two real-world
-# samples produced near-identical per-column costs:
+# Measured anchor for per-column LLM cost on Haiku 4.5, taken at
+# PROMPT_VERSION 2026-05-11-1. (The 2026-06-08-1 PII sample-gate only
+# drops sample-value lines for classifier-flagged columns, so the real
+# per-column cost is unchanged or slightly lower than this anchor.) Two
+# real-world samples produced near-identical per-column costs:
 #   - ecommerce fixture: $0.0074 / 24 cols = $0.000308/col
 #   - Pagila (partition-filtered): $0.0299 / 87 cols = $0.000344/col
 # Rounded to one significant figure both for honest "approximate"

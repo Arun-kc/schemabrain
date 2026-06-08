@@ -66,7 +66,7 @@ The full version with code citations is at [`docs/threat-model.md`](threat-model
 | Threat | Mitigation |
 |---|---|
 | Column comment overrides the enrichment system prompt | Structured JSON delimiters; descriptions are data, not code; operator can re-run `index` to overwrite |
-| Sample value contains exfiltration payload | PII-shaped values (email / SSN / credit card) redacted before reaching the prompt; generic injection payloads survive (this is a PII filter, not an injection filter) |
+| Sample value contains exfiltration payload | Two layers: email / SSN / credit-card-shaped values are redacted in place before samples reach the store, and both sample values and their shape signatures are dropped *entirely* from the enrichment prompt for any column the name-based PII classifier flags (so names, addresses, phones, and non-US IDs whose **column name** signals PII never reach the prompt). Residual gaps: free-text columns with generic names (`notes`, `bio`) classify public, and generic non-PII injection payloads in a public column's samples still survive (this is a PII filter, not an injection filter) |
 | Adversarial column name biases the LLM | Defense-in-depth via the system prompt's structured output requirement |
 
 **Residual risk:** an adversary controlling column comments can probably bias enrichment description tone. Blast radius bounded by what free-text English can express.
