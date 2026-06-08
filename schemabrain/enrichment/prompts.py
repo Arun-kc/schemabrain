@@ -20,6 +20,7 @@ raw text to redact in the first place).
 from __future__ import annotations
 
 from schemabrain.core.models import Column, Table
+from schemabrain.pii.classifier import classify_column
 from schemabrain.profiler.stats import ColumnStats
 
 # Bump on ANY change that should re-enrich every cached column.
@@ -27,7 +28,7 @@ from schemabrain.profiler.stats import ColumnStats
 # date-stamp lets a future debugger reconstruct "what prompt was in use
 # when these cached fingerprints were stamped" without checking out an
 # old commit. Tests treat this as a load-bearing constant.
-PROMPT_VERSION = "2026-05-11-1"
+PROMPT_VERSION = "2026-06-08-1"
 
 SYSTEM_PROMPT = """\
 You are a data engineer documenting columns in a relational database for an AI agent.
@@ -69,13 +70,19 @@ def column_description_user_prompt(
     `stats` is `None` or when the relevant tuple is empty (avoids
     emitting empty `Sample values: ` lines that confuse the model).
 
-    **TRUST BOUNDARY:** `stats.sample_values` and `stats.shape_patterns`
-    are sent to the LLM verbatim. The contract is that the profiler
-    (`schemabrain.profiler.postgres.PostgresProfiler`) has already run
-    PII redaction (email/SSN/CC) before populating `ColumnStats`. If a
-    custom profiler ever returns un-redacted PII in `sample_values`, it
-    will reach Anthropic. Do not change the profiler contract without
-    re-evaluating this assumption.
+    **TRUST BOUNDARY:** profiled-value-derived lines — both
+    `stats.sample_values` and `stats.shape_patterns` — are emitted ONLY
+    for columns the name-based PII classifier marks `public`. The
+    profiler's value-level redaction covers email/SSN/CC, but names,
+    addresses, phone numbers, and non-US national IDs slip past it, so any
+    column `classify_column` flags as `pii` has BOTH lines dropped here,
+    before the prompt is sent. (Shape signatures are masked but pass
+    non-ASCII characters through verbatim, so they are withheld for PII
+    columns too rather than relied on as content-free.) The classifier is
+    name-driven, so the gate needs no profiled value to make its call.
+    This closes the gap for columns whose NAME signals PII; a free-text
+    column with a generic name (`bio`, `notes`) is a residual gap — the
+    v1 classifier is name-based by design.
     """
     siblings = [c for c in table.columns if c.name != column.name][:_SIBLING_LIMIT]
 
@@ -100,8 +107,23 @@ def column_description_user_prompt(
         parts.append(f"Total rows: {stats.total_rows}")
         parts.append(f"Null %: {stats.null_pct:.1%}")
         parts.append(f"Distinct values: {stats.distinct_count}")
-        if stats.sample_values:
+        # PII gate (see TRUST BOUNDARY above). `classify_column` decides
+        # from the column NAME alone, so no profiled value is needed to
+        # withhold one. Both profiled-value-derived lines — the raw samples
+        # AND their shape signatures (which pass non-ASCII characters
+        # through verbatim) — are emitted ONLY for columns the classifier
+        # marks `public`. The `== "public"` allowlist (not `!= "pii"`)
+        # means a future `internal`/`confidential` sensitivity withholds
+        # rather than leaks.
+        sensitivity, _categories = classify_column(
+            column.name,
+            column.data_type,
+            is_primary_key=column.is_primary_key,
+            table_name=table.name,
+        )
+        column_is_public = sensitivity == "public"
+        if stats.sample_values and column_is_public:
             parts.append(f"Sample values: {' | '.join(stats.sample_values)}")
-        if stats.shape_patterns:
+        if stats.shape_patterns and column_is_public:
             parts.append(f"Shape patterns: {', '.join(stats.shape_patterns)}")
     return "\n".join(parts)

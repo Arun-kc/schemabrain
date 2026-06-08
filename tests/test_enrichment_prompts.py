@@ -78,7 +78,7 @@ class TestPromptVersion:
     def test_locked_value(self) -> None:
         # Changing this string is a deliberate cache-invalidation event.
         # Bumping it must be paired with a prompt change (or vice versa).
-        assert PROMPT_VERSION == "2026-05-11-1"
+        assert PROMPT_VERSION == "2026-06-08-1"
 
     def test_format_is_date_stamped(self) -> None:
         # Format: `YYYY-MM-DD-N`. Locks the convention so future bumps
@@ -207,24 +207,25 @@ class TestColumnDescriptionUserPrompt:
         assert "email (" not in sibling_line
 
     def test_includes_stats_when_provided(self) -> None:
+        # Public column → every stats line is emitted, samples included.
         stats = ColumnStats(
-            column_name="email",
+            column_name="created_at",
             total_rows=100,
             null_count=10,
             distinct_count=85,
-            sample_values=("<EMAIL>",),
-            shape_patterns=("aaa@aaaa.aa",),
+            sample_values=("2026-01-01", "2026-02-02"),
+            shape_patterns=("9999-99-99",),
         )
         rendered = column_description_user_prompt(
             table=_users_table(),
-            column=_column("email"),
+            column=_column("created_at", data_type="TIMESTAMP"),
             stats=stats,
             fk_targets=(),
         )
         assert "100" in rendered
         assert "85" in rendered
-        assert "<EMAIL>" in rendered
-        assert "aaa@aaaa.aa" in rendered
+        assert "Sample values: 2026-01-01 | 2026-02-02" in rendered
+        assert "9999-99-99" in rendered
 
     def test_omits_sample_lines_when_no_samples(self) -> None:
         # A column profiled but with zero non-null rows produces empty
@@ -246,11 +247,14 @@ class TestColumnDescriptionUserPrompt:
         assert "Sample values" not in rendered
         assert "Shape patterns" not in rendered
 
-    def test_does_not_re_redact_already_redacted_samples(self) -> None:
-        # Profiler already redacts; this function must trust the input
-        # and pass redacted samples through verbatim.
+    def test_public_column_passes_redacted_samples_verbatim(self) -> None:
+        # On the path where samples ARE sent (a public column), the profiler
+        # has already redacted email/SSN/CC in place; this function trusts
+        # that and passes the sentinel through verbatim — it neither
+        # re-redacts nor re-expands. (PII columns are gated entirely; see
+        # TestPiiSampleGate.)
         stats = ColumnStats(
-            column_name="ssn",
+            column_name="created_at",
             total_rows=5,
             null_count=0,
             distinct_count=5,
@@ -258,7 +262,7 @@ class TestColumnDescriptionUserPrompt:
         )
         rendered = column_description_user_prompt(
             table=_users_table(),
-            column=_column("ssn"),
+            column=_column("created_at", data_type="TIMESTAMP"),
             stats=stats,
             fk_targets=(),
         )
@@ -284,10 +288,12 @@ class TestColumnDescriptionUserPrompt:
         second = column_description_user_prompt(**args)
         assert first == second
 
-    def test_golden_locks_full_format(self) -> None:
-        # Locks the exact rendered prompt for a known input. If the
-        # template changes, this fails — and PROMPT_VERSION must be
-        # bumped in the same change.
+    def test_golden_pii_column_omits_profiled_value_lines(self) -> None:
+        # Locks the exact rendered prompt for a PII column: BOTH the
+        # sample-value line and the shape-pattern line are absent (gated),
+        # so the profiler signal stops at distinct/null counts. If the
+        # template changes, this fails — and PROMPT_VERSION must be bumped
+        # in the same change.
         rendered = column_description_user_prompt(
             table=_users_table(),
             column=Column(
@@ -320,11 +326,123 @@ class TestColumnDescriptionUserPrompt:
             "Sibling columns: id (BIGINT), created_at (TIMESTAMP)\n"
             "Total rows: 100\n"
             "Null %: 10.0%\n"
-            "Distinct values: 85\n"
-            "Sample values: <EMAIL>\n"
-            "Shape patterns: aaa@aaaa.aa"
+            "Distinct values: 85"
         )
         assert rendered == expected
+
+    def test_golden_public_column_includes_sample_line(self) -> None:
+        # The public path locks the full format WITH the sample-value line.
+        rendered = column_description_user_prompt(
+            table=_users_table(),
+            column=Column(
+                name="created_at",
+                table_name="users",
+                schema_name="public",
+                data_type="TIMESTAMP",
+                nullable=False,
+                ordinal_position=3,
+                default=None,
+                is_primary_key=False,
+            ),
+            stats=ColumnStats(
+                column_name="created_at",
+                total_rows=100,
+                null_count=10,
+                distinct_count=85,
+                sample_values=("2026-01-01", "2026-02-02"),
+                shape_patterns=("9999-99-99",),
+            ),
+            fk_targets=(),
+        )
+        expected = (
+            "Table: public.users\n"
+            "Column: created_at\n"
+            "Type: TIMESTAMP\n"
+            "Nullable: False\n"
+            "Primary key: False\n"
+            "Sibling columns: id (BIGINT), email (TEXT)\n"
+            "Total rows: 100\n"
+            "Null %: 10.0%\n"
+            "Distinct values: 85\n"
+            "Sample values: 2026-01-01 | 2026-02-02\n"
+            "Shape patterns: 9999-99-99"
+        )
+        assert rendered == expected
+
+
+class TestPiiSampleGate:
+    """Sample values are withheld from the LLM prompt for any column the
+    name-based PII classifier flags.
+
+    The profiler's value-level redaction only catches email/SSN/CC; raw
+    names, addresses, phone numbers, non-US national IDs, and free text
+    sail through it. This gate closes that egress by classifying the
+    column NAME (which is enough — `classify_column` is name-driven) and
+    dropping the sample-value line entirely when it is PII. Masked shape
+    patterns still go through: they are structural signatures (`Aaaa 999`),
+    not raw cell content.
+    """
+
+    def _named(self, column_name: str, *, samples: tuple[str, ...]) -> ColumnStats:
+        return ColumnStats(
+            column_name=column_name,
+            total_rows=100,
+            null_count=0,
+            distinct_count=100,
+            sample_values=samples,
+            shape_patterns=("Aaaa Aaaaa",),
+        )
+
+    def test_contact_pii_column_omits_sample_values(self) -> None:
+        # `full_name` is contact PII; the raw names the email/SSN/CC
+        # redactor never touches must not reach the prompt.
+        rendered = column_description_user_prompt(
+            table=_users_table(),
+            column=_column("full_name"),
+            stats=self._named("full_name", samples=("Jane Doe", "John Smith")),
+            fk_targets=(),
+        )
+        assert "Sample values" not in rendered
+        assert "Jane Doe" not in rendered
+        assert "John Smith" not in rendered
+
+    def test_catastrophic_column_omits_sample_values(self) -> None:
+        rendered = column_description_user_prompt(
+            table=_users_table(),
+            column=_column("password"),
+            stats=self._named("password", samples=("hunter2", "correct-horse")),
+            fk_targets=(),
+        )
+        assert "Sample values" not in rendered
+        assert "hunter2" not in rendered
+
+    def test_pii_column_also_omits_shape_patterns(self) -> None:
+        # Shape signatures are derived from cell content and pass non-ASCII
+        # through verbatim, so they are withheld for PII columns too — no
+        # profiled-value-derived line survives the gate.
+        rendered = column_description_user_prompt(
+            table=_users_table(),
+            column=_column("full_name"),
+            stats=self._named("full_name", samples=("Jane Doe",)),
+            fk_targets=(),
+        )
+        assert "Shape patterns" not in rendered
+
+    def test_public_column_keeps_sample_values(self) -> None:
+        # The gate is targeted: a column no rule matches keeps its samples.
+        rendered = column_description_user_prompt(
+            table=_users_table(),
+            column=_column("created_at", data_type="TIMESTAMP"),
+            stats=ColumnStats(
+                column_name="created_at",
+                total_rows=100,
+                null_count=0,
+                distinct_count=100,
+                sample_values=("2026-01-01", "2026-02-02"),
+            ),
+            fk_targets=(),
+        )
+        assert "Sample values: 2026-01-01 | 2026-02-02" in rendered
 
 
 def _junction_table() -> Table:

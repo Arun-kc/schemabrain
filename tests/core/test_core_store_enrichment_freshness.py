@@ -25,7 +25,7 @@ from schemabrain.core.store import SQLiteStore
 
 SOURCE_A = "src_a"
 SOURCE_B = "src_b"
-LIVE_PROMPT = "2026-05-11-1"
+LIVE_PROMPT = "2026-06-08-1"
 
 
 def _table(name: str) -> Table:
