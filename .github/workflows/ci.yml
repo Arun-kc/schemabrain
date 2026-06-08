@@ -364,10 +364,10 @@ jobs:
 
       - name: Set up pnpm
         if: steps.filter.outputs.dashboard == 'true'
-        # Pinned to v4 (immutable major); pnpm version comes from
+        # Pinned to v6 (immutable major); pnpm version comes from
         # `web/package.json` engines.pnpm (>=9). Keep this in sync with
         # the engines field if it ever bumps.
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 9
 
@@ -400,7 +400,7 @@ jobs:
       - name: Cache Playwright browsers
         if: steps.filter.outputs.dashboard == 'true'
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           # Browser binaries live under ~/.cache/ms-playwright; cache
           # key is bound to the Playwright version so a bump
