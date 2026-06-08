@@ -6,15 +6,15 @@ report a vulnerability, what to expect in response, and what is in scope.
 
 ## Supported Versions
 
-SchemaBrain is in pre-1.0 (current line: `0.4.x`). Only the latest
+SchemaBrain is in pre-1.0 (current line: `0.5.x`). Only the latest
 minor and the `main` branch receive security fixes today. When 1.0 ships,
 this table will list the supported minor versions.
 
 | Version          | Supported          |
 | ---------------- | ------------------ |
 | `main` (HEAD)    | :white_check_mark: |
-| Latest `0.4.x`   | :white_check_mark: |
-| `0.3.x` and older| :x:                |
+| Latest `0.5.x`   | :white_check_mark: |
+| `0.4.x` and older| :x:                |
 
 ## Reporting a Vulnerability
 
@@ -64,7 +64,7 @@ not currently offer a bug bounty.
 
 ## In Scope
 
-- The published PyPI package (`schemabrain`) on the latest alpha and the
+- The published PyPI package (`schemabrain`) on the latest release and the
   `main` branch
 - The MCP server surface (`schemabrain serve`), including all exposed
   tools
