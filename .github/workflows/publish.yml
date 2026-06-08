@@ -123,7 +123,14 @@ jobs:
             echo "$listing" | grep -q "schemabrain/dashboard/static/$route.html" \
               || { echo "BLOCKED: wheel missing dashboard surface route '$route.html' (partial export)"; exit 1; }
           done
-          echo "OK: dashboard bundled — index.html + graph/entities/pii/audit/refusals/policy/drift routes + $next_count _next assets"
+          # CSP hash manifest (issue #185) — the sidecar reads this to build a
+          # hash-pinned script-src. If it is MISSING from the wheel, the sidecar
+          # silently falls back to strict `script-src 'self'`, which refuses
+          # every inline bootstrap script and breaks the dashboard at runtime.
+          # `pnpm run export` writes it via scripts/inject-csp-hashes.mjs.
+          echo "$listing" | grep -q "schemabrain/dashboard/static/csp-script-hashes.json" \
+            || { echo "BLOCKED: wheel missing csp-script-hashes.json (CSP script-src would break the dashboard at runtime)"; exit 1; }
+          echo "OK: dashboard bundled — index.html + graph/entities/pii/audit/refusals/policy/drift routes + csp-script-hashes.json + $next_count _next assets"
 
       - name: Show built artifacts
         run: ls -la dist/

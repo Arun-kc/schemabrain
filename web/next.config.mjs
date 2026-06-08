@@ -28,10 +28,17 @@ const nextConfig = {
       },
     ];
   },
-  // No CSP nonce config here: a static export has no server runtime to
-  // mint per-request nonces, so the sidecar's CSP uses 'unsafe-inline'
-  // for the inline scripts/styles Next emits (see
-  // schemabrain/dashboard/sidecar.py CONTENT_SECURITY_POLICY).
+  // Deterministic build id (issue #185). A static export has no server
+  // runtime to mint per-request CSP nonces, so the sidecar hash-pins
+  // script-src instead (see web/scripts/inject-csp-hashes.mjs +
+  // schemabrain/dashboard/sidecar.py build_content_security_policy). The
+  // ONLY inline-script bytes that vary build-to-build are Next's random
+  // build id, which surfaces in the RSC-flight payload as `"b":"<id>"`.
+  // Pinning it to a fixed value makes every inline <script> byte-stable,
+  // so the same source produces the same hashes across builds. (style-src
+  // still allows 'unsafe-inline' — React inline style="" attrs fall under
+  // style-src-attr, which hashes can't cover; out of scope for #185.)
+  generateBuildId: () => "schemabrain",
 };
 
 export default nextConfig;

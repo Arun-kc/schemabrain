@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import json
+import re
 import sqlite3
 import time
 from collections.abc import Iterable
@@ -68,7 +69,9 @@ DEFAULT_PORT: int = 7878
 CHARTER_VERSION_HEADER: str = "X-Schemabrain-Charter-Version"
 
 # Content-Security-Policy for the static dashboard, served on EVERY
-# response (JSON, SSE, and the static export bytes).
+# response (JSON, SSE, and the static export bytes). The CSP is assembled
+# per-app by ``build_content_security_policy`` because ``script-src`` is
+# hash-pinned from a build-time manifest, not a fixed string.
 #
 #  - default-src 'self': nothing loads cross-origin by default.
 #  - connect-src 'self': permits the same-origin SSE stream
@@ -76,42 +79,110 @@ CHARTER_VERSION_HEADER: str = "X-Schemabrain-Charter-Version"
 #    a third-party origin.
 #  - font-src 'self': the woff2 faces are self-hosted under _next/.
 #  - img-src 'self' data:: inline SVG/data-URI assets the export emits.
-#  - script-src / style-src include 'unsafe-inline' deliberately. A
+#  - script-src is HASH-pinned (issue #185), never 'unsafe-inline'. A
 #    Next.js `output: export` build emits inline bootstrap + RSC-flight
-#    <script> tags plus the pre-hydration theme <script>, and there is
-#    no server runtime to mint a per-request nonce (nonces need a
-#    server; the sidecar serves verbatim bytes). A hash-based CSP IS
-#    reachable but deferred: of the inline scripts only the RSC-flight
-#    payload varies build-to-build, and only by the random Next build
-#    id — pinning `generateBuildId` + a post-export hash-injection step
-#    would let script-src drop 'unsafe-inline'. style-src is harder:
-#    React inline style="" attributes fall under style-src-attr, which
-#    hashes cannot cover, so they'd have to move to classes first. Until
-#    that follow-up, 'unsafe-inline' is the pragmatic choice and the
-#    residual XSS risk is bounded by the localhost-only bind, the
-#    read-only route table, React's default escaping, and the absence of
-#    any user-authored HTML. object-src 'none' + base-uri 'self' +
-#    frame-ancestors 'none' keep the high-value sinks closed regardless.
-CONTENT_SECURITY_POLICY: str = "; ".join(
-    [
-        "default-src 'self'",
-        "base-uri 'self'",
-        "object-src 'none'",
-        "frame-ancestors 'none'",
-        "img-src 'self' data:",
-        "font-src 'self'",
-        "style-src 'self' 'unsafe-inline'",
-        "script-src 'self' 'unsafe-inline'",
-        "connect-src 'self'",
-        "form-action 'self'",
-    ]
+#    <script> tags plus the pre-hydration theme <script>, and there is no
+#    server runtime to mint a per-request nonce (nonces need a server;
+#    the sidecar serves verbatim bytes). Instead, the `pnpm run export`
+#    step extracts each inline script's sha256 into a manifest
+#    (`csp-script-hashes.json`) that ships in the static dir; the sidecar
+#    reads it and lists `script-src 'self' '<hash>'…`. A pinned
+#    `generateBuildId` (web/next.config.mjs) keeps those bytes — and thus
+#    the hashes — deterministic across builds. When the manifest is
+#    absent (contributor dev, empty static) script-src collapses to a
+#    strict `'self'`: a missing manifest fails CLOSED, never open.
+#  - style-src KEEPS 'unsafe-inline' deliberately and separately. React
+#    emits inline style="" attributes governed by style-src-attr, which
+#    CSP hashes cannot cover; dropping it would require moving those to
+#    classes first (tracked separately, out of scope for #185). object-src
+#    'none' + base-uri 'self' + frame-ancestors 'none' keep the high-value
+#    sinks closed regardless; the residual risk is further bounded by the
+#    localhost-only bind, the read-only route table, React's default
+#    escaping, and the absence of any user-authored HTML.
+#
+# All CSP directives EXCEPT script-src (which is computed from the
+# build-time hash manifest). Kept as an ordered tuple so the assembled
+# CSP is byte-stable for the same manifest.
+_CSP_BASE_DIRECTIVES: tuple[str, ...] = (
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "connect-src 'self'",
+    "form-action 'self'",
 )
 
-# Static, request-independent hardening headers applied to every
-# response alongside the CSP. No HSTS: the sidecar serves plain HTTP on
-# 127.0.0.1 with no TLS, so HSTS would be meaningless (and wrong) here.
+# Build-time inline-script hash manifest the `pnpm run export` step writes
+# into the static dir. A JSON array of `sha256-<base64>` strings — the
+# deduped union of every inline <script> block across the exported HTML.
+# Gitignored (built at release); the sidecar reads it to hash-pin
+# script-src. See web/scripts/inject-csp-hashes.mjs.
+CSP_SCRIPT_HASHES_FILENAME: str = "csp-script-hashes.json"
+
+# A well-formed CSP sha256 source-hash: ``sha256-`` + standard base64
+# (with optional ``=`` padding) and NOTHING else. The strict shape is a
+# security control, not cosmetics: each accepted entry is wrapped as
+# ``'{h}'`` in the CSP, so a value carrying a quote/space/semicolon (e.g.
+# a hand-edited ``sha256-x' 'unsafe-inline``) would break out of its
+# quoted token and inject an arbitrary source-expression. Anchored
+# ``^…$`` so no such entry can pass.
+_CSP_SHA256_HASH_RE = re.compile(r"^sha256-[A-Za-z0-9+/]+=*$")
+
+
+def _load_script_hashes(static_dir: Path) -> list[str]:
+    """Read the build-time inline-script SHA-256 manifest, if present.
+
+    Returns the list of ``sha256-<base64>`` hash strings the export step
+    extracted from the emitted HTML, or ``[]`` when the manifest is
+    absent (contributor dev / tests with an empty static dir) or
+    unreadable / malformed. NEVER raises and NEVER signals a fallback to
+    ``'unsafe-inline'``: a broken manifest can only narrow ``script-src``
+    toward strict ``'self'``, never reopen it. Each entry must match the
+    strict ``sha256-<base64>`` shape (``_CSP_SHA256_HASH_RE``); malformed
+    or quote-bearing entries are dropped, so a hand-edited manifest cannot
+    inject an arbitrary source-expression (e.g. ``'unsafe-inline'``) into
+    the CSP by breaking out of its quoted token.
+    """
+    manifest = static_dir / CSP_SCRIPT_HASHES_FILENAME
+    try:
+        raw = manifest.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [h for h in data if isinstance(h, str) and _CSP_SHA256_HASH_RE.match(h)]
+
+
+def build_content_security_policy(static_dir: Path) -> str:
+    """Assemble the served CSP, hash-pinning ``script-src`` (issue #185).
+
+    ``script-src`` is ``'self'`` plus the build-time inline-script hashes
+    when the manifest is present, and a strict ``'self'`` otherwise —
+    NEVER ``'unsafe-inline'``. Read once per app at ``create_sidecar``
+    time (the manifest is a build artifact that never changes during a
+    process's life), not per request.
+    """
+    hashes = _load_script_hashes(static_dir)
+    if hashes:
+        script_src = "script-src 'self' " + " ".join(f"'{h}'" for h in hashes)
+    else:
+        script_src = "script-src 'self'"
+    return "; ".join((*_CSP_BASE_DIRECTIVES, script_src))
+
+
+# Static, request-independent hardening headers applied to every response
+# alongside the (dynamically-assembled) CSP. No HSTS: the sidecar serves
+# plain HTTP on 127.0.0.1 with no TLS, so HSTS would be meaningless (and
+# wrong) here. The CSP is NOT in this dict — it is computed per-app from
+# the hash manifest and stamped by ``_register_security_headers``.
 SECURITY_HEADERS: dict[str, str] = {
-    "Content-Security-Policy": CONTENT_SECURITY_POLICY,
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "strict-origin-when-cross-origin",
@@ -257,27 +328,33 @@ def create_sidecar(config: SidecarConfig) -> FastAPI:
     # most-recently-added first), which means it stamps EVERY response —
     # including the html-fallback FileResponse, which short-circuits and
     # returns before the inner middleware stack ever runs. A static
-    # surface (`/pii`) must carry the CSP just as the JSON routes do.
-    _register_security_headers(app)
+    # surface (`/pii`) must carry the CSP just as the JSON routes do. The
+    # CSP is computed ONCE here from the live STATIC_DIR (respecting a
+    # monkeypatched dir in tests) — the hash manifest is a build artifact
+    # that does not change during the process's life.
+    _register_security_headers(app, build_content_security_policy(STATIC_DIR))
 
     return app
 
 
-def _register_security_headers(app: FastAPI) -> None:
+def _register_security_headers(app: FastAPI, content_security_policy: str) -> None:
     """Attach the CSP + hardening headers to every response.
 
     Registered first so it is the outermost middleware (LIFO on the
     response path), which means it stamps EVERY response — the JSON
     routes, the SSE stream, the static-export bytes, and the HTML
-    fallback's ``FileResponse`` alike.
+    fallback's ``FileResponse`` alike. ``content_security_policy`` is the
+    pre-assembled, hash-pinned CSP string for this app's static dir.
     """
     from starlette.requests import Request
     from starlette.responses import Response
 
+    headers = {"Content-Security-Policy": content_security_policy, **SECURITY_HEADERS}
+
     @app.middleware("http")
     async def add_security_headers(request: Request, call_next: Any) -> Response:
         response: Response = await call_next(request)
-        for header, value in SECURITY_HEADERS.items():
+        for header, value in headers.items():
             response.headers[header] = value
         return response
 
