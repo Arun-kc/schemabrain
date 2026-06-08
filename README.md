@@ -341,6 +341,8 @@ So the engineering order is **schema intelligence → semantic substrate → tru
 
 > The `v0.5` / `v1` / `v2` / `v3` labels are **roadmap milestone names**, not package versions. The package follows strict semver — `1.0.0` is reserved for an API that's been battle-tested by external users without a forced break. See [ADR-0003](docs/adr/0003-versioning-policy.md).
 
+The full, living roadmap — including explicit non-goals and how to influence priorities — lives in [`ROADMAP.md`](ROADMAP.md).
+
 ### Now — shipping today (v0.5.x on PyPI)
 
 What you get from `pip install schemabrain` right now:
@@ -358,7 +360,7 @@ The vision-launch feature set. These are in active development and **not** on Py
 
 - **Graph-first dashboard, 9 surfaces, dual-theme reskin** — an interactive Knowledge Graph (the signature surface), Entities index, Entity drilldown with a semantic pane, Data dictionary with Export-to-Markdown, plus the existing PII matrix, Refusals, Audit, an editable Policy editor, and Drift intelligence.
 - **New capabilities** — a persisted knowledge graph behind `/api/graph`; a `schemabrain docs` CLI that emits a Markdown/HTML data dictionary; per-column PII confidence; RFC-6962 Merkle-root audit proofs; hybrid retrieval (bge query-prefix + BM25 via RRF); two-tier model routing.
-- **Openness** — a published `ROADMAP`, Code of Conduct, good-first-issues, and GitHub Discussions.
+- **Openness** — a Code of Conduct, good-first-issues, and GitHub Discussions. ([`ROADMAP.md`](ROADMAP.md) has already landed.)
 
 ### Later — roadmap (deferred; future direction only)
 
