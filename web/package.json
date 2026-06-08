@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "next dev --port 3000",
     "build": "next build",
-    "export": "next build && find ../schemabrain/dashboard/static -maxdepth 1 \\( -name '*.html' -o -name '*.txt' -o -name '_next' \\) -exec rm -rf {} + && cp -R out/. ../schemabrain/dashboard/static/",
+    "export": "next build && node scripts/inject-csp-hashes.mjs && find ../schemabrain/dashboard/static -maxdepth 1 \\( -name '*.html' -o -name '*.txt' -o -name '_next' -o -name 'csp-script-hashes.json' \\) -exec rm -rf {} + && cp -R out/. ../schemabrain/dashboard/static/",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
