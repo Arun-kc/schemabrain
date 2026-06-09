@@ -1,0 +1,86 @@
+{
+  "entity": {
+    "name": "user",
+    "description": "A registered account.",
+    "qualified_table": "public.users",
+    "identity": "id",
+    "group": "identity",
+    "origin": "manual",
+    "inference_method": "manually_authored",
+    "validation_state": "applied",
+    "rows": null,
+    "confidence": null,
+    "rationale": null
+  },
+  "columns": [
+    {
+      "name": "id",
+      "data_type": "integer",
+      "description": null,
+      "sensitivity": "public",
+      "pii_categories": [],
+      "similar": []
+    },
+    {
+      "name": "email",
+      "data_type": "text",
+      "description": null,
+      "sensitivity": "pii",
+      "pii_categories": [
+        "contact"
+      ],
+      "similar": []
+    },
+    {
+      "name": "password_hash",
+      "data_type": "text",
+      "description": null,
+      "sensitivity": "pii",
+      "pii_categories": [
+        "credential"
+      ],
+      "similar": []
+    },
+    {
+      "name": "created_at",
+      "data_type": "timestamptz",
+      "description": null,
+      "sensitivity": "public",
+      "pii_categories": [],
+      "similar": []
+    }
+  ],
+  "metrics": [
+    {
+      "name": "user_count",
+      "description": "Total count of registered unique users.",
+      "measure": {
+        "agg": "count",
+        "column": "id",
+        "expression": null
+      },
+      "time_grains": [
+        "day",
+        "month",
+        "year"
+      ]
+    }
+  ],
+  "joins": [
+    {
+      "name": "user_orders",
+      "description": "Links user accounts to their placed orders.",
+      "source_entity": "user",
+      "target_entity": "order",
+      "on_clause": "\"user\".\"id\" = \"order\".\"user_id\"",
+      "cardinality": "one_to_many",
+      "origin": "manual",
+      "inference_method": "manually_authored",
+      "is_log_mined": false
+    }
+  ],
+  "referenced_by": {
+    "metrics": 1,
+    "joins": 1
+  }
+}

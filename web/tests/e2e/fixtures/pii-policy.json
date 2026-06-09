@@ -1,0 +1,171 @@
+{
+  "source_connection_id": "demo-source",
+  "policy_path": "schemabrain/pii_policy.yaml",
+  "block_source": "default",
+  "active_block": [
+    "credential",
+    "government_id",
+    "payment_card"
+  ],
+  "catastrophic_floor": [
+    "credential",
+    "government_id",
+    "payment_card"
+  ],
+  "effective_block_for_describe": [
+    "credential",
+    "government_id",
+    "payment_card"
+  ],
+  "category_rollup": [
+    {
+      "category": "contact",
+      "column_count": 1,
+      "entity_count": 1,
+      "sample_columns": [
+        "public.users.email"
+      ],
+      "blocked_by_active_policy": false,
+      "blocked_by_catastrophic_floor": false
+    },
+    {
+      "category": "financial",
+      "column_count": 0,
+      "entity_count": 0,
+      "sample_columns": [],
+      "blocked_by_active_policy": false,
+      "blocked_by_catastrophic_floor": false
+    },
+    {
+      "category": "payment_card",
+      "column_count": 1,
+      "entity_count": 1,
+      "sample_columns": [
+        "public.orders.card_pan"
+      ],
+      "blocked_by_active_policy": true,
+      "blocked_by_catastrophic_floor": true
+    },
+    {
+      "category": "health",
+      "column_count": 0,
+      "entity_count": 0,
+      "sample_columns": [],
+      "blocked_by_active_policy": false,
+      "blocked_by_catastrophic_floor": false
+    },
+    {
+      "category": "genetic",
+      "column_count": 0,
+      "entity_count": 0,
+      "sample_columns": [],
+      "blocked_by_active_policy": false,
+      "blocked_by_catastrophic_floor": false
+    },
+    {
+      "category": "biometric",
+      "column_count": 0,
+      "entity_count": 0,
+      "sample_columns": [],
+      "blocked_by_active_policy": false,
+      "blocked_by_catastrophic_floor": false
+    },
+    {
+      "category": "behavioral",
+      "column_count": 0,
+      "entity_count": 0,
+      "sample_columns": [],
+      "blocked_by_active_policy": false,
+      "blocked_by_catastrophic_floor": false
+    },
+    {
+      "category": "online_identifier",
+      "column_count": 0,
+      "entity_count": 0,
+      "sample_columns": [],
+      "blocked_by_active_policy": false,
+      "blocked_by_catastrophic_floor": false
+    },
+    {
+      "category": "credential",
+      "column_count": 1,
+      "entity_count": 1,
+      "sample_columns": [
+        "public.users.password_hash"
+      ],
+      "blocked_by_active_policy": true,
+      "blocked_by_catastrophic_floor": true
+    },
+    {
+      "category": "government_id",
+      "column_count": 0,
+      "entity_count": 0,
+      "sample_columns": [],
+      "blocked_by_active_policy": true,
+      "blocked_by_catastrophic_floor": true
+    },
+    {
+      "category": "location",
+      "column_count": 0,
+      "entity_count": 0,
+      "sample_columns": [],
+      "blocked_by_active_policy": false,
+      "blocked_by_catastrophic_floor": false
+    },
+    {
+      "category": "demographic_protected",
+      "column_count": 0,
+      "entity_count": 0,
+      "sample_columns": [],
+      "blocked_by_active_policy": false,
+      "blocked_by_catastrophic_floor": false
+    }
+  ],
+  "per_column": [
+    {
+      "qualified_table": "public.orders",
+      "column_name": "card_pan",
+      "qualified_column": "public.orders.card_pan",
+      "sensitivity": "pii",
+      "categories": [
+        "payment_card"
+      ],
+      "origin": "heuristic",
+      "effective_enforcement": "blocked"
+    },
+    {
+      "qualified_table": "public.users",
+      "column_name": "email",
+      "qualified_column": "public.users.email",
+      "sensitivity": "pii",
+      "categories": [
+        "contact"
+      ],
+      "origin": "heuristic",
+      "effective_enforcement": "allowed"
+    },
+    {
+      "qualified_table": "public.users",
+      "column_name": "password_hash",
+      "qualified_column": "public.users.password_hash",
+      "sensitivity": "pii",
+      "categories": [
+        "credential"
+      ],
+      "origin": "heuristic",
+      "effective_enforcement": "blocked"
+    }
+  ],
+  "diff_preview": {
+    "current_blocked": 2,
+    "if_all_blocked": 3,
+    "if_catastrophic_only": 2,
+    "if_none_blocked": 0
+  },
+  "yaml_parse_error": null,
+  "policy_drift": {
+    "detected": false,
+    "recorded_at": "2026-06-09T12:46:47+00:00",
+    "current_mtime": null
+  }
+}

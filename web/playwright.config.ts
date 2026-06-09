@@ -17,6 +17,10 @@ const BASE_URL = process.env.SCHEMABRAIN_E2E_BASE_URL ?? "http://127.0.0.1:7878"
 
 export default defineConfig({
   testDir: "./tests/e2e",
+  // Pixel baselines run in a pinned container via playwright.visual.config.ts;
+  // they must NOT run here (a bare ubuntu-latest runner would mismatch the
+  // container-captured snapshots). Behavioural specs only.
+  testIgnore: ["**/visual.spec.ts"],
   fullyParallel: false,
   // The sidecar binds 127.0.0.1 only and the spec is read-only against
   // a shared store; running tests in parallel would just race the

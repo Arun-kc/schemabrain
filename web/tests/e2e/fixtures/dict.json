@@ -1,0 +1,162 @@
+{
+  "schema_version": "17",
+  "sources": [
+    {
+      "source_connection_id": "demo-source",
+      "entities": [
+        {
+          "name": "order",
+          "description": "A purchase by a user.",
+          "qualified_table": "public.orders",
+          "identity": "id",
+          "group": "billing",
+          "columns": [
+            {
+              "name": "id",
+              "data_type": "integer",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": true,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "user_id",
+              "data_type": "integer",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "card_pan",
+              "data_type": "text",
+              "nullable": true,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "pii",
+              "pii_categories": [
+                "payment_card"
+              ]
+            },
+            {
+              "name": "amount_cents",
+              "data_type": "integer",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            }
+          ],
+          "joins": [
+            {
+              "name": "user_orders",
+              "description": "Links user accounts to their placed orders.",
+              "source_entity": "user",
+              "target_entity": "order",
+              "on_clause": "\"user\".\"id\" = \"order\".\"user_id\"",
+              "cardinality": "one_to_many",
+              "provenance": "Operator-authored"
+            }
+          ],
+          "metrics": [
+            {
+              "name": "total_revenue",
+              "description": "Sum of order purchase values (stored in cents).",
+              "agg": "sum",
+              "measure": "amount_cents",
+              "measure_is_expression": false,
+              "time_dimension": null,
+              "time_grains": []
+            }
+          ]
+        },
+        {
+          "name": "user",
+          "description": "A registered account.",
+          "qualified_table": "public.users",
+          "identity": "id",
+          "group": "identity",
+          "columns": [
+            {
+              "name": "id",
+              "data_type": "integer",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": true,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            },
+            {
+              "name": "email",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "pii",
+              "pii_categories": [
+                "contact"
+              ]
+            },
+            {
+              "name": "password_hash",
+              "data_type": "text",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "pii",
+              "pii_categories": [
+                "credential"
+              ]
+            },
+            {
+              "name": "created_at",
+              "data_type": "timestamptz",
+              "nullable": false,
+              "is_primary_key": false,
+              "is_identity": false,
+              "description": null,
+              "pii_sensitivity": "public",
+              "pii_categories": []
+            }
+          ],
+          "joins": [
+            {
+              "name": "user_orders",
+              "description": "Links user accounts to their placed orders.",
+              "source_entity": "user",
+              "target_entity": "order",
+              "on_clause": "\"user\".\"id\" = \"order\".\"user_id\"",
+              "cardinality": "one_to_many",
+              "provenance": "Operator-authored"
+            }
+          ],
+          "metrics": [
+            {
+              "name": "user_count",
+              "description": "Total count of registered unique users.",
+              "agg": "count",
+              "measure": "id",
+              "measure_is_expression": false,
+              "time_dimension": "user.created_at",
+              "time_grains": [
+                "day",
+                "month",
+                "year"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

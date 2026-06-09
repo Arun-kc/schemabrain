@@ -1,0 +1,20 @@
+{
+  "charter_version": "1.2",
+  "dashboard_schema_version": "1.10",
+  "fingerprint_version": "fp-v1",
+  "store_path": "/demo/schemabrain.db",
+  "default_source_connection_id": "demo-source",
+  "source_connection_ids": [
+    "demo-source"
+  ],
+  "sources": [
+    {
+      "source_id": "demo-source",
+      "engine": null,
+      "state": "indexed",
+      "last_indexed_at": 1781012680,
+      "tables": 2,
+      "entities": 2
+    }
+  ]
+}
