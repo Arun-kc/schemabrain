@@ -21,6 +21,11 @@ lib64/
 # in CI with FileNotFoundError on the TS files. Discovered after
 # PR #125 CI 26448572653.
 !web/lib/
+# Same trap for the marketing site's `lib/` (site/lib/positioning.ts,
+# synced from the Python single source by scripts/sync_brand_tokens.py).
+# Without this the generic `lib/` rule swallows it and the site build
+# fails in CI with an unresolved positioning import.
+!site/lib/
 
 parts/
 sdist/

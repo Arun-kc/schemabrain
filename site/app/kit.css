@@ -1,0 +1,238 @@
+/* ============================================================
+   Component kit base classes
+   Buttons, icon buttons, PII chips, confidence meter, data table.
+   Ported verbatim from the design handoff (tokens.css); the React
+   atoms in components/kit/ are thin typed wrappers over these.
+   Token-driven, .sb-app-scoped, both themes, AA contrast.
+   ============================================================ */
+
+/* buttons */
+.sb-btn {
+  font-family: var(--f-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  border-radius: var(--r-md);
+  padding: 9px 14px;
+  border: 1px solid var(--hair);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: all var(--dur-2) var(--ease);
+  white-space: nowrap;
+}
+.sb-btn:hover {
+  border-color: var(--green);
+  color: var(--green);
+}
+.sb-btn.primary {
+  background: var(--green);
+  color: var(--ink-on-accent);
+  border-color: transparent;
+}
+.sb-btn.primary:hover {
+  box-shadow: var(--glow-green);
+  filter: brightness(1.04);
+  color: var(--ink-on-accent);
+}
+.sb-btn.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-2);
+}
+.sb-btn.ghost:hover {
+  background: var(--panel-2);
+  color: var(--ink);
+}
+.sb-btn:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+.sb-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.sb-btn:disabled:hover {
+  border-color: var(--hair);
+  color: var(--ink);
+  box-shadow: none;
+  filter: none;
+}
+
+/* icon button */
+.sb-iconbtn {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-md);
+  border: 1px solid var(--hair);
+  background: var(--panel);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: all var(--dur-2) var(--ease);
+}
+.sb-iconbtn:hover {
+  color: var(--ink);
+  border-color: var(--green);
+}
+.sb-iconbtn:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+/* PII chip */
+.sb-chip {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  border-radius: var(--r-pill);
+  padding: 3px 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+.sb-chip .d {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.sb-chip.contact {
+  color: var(--pii-2);
+  border-color: color-mix(in oklch, var(--pii-2) 45%, transparent);
+  background: color-mix(in oklch, var(--pii-2) 12%, transparent);
+}
+.sb-chip.payment,
+.sb-chip.auth {
+  color: var(--alarm);
+  border-color: color-mix(in oklch, var(--alarm) 50%, transparent);
+  background: color-mix(in oklch, var(--alarm) 13%, transparent);
+}
+.sb-chip.none {
+  color: var(--ink-3);
+  border-color: var(--hair);
+}
+.sb-chip.neutral {
+  color: var(--ink-2);
+  border-color: var(--hair);
+  background: var(--panel-2);
+}
+.sb-chip.green {
+  color: var(--green);
+  border-color: color-mix(in oklch, var(--green) 40%, transparent);
+  background: color-mix(in oklch, var(--green) 12%, transparent);
+}
+.sb-chip.cyan {
+  color: var(--cyan);
+  border-color: color-mix(in oklch, var(--cyan) 40%, transparent);
+  background: color-mix(in oklch, var(--cyan) 12%, transparent);
+}
+
+/* confidence meter */
+.sb-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.sb-meter .track {
+  width: 64px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--hair);
+  overflow: hidden;
+}
+.sb-meter .fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--green);
+}
+
+/* data table */
+.sb-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.sb-table th {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--ink-3);
+  text-align: left;
+  font-weight: 600;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--hair);
+}
+.sb-table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--hair-2);
+  color: var(--ink);
+}
+.sb-table tr:hover td {
+  background: var(--panel-2);
+}
+
+/* toast — shared copy-confirmation primitive */
+.sb-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  z-index: 200;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(16px);
+  opacity: 0;
+  transition: transform var(--dur-2) var(--ease-out), opacity var(--dur-2) var(--ease-out);
+  background: var(--panel-2);
+  border: 1px solid color-mix(in oklch, var(--green) 30%, transparent);
+  color: var(--green);
+  font-family: var(--f-mono);
+  font-size: 12px;
+  padding: 9px 16px;
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-pop);
+}
+.sb-toast[data-open="true"] {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+}
+
+/* knowledge-graph refusal-hotspot pulse ring (kit GraphNode, G4). Sits behind
+ * the orb and breathes to draw the eye to an entity with attributed refusals.
+ * Compositor-only (transform + opacity) per the perf budget; pointer-inert. */
+.sb-gnode-pulse {
+  position: absolute;
+  inset: -9px;
+  border-radius: 50%;
+  border: 1.6px solid var(--alarm);
+  pointer-events: none;
+  animation: sb-gnode-pulse 1.8s ease-in-out infinite;
+}
+@keyframes sb-gnode-pulse {
+  0%,
+  100% {
+    transform: scale(0.92);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scale(1.12);
+    opacity: 0.12;
+  }
+}
+/* Honour reduced motion: keep the ring as a static emphasis, drop the breath. */
+@media (prefers-reduced-motion: reduce) {
+  .sb-gnode-pulse {
+    animation: none;
+    transform: scale(1);
+    opacity: 0.5;
+  }
+}

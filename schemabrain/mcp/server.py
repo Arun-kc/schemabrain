@@ -1,11 +1,12 @@
 """FastMCP server wiring for SchemaBrain.
 
 `build_server(store, source_connection_id, embedder)` returns a
-configured `FastMCP` instance with ten tools registered. Five
+configured `FastMCP` instance with twelve tools registered. Six
 physical-schema tools: `find_relevant_tables`, `describe_table`,
-`describe_column`, `suggest_joins`, `get_example_queries`. Five
-semantic-layer tools: `find_relevant_entities`, `list_entities`,
-`describe_entity`, `resolve_join`, `get_metric`.
+`describe_column`, `suggest_joins`, `list_joins`,
+`get_example_queries`. Six semantic-layer tools:
+`find_relevant_entities`, `list_entities`, `describe_entity`,
+`resolve_join`, `list_metrics`, `get_metric`.
 
 This module is the *boundary* between SchemaBrain's pure-function tool
 implementations (in `mcp/*.py`) and the MCP transport. Two boundary

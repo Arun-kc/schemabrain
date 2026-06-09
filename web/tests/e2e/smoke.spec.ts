@@ -1,8 +1,8 @@
 /**
  * Dashboard end-to-end smoke.
  *
- * The smallest valuable browser-driven regression net for the 4 dashboard
- * surfaces (landing + PII + Refusals + Audit). Each spec navigates,
+ * The smallest valuable browser-driven regression net for the core dashboard
+ * surfaces (root→overview redirect + PII + Refusals + Audit). Each spec navigates,
  * asserts the surface's load-bearing landmark, then captures a screenshot
  * for visual review in `playwright-report/`.
  *
@@ -26,27 +26,20 @@ test.beforeEach(async ({ context }, testInfo) => {
 });
 
 test.describe("dashboard E2E smoke", () => {
-  test("landing page renders the three surface cards", async ({ page }) => {
+  test("root redirects to the overview surface", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
 
+    // `/` is a redirect stub now — the marketing landing moved to the
+    // separate `site/` app, and the dashboard home is /overview.
     await page.goto("/");
 
+    await expect(page).toHaveURL(/\/overview\/?$/);
     await expect(
-      page.getByRole("heading", { name: /What the SQL firewall sees/i }),
+      page.getByRole("heading", { name: /Agents are reasoning over a protected graph/ }),
     ).toBeVisible();
 
-    // Three surface cards — each is the entry point to one M1 page.
-    await expect(page.getByText("PII Visualization", { exact: false })).toBeVisible();
-    await expect(page.getByText("Refusal Experience", { exact: false })).toBeVisible();
-    await expect(page.getByText("Audit Viewer", { exact: false })).toBeVisible();
-
-    // Active-pipeline telemetry section is the hero composition the
-    // landing page is built around; missing it means the layout
-    // collapsed.
-    await expect(page.getByText(/Active Pipeline Telemetry/i)).toBeVisible();
-
-    await page.screenshot({ path: "test-results/01-landing.png", fullPage: true });
+    await page.screenshot({ path: "test-results/01-overview.png", fullPage: true });
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });
 
