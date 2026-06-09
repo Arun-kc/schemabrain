@@ -6,7 +6,7 @@ SchemaBrain sits between LLM-powered agents and production Postgres, exposing 12
 
 ## Get started
 
-- [Introduction](https://github.com/Arun-kc/schemabrain/blob/main/docs/introduction.mdx): One-page elevator — what SchemaBrain is, the 4 firewall properties, 5-minute install ladder, host picker.
+- [Introduction](https://github.com/Arun-kc/schemabrain/blob/main/docs/introduction.mdx): One-page elevator — what SchemaBrain is, the 5-minute install ladder, and the host picker.
 - [Setup](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup.md): Activation wizard (recommended) — pick a host, run the wizard, ask the agent in ~60s.
 - [Docker install](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup/docker.md): Published image with the embedding model baked in (no first-run download).
 - [Manual flow](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup/manual.md): Explicit `index` + `mine-queries`, Anthropic SDK demo, logs config, troubleshooter, MCP Inspector, SQL-validation ladder.

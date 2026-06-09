@@ -16,7 +16,7 @@ AI agents fail when querying real production databases:
 
 SchemaBrain fixes all four and serves the result through a stable MCP tool surface that any agent can call.
 
-The bigger problem behind these — database MCPs running as the credentialed role, prompt injection escalating to SQLi, no PII-aware refusal at the SQL boundary — is what SchemaBrain addresses architecturally in v0.4. There is no SQL surface for the agent to attack: the 12 typed tools accept structured arguments, the compiler emits parameterized SQL against operator-validated definitions, and the four load-bearing mechanisms (read-only by architecture, 12-category PII taxonomy, hash-chained audit, structured recovery envelope) form the firewall.
+The bigger problem behind these — database MCPs running as the credentialed role, prompt injection escalating to SQLi, no PII-aware refusal at the SQL boundary — is what SchemaBrain addresses architecturally. There is no SQL surface for the agent to attack: the 12 typed tools accept structured arguments, the compiler emits parameterized SQL against operator-validated definitions, and the four load-bearing mechanisms (read-only by architecture, 12-category PII taxonomy, hash-chained audit, structured recovery envelope) form the SQL firewall — one proof-point of six.
 
 ## How it compares
 
