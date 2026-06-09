@@ -34,6 +34,22 @@ export const MARK_SAFE_SENSITIVITY: Sensitivity = "internal";
 /** Per-column control states. `floor` is the locked catastrophic state. */
 export type PolicyVerb = "block" | "redact" | "allow";
 
+/**
+ * Human-facing label for each verb. The middle verb's INTERNAL symbol stays
+ * `redact` (the client-projection enum value + the shared `PolicyStatusFilter`
+ * that the read-only /pii matrix also consumes), but it is SHOWN as `open`:
+ * `applyVerb` only removes the column from the block set — values flow to the
+ * agent unmasked, nothing is redacted at query time. (Description redaction at
+ * enrichment is a separate, accurate behaviour surfaced as `redact` on the
+ * /pii matrix.) Single source of truth so the control, filter chip, and
+ * per-table mini-summary never disagree. See ADR 0008.
+ */
+export const POLICY_VERB_LABEL: Record<PolicyVerb, string> = {
+  block: "block",
+  redact: "open",
+  allow: "allow",
+};
+
 export interface StagedOverride {
   sensitivity: Sensitivity;
   categories: readonly PIICategory[];

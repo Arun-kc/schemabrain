@@ -5,6 +5,7 @@ import { cn } from "@/lib/cn";
 import {
   columnVerb,
   countVerbs,
+  POLICY_VERB_LABEL,
   type PolicyVerb,
   siblingsAffectedByVerb,
   type StagedOverrides,
@@ -80,7 +81,11 @@ export function TableGroup({
           {counts.block > 0 && <span className={styles.miniBlock}>{counts.block} blocked</span>}
           {counts.floor > 0 && <span className={styles.miniFloor}>{counts.floor} floor</span>}
           {counts.allow > 0 && <span className={styles.miniAllow}>{counts.allow} allowed</span>}
-          {counts.redact > 0 && <span className={styles.miniRedact}>{counts.redact} open</span>}
+          {counts.redact > 0 && (
+            <span className={styles.miniRedact}>
+              {counts.redact} {POLICY_VERB_LABEL.redact}
+            </span>
+          )}
         </span>
       </button>
       <div
