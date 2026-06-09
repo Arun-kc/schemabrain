@@ -65,7 +65,7 @@ uvx schemabrain init
 | Goal | Where to go |
 |---|---|
 | Try it on the bundled fixture | [Quickstart](#quickstart) |
-| Understand the safety guarantees | [The firewall](#the-firewall) |
+| Understand the safety guarantees | [Safety guarantees](#safety-guarantees) |
 | Wire up your MCP client | [Claude Desktop](docs/setup/claude-desktop.md) · [Claude Code](docs/setup/claude-code.md) · [Cursor](docs/setup/cursor.md) · [Windsurf](docs/setup/windsurf.md) · [ChatGPT (roadmap)](docs/setup/chatgpt.md) |
 | Plug into your own agent loop | [`docs/setup/manual.md`](docs/setup/manual.md#3-wire-your-own-agent-anthropic-sdk) |
 | Build a semantic layer | [`docs/semantic-layer.md`](docs/semantic-layer.md) |
@@ -131,7 +131,7 @@ After the wizard, `schemabrain inspect` shows what the agent has and `schemabrai
 
 ---
 
-## The firewall
+## Safety guarantees
 
 <p align="center">
   <picture>

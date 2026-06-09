@@ -69,7 +69,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"
 
 python anthropic_demo.py \
-    --source "$DATABASE_URL" \
+    --url-env DATABASE_URL \
     --store-path ./schemabrain.db \
     --question "Where do we store customer order totals?"
 ```
