@@ -3,7 +3,7 @@
 import { type KeyboardEvent, useRef } from "react";
 import { Icon } from "@/components/kit";
 import { cn } from "@/lib/cn";
-import { categoryWideNote, type PolicyVerb, prettyCategory } from "@/lib/policy";
+import { categoryWideNote, POLICY_VERB_LABEL, type PolicyVerb, prettyCategory } from "@/lib/policy";
 import { type PolicyColumnEntry } from "@/lib/types";
 import styles from "./policy-editor.module.css";
 
@@ -112,13 +112,16 @@ export function PerColumnRow({
           {VERBS.map((option) => {
             const active = verb === option;
             const enabled = isEnabled(option);
+            // The middle verb's internal symbol is `redact`, but it SHOWS as
+            // `open` (POLICY_VERB_LABEL) — applyVerb only un-blocks; no masking.
+            const label = POLICY_VERB_LABEL[option];
             // Fold the disabled rationale into the accessible name — a `title`
             // alone isn't announced by screen readers (and a native-disabled
             // control can't be focused to surface it). The `^block ` prefix is
             // preserved so role/name selectors still match.
             const optionLabel = enabled
-              ? `${option} ${row.qualified_column}`
-              : `${option} ${row.qualified_column} — unavailable, no category to block`;
+              ? `${label} ${row.qualified_column}`
+              : `${label} ${row.qualified_column} — unavailable, no category to block`;
             return (
               <button
                 key={option}
@@ -136,7 +139,7 @@ export function PerColumnRow({
                 className={cn(active && styles[VERB_ACTIVE_CLASS[option]])}
                 onClick={() => enabled && onSetVerb(row, option)}
               >
-                {option}
+                {label}
               </button>
             );
           })}
