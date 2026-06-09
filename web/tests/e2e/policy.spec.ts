@@ -156,11 +156,11 @@ test.describe("Policy editor E2E smoke", () => {
     await blockRadio.click();
     await expect(blockRadio).toBeFocused();
 
-    // ArrowRight selects redact and focus follows it.
+    // ArrowRight selects the middle verb (shown as `open`) and focus follows it.
     await page.keyboard.press("ArrowRight");
-    const redactRadio = grid.getByRole("radio", { name: `redact ${colName}` });
-    await expect(redactRadio).toHaveAttribute("aria-checked", "true");
-    await expect(redactRadio).toBeFocused();
+    const openRadio = grid.getByRole("radio", { name: `open ${colName}` });
+    await expect(openRadio).toHaveAttribute("aria-checked", "true");
+    await expect(openRadio).toBeFocused();
   });
 
   test("collapse-by-default; expanding mounts rows, collapsing unmounts them", async ({ page }) => {
