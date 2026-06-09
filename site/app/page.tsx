@@ -18,10 +18,17 @@ import { INSTALL_PRIMARY, LICENSE_LABEL, TAGLINE } from "@/lib/positioning";
 const GITHUB_URL = "https://github.com/Arun-kc/schemabrain";
 const DOCS_URL = "https://schemabrain.mintlify.app/";
 
-// Split the canonical tagline so the middle phrase can be accent-colored
-// without duplicating the string.
+// Landing-only pain hook for the H1. The canonical tagline (parity-gated)
+// moves into the subhead, where its phrase keeps the green accent — so the
+// hook grabs and the tagline still positions ("safe because it's smart").
+const HERO_HOOK_LEAD = "Stop giving AI agents ";
+// The threat phrase carries the brand's danger color (--alarm) — the one
+// place a red accent is earned: the exact thing the headline says to stop.
+const HERO_HOOK_THREAT = "raw database access";
 const HERO_PHRASE = "trust and intelligence layer";
-const [HERO_PRE, HERO_POST] = TAGLINE.split(HERO_PHRASE);
+// " between AI agents and your database." — derived from TAGLINE so the
+// subhead stays bound to the canonical string (parity gate still applies).
+const HERO_POST = TAGLINE.split(HERO_PHRASE)[1];
 
 type Theme = "dark" | "light";
 
@@ -192,14 +199,13 @@ function Hero() {
           open source · {LICENSE_LABEL} · MCP-native
         </span>
         <h1>
-          {HERO_PRE}
-          <span className="g">{HERO_PHRASE}</span>
-          {HERO_POST}
+          {HERO_HOOK_LEAD}
+          <span className="threat">{HERO_HOOK_THREAT}</span>.
         </h1>
         <p className="lede">
-          Like Cloudflare sits between the internet and your servers, SchemaBrain sits between
-          AI agents and your database — making your schema understandable, keeping access safe,
-          and keeping every query trustworthy.
+          SchemaBrain is the <span className="g">{HERO_PHRASE}</span>
+          {HERO_POST} It learns your schema, then compiles every query read-only, PII-aware,
+          and audited.
         </p>
         <div className="cta">
           <a className="sb-btn primary ld-btn-lg" href="#install">

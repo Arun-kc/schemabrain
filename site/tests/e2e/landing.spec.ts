@@ -15,10 +15,10 @@ test("landing renders all sections with no page errors", async ({ page }) => {
 
   await page.goto("/");
 
-  // Hero H1 carries the canonical positioning phrase (sourced from TAGLINE).
-  await expect(page.getByRole("heading", { level: 1 })).toContainText(
-    /trust and intelligence layer/i,
-  );
+  // Hero H1 is the pain hook; the canonical positioning phrase (sourced from
+  // TAGLINE) moved into the subhead, where it keeps the "safe because smart" framing.
+  await expect(page.getByRole("heading", { level: 1 })).toContainText(/raw database access/i);
+  await expect(page.getByText(/trust and intelligence layer/i)).toBeVisible();
 
   // The five content sections' load-bearing headings.
   await expect(
