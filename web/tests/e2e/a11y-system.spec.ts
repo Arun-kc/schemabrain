@@ -109,4 +109,20 @@ test.describe("System responsive + a11y", () => {
     const navMs = await transitionMs(page, ".sb-nav-item");
     expect(navMs, `nav transition ${navMs}ms should be ~0 under reduced motion`).toBeLessThan(50);
   });
+
+  test("the drilldown sheet opens without a slide under reduced motion", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    // Open the entity drilldown via its URL contract (ADR 0005 §3, ?entity=) —
+    // the same slide-over the graph + Entities index + PII rows all address.
+    await page.goto("/entities?entity=user");
+
+    await expect(page.getByRole("dialog", { name: "Entity user" })).toBeVisible();
+
+    // app/shell.css drops the `.sb-drill` slide transition under reduced motion
+    // (the wsQA-axe-reduced-motion-graph-park "sheet slide instant" guarantee),
+    // so the sheet snaps open. The graph's own parked force-sim / frame-count
+    // guarantee lives in graph.spec.ts.
+    const slideMs = await transitionMs(page, ".sb-drill");
+    expect(slideMs, `sheet slide ${slideMs}ms should be ~0 under reduced motion`).toBeLessThan(50);
+  });
 });

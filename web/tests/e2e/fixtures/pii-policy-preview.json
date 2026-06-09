@@ -1,0 +1,33 @@
+{
+  "staged_yaml": "version: 1\nblock:\n- payment_card\n- credential\n- government_id",
+  "current_yaml": "version: 1\nblock:\n- payment_card\n- credential\n- government_id",
+  "diff_lines": [
+    {
+      "kind": "context",
+      "text": "version: 1"
+    },
+    {
+      "kind": "context",
+      "text": "block:"
+    },
+    {
+      "kind": "context",
+      "text": "- payment_card"
+    },
+    {
+      "kind": "context",
+      "text": "- credential"
+    },
+    {
+      "kind": "context",
+      "text": "- government_id"
+    }
+  ],
+  "changed": false,
+  "staged_block": [
+    "credential",
+    "government_id",
+    "payment_card"
+  ],
+  "current_parse_error": null
+}

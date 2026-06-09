@@ -429,6 +429,15 @@ jobs:
         working-directory: web
         run: pnpm run export
 
+      - name: Web perf budget (bundle size + reactflow isolation + fonts swap)
+        # Deterministic half of wsQA-perf-budget-landing for the dashboard app:
+        # asserts the /overview first-load JS/CSS stays within budget, reactflow
+        # stays dynamic-imported on /graph only (never an eager chunk), and every
+        # fetched @font-face uses font-display: swap. Reads web/.next from the
+        # export above. LCP/CLS stay a manual Lighthouse check (README).
+        if: steps.filter.outputs.dashboard == 'true'
+        run: node scripts/check_bundle_budget.mjs --app web --route '/(app)/overview/page' --js 200 --css 50 --forbid-module 'react-flow__' --fonts-swap
+
       - name: Boot dashboard sidecar (headless)
         if: steps.filter.outputs.dashboard == 'true'
         # Background the demo script so the subsequent steps can talk
@@ -477,6 +486,122 @@ jobs:
             web/test-results/
           # 7-day retention is plenty for triaging a failed run; longer
           # would just burn artifact storage.
+          retention-days: 7
+
+  dashboard-visual:
+    name: Dashboard visual regression
+    # Pixel baselines are environment-specific (fonts, anti-aliasing), so this
+    # job runs ENTIRELY inside the pinned Playwright image — the SAME image used
+    # to generate the committed baselines (scripts/update_visual_baselines.sh).
+    # That keeps generation and assertion byte-identical and immune to the
+    # `ubuntu-latest` runner image drifting underneath us. The behavioural
+    # dashboard-e2e job above runs on the bare runner and `testIgnore`s
+    # visual.spec.ts, so the two never compare pixels in mismatched environments.
+    runs-on: ubuntu-latest
+    needs: lint-and-unit
+    container:
+      # Must match `@playwright/test` in web/pnpm-lock.yaml AND the image tag in
+      # scripts/update_visual_baselines.sh + playwright.visual.config.ts. Bump
+      # all four together and regenerate baselines.
+      image: mcr.microsoft.com/playwright:v1.60.0-noble
+    # Build + uv sync + container deps + 72 screenshots; generous ceiling.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Detect dashboard-relevant changes
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            dashboard:
+              - 'web/**'
+              - 'schemabrain/dashboard/**'
+              - 'scripts/dashboard_demo.py'
+              - 'scripts/update_visual_baselines.sh'
+              - '.github/workflows/ci.yml'
+
+      - name: Install uv
+        if: steps.filter.outputs.dashboard == 'true'
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.11
+        if: steps.filter.outputs.dashboard == 'true'
+        run: uv python install 3.11
+
+      - name: Install Python dependencies (+ui extra)
+        if: steps.filter.outputs.dashboard == 'true'
+        run: uv sync --extra dev --extra ui --python 3.11
+
+      - name: Set up pnpm (corepack)
+        # The Playwright image already ships Node; corepack activates the same
+        # pnpm major as web/package.json engines (>=9), matching the local
+        # generation script. No actions/setup-node (it would fight the image's
+        # bundled Node).
+        if: steps.filter.outputs.dashboard == 'true'
+        run: corepack enable && corepack prepare pnpm@9 --activate
+
+      - name: Cache pnpm store
+        if: steps.filter.outputs.dashboard == 'true'
+        uses: actions/cache@v5
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-visual-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+
+      - name: Install web dependencies
+        if: steps.filter.outputs.dashboard == 'true'
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Build dashboard static export
+        if: steps.filter.outputs.dashboard == 'true'
+        working-directory: web
+        run: pnpm run export
+
+      - name: Boot dashboard sidecar (headless)
+        if: steps.filter.outputs.dashboard == 'true'
+        # The sidecar and Playwright share this container's loopback, so the
+        # config's default baseURL (127.0.0.1:7878) resolves with no extra
+        # networking.
+        run: |
+          uv run --python 3.11 python scripts/dashboard_demo.py --no-open &
+          echo "SIDECAR_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for sidecar health
+        if: steps.filter.outputs.dashboard == 'true'
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:7878/api/health > /dev/null; then
+              echo "sidecar healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "sidecar failed to come up within 30s" >&2
+          exit 1
+
+      - name: Run visual regression (assert against committed baselines)
+        if: steps.filter.outputs.dashboard == 'true'
+        working-directory: web
+        # Browsers are preinstalled in the image — no `playwright install`. A
+        # diff fails the job; the report (with diff PNGs) uploads below.
+        run: pnpm exec playwright test -c playwright.visual.config.ts
+
+      - name: Stop sidecar
+        if: always() && steps.filter.outputs.dashboard == 'true' && env.SIDECAR_PID != ''
+        run: kill "$SIDECAR_PID" 2>/dev/null || true
+
+      - name: Upload visual diff report on failure
+        if: failure() && steps.filter.outputs.dashboard == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-report
+          path: |
+            web/playwright-report/
+            web/test-results/
           retention-days: 7
 
   site-build:
@@ -535,6 +660,14 @@ jobs:
         if: steps.filter.outputs.site == 'true'
         working-directory: site
         run: pnpm build
+
+      - name: Landing perf budget (bundle size + fonts swap)
+        # Deterministic half of wsQA-perf-budget-landing for the marketing
+        # landing: first-load JS < 150kb / CSS < 30kb (gzip, the Landing tier),
+        # no reactflow, every fetched @font-face font-display: swap. Reads
+        # site/.next from the build above. LCP/CLS = manual Lighthouse.
+        if: steps.filter.outputs.site == 'true'
+        run: node scripts/check_bundle_budget.mjs --app site --route '/page' --js 150 --css 30 --forbid-module 'react-flow__' --fonts-swap
 
       - name: Cache Playwright browsers
         if: steps.filter.outputs.site == 'true'

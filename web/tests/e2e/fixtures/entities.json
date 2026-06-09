@@ -1,0 +1,42 @@
+{
+  "source_connection_id": "demo-source",
+  "items": [
+    {
+      "name": "order",
+      "description": "A purchase by a user.",
+      "qualified_table": "public.orders",
+      "identity": "id",
+      "group": "billing",
+      "origin": "manual",
+      "inference_method": "manually_authored",
+      "validation_state": "applied",
+      "rows": null,
+      "confidence": null,
+      "pii_level": "catastrophic",
+      "metrics_count": 1,
+      "joins_count": 1
+    },
+    {
+      "name": "user",
+      "description": "A registered account.",
+      "qualified_table": "public.users",
+      "identity": "id",
+      "group": "identity",
+      "origin": "manual",
+      "inference_method": "manually_authored",
+      "validation_state": "applied",
+      "rows": null,
+      "confidence": null,
+      "pii_level": "catastrophic",
+      "metrics_count": 1,
+      "joins_count": 1
+    }
+  ],
+  "count": 2,
+  "summary": {
+    "entities": 2,
+    "metrics": 2,
+    "joins": 1,
+    "catastrophic_entities": 2
+  }
+}

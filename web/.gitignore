@@ -27,6 +27,13 @@ test-results/
 playwright/.cache/
 .vitest-cache/
 
+# Visual-regression baselines are Linux-captured only (the pinned Playwright
+# container — see playwright.visual.config.ts). Running `playwright test` locally
+# on macOS/Windows writes platform-suffixed baselines; never commit those — only
+# the `*-linux.png` set is the source of truth.
+tests/e2e/__screenshots__/**/*-darwin.png
+tests/e2e/__screenshots__/**/*-win32.png
+
 # Editor / OS
 .DS_Store
 ._*
