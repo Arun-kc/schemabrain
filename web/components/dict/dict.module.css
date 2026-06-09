@@ -141,7 +141,7 @@
 
 .idxItemOn {
   background: color-mix(in oklch, var(--green) 13%, transparent);
-  color: var(--green);
+  color: var(--green-strong);
 }
 
 .idxDot {
@@ -310,7 +310,7 @@
 }
 
 .joinMined {
-  color: var(--cyan);
+  color: var(--cyan-strong);
 }
 
 /* ---------- Metrics ---------- */
@@ -395,7 +395,7 @@
   display: block;
   font-family: var(--font-mono);
   font-size: 0.875rem;
-  color: var(--green);
+  color: var(--green-strong);
   background: var(--panel-2);
   border: 1px solid var(--hair-2);
   padding: 0.5rem 0.75rem;

@@ -18,6 +18,15 @@ Each spec also asserts **zero `pageerror` events** during navigation —
 catches missing CSS, JS exceptions, hydration mismatches that would
 otherwise render silently.
 
+**Accessibility & responsive.** Every surface spec runs an
+`@axe-core/playwright` audit (WCAG 2.0/2.1 A+AA, failing only on
+serious/critical impacts) under both themes via the shared `a11y.ts`
+helper. `a11y-system.spec.ts` adds the cross-cutting shell guarantees:
+the skip link, keyboard reachability of the nav rail + source selector,
+≥44px nav targets, no horizontal overflow at 375/768/1024/1440, and the
+app-wide reduced-motion contract. Contrast is enforced as a side effect —
+the suite drove the AA-safe `--*-strong` text shades in `app/sb-theme.css`.
+
 Screenshots land in `test-results/` and `playwright-report/` after
 each run.
 
@@ -93,8 +102,6 @@ Paths-filtered so docs-only and core-Python-only PRs don't pay the
 ## What this does NOT cover
 
 - Sidecar boot / API smoke — covered by `tests/dashboard/test_sidecar_routes.py`
-- Accessibility audits — `@axe-core/playwright` is installed but not
-  wired up here; follow-up PR
 - Visual-regression baselines — screenshots are artifacts for review,
-  not pixel-diff assertions. Pin pixel baselines once the design is
-  fully locked
+  not pixel-diff assertions. Pin Linux-captured pixel baselines in a
+  follow-up QA pass

@@ -277,7 +277,7 @@
   font-family: var(--f-mono);
   font-size: 12px;
   font-weight: 600;
-  color: var(--green);
+  color: var(--green-strong);
 }
 .arrow {
   color: var(--ink-3);

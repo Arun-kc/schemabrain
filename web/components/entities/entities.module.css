@@ -89,7 +89,7 @@
 }
 
 .statNum[data-tone="alarm"] {
-  color: var(--alarm);
+  color: var(--alarm-strong);
 }
 
 .statLabel {
@@ -224,7 +224,7 @@
 }
 
 .entBtn:hover .entName {
-  color: var(--green);
+  color: var(--green-strong);
 }
 
 .groupCell {
@@ -243,7 +243,7 @@
 }
 
 .row:hover .openArrow {
-  color: var(--green);
+  color: var(--green-strong);
 }
 
 /* ---------- Empty state ---------- */
@@ -320,7 +320,7 @@
   display: block;
   font-family: var(--font-mono);
   font-size: 0.875rem;
-  color: var(--green);
+  color: var(--green-strong);
   background: var(--panel-2);
   border: 1px solid var(--hair-2);
   padding: 0.5rem 0.75rem;

@@ -16,6 +16,7 @@
  */
 
 import { expect, test } from "@playwright/test";
+import { expectNoSeriousA11yViolations } from "./a11y";
 import { pinTheme, themeForProject } from "./theme";
 
 // Pin the theme via localStorage before the first Next.js hydration runs,
@@ -119,6 +120,24 @@ test.describe("dashboard E2E smoke", () => {
 
     await page.screenshot({ path: "test-results/04-audit.png", fullPage: true });
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
+  });
+
+  test("PII matrix has no serious or critical accessibility violations", async ({ page }) => {
+    await page.goto("/pii");
+    await expect(page.getByRole("heading", { name: /PII matrix/i })).toBeVisible();
+    await expectNoSeriousA11yViolations(page);
+  });
+
+  test("refusals timeline has no serious or critical accessibility violations", async ({ page }) => {
+    await page.goto("/refusals");
+    await expect(page.getByRole("heading", { name: /Refusals/i })).toBeVisible();
+    await expectNoSeriousA11yViolations(page);
+  });
+
+  test("audit ledger has no serious or critical accessibility violations", async ({ page }) => {
+    await page.goto("/audit");
+    await expect(page.getByRole("heading", { name: /Audit/i })).toBeVisible();
+    await expectNoSeriousA11yViolations(page);
   });
 
   test("source id auto-resolves in the shell source selector", async ({ page }) => {

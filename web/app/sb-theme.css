@@ -56,8 +56,13 @@
   --hair: oklch(0.86 0.008 270);
   --hair-2: oklch(0.90 0.006 270);
   --ink: oklch(0.22 0.012 275);
-  --ink-2: oklch(0.22 0.012 275 / 0.66);
-  --ink-3: oklch(0.22 0.012 275 / 0.45);
+  --ink-2: oklch(0.22 0.012 275 / 0.73);
+  /* Opaque, not the old 0.45-alpha tint: muted text (nav-group titles, search
+     placeholder, ⌘K hint, source meta, policy strip meta) must clear WCAG-AA
+     4.5:1 on the white panel, the off-white --bg-1 rail, AND the pale-red policy
+     floor row. --ink-2 was bumped 0.66→0.73 to stay a clear step darker than
+     this opaque --ink-3. Verified by the per-surface axe sweep in tests/e2e. */
+  --ink-3: oklch(0.48 0.012 275);
   --ink-on-accent: oklch(0.99 0.01 162);
 
   --green: oklch(0.58 0.15 162);
@@ -69,6 +74,17 @@
   --pii-2: oklch(0.70 0.16 65);
   --pii-3: oklch(0.60 0.19 40);
   --alarm: oklch(0.55 0.22 25);
+
+  /* AA-safe TEXT shades. The vivid accents above stay for fills (status dots,
+     active bars, node rings, glows, sparklines); these darker variants are used
+     wherever an accent is small TEXT on its own pale tint (chips, selected
+     states, pills, labels), to clear WCAG-AA 4.5:1 on paper. --green-strong also
+     fills the primary button under white ink. Verified by the axe sweep. */
+  --green-strong: oklch(0.45 0.15 162);
+  --cyan-strong: oklch(0.46 0.13 230);
+  --amber-strong: oklch(0.52 0.13 75);
+  --pii-2-strong: oklch(0.52 0.16 65);
+  --alarm-strong: oklch(0.50 0.22 25);
 
   --shadow: 0 14px 36px oklch(0.25 0.02 275 / 0.12);
   --shadow-pop: 0 20px 50px oklch(0.25 0.02 275 / 0.18);
@@ -94,7 +110,9 @@
   --hair-2: oklch(0.45 0.03 278 / 0.22);
   --ink: oklch(0.97 0.010 280);
   --ink-2: oklch(0.97 0.010 280 / 0.64);
-  --ink-3: oklch(0.97 0.010 280 / 0.42);
+  /* Opaque, not the old 0.42-alpha tint: muted text must clear WCAG-AA 4.5:1 on
+     the dark --bg / --bg-1 surfaces. Verified by the per-surface axe sweep. */
+  --ink-3: oklch(0.70 0.010 280);
   --ink-on-accent: oklch(0.18 0.03 162);
 
   --green: oklch(0.82 0.16 160);
@@ -106,6 +124,15 @@
   --pii-2: oklch(0.80 0.15 70);
   --pii-3: oklch(0.74 0.18 45);
   --alarm: oklch(0.66 0.23 25);
+
+  /* AA-safe TEXT shades (dark). On the dark surfaces the chromatic accents
+     already clear AA as text, so most equal their base; only --alarm lightens
+     so the catastrophic PII chips clear 4.5:1 on the dark-red tint. */
+  --green-strong: oklch(0.82 0.16 160);
+  --cyan-strong: oklch(0.82 0.13 210);
+  --amber-strong: oklch(0.83 0.15 75);
+  --pii-2-strong: oklch(0.80 0.15 70);
+  --alarm-strong: oklch(0.74 0.20 25);
 
   --shadow: 0 18px 48px oklch(0 0 0 / 0.5);
   --shadow-pop: 0 24px 64px oklch(0 0 0 / 0.6);

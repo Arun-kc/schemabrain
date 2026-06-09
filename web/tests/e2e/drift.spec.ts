@@ -14,6 +14,7 @@
  */
 
 import { expect, type Page, test } from "@playwright/test";
+import { expectNoSeriousA11yViolations } from "./a11y";
 import { pinTheme, themeForProject } from "./theme";
 
 test.beforeEach(async ({ context }, testInfo) => {
@@ -80,6 +81,14 @@ function trackWrites(page: Page): string[] {
 }
 
 test.describe("Drift surface E2E smoke", () => {
+  test("has no serious or critical accessibility violations", async ({ page }) => {
+    await routeDrift(page, STALE);
+    await page.goto("/drift");
+
+    await expect(page.getByRole("heading", { name: "Drift", exact: true })).toBeVisible();
+    await expectNoSeriousA11yViolations(page);
+  });
+
   test("stale: hero + risk cards render, actions are copy-only (GET-only)", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));

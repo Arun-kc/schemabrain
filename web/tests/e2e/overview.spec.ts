@@ -11,6 +11,7 @@
  */
 
 import { expect, test } from "@playwright/test";
+import { expectNoSeriousA11yViolations } from "./a11y";
 import { pinTheme, themeForProject } from "./theme";
 
 test.beforeEach(async ({ context }, testInfo) => {
@@ -54,6 +55,16 @@ const OVERVIEW = {
     metric_names: ["active_users", "mrr_cents"],
   },
 };
+
+test("overview has no serious or critical accessibility violations", async ({ page }) => {
+  await page.route("**/api/overview*", (route) => route.fulfill({ json: OVERVIEW }));
+  await page.goto("/overview");
+
+  await expect(
+    page.getByRole("heading", { name: /Agents are reasoning over a protected graph/ }),
+  ).toBeVisible();
+  await expectNoSeriousA11yViolations(page);
+});
 
 test("overview renders the hero and the 6 bento cards with live links", async ({ page }) => {
   const errors: string[] = [];

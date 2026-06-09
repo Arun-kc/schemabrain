@@ -112,13 +112,13 @@
 }
 
 .statNum[data-tone="alarm"] {
-  color: var(--alarm);
+  color: var(--alarm-strong);
 }
 .statNum[data-tone="cyan"] {
-  color: var(--cyan);
+  color: var(--cyan-strong);
 }
 .statNum[data-tone="green"] {
-  color: var(--green);
+  color: var(--green-strong);
 }
 
 .statLabel {
@@ -141,7 +141,7 @@
   font-family: var(--font-mono);
   font-size: 0.8125rem;
   font-weight: 600;
-  color: var(--cyan);
+  color: var(--cyan-strong);
   background: none;
   border: none;
   padding: 0;
@@ -213,13 +213,13 @@
 }
 
 .verifyStatus[data-state="done"] {
-  color: var(--green);
+  color: var(--green-strong);
 }
 .verifyStatus[data-state="broken"] {
-  color: var(--alarm);
+  color: var(--alarm-strong);
 }
 .verifyStatus[data-state="advanced"] {
-  color: var(--amber);
+  color: var(--amber-strong);
 }
 
 .spin {
@@ -255,7 +255,7 @@
 }
 
 .bannerBroken .bannerIcon {
-  color: var(--alarm);
+  color: var(--alarm-strong);
 }
 
 .bannerAdvanced {
@@ -265,7 +265,7 @@
 }
 
 .bannerAdvanced .bannerIcon {
-  color: var(--amber);
+  color: var(--amber-strong);
 }
 
 .bannerIcon {
@@ -433,17 +433,17 @@
   white-space: nowrap;
 }
 .costChip[data-cost="small"] {
-  color: var(--green);
+  color: var(--green-strong);
   border-color: color-mix(in oklch, var(--green) 40%, transparent);
   background: color-mix(in oklch, var(--green) 12%, transparent);
 }
 .costChip[data-cost="medium"] {
-  color: var(--amber);
+  color: var(--amber-strong);
   border-color: color-mix(in oklch, var(--amber) 45%, transparent);
   background: color-mix(in oklch, var(--amber) 13%, transparent);
 }
 .costChip[data-cost="large"] {
-  color: var(--alarm);
+  color: var(--alarm-strong);
   border-color: color-mix(in oklch, var(--alarm) 50%, transparent);
   background: color-mix(in oklch, var(--alarm) 13%, transparent);
 }
@@ -455,7 +455,7 @@
   gap: 0.4rem;
   font-family: var(--font-mono);
   font-size: 0.75rem;
-  color: var(--cyan);
+  color: var(--cyan-strong);
   overflow: hidden;
 }
 
@@ -501,14 +501,14 @@
 }
 
 .proofState[data-state="proven"] {
-  color: var(--green);
+  color: var(--green-strong);
 }
 .proofState[data-state="edited"],
 .proofState[data-state="broken"] {
-  color: var(--alarm);
+  color: var(--alarm-strong);
 }
 .proofState[data-state="advanced"] {
-  color: var(--amber);
+  color: var(--amber-strong);
 }
 .proofState[data-state="unavailable"] {
   color: var(--ink-3);
@@ -604,7 +604,7 @@
 }
 
 .ladderHash {
-  color: var(--cyan);
+  color: var(--cyan-strong);
   word-break: break-all;
   line-height: 1.4;
 }
@@ -627,12 +627,12 @@
 }
 
 .ladderVerdict[data-ok="true"] {
-  color: var(--green);
+  color: var(--green-strong);
   background: color-mix(in oklch, var(--green) 8%, transparent);
 }
 
 .ladderVerdict[data-ok="false"] {
-  color: var(--alarm);
+  color: var(--alarm-strong);
   background: color-mix(in oklch, var(--alarm) 8%, transparent);
 }
 
@@ -673,7 +673,7 @@
 }
 
 .copyHash:hover {
-  color: var(--green);
+  color: var(--green-strong);
 }
 
 .copyHash:focus-visible {
@@ -828,7 +828,7 @@
   display: block;
   font-family: var(--font-mono);
   font-size: 0.875rem;
-  color: var(--green);
+  color: var(--green-strong);
   background: var(--panel-2);
   border: 1px solid var(--hair-2);
   padding: 0.5rem 0.75rem;

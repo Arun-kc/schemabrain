@@ -20,6 +20,7 @@
  */
 
 import { expect, type Page, test } from "@playwright/test";
+import { expectNoSeriousA11yViolations } from "./a11y";
 import { pinTheme, themeForProject } from "./theme";
 
 test.beforeEach(async ({ context }, testInfo) => {
@@ -125,6 +126,15 @@ async function dragNode(page: Page, id: string, dx: number, dy: number): Promise
 }
 
 test.describe("Knowledge graph surface E2E smoke", () => {
+  test("has no serious or critical accessibility violations", async ({ page }) => {
+    await routeGraph(page, GRAPH);
+    await page.goto("/graph");
+
+    await expect(page.getByRole("region", { name: "Knowledge graph" })).toBeVisible();
+    await expect(page.locator('.react-flow__node[data-id="user"]')).toBeVisible();
+    await expectNoSeriousA11yViolations(page);
+  });
+
   test("renders entity nodes + relationship edges, read-only (GET-only)", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));

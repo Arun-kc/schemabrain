@@ -61,12 +61,12 @@
   justify-content: center;
   flex-shrink: 0;
   border: 2px solid color-mix(in oklch, var(--amber) 50%, transparent);
-  color: var(--amber);
+  color: var(--amber-strong);
 }
 
 .hero.fresh .ring {
   border-color: color-mix(in oklch, var(--green) 50%, transparent);
-  color: var(--green);
+  color: var(--green-strong);
 }
 
 .heroBody {
@@ -122,7 +122,7 @@
 
 .upToDateIcon {
   display: inline-flex;
-  color: var(--green);
+  color: var(--green-strong);
 }
 
 /* ---------- kind filter toolbar ---------- */
@@ -217,11 +217,11 @@
 }
 
 .riskHigh {
-  color: var(--alarm);
+  color: var(--alarm-strong);
 }
 
 .riskMed {
-  color: var(--amber);
+  color: var(--amber-strong);
 }
 
 .riskLow {
@@ -316,7 +316,7 @@
 }
 
 .emptyIcon {
-  color: var(--green);
+  color: var(--green-strong);
 }
 
 /* ---------- loading / error ---------- */

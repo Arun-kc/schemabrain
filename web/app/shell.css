@@ -22,7 +22,8 @@
   z-index: 100;
   padding: 8px 14px;
   border-radius: var(--r-md);
-  background: var(--green);
+  /* --green-strong so the white --ink-on-accent label clears AA once focused. */
+  background: var(--green-strong);
   color: var(--ink-on-accent);
   font-family: var(--f-mono);
   font-size: 12.5px;
@@ -240,6 +241,9 @@
   display: flex;
   align-items: center;
   gap: 11px;
+  /* min-height keeps the touch/click target ≥44px (wsSHELL-responsive-a11y);
+     align-items:center keeps the label + icon centred in the taller box. */
+  min-height: 44px;
   padding: 9px 10px;
   border-radius: var(--r-md);
   color: var(--ink-2);
@@ -261,7 +265,7 @@
 }
 .sb-nav-item.active {
   background: color-mix(in oklch, var(--green) 14%, transparent);
-  color: var(--green);
+  color: var(--green-strong);
 }
 .sb-nav-item.active::before {
   content: "";
