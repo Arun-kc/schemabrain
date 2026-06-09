@@ -25,11 +25,9 @@ import type { Page } from "@playwright/test";
 import auditMerkleRoot from "./fixtures/audit-merkle-root.json";
 import auditRefusals from "./fixtures/audit-refusals.json";
 import auditRows from "./fixtures/audit-rows.json";
-import auditVerify from "./fixtures/audit-verify.json";
 import dict from "./fixtures/dict.json";
 import drift from "./fixtures/drift.json";
 import entities from "./fixtures/entities.json";
-import entityUserColumns from "./fixtures/entity-user-columns.json";
 import graph from "./fixtures/graph.json";
 import meta from "./fixtures/meta.json";
 import overview from "./fixtures/overview.json";
@@ -48,8 +46,14 @@ export const FROZEN_NOW_MS = 1_781_014_180_000;
 /** A minimal healthy response so the shell never paints a disconnected state. */
 const HEALTH = { status: "ok", store: "ok", store_reason: null, uptime_s: 1 } as const;
 
-/** Exact-pathname → fixture. Query strings (`?source_connection_id=…`,
- * `?limit=…`) are ignored — we match on the pathname only. */
+/**
+ * Exact-pathname → fixture. Query strings (`?source_connection_id=…`,
+ * `?limit=…`) are ignored — we match on the pathname only. This is the complete
+ * set the 9 surfaces fetch on load; endpoints reached only via interaction
+ * (`/api/audit/verify` on a Verify click, `/api/entities/{name}/columns` on a
+ * drilldown open) aren't fetched by the screenshots, so they're intentionally
+ * absent — an unmocked call hits the deterministic 404 below.
+ */
 const FIXTURE_BY_PATH: Record<string, unknown> = {
   "/api/health": HEALTH,
   "/api/meta": meta,
@@ -64,14 +68,7 @@ const FIXTURE_BY_PATH: Record<string, unknown> = {
   "/api/audit/rows": auditRows,
   "/api/audit/refusals": auditRefusals,
   "/api/audit/merkle/root": auditMerkleRoot,
-  "/api/audit/verify": auditVerify,
 };
-
-/** Parametric routes (`/api/entities/{name}/columns`) the index/drilldown hit. */
-function matchParametric(pathname: string): unknown {
-  if (/^\/api\/entities\/[^/]+\/columns$/.test(pathname)) return entityUserColumns;
-  return undefined;
-}
 
 /**
  * Intercept every `/api/*` request and answer from the frozen fixtures. Any
@@ -82,7 +79,7 @@ function matchParametric(pathname: string): unknown {
 export async function routeAllApis(page: Page): Promise<void> {
   await page.route("**/api/**", async (route) => {
     const { pathname } = new URL(route.request().url());
-    const json = FIXTURE_BY_PATH[pathname] ?? matchParametric(pathname);
+    const json = FIXTURE_BY_PATH[pathname];
     if (json === undefined) {
       await route.fulfill({
         status: 404,
