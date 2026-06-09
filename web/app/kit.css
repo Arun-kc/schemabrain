@@ -25,10 +25,12 @@
 }
 .sb-btn:hover {
   border-color: var(--green);
-  color: var(--green);
+  color: var(--green-strong);
 }
 .sb-btn.primary {
-  background: var(--green);
+  /* --green-strong (not --green) so white --ink-on-accent clears AA on the
+     fill; in dark theme --green-strong == the vivid base, so no visual change. */
+  background: var(--green-strong);
   color: var(--ink-on-accent);
   border-color: transparent;
 }
@@ -104,13 +106,13 @@
   border-radius: 50%;
 }
 .sb-chip.contact {
-  color: var(--pii-2);
+  color: var(--pii-2-strong);
   border-color: color-mix(in oklch, var(--pii-2) 45%, transparent);
   background: color-mix(in oklch, var(--pii-2) 12%, transparent);
 }
 .sb-chip.payment,
 .sb-chip.auth {
-  color: var(--alarm);
+  color: var(--alarm-strong);
   border-color: color-mix(in oklch, var(--alarm) 50%, transparent);
   background: color-mix(in oklch, var(--alarm) 13%, transparent);
 }
@@ -124,12 +126,12 @@
   background: var(--panel-2);
 }
 .sb-chip.green {
-  color: var(--green);
+  color: var(--green-strong);
   border-color: color-mix(in oklch, var(--green) 40%, transparent);
   background: color-mix(in oklch, var(--green) 12%, transparent);
 }
 .sb-chip.cyan {
-  color: var(--cyan);
+  color: var(--cyan-strong);
   border-color: color-mix(in oklch, var(--cyan) 40%, transparent);
   background: color-mix(in oklch, var(--cyan) 12%, transparent);
 }
@@ -194,7 +196,7 @@
   transition: transform var(--dur-2) var(--ease-out), opacity var(--dur-2) var(--ease-out);
   background: var(--panel-2);
   border: 1px solid color-mix(in oklch, var(--green) 30%, transparent);
-  color: var(--green);
+  color: var(--green-strong);
   font-family: var(--f-mono);
   font-size: 12px;
   padding: 9px 16px;

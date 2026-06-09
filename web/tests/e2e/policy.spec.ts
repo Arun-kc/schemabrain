@@ -20,6 +20,7 @@
  */
 
 import { expect, type Page, test } from "@playwright/test";
+import { expectNoSeriousA11yViolations } from "./a11y";
 import { pinTheme, themeForProject } from "./theme";
 
 test.beforeEach(async ({ context }, testInfo) => {
@@ -57,6 +58,17 @@ async function collapseAllGroups(page: Page): Promise<void> {
 }
 
 test.describe("Policy editor E2E smoke", () => {
+  test("has no serious or critical accessibility violations", async ({ page }) => {
+    await page.goto("/policy");
+
+    await expect(page.getByRole("heading", { name: "Policy", exact: true })).toBeVisible();
+    // Expand the groups so the per-column radiogroup controls are mounted and
+    // included in the scan (the richest interactive DOM on this surface).
+    await expandAllGroups(page);
+    await expect(page.getByRole("radiogroup").first()).toBeVisible();
+    await expectNoSeriousA11yViolations(page);
+  });
+
   test("renders the grouped grid + category strip + yaml + diff panels", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));

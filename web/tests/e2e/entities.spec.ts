@@ -14,6 +14,7 @@
  */
 
 import { expect, type Page, test } from "@playwright/test";
+import { expectNoSeriousA11yViolations } from "./a11y";
 import { pinTheme, themeForProject } from "./theme";
 
 test.beforeEach(async ({ context }, testInfo) => {
@@ -70,6 +71,14 @@ function trackWrites(page: Page): string[] {
 }
 
 test.describe("Entities surface E2E smoke", () => {
+  test("has no serious or critical accessibility violations", async ({ page }) => {
+    await routeEntities(page);
+    await page.goto("/entities");
+
+    await expect(page.getByRole("heading", { name: "Entities" })).toBeVisible();
+    await expectNoSeriousA11yViolations(page);
+  });
+
   test("renders the table, stats, and sortable headers, read-only (GET-only)", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));

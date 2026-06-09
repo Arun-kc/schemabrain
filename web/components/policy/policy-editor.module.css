@@ -58,7 +58,7 @@
 }
 
 .bannerIcon {
-  color: var(--amber);
+  color: var(--amber-strong);
   flex-shrink: 0;
   display: inline-flex;
 }
@@ -189,17 +189,17 @@
 }
 
 .catWide {
-  color: var(--amber);
+  color: var(--amber-strong);
 }
 
 .floorLock {
-  color: var(--alarm);
+  color: var(--alarm-strong);
 }
 
 .floorTag {
   font-family: var(--f-mono);
   font-size: 10px;
-  color: var(--alarm);
+  color: var(--alarm-strong);
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -242,17 +242,17 @@
 
 .seg button.onBlock {
   background: color-mix(in oklch, var(--alarm) 18%, transparent);
-  color: var(--alarm);
+  color: var(--alarm-strong);
 }
 
 .seg button.onRedact {
   background: color-mix(in oklch, var(--cyan) 18%, transparent);
-  color: var(--cyan);
+  color: var(--cyan-strong);
 }
 
 .seg button.onAllow {
   background: color-mix(in oklch, var(--green) 18%, transparent);
-  color: var(--green);
+  color: var(--green-strong);
 }
 
 .empty {
@@ -267,7 +267,7 @@
   border: none;
   padding: 0;
   font: inherit;
-  color: var(--green);
+  color: var(--green-strong);
   text-decoration: underline;
   cursor: pointer;
 }
@@ -314,13 +314,13 @@
 .stripOn {
   border-color: color-mix(in oklch, var(--alarm) 45%, transparent);
   background: color-mix(in oklch, var(--alarm) 12%, transparent);
-  color: var(--alarm);
+  color: var(--alarm-strong);
 }
 
 .stripFloor {
   border-color: color-mix(in oklch, var(--alarm) 30%, transparent);
   background: color-mix(in oklch, var(--alarm) 8%, transparent);
-  color: var(--alarm);
+  color: var(--alarm-strong);
   cursor: default;
 }
 
@@ -427,7 +427,7 @@
 
 .statusSeg button.statusOn {
   background: color-mix(in oklch, var(--green) 16%, transparent);
-  color: var(--green);
+  color: var(--green-strong);
 }
 
 .searchClear {
@@ -549,7 +549,7 @@
 }
 
 .miniBlock {
-  color: var(--alarm);
+  color: var(--alarm-strong);
 }
 
 .miniFloor {
@@ -557,11 +557,11 @@
 }
 
 .miniAllow {
-  color: var(--green);
+  color: var(--green-strong);
 }
 
 .miniRedact {
-  color: var(--cyan);
+  color: var(--cyan-strong);
 }
 
 .groupPanel {
@@ -613,11 +613,11 @@
 }
 
 .tkKey {
-  color: var(--cyan);
+  color: var(--cyan-strong);
 }
 
 .tkValue {
-  color: var(--green);
+  color: var(--green-strong);
 }
 
 .tkComment {
@@ -625,7 +625,7 @@
 }
 
 .tkAlarm {
-  color: var(--alarm);
+  color: var(--alarm-strong);
 }
 
 .tkPunct {
@@ -678,7 +678,7 @@
 }
 
 .diffRow.add .diffSign {
-  color: var(--green);
+  color: var(--green-strong);
 }
 
 .diffRow.remove {
@@ -686,7 +686,7 @@
 }
 
 .diffRow.remove .diffSign {
-  color: var(--alarm);
+  color: var(--alarm-strong);
 }
 
 .diffRow.context {
