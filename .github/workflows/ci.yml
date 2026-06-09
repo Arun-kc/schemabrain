@@ -478,3 +478,87 @@ jobs:
           # 7-day retention is plenty for triaging a failed run; longer
           # would just burn artifact storage.
           retention-days: 7
+
+  site-build:
+    name: Marketing site (build + E2E)
+    # The standalone marketing landing (site/) is a separate Next static-export
+    # app deployed to Vercel — out of the pip wheel. Vercel owns the production
+    # deploy; this job is the PR-gate that the site typechecks, lints, builds,
+    # and passes its smoke. Gated on site/** so dashboard/docs/Python PRs skip
+    # it. (Brand drift between web/ and site/ is caught separately by the
+    # tests/test_brand_tokens_sync.py gate in lint-and-unit.)
+    runs-on: ubuntu-latest
+    needs: lint-and-unit
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Detect site-relevant changes
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            site:
+              - 'site/**'
+              - '.github/workflows/ci.yml'
+
+      - name: Set up pnpm
+        if: steps.filter.outputs.site == 'true'
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - name: Set up Node 20
+        if: steps.filter.outputs.site == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      - name: Install site dependencies
+        if: steps.filter.outputs.site == 'true'
+        working-directory: site
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        if: steps.filter.outputs.site == 'true'
+        working-directory: site
+        run: pnpm typecheck
+
+      - name: Lint
+        if: steps.filter.outputs.site == 'true'
+        working-directory: site
+        run: pnpm lint
+
+      - name: Build static export
+        if: steps.filter.outputs.site == 'true'
+        working-directory: site
+        run: pnpm build
+
+      - name: Cache Playwright browsers
+        if: steps.filter.outputs.site == 'true'
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-site-${{ runner.os }}-${{ hashFiles('site/pnpm-lock.yaml') }}
+
+      - name: Install Playwright Chromium (+OS deps)
+        if: steps.filter.outputs.site == 'true'
+        working-directory: site
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Playwright smoke
+        if: steps.filter.outputs.site == 'true'
+        working-directory: site
+        run: pnpm test:e2e
+
+      - name: Upload Playwright artifacts on failure
+        if: failure() && steps.filter.outputs.site == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-playwright-report
+          path: |
+            site/playwright-report/
+            site/test-results/
+          retention-days: 7

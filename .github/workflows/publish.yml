@@ -110,7 +110,10 @@ jobs:
           wheel=$(ls dist/*.whl)
           echo "Inspecting $wheel"
           listing=$(unzip -l "$wheel")
-          # index.html + the _next bundle = the SPA shell loads at all.
+          # index.html is the root redirect stub (forwards `/` → `/overview`,
+          # the dashboard home — the marketing landing now ships separately in
+          # site/). Its presence + the _next bundle prove the export ran at all;
+          # the real "home loads" guard is the overview.html route check below.
           echo "$listing" | grep -q "schemabrain/dashboard/static/index.html" \
             || { echo "BLOCKED: wheel ships no dashboard/static/index.html (empty dashboard)"; exit 1; }
           next_count=$(echo "$listing" | grep -c "/dashboard/static/_next/" || true)

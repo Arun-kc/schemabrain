@@ -1,0 +1,34 @@
+/*
+ * Marketing site global stylesheet.
+ *
+ * The site reuses the dashboard's design-token + component-kit layer verbatim
+ * (synced from web/ by scripts/sync_brand_tokens.py) plus the landing-only
+ * styles ported from the design handoff. No Tailwind: the landing is authored
+ * in hand-written, token-driven CSS, so the utility layer would be dead weight
+ * against the <30kb CSS budget.
+ *
+ * Theme: tokens are scoped under `.sb-app`; the dark ("Observatory") override is
+ * `[data-theme="dark"] .sb-app`, driven by the `data-theme` attribute the inline
+ * init script sets on <html> (see app/layout.tsx). The page wrapper carries
+ * `.sb-app` so all `var(--…)` tokens resolve.
+ */
+
+@import "./sb-theme.css";
+@import "./kit.css";
+@import "./landing.css";
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+/* Page backdrop for overscroll/rubber-band — the `.sb-app` wrapper paints the
+ * real surface, but tokens are scoped to it, so mirror just the base bg here.
+ * Atlas (light) is the default; Observatory (dark) when <html data-theme>. */
+html {
+  background: oklch(0.985 0.003 95);
+}
+html[data-theme="dark"] {
+  background: oklch(0.16 0.028 275);
+}

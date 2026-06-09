@@ -1,0 +1,17 @@
+# Next.js
+/.next/
+/out/
+
+# Playwright
+/test-results/
+/playwright-report/
+
+# dependencies
+/node_modules/
+
+# misc
+*.tsbuildinfo
+next-env.d.ts
+
+# vercel
+.vercel

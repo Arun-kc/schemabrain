@@ -2343,13 +2343,19 @@ def _register_html_fallback(app: FastAPI) -> None:
 
 
 def _register_fallback_landing(app: FastAPI) -> None:
-    """Serve a minimal landing page at ``/`` when no static export exists.
+    """Serve a minimal "sidecar is alive" probe at ``/`` when no static
+    export exists.
 
-    The page is dev-mode only — it renders when the wheel has not
-    bundled the Next.js export and when the operator is not running
-    ``pnpm dev`` separately. It fetches live data from the /api/*
-    routes and shows the operator a real surface so the sidecar feels
-    "alive" the moment it boots, instead of returning 404 at /.
+    Dev-mode only — it renders when the wheel has not bundled the
+    Next.js export and the operator is not running ``pnpm dev``
+    separately. It fetches live data from the /api/* routes so the
+    sidecar feels alive the moment it boots, instead of returning 404
+    at /. It is NOT the marketing landing (that now ships as the
+    separate ``site/`` app, deployed to the web — see
+    docs/internal/landing_site_separation_plan_2026_06_09.md). With a
+    real export present, ``/`` instead serves the dashboard's
+    ``index.html`` redirect stub, which forwards to the home at
+    ``/overview``.
 
     Inline HTML on purpose: no Jinja, no template files. The full
     React UI is the production surface; this is just a working
