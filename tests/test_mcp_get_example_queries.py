@@ -300,6 +300,41 @@ class TestEnvelopeSuccess:
         finally:
             store.close()
 
+    def test_success_confidence_is_medium_with_query_log_provenance(self, tmp_path: Path) -> None:
+        # Charter v1.2: example queries are mined from observed SQL
+        # (`pg_stat_statements`), so the populated envelope must DERIVE
+        # confidence as MEDIUM via `(observed_in_query_log, applied)` —
+        # NOT the pre-1.2 hardcoded HIGH that conflated query-log-mined
+        # SQL with FK-derived facts. Provenance carries the 2D signal so
+        # the agent can tell this apart from schema-sourced data.
+        import asyncio
+
+        server, store = _build_test_server(tmp_path)
+        try:
+            _insert_example(
+                store,
+                source_id="sid",
+                schema="public",
+                table="orders",
+                sql_text="SELECT * FROM orders",
+                observation_count=10,
+            )
+            _content, structured = asyncio.run(
+                server.call_tool(
+                    "get_example_queries",
+                    {"qualified_name": "public.orders"},
+                )
+            )
+            envelope = ToolResponse.model_validate(structured)
+            assert envelope.status == "success"
+            assert envelope.confidence == "MEDIUM"
+            assert envelope.provenance is not None
+            assert envelope.provenance.source == "inferred"
+            assert envelope.provenance.inference_method == "observed_in_query_log"
+            assert envelope.provenance.validation_state == "applied"
+        finally:
+            store.close()
+
 
 class TestEnvelopeEmpty:
     def test_indexed_table_no_examples_yields_empty_status(self, tmp_path: Path) -> None:

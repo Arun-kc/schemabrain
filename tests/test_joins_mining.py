@@ -159,6 +159,40 @@ class TestExtractHappyPath:
         assert extracted.schema_b == ""
 
 
+class TestSqlglotVersionRegression:
+    """Tripwire for the sqlglot major-version drift behind the `<27.0` pin.
+
+    sqlglot 30.x renamed the `exp.Select` arg key from `"from"` to
+    `"from_"`. `mining.py:_build_alias_map` reads the FROM-side table via
+    `select.args.get("from")`, so on 30.x that lookup returns None: the
+    FROM-side table never enters the alias map, every ON predicate that
+    references it is dropped, and `extract_join_predicates` returns an
+    EMPTY set with no error raised (a silent semantic break, not a parse
+    failure).
+
+    This test asserts the FROM-side table is resolved — it passes on the
+    pinned 26.x and FAILS on sqlglot 30.x. The lock-free CI smoke job
+    runs it against whatever a fresh `pip install` resolves, so widening
+    the pin to admit 30.x without porting the AST walk off `args.get(
+    "from")` (e.g. to `select.find(exp.From)`) fails loudly here rather
+    than silently emptying the join-mining path for end users.
+    """
+
+    def test_from_side_table_is_resolved_not_silently_dropped(self) -> None:
+        # `users` is the FROM-side table (the one read via the renamed
+        # arg key); `orders` is the JOIN-side table. A correct extraction
+        # resolves BOTH and yields exactly one join between them.
+        sql = "SELECT * FROM public.users u JOIN public.orders o ON u.id = o.user_id"
+        result = extract_join_predicates(sql)
+        assert result != frozenset(), (
+            "join-mining returned an empty set — sqlglot likely renamed the "
+            "FROM arg key (30.x: 'from' -> 'from_'); see the pyproject pin"
+        )
+        extracted = next(iter(result))
+        tables = {extracted.table_a, extracted.table_b}
+        assert tables == {"orders", "users"}
+
+
 # ----- extract_join_predicates: skip cases -----------------------------------
 
 
