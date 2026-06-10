@@ -695,3 +695,101 @@ jobs:
             site/playwright-report/
             site/test-results/
           retention-days: 7
+
+  lockfree-install-smoke:
+    name: Lock-free install smoke (fresh resolver)
+    # Catches dependency-resolution drift that uv.lock hides. Every other
+    # job installs via `uv sync`, which pins to uv.lock — but end users run
+    # `pip install schemabrain`, which resolves dependency RANGES fresh
+    # against PyPI. A wide upper bound (e.g. `sqlglot<27`, `fastapi<1.0`,
+    # `anthropic<1.0`) resolving to a newer breaking release is invisible to
+    # the locked suite and ships silently to users. (Concretely: sqlglot 30.x
+    # renamed the `exp.Select` "from" arg key to "from_", silently emptying
+    # join mining — CI stayed green on the locked 26.x while a fresh
+    # `pip install` resolved the broken 30.x.) This job builds the wheel,
+    # installs it into a clean venv with pip's resolver (NO uv.lock), and
+    # smoke-tests the CLI, the MCP import surface, and the join-mining path
+    # (mirrors tests/test_joins_mining.py::TestSqlglotVersionRegression).
+    runs-on: ubuntu-latest
+    needs: lint-and-unit
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Detect dependency / source changes
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          # Dependency ranges live in pyproject.toml; a source change can
+          # also break import on a fresh resolve. Skip docs-only PRs to keep
+          # the typical critical path fast.
+          filters: |
+            deps:
+              - 'pyproject.toml'
+              - 'schemabrain/**'
+              - '.github/workflows/ci.yml'
+
+      - name: Install uv
+        if: steps.filter.outputs.deps == 'true'
+        # Same point-tag pin as the rest of this workflow (see lint-and-unit
+        # for the @v8-is-unsafe rationale). Used only to build the wheel and
+        # provision Python — the install itself goes through pip so the
+        # resolver matches what a `pip install` end user actually gets.
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.11
+        if: steps.filter.outputs.deps == 'true'
+        run: uv python install 3.11
+
+      - name: Build wheel
+        # `--wheel` (not bare `uv build`) so bundled artifacts (eval golden
+        # sets + SQL fixtures) ride along; the sdist target strips gitignored
+        # artifacts. Matches the release packaging step in publish.yml.
+        if: steps.filter.outputs.deps == 'true'
+        run: uv build --wheel
+
+      - name: Install the wheel with a FRESH pip resolver (no uv.lock)
+        # A clean, seeded venv + `pip install` of the built wheel resolves
+        # every dependency range against PyPI from scratch — exactly the path
+        # `pip install schemabrain[ui]` takes for an end user. The `[ui]`
+        # extra is included so the fastapi/uvicorn/sse-starlette upper bounds
+        # resolve fresh too, not just the core deps. The wheel filename is
+        # captured into a var so the `[ui]` extra isn't mangled by shell glob
+        # bracket-expansion.
+        if: steps.filter.outputs.deps == 'true'
+        run: |
+          uv venv --seed --python 3.11 "$RUNNER_TEMP/freshenv"
+          WHEEL=$(ls dist/schemabrain-*.whl | head -1)
+          "$RUNNER_TEMP/freshenv/bin/pip" install "${WHEEL}[ui]"
+
+      - name: Smoke the shipped wheel
+        # Run from $RUNNER_TEMP so the repo's source tree is NOT on sys.path:
+        # `import schemabrain` then resolves to the installed wheel, not the
+        # checkout. Asserts the CLI entry point works, the MCP import surface
+        # loads, and join mining resolves the FROM-side table — the exact path
+        # sqlglot 30.x silently empties. A drift here fails the build loudly
+        # instead of shipping an empty join-mining path to users.
+        if: steps.filter.outputs.deps == 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/freshenv/bin/schemabrain" --version
+          "$RUNNER_TEMP/freshenv/bin/python" - <<'PY'
+          import sqlglot
+          print("resolved sqlglot:", sqlglot.__version__)
+          from schemabrain.mcp.server import build_server
+          assert callable(build_server), "MCP build_server is not importable"
+          from schemabrain.joins.mining import extract_join_predicates
+          sql = "SELECT * FROM public.users u JOIN public.orders o ON u.id = o.user_id"
+          result = extract_join_predicates(sql)
+          assert result, (
+              "join mining returned an empty set on a fresh resolve — likely a "
+              "sqlglot major bump renaming the FROM arg key (30.x: 'from'->'from_'); "
+              "see the sqlglot pin in pyproject.toml"
+          )
+          tables = {t for j in result for t in (j.table_a, j.table_b)}
+          assert tables == {"orders", "users"}, f"unexpected tables resolved: {tables}"
+          print("lock-free smoke OK — CLI, MCP import, and join mining all green")
+          PY
