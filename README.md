@@ -361,7 +361,7 @@ The vision-launch feature set. These are in active development and **not** on Py
 
 - **Graph-first dashboard, 9 surfaces, dual-theme reskin** — an interactive Knowledge Graph (the signature surface), Entities index, Entity drilldown with a semantic pane, Data dictionary with Export-to-Markdown, plus the existing PII matrix, Refusals, Audit, an editable Policy editor, and Drift intelligence.
 - **New capabilities** — a persisted knowledge graph behind `/api/graph`; a `schemabrain docs` CLI that emits a Markdown/HTML data dictionary; per-column PII confidence; RFC-6962 Merkle-root audit proofs; hybrid retrieval (bge query-prefix + BM25 via RRF); two-tier model routing.
-- **Openness** — a Code of Conduct, good-first-issues, and GitHub Discussions. ([`ROADMAP.md`](ROADMAP.md) has already landed.)
+- **Openness** — good-first-issues and GitHub Discussions. ([`ROADMAP.md`](ROADMAP.md) and a [`Code of Conduct`](CODE_OF_CONDUCT.md) have landed.)
 
 ### Later — roadmap (deferred; future direction only)
 

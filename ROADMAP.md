@@ -59,8 +59,8 @@ ship with the next release:
   `schemabrain docs` CLI that emits a Markdown/HTML data dictionary;
   per-column PII confidence; RFC-6962 Merkle-root audit proofs; hybrid
   retrieval (bge query-prefix + BM25 via RRF); two-tier model routing.
-- **Openness** — a Code of Conduct, good-first-issues, and GitHub
-  Discussions (this `ROADMAP` is the first of these to land).
+- **Openness** — good-first-issues and GitHub
+  Discussions (this `ROADMAP` and a [`Code of Conduct`](CODE_OF_CONDUCT.md) have landed).
 
 ## Later — direction, not commitments
 
