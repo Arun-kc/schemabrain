@@ -507,6 +507,21 @@ jobs:
     # Build + uv sync + container deps + 72 screenshots; generous ceiling.
     timeout-minutes: 20
     steps:
+      - name: Trust the workspace for git (container UID mismatch)
+        # This is the ONLY job that runs INSIDE a container (the pinned
+        # Playwright image); every other job uses the bare runner. git in
+        # the container sees the /__w checkout as owned by a different UID
+        # than the container's root user and aborts the first git op with
+        # "dubious ownership" (exit 128) — which failed checkout/paths-filter
+        # on every run since this job landed. actions/checkout only adds a
+        # TEMPORARY safe.directory that it removes in its post step, so the
+        # later steps still tripped. Writing to the SYSTEM config
+        # (/etc/gitconfig) is HOME-independent and a trusted scope for
+        # safe.directory, so every git invocation in the job — checkout,
+        # paths-filter, the visual diff — trusts the tree. Runs before
+        # checkout and unconditionally (it must precede the paths filter).
+        run: git config --system --add safe.directory '*'
+
       - uses: actions/checkout@v6
 
       - name: Detect dashboard-relevant changes
