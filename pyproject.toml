@@ -36,10 +36,21 @@ dependencies = [
     # sqlglot is the SQL parser behind query log mining. v0.5 uses it
     # to extract the set of tables a `pg_stat_statements` row touches
     # and to filter DDL/transaction-control statements out of the
-    # example_queries write set. Pinned at the 25.x major; sqlglot
-    # bumps the parser semantics across majors, so widening the range
-    # is a deliberate review.
-    "sqlglot>=25.0,<31.0",
+    # example_queries write set. sqlglot bumps parser semantics across
+    # majors, so the upper bound is a deliberate, tested review.
+    #
+    # Capped below 27.0: sqlglot 30.x renamed the `exp.Select` arg key
+    # from `"from"` to `"from_"`, which silently breaks
+    # `joins/mining.py:_build_alias_map` — `select.args.get("from")`
+    # returns None, the FROM-side table never enters the alias map, and
+    # `extract_join_predicates` returns an empty set with NO error
+    # (see tests/test_joins_mining.py::TestSqlglotVersionRegression).
+    # The lock pins 26.x where the suite is green; the lock-free CI
+    # smoke job exercises whatever a fresh `pip install` resolves so
+    # this can't silently drift again. Widen the bound only after
+    # porting the AST walk off the version-specific `args.get("from")`
+    # key (e.g. to `select.find(exp.From)`).
+    "sqlglot>=25.0,<27.0",
     # PyYAML powers the entity YAML grammar parser
     # (`schemabrain entities apply <yaml-path>` and the in-process
     # loader behind it). It also arrives transitively via fastembed's

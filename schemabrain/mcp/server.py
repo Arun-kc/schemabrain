@@ -762,10 +762,18 @@ def build_server(
             )
         except Exception as exc:
             return _wrap_internal_error(exc)
+        # Physical-schema introspection: the table shape is read straight
+        # from the live information_schema, so HIGH is legitimate. Charter
+        # v1.2 — emit `provenance.source="schema"` so the agent knows the
+        # HIGH comes from direct introspection, not an LLM guess. Direct
+        # reads have no 2D `(inference_method, validation_state)` signal,
+        # so those stay None rather than being forced into an ill-fitting
+        # InferenceMethod.
         return ToolResponse[TableDescription](
             status="success",
             data=table,
             confidence="HIGH",
+            provenance=Provenance(source="schema"),
             follow_up_hints=["describe_column", "suggest_joins"],
         )
 
@@ -857,10 +865,15 @@ def build_server(
             )
         except Exception as exc:
             return _wrap_internal_error(exc)
+        # Same physical-schema introspection contract as describe_table:
+        # column detail is read directly from information_schema, so HIGH
+        # is legitimate and `provenance.source="schema"` makes the source
+        # explicit. No derived 2D signal — those fields stay None.
         return ToolResponse[ColumnDetail](
             status="success",
             data=column,
             confidence="HIGH",
+            provenance=Provenance(source="schema"),
             follow_up_hints=["describe_table"],
         )
 
@@ -924,10 +937,17 @@ def build_server(
                 confidence=None,
                 follow_up_hints=["describe_table"],
             )
+        # Example queries are mined from observed SQL (`pg_stat_statements`),
+        # not derived from declared constraints — Charter v1.2 derives the
+        # confidence from the 2D signal `(observed_in_query_log, applied)`
+        # → MEDIUM, rather than the pre-1.2 hardcoded HIGH that conflated
+        # query-log-mined SQL with FK-derived facts. Provenance carries the
+        # same signal so the agent can tell the two apart.
         return ToolResponse[ExampleQueriesResult](
             status="success",
             data=result,
-            confidence="HIGH",
+            confidence=derive_confidence("observed_in_query_log", "applied"),
+            provenance=_provenance_from_signal("observed_in_query_log", "applied"),
             follow_up_hints=["describe_table"],
         )
 
