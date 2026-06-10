@@ -5300,6 +5300,173 @@ class TestStageNextStep:
         # actionable next-step copy.
         assert outcome.message == "Ready"
 
+    @staticmethod
+    def _pg_config(base_config: WizardConfig, store_path: Path) -> WizardConfig:
+        return _dc_replace(
+            base_config,
+            source_url="postgresql+psycopg://u:p@localhost:5432/db",
+            store_path=store_path,
+        )
+
+    @staticmethod
+    def _seed_tables_entities_join(store_path: Path, source_id: str) -> None:
+        """Seed two indexed tables + two entities + one canonical join.
+
+        Writes go through the low-level store API (`write_entity` /
+        `write_canonical_join`), which — unlike the CLI apply commands —
+        does NOT refresh the graph projection. So after seeding,
+        `graph_nodes` / `graph_edges` are still empty: the rebuild under
+        test is the only thing that can populate them.
+        """
+        from schemabrain.core.entity import Entity, SingleTableBinding
+        from schemabrain.core.join import CanonicalJoin, JoinColumnPair
+        from schemabrain.core.models import Column, Table
+        from schemabrain.core.store import SQLiteStore
+
+        def _table(store: SQLiteStore, name: str) -> None:
+            store.write_table(
+                Table(
+                    name=name,
+                    schema_name="public",
+                    columns=(
+                        Column(
+                            name="id",
+                            table_name=name,
+                            schema_name="public",
+                            data_type="bigint",
+                            nullable=False,
+                            ordinal_position=1,
+                            is_primary_key=True,
+                        ),
+                    ),
+                ),
+                source_connection_id=source_id,
+            )
+
+        with SQLiteStore(path=store_path) as store:
+            _table(store, "orders")
+            _table(store, "users")
+            store.write_entity(
+                Entity(
+                    name="order",
+                    description="",
+                    binding=SingleTableBinding(qualified_table="public.orders"),
+                    identity="id",
+                ),
+                source_connection_id=source_id,
+            )
+            store.write_entity(
+                Entity(
+                    name="user",
+                    description="",
+                    binding=SingleTableBinding(qualified_table="public.users"),
+                    identity="id",
+                ),
+                source_connection_id=source_id,
+            )
+            store.write_canonical_join(
+                CanonicalJoin(
+                    name="order_to_user",
+                    description="",
+                    source_entity="order",
+                    target_entity="user",
+                    on=(JoinColumnPair(source_column="id", target_column="id"),),
+                    cardinality="many_to_one",
+                ),
+                source_connection_id=source_id,
+            )
+
+    def test_next_step_rebuilds_graph_projection_from_store(
+        self, base_config: WizardConfig, tmp_path: Path
+    ) -> None:
+        """wsINIT-graph-payoff (PR-22, ADR-0010): the closing stage refreshes
+        the persisted graph projection so `schemabrain dashboard`'s /graph
+        surface opens onto a populated graph right after init — the wizard's
+        own index/apply path never touched `graph_nodes` / `graph_edges`.
+        """
+        from schemabrain.core.store import SQLiteStore
+
+        store_path = tmp_path / "store.db"
+        cfg = self._pg_config(base_config, store_path)
+        source_id = wizard._source_id_for(cfg.source_url)
+        self._seed_tables_entities_join(store_path, source_id)
+
+        # Precondition: the projection is empty (seeding never built it).
+        with SQLiteStore(path=store_path) as store:
+            assert store.list_graph_nodes(source_connection_id=source_id) == []
+
+        outcome = wizard._stage_next_step(WizardContext(config=cfg))
+        assert outcome.status == "done"
+
+        with SQLiteStore(path=store_path) as store:
+            nodes = {n.entity_name for n in store.list_graph_nodes(source_connection_id=source_id)}
+            edges = [e.join_name for e in store.list_graph_edges(source_connection_id=source_id)]
+        assert nodes == {"order", "user"}
+        assert edges == ["order_to_user"]
+
+    def test_next_step_skips_projection_when_no_indexed_tables(
+        self, base_config: WizardConfig, tmp_path: Path
+    ) -> None:
+        """A store that exists but has no indexed tables for the source
+        (e.g. index was skipped) gets no projection rebuild — and the
+        closing stage still reports done.
+        """
+        from schemabrain.core.store import SQLiteStore
+
+        store_path = tmp_path / "store.db"
+        cfg = self._pg_config(base_config, store_path)
+        source_id = wizard._source_id_for(cfg.source_url)
+        # Materialise an empty store (schema only, no tables for the source).
+        with SQLiteStore(path=store_path):
+            pass
+
+        outcome = wizard._stage_next_step(WizardContext(config=cfg))
+        assert outcome.status == "done"
+        with SQLiteStore(path=store_path) as store:
+            assert store.list_graph_nodes(source_connection_id=source_id) == []
+
+    def test_next_step_skips_projection_for_non_postgres_source(
+        self, base_config: WizardConfig, tmp_path: Path
+    ) -> None:
+        """A non-Postgres source (which the wizard never indexes) must not
+        crash the closing stage. Regression guard: `_source_id_for` raises
+        ValueError for non-Postgres URLs, so the rebuild has to bail BEFORE
+        computing the source id — `base_config` uses `sqlite:///:memory:`.
+        """
+        from schemabrain.core.store import SQLiteStore
+
+        store_path = tmp_path / "store.db"
+        with SQLiteStore(path=store_path):  # materialise a real store file
+            pass
+        cfg = _dc_replace(base_config, store_path=store_path)  # sqlite source
+        assert not wizard.is_postgres_url(cfg.source_url)
+
+        outcome = wizard._stage_next_step(WizardContext(config=cfg))
+        assert outcome.status == "done"
+
+    def test_next_step_swallows_projection_rebuild_errors(
+        self, base_config: WizardConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A projection rebuild failure must never abort the wizard's
+        closing stage — the host is already wired and the store populated.
+        The graph self-heals on the next `index` / `apply`.
+        """
+        import schemabrain.semantic.graph_projection as gp
+
+        store_path = tmp_path / "store.db"
+        cfg = self._pg_config(base_config, store_path)
+        source_id = wizard._source_id_for(cfg.source_url)
+        self._seed_tables_entities_join(store_path, source_id)
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("projection rebuild blew up")
+
+        monkeypatch.setattr(gp, "rebuild_graph_projection", _boom)
+
+        outcome = wizard._stage_next_step(WizardContext(config=cfg))
+        assert outcome.status == "done"
+        assert outcome.message == "Ready"
+
 
 # ----- DEFAULT_STAGES contract --------------------------------------------
 

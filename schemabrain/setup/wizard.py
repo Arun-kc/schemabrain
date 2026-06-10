@@ -2840,14 +2840,61 @@ def _wire_host_message(
 # ----- stage 7: next_step --------------------------------------------------
 
 
+def _rebuild_graph_projection_best_effort(ctx: WizardContext) -> None:
+    """Refresh the v15 graph read-model from the wizard's store.
+
+    ADR-0010 assigns this wizard graph hand-off to `wsINIT-graph-payoff`
+    (PR-22): unlike the CLI `index` / `entities apply` / `joins apply`
+    commands — which each call `_refresh_graph_projection` — the wizard's
+    own indexer (`_run_indexer`) and bundled-pack apply path never touch
+    `graph_nodes` / `graph_edges`. Without this, `schemabrain dashboard`'s
+    `/graph` surface (the init payoff) would open onto an EMPTY canvas
+    right after a successful `init`.
+
+    Best-effort by design: a read-model rebuild must never fail the
+    wizard's closing stage. The store may be absent (index skipped, or a
+    non-Postgres source), have no indexed tables yet, or the rebuild may
+    raise on an unexpected store/compiler edge — in every such case the
+    projection is simply left for the next `index` / `apply` to refresh
+    (it can only ever be structurally stale, never floor-inconsistent —
+    see ADR-0010), so swallowing here is the correct trade.
+    """
+    cfg = ctx.config
+    # The graph projection only exists for indexable (Postgres) sources,
+    # and only once the store has been written. Non-Postgres sources never
+    # reach the indexer (`_stage_index` skips them), and `_source_id_for`
+    # raises for non-Postgres URLs — so guard here before computing it.
+    if not is_postgres_url(cfg.source_url) or not cfg.store_path.exists():
+        return
+    try:
+        source_id = _source_id_for(cfg.source_url)
+
+        from schemabrain.core.store import SQLiteStore
+        from schemabrain.semantic.graph_projection import rebuild_graph_projection
+
+        with SQLiteStore(path=cfg.store_path) as store:
+            if not store.list_tables(source_connection_id=source_id):
+                # Nothing indexed for this source — an empty projection
+                # adds no payoff and the rebuild would be wasted work.
+                return
+            rebuild_graph_projection(store, source_connection_id=source_id)
+    except Exception:  # best-effort read-model refresh; see docstring
+        # Never let a projection refresh abort a wizard that has already
+        # wired the host + populated the store. The graph self-heals on
+        # the next `index` / `entities apply` / `joins apply`.
+        return
+
+
 def _stage_next_step(ctx: WizardContext) -> StageOutcome:
     """Closing stage — never fails; emits a brief status line.
 
     The renderer's closing block carries the actionable next-step
-    copy (restart prompt, example query, tail/audit hints, thesis
-    tagline), so this handler only signals that the wizard reached
-    the end successfully.
+    copy (graph payoff, restart prompt, example query, tail/audit hints,
+    thesis tagline), so this handler only signals that the wizard reached
+    the end successfully — after refreshing the graph projection so the
+    payoff opens onto a populated graph (`wsINIT-graph-payoff`, PR-22).
     """
+    _rebuild_graph_projection_best_effort(ctx)
     return StageOutcome(
         stage=7,
         name="next_step",

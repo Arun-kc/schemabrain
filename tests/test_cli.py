@@ -3751,3 +3751,21 @@ class TestSuggestLlmProgressHelper:
             ),
         ):
             raise _SpecificError("LLM call failed")
+
+
+class TestCliHelpEpilog:
+    """wsDX-cli-help: the top-level `--help` epilog must surface the
+    canonical `uvx schemabrain init` install promise so an operator who
+    runs `schemabrain --help` (or hits a usage error) sees the runner-led
+    quickstart, not a bare `schemabrain init` that assumes a global pip
+    install. The pipx fallback is kept consistent with the docs ladder.
+    """
+
+    def test_epilog_leads_get_started_with_uvx(self) -> None:
+        from schemabrain.cli import _build_parser
+
+        help_text = _build_parser().format_help()
+        assert "uvx schemabrain init" in help_text
+        # Keeps a runner-agnostic fallback in the same breath as the docs
+        # install ladder (uvx primary, pipx fallback).
+        assert "pipx" in help_text

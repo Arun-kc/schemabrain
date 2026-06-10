@@ -34,17 +34,17 @@ SchemaBrain sits between the agent and the database and changes that contract.
     ```
     The wizard detects your installed MCP hosts (Claude Desktop, Claude Code, Cursor, Windsurf) and shows a menu — press Enter for the detected default, or pass `--host X` to skip the prompt. It spins up a local Postgres demo with a 12-table SaaS schema and writes a ready-to-use config. Press Enter at every prompt for the demo defaults.
   </Step>
-  <Step title="Restart the host and ask">
-    Ask your agent: *"list the entities you know about, then describe the user entity."*
-
-    The demo ships a pre-curated entity pack, so this works **without an `ANTHROPIC_API_KEY`**. If you connected your own Postgres and skipped entity curation (no Anthropic key on hand), ask *"list the tables in my database"* instead — that uses the physical-schema tools, which need no entities.
-  </Step>
-  <Step title="Open the dashboard">
+  <Step title="See your schema as a graph">
     ```bash
     pip install 'schemabrain[ui]'
     schemabrain dashboard
     ```
-    Three surfaces: a PII Ledger of every tagged column, a Refusal Explorer of every blocked query, and a hash-chained Audit Viewer.
+    The payoff: your schema rendered as an interactive **knowledge graph** — entities as nodes, joins as edges, catastrophic-PII hotspots flagged — alongside a PII Ledger of every tagged column, a Refusal Explorer of every blocked query, and a hash-chained Audit Viewer. The dashboard reads the local store directly, so it works before you restart the host.
+  </Step>
+  <Step title="Restart the host and ask">
+    Restart your MCP host so the agent picks up the new tools, then ask: *"list the entities you know about, then describe the user entity."*
+
+    The demo ships a pre-curated entity pack, so this works **without an `ANTHROPIC_API_KEY`**. If you connected your own Postgres and skipped entity curation (no Anthropic key on hand), ask *"list the tables in my database"* instead — that uses the physical-schema tools, which need no entities.
   </Step>
 </Steps>
 
