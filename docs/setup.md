@@ -50,8 +50,17 @@ SchemaBrain init — activation wizard
   [4/7] Curate metrics     ✓ 5 metrics applied (bundled demo pack)
   [5/7] Curate joins       ✓ 8 canonical joins applied (bundled demo pack)
   [6/7] Wire host          ✓ wrote schemabrain entry to claude_desktop_config.json
-  [7/7] Next               ✓ restart your MCP host, then ask: "list the entities SchemaBrain knows about"
+  [7/7] Next               ✓ ready
+
+──────────────────────────────────────────────────────────────
+Your schema is now a knowledge graph.
+  See it:  schemabrain dashboard   → your schema as an interactive graph
+
+Restart your MCP host, then ask:
+> list the entities SchemaBrain knows about
 ```
+
+The wizard leads with the payoff: your schema is now a navigable knowledge graph you can open with `schemabrain dashboard` (needs the `[ui]` extra — `pip install 'schemabrain[ui]'`). Restarting the host is the second step, so the agent picks up the new tools.
 
 <Warning>
   **Connection scheme:** when you paste your own URL it **MUST** use `postgresql+psycopg://` (psycopg v3). A bare `postgresql://` is auto-rewritten with a one-line confirmation.

@@ -7,6 +7,12 @@ codebase that stays maintainable as it grows.
 This document covers everything you need to send a good PR. If something
 is unclear, open an issue rather than guessing.
 
+## Code of Conduct
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md) (v2.1).
+By participating you agree to uphold it; report unacceptable behavior to
+`arunkc91@gmail.com`.
+
 ## Quick reference
 
 | Want to... | Run |

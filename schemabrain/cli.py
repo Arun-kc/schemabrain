@@ -781,7 +781,7 @@ Developer:
   eval · mine-queries · fixture-path
                         Bench harness + query-log mining.
 
-Get started: `schemabrain init`.
+Get started: `uvx schemabrain init`  (or `pipx run schemabrain init`).
 """
 
 
@@ -9156,6 +9156,47 @@ def _render_abort_panel(result: object, *, total: int, console: object) -> None:
     )
 
 
+def _ui_extra_importable() -> bool:
+    """True when the optional ``[ui]`` extra is installed.
+
+    The dashboard sidecar refuses to boot without ``uvicorn`` (see
+    ``dashboard/cli.py``), so ``uvicorn`` is the canonical sentinel for
+    "the ``[ui]`` extra is present". Uses ``importlib.util.find_spec`` so
+    we never pay the (heavy) ``uvicorn`` import just to decide which
+    closing-block copy to show.
+    """
+    import importlib.util
+
+    return importlib.util.find_spec("uvicorn") is not None
+
+
+def _graph_route_in_wheel() -> bool:
+    """True when the built dashboard static export ships the ``/graph`` route.
+
+    The graph payoff points the operator at the dashboard's knowledge-graph
+    surface; that surface only exists if ``graph.html`` was bundled into the
+    wheel (``pnpm run export`` + the ``publish.yml`` per-route sentinel). A
+    bare source/sdist checkout without a built export has no ``graph.html``,
+    so the payoff falls back to a plain dashboard hint instead of dangling.
+    """
+    from schemabrain.dashboard import STATIC_DIR
+
+    return (STATIC_DIR / "graph.html").exists()
+
+
+def _graph_payoff_available() -> bool:
+    """Gate for the init closing block's graph call-to-action.
+
+    Lead with the graph payoff only when it can actually be delivered: the
+    ``[ui]`` extra is importable AND the ``/graph`` route shipped in the
+    wheel. Otherwise the closing block keeps the restart prompt as the lead
+    and shows an install/dashboard hint (wsINIT-graph-payoff). This is a
+    printed call-to-action only — init never launches a browser, so the
+    "no auto-open in CI" invariant holds by construction.
+    """
+    return _ui_extra_importable() and _graph_route_in_wheel()
+
+
 def _render_closing_block(
     wizard_result: object,
     *,
@@ -9197,6 +9238,21 @@ def _render_closing_block(
     if not isinstance(host_result, InitResult):
         return  # pragma: no cover — defensive; caller only calls this after a stage-4 success
     console.print("[dim]" + "─" * 62 + "[/]")  # type: ignore[attr-defined]
+    # wsINIT-graph-payoff: when the dashboard graph view can actually be
+    # shown ([ui] importable + /graph in the wheel), LEAD with it — the
+    # signature payoff of an init run is "your schema is now a navigable
+    # knowledge graph", not "go restart your MCP host". The host-restart
+    # prompt stays (agents still need the reload to discover the tools) but
+    # becomes the secondary step by position. Nothing auto-opens here — this
+    # is a printed call-to-action, so CI / headless runs are safe by default.
+    graph_payoff = _graph_payoff_available()
+    if graph_payoff:
+        console.print("Your schema is now a [bold]knowledge graph[/].")  # type: ignore[attr-defined]
+        console.print(  # type: ignore[attr-defined]
+            "  See it:  [bold]schemabrain dashboard[/]  "
+            "[dim]→ your schema as an interactive graph[/]"
+        )
+        console.print()  # type: ignore[attr-defined]
     if host_result.state == "printed_only":
         console.print("Add the snippet above to your host config, then ask:")  # type: ignore[attr-defined]
     else:
@@ -9236,15 +9292,27 @@ def _render_closing_block(
     console.print("See what was curated:  [bold]schemabrain inspect[/]")  # type: ignore[attr-defined]
     console.print("Verify the wiring:     [bold]schemabrain doctor[/]")  # type: ignore[attr-defined]
     console.print("Detect schema drift:   [bold]schemabrain check[/]")  # type: ignore[attr-defined]
-    # Dashboard is opt-in via the `[ui]` extra. An indie dev who ran
-    # `pip install schemabrain` (no extras) would otherwise never
-    # discover this surface exists, since it doesn't show up in the
-    # init flow or any `--help`-level catalog. Single dim line —
-    # tells you both the command and how to install it.
-    console.print(  # type: ignore[attr-defined]
-        "Open the local UI:     [bold]schemabrain dashboard[/]  "
-        "[dim](pip install 'schemabrain[ui]')[/]"
-    )
+    # Dashboard discovery line — only when we did NOT already lead with the
+    # graph payoff (avoids duplicating the CTA). The dashboard is opt-in via
+    # the `[ui]` extra: an indie dev who ran `pip install schemabrain` (no
+    # extras) would otherwise never discover this surface exists, since it
+    # doesn't show up in the init flow or any `--help`-level catalog. When
+    # the extra is present but the export isn't built (dev/sdist), just name
+    # the command; when it's missing, append the install hint.
+    if not graph_payoff:
+        if _ui_extra_importable():
+            console.print(  # type: ignore[attr-defined]
+                "See your schema as a graph:  [bold]schemabrain dashboard[/]"
+            )
+        else:
+            # `\[ui]` escapes the bracket so Rich renders a literal
+            # `schemabrain[ui]` rather than parsing `[ui]` as a (dropped)
+            # markup tag — the un-escaped form silently shipped
+            # `pip install 'schemabrain'` (the extra vanished).
+            console.print(  # type: ignore[attr-defined]
+                "See your schema as a graph:  [bold]schemabrain dashboard[/]  "
+                "[dim](pip install 'schemabrain\\[ui]')[/]"
+            )
     console.print()  # type: ignore[attr-defined]
     console.print("[dim]The agent reads. It doesn't write. That's the whole point.[/]")  # type: ignore[attr-defined]
 

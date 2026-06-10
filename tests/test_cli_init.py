@@ -2254,6 +2254,141 @@ class TestWizardRenderer:
         assert "Steer the agent" not in captured.err
         assert "paste into the system prompt" not in captured.err
 
+    def test_closing_block_leads_with_graph_payoff_when_available(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """wsINIT-graph-payoff: when the dashboard graph view can be shown
+        ([ui] importable + /graph in the wheel), the closing block LEADS
+        with the graph call-to-action and the host-restart prompt becomes
+        the secondary step (by position). The restart line still renders —
+        agents need the reload — it just no longer headlines the run.
+        """
+        import schemabrain.cli as cli
+        from schemabrain.setup.wizard import WizardResult
+
+        monkeypatch.setattr(cli, "_graph_payoff_available", lambda: True)
+
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._written_host_result(tmp_path),  # type: ignore[arg-type]
+        )
+        cli._render_wizard_result(result, host_display="Claude Desktop")
+        captured = capsys.readouterr()
+        err = captured.err
+        # The graph payoff leads.
+        assert "knowledge graph" in err
+        assert "schemabrain dashboard" in err
+        # And it appears BEFORE the (now secondary) restart prompt.
+        assert err.index("knowledge graph") < err.index("Restart Claude Desktop")
+        # The restart prompt is still present (reload is still required).
+        assert "Restart Claude Desktop" in err
+        # No dangling [ui] install hint when the extra is already importable
+        # and the payoff led — the CTA replaced the buried discovery line.
+        assert "pip install 'schemabrain[ui]'" not in err
+        # Thesis tagline still closes the block.
+        assert "The agent reads. It doesn't write." in err
+
+    def test_closing_block_falls_back_to_dashboard_hint_without_graph_in_wheel(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """When the /graph route is not in the wheel (e.g. a source/sdist
+        checkout with no built export) but the [ui] extra IS importable,
+        the closing block keeps the restart prompt as the lead and shows a
+        plain dashboard hint — no graph-payoff headline, no install hint.
+        """
+        import schemabrain.cli as cli
+        from schemabrain.setup.wizard import WizardResult
+
+        monkeypatch.setattr(cli, "_graph_payoff_available", lambda: False)
+        monkeypatch.setattr(cli, "_ui_extra_importable", lambda: True)
+
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._written_host_result(tmp_path),  # type: ignore[arg-type]
+        )
+        cli._render_wizard_result(result, host_display="Claude Desktop")
+        err = capsys.readouterr().err
+        # No graph-payoff headline.
+        assert "Your schema is now a" not in err
+        # Restart still leads; dashboard surfaced as a plain hint.
+        assert "Restart Claude Desktop" in err
+        assert "schemabrain dashboard" in err
+        # [ui] present → no install hint.
+        assert "pip install 'schemabrain[ui]'" not in err
+
+    def test_closing_block_shows_ui_install_hint_when_extra_missing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """When the [ui] extra is NOT importable, the closing block falls
+        back to the restart-led copy and surfaces the install command so an
+        operator who ran a bare `pip install schemabrain` still discovers
+        the dashboard graph surface exists.
+        """
+        import schemabrain.cli as cli
+        from schemabrain.setup.wizard import WizardResult
+
+        monkeypatch.setattr(cli, "_graph_payoff_available", lambda: False)
+        monkeypatch.setattr(cli, "_ui_extra_importable", lambda: False)
+
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._written_host_result(tmp_path),  # type: ignore[arg-type]
+        )
+        cli._render_wizard_result(result, host_display="Claude Desktop")
+        err = capsys.readouterr().err
+        assert "Restart Claude Desktop" in err
+        # Assert on the contiguous install target — Rich may soft-wrap
+        # between "pip install" and the package spec at narrow widths, so
+        # the full "pip install 'schemabrain[ui]'" phrase is not guaranteed
+        # to survive on one line, but the `'schemabrain[ui]'` span is.
+        assert "'schemabrain[ui]'" in err
+
+    def test_graph_payoff_available_gates_on_ui_and_graph_route(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`_graph_payoff_available` is the AND of [ui]-importable and
+        /graph-in-wheel. Pin the truth table so a regression in either
+        gate can't silently re-enable (or suppress) the payoff CTA.
+        """
+        import schemabrain.cli as cli
+
+        for ui, graph, expected in (
+            (True, True, True),
+            (True, False, False),
+            (False, True, False),
+            (False, False, False),
+        ):
+            monkeypatch.setattr(cli, "_ui_extra_importable", lambda ui=ui: ui)
+            monkeypatch.setattr(cli, "_graph_route_in_wheel", lambda graph=graph: graph)
+            assert cli._graph_payoff_available() is expected
+
+    def test_ui_extra_importable_returns_bool(self) -> None:
+        # Exercise the real body (importlib.util.find_spec on uvicorn) —
+        # the truth-table test monkeypatches it, so this pins the actual
+        # implementation returns a plain bool regardless of env.
+        from schemabrain.cli import _ui_extra_importable
+
+        assert isinstance(_ui_extra_importable(), bool)
+
+    def test_graph_route_in_wheel_returns_bool(self) -> None:
+        # Exercise the real body (STATIC_DIR / graph.html existence) so the
+        # gate's filesystem probe is covered, not just its monkeypatch.
+        from schemabrain.cli import _graph_route_in_wheel
+
+        assert isinstance(_graph_route_in_wheel(), bool)
+
     def test_wizard_status_to_tier_routes_known_statuses(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
