@@ -119,12 +119,18 @@ export function graphEdgeStyle({
     // would imply a relationship type this edge doesn't have).
     return { stroke: "var(--ink-2)", strokeWidth: 2, strokeDasharray: dash, opacity: 0.95 };
   }
-  // Resting edge — faded under an active focus overlay, else the hairline rest.
+  // Resting edge — faded under an active focus overlay, else a quiet but
+  // READABLE line. Uses --ink-3 (the tertiary ink, contrast-verified ≥4.5:1
+  // on the canvas --bg-1 in both themes), NOT --hair: --hair is a near-white
+  // panel-border hairline that vanished against the graph canvas, so resting
+  // edges (e.g. the rank-0 demo joins) rendered invisible. opacity 0.7 keeps
+  // them clearly subordinate to highlighted (green, 0.95) and selected
+  // (--ink-2, 0.95) edges while still being visible.
   return {
-    stroke: "var(--hair)",
+    stroke: "var(--ink-3)",
     strokeWidth: 1.4,
     strokeDasharray: dash,
-    opacity: dimmed ? 0.16 : 0.5,
+    opacity: dimmed ? 0.16 : 0.7,
   };
 }
 

@@ -21,7 +21,7 @@ schemabrain inspect
 
 ```
 ◆ store · ./schemabrain.db
-12 tables · 84 columns · 12 entities · 5 metrics · 8 joins
+12 tables · 84 columns · 12 entities · 5 metrics · 11 joins
 
 Definitions
 ├── Entities (12)

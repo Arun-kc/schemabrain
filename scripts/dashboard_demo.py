@@ -48,6 +48,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Do not open the dashboard in a browser. Used by CI smoke jobs.",
     )
+    parser.add_argument(
+        "--pack",
+        choices=("demo", "saas"),
+        default="demo",
+        help=(
+            "Which store to boot. 'demo' (default) is the minimal 2-entity "
+            "users+orders store the visual-regression baselines are pinned to. "
+            "'saas' boots the full bundled SaaS pack (12 entities / 11 joins / "
+            "5 metrics) with a populated knowledge graph and a real "
+            "refused/error/success audit chain, so all nine surfaces tell the "
+            "SaaS firewall story — no API key, no Postgres."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not is_ui_available():
@@ -58,15 +71,23 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    store_path = Path(tempfile.gettempdir()) / "schemabrain-dashboard-demo.db"
-    if store_path.exists():
-        store_path.unlink()
-    _seed_store(store_path)
-    _seed_audit_chain(store_path)
+    if args.pack == "saas":
+        store_path = Path(tempfile.gettempdir()) / "schemabrain-saas-dashboard-demo.db"
+        if store_path.exists():
+            store_path.unlink()
+        source_id = _seed_saas_store(store_path)
+        _seed_saas_audit_chain(store_path, source_id)
+    else:
+        store_path = Path(tempfile.gettempdir()) / "schemabrain-dashboard-demo.db"
+        if store_path.exists():
+            store_path.unlink()
+        _seed_store(store_path)
+        _seed_audit_chain(store_path)
+        source_id = SOURCE_CONNECTION_ID
 
     print()
     print("=" * 60)
-    print("SchemaBrain dashboard demo")
+    print(f"SchemaBrain dashboard demo ({args.pack} pack)")
     print("=" * 60)
     print(f"  store: {store_path}")
     print("  dashboard: http://127.0.0.1:7878/")
@@ -86,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         store_path=store_path,
         port=7878,
         open_browser=not args.no_open,
-        source_connection_id=SOURCE_CONNECTION_ID,
+        source_connection_id=source_id,
     )
 
 
@@ -321,6 +342,100 @@ def _seed_audit_chain(store_path: Path) -> None:
                 ),
             )
         )
+    finally:
+        writer.close()
+
+
+class _StubExecutor:
+    """Canned-row executor for the SaaS replay — success beats need rows
+    to land in the audit chain without a live Postgres."""
+
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+        self.calls: list[tuple[str, dict[str, object]]] = []
+        self.max_rows: int | None = None
+
+    def execute(self, sql_text: str, params: dict[str, object]) -> list[dict[str, object]]:
+        self.calls.append((sql_text, params))
+        return self.rows
+
+
+class _FakeEmbedder:
+    """Embedder seam stand-in — get_metric never calls it."""
+
+    def embed(self, text: str) -> list[float]:
+        return [0.0]
+
+
+def _seed_saas_store(store_path: Path) -> str:
+    """Build the bundled SaaS demo store + its graph projection.
+
+    Reuses the offline `build_saas_dictionary_store` (12 entities / 11
+    joins / 5 metrics / real PII tags — no Postgres, no API key) and then
+    rebuilds the graph projection the builder omits, so `/graph` opens
+    populated. Returns the store's source-connection id.
+    """
+    from schemabrain.datadict.demo_store import SOURCE_ID as saas_source_id
+    from schemabrain.datadict.demo_store import build_saas_dictionary_store
+    from schemabrain.semantic.graph_projection import rebuild_graph_projection
+
+    build_saas_dictionary_store(store_path)
+    with SQLiteStore(store_path) as store:
+        rebuild_graph_projection(store, source_connection_id=saas_source_id)
+    return saas_source_id
+
+
+def _seed_saas_audit_chain(store_path: Path, source_id: str) -> None:
+    """Replay a mixed refused / error / success history through the REAL
+    MCP server so `/refusals`, `/audit`, and `audit verify` populate with
+    genuine envelopes (not hand-built rows). Execution is stubbed — every
+    beat is decided at the firewall/plan boundary, so canned success rows
+    are enough to write an authentic chain.
+    """
+    import asyncio
+
+    from schemabrain.mcp.server import build_server
+    from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES
+
+    conn = sqlite3.connect(str(store_path))
+    ensure_audit_schema(conn)
+    conn.commit()
+    conn.close()
+
+    # (get_metric args, canned rows). Refusals/errors ignore the rows;
+    # success beats surface them. Order chosen so the chain reads as a
+    # realistic session: refuse → recover-elsewhere → succeed.
+    beats: list[tuple[dict[str, object], list[dict[str, object]]]] = [
+        ({"name": "user_count", "group_by": ["user.password_hash"]}, [{"user_count": 1}]),
+        ({"name": "usage_volume", "group_by": ["plan.title"]}, [{"x": 1}]),
+        ({"name": "total_revenue_real", "time_grain": "month"}, [{"x": 1}]),
+        (
+            {"name": "total_revenue", "group_by": ["plan.title"]},
+            [
+                {"title": "Enterprise", "total_revenue": 4_812_004},
+                {"title": "Pro", "total_revenue": 61_902},
+                {"title": "Free", "total_revenue": 0},
+            ],
+        ),
+        (
+            {"name": "user_count", "group_by": ["user.role"]},
+            [{"role": "owner", "user_count": 14}, {"role": "member", "user_count": 58}],
+        ),
+    ]
+
+    writer = AuditWriter(store_path)
+    try:
+        for args, rows in beats:
+            with SQLiteStore(store_path) as store:
+                app = build_server(
+                    store=store,
+                    source_connection_id=source_id,
+                    embedder=_FakeEmbedder(),  # type: ignore[arg-type]
+                    metric_executor=_StubExecutor(rows),  # type: ignore[arg-type]
+                    pii_block=CATASTROPHIC_LEAK_CATEGORIES,
+                    audit_writer=writer,
+                )
+                asyncio.run(app.call_tool("get_metric", args))
     finally:
         writer.close()
 

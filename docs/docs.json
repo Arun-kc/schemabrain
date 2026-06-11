@@ -94,6 +94,7 @@
                 "group": "Setup",
                 "icon": "gear",
                 "pages": [
+                  "reference/cli/demo",
                   "reference/cli/init",
                   "reference/cli/doctor"
                 ]

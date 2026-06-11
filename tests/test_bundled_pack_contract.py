@@ -99,9 +99,13 @@ _SAAS_JOIN_PINS: dict[str, tuple[str, str]] = {
     "invoice_workspace": ("invoice", "workspace"),
     "invoice_subscription": ("invoice", "subscription"),
     # Catastrophic-propagation joins: the JOIN result inherits the
-    # payment_card / credential tag from the source table.
+    # payment_card / credential / government_id tag from the source table.
     "workspace_payment_methods": ("payment_method", "workspace"),
     "user_sessions": ("session", "user"),
+    "workspace_api_keys": ("api_key", "workspace"),
+    "workspace_billing_profile": ("billing_profile", "workspace"),
+    # Plain hub join (no catastrophic column on support_tickets).
+    "workspace_support_tickets": ("support_ticket", "workspace"),
 }
 _SAAS_METRIC_PINS: dict[str, str] = {
     "total_revenue": "invoice",

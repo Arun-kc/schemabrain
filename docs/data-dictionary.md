@@ -25,6 +25,12 @@ A programmatic API credential issued to a workspace.
 | `created_at` | `timestamptz` | no | no | no | Public | — | — |
 | `revoked_at` | `timestamptz` | yes | no | no | Public | — | — |
 
+### Joins
+
+| Join | On | Cardinality | Provenance | Description |
+| --- | --- | --- | --- | --- |
+| `workspace_api_keys` | `"api_key"."workspace_id" = "workspace"."id"` | many_to_one | Operator-authored | Links each API key on file to the workspace that owns it. |
+
 ## billing_profile
 
 A workspace's legal / tax identity used for invoicing.
@@ -42,8 +48,14 @@ A workspace's legal / tax identity used for invoicing.
 | `legal_entity` | `text` | no | no | no | Public | — | — |
 | `tax_id` | `text` | no | no | no | PII | `Government ID` (catastrophic) | — |
 | `national_id` | `text` | yes | no | no | PII | `Government ID` (catastrophic) | — |
-| `country_code` | `text` | no | no | no | PII | `Contact` | — |
+| `country_code` | `text` | no | no | no | Public | — | — |
 | `created_at` | `timestamptz` | no | no | no | Public | — | — |
+
+### Joins
+
+| Join | On | Cardinality | Provenance | Description |
+| --- | --- | --- | --- | --- |
+| `workspace_billing_profile` | `"billing_profile"."workspace_id" = "workspace"."id"` | one_to_one | Operator-authored | Links each workspace to its single legal / tax billing profile. |
 
 ## invoice
 
@@ -243,6 +255,12 @@ A customer-filed support request (free-text body).
 | `status` | `text` | no | no | no | Public | — | — |
 | `created_at` | `timestamptz` | no | no | no | Public | — | — |
 
+### Joins
+
+| Join | On | Cardinality | Provenance | Description |
+| --- | --- | --- | --- | --- |
+| `workspace_support_tickets` | `"support_ticket"."workspace_id" = "workspace"."id"` | many_to_one | Operator-authored | Links each support ticket to the workspace that filed it. |
+
 ## usage_event
 
 A metered telemetry event (api_call / login / export).
@@ -315,7 +333,7 @@ A tenant account — the org boundary that owns users, subscriptions, and billin
 | Column | Type | Null | PK | Identity | Sensitivity | PII categories | Description |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id` | `bigint` | no | yes | yes | Public | — | — |
-| `name` | `text` | no | no | no | PII | `Contact` | — |
+| `name` | `text` | no | no | no | Public | — | — |
 | `slug` | `text` | no | no | no | Public | — | — |
 | `region` | `text` | no | no | no | Public | — | — |
 | `plan_tier` | `text` | no | no | no | Public | — | — |
@@ -327,6 +345,9 @@ A tenant account — the org boundary that owns users, subscriptions, and billin
 | Join | On | Cardinality | Provenance | Description |
 | --- | --- | --- | --- | --- |
 | `invoice_workspace` | `"invoice"."workspace_id" = "workspace"."id"` | many_to_one | Operator-authored | Links each invoice to the workspace it bills. |
+| `workspace_api_keys` | `"api_key"."workspace_id" = "workspace"."id"` | many_to_one | Operator-authored | Links each API key on file to the workspace that owns it. |
+| `workspace_billing_profile` | `"billing_profile"."workspace_id" = "workspace"."id"` | one_to_one | Operator-authored | Links each workspace to its single legal / tax billing profile. |
 | `workspace_payment_methods` | `"payment_method"."workspace_id" = "workspace"."id"` | many_to_one | Operator-authored | Links each payment method on file to its workspace. |
 | `workspace_subscriptions` | `"subscription"."workspace_id" = "workspace"."id"` | many_to_one | Operator-authored | Links each subscription to its workspace. |
+| `workspace_support_tickets` | `"support_ticket"."workspace_id" = "workspace"."id"` | many_to_one | Operator-authored | Links each support ticket to the workspace that filed it. |
 | `workspace_users` | `"user"."workspace_id" = "workspace"."id"` | many_to_one | Operator-authored | Links each user to the workspace they belong to. |

@@ -48,7 +48,7 @@ SchemaBrain init — activation wizard
   [2/7] Index schema       ✓ 12 tables, 84 columns indexed
   [3/7] Curate entities    ✓ 12 entities applied (bundled demo pack)
   [4/7] Curate metrics     ✓ 5 metrics applied (bundled demo pack)
-  [5/7] Curate joins       ✓ 8 canonical joins applied (bundled demo pack)
+  [5/7] Curate joins       ✓ 11 canonical joins applied (bundled demo pack)
   [6/7] Wire host          ✓ wrote schemabrain entry to claude_desktop_config.json
   [7/7] Next               ✓ ready
 

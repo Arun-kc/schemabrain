@@ -840,3 +840,61 @@ def test_stage_joins_demo_branch_zero_applied_emits_failed(
     assert outcome.status == "failed"
     assert outcome.stage == 5
     assert "bundled demo joins" in outcome.message
+
+
+def test_saas_usage_event_is_intentionally_a_join_island() -> None:
+    """`usage_event` ships with NO canonical join — on purpose.
+
+    This is load-bearing, not an oversight. The README "Sample session"
+    uses `get_metric(usage_volume, group_by=["plan.title"])` returning
+    `unreachable_entity` as the hero refusal-not-fabrication demo: there
+    is no modeled path from a usage event to a plan, so SchemaBrain
+    refuses rather than inventing one. Adding a join from `usage_event`
+    into the billing graph would (a) turn that clean refusal into a
+    `degraded` fan-out result — usage events duplicate across a
+    workspace's many subscriptions, inflating the SUM — and (b) break the
+    demo. If you think `usage_event` "should" have a join, you are about
+    to reintroduce a fan-out trap. Don't.
+    """
+    join_dir = bundled_joins_fixture_dir(pack="saas")
+    connected: set[str] = set()
+    for path in sorted(join_dir.glob("*.yaml")):
+        spec = parse_canonical_join_yaml_file(path)
+        connected.add(spec.source_entity)
+        connected.add(spec.target_entity)
+
+    assert "usage_event" not in connected, (
+        "usage_event must stay a join-island (see docstring); a canonical "
+        "join now connects it, which breaks the unreachable_entity refusal "
+        "demo and opens a fan-out path through subscriptions"
+    )
+
+
+def test_saas_total_revenue_real_has_no_time_dimension() -> None:
+    """`total_revenue_real` ships with NO `time_dimension` — on purpose.
+
+    This is the inverse of the island guard, and equally load-bearing.
+    `total_revenue_real` anchors on `subscription_item`, a line-item
+    table with no timestamp column of its own. Asking it for a
+    `time_grain` makes the resolver reach four candidate timestamps via
+    canonical joins (subscription.started_at / canceled_at /
+    trial_ends_at, then workspace.created_at) and return
+    `ambiguous_time_dimension` — the S5 demo beat, exercised end to end
+    in tests/test_saas_store_envelopes.py::TestAmbiguousTimeDimension.
+
+    Declaring a `time_dimension` on this metric (even "to be helpful")
+    would silently collapse the ambiguity into a deterministic bucketing
+    and kill the beat — the same class of regression the island guard
+    above prevents on the join side. The S5 beat lives HERE, not on
+    `active_subscriptions`: that metric declares its own dimension and
+    resolves deterministically (own-table timestamps are excluded from
+    inheritance by design, so it cannot be made ambiguous).
+    """
+    metric_dir = bundled_metrics_fixture_dir(pack="saas")
+    metric = parse_metric_yaml_file(metric_dir / "total_revenue_real.yaml")
+
+    assert metric.time_dimension is None, (
+        "total_revenue_real must keep NO time_dimension (see docstring); a "
+        "declared dimension collapses the ambiguous_time_dimension S5 demo "
+        "into a deterministic bucketing and kills the beat"
+    )

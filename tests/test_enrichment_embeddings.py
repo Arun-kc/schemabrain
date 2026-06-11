@@ -674,3 +674,36 @@ class TestFastEmbedPartialDownloadHealing:
         assert not model_root.exists()
         # TextEmbedding still got constructed (mocked) so the smoke path is alive.
         assert len(_StubTextEmbedding.init_calls) == 1
+
+
+class TestQuietModelDownloadProgress:
+    """The model-load path silences huggingface_hub's tqdm `Fetching N
+    files` bar (noise that fires even when the model is fully cached),
+    while honouring an explicit `HF_HUB_DISABLE_PROGRESS_BARS=0` opt-in.
+    """
+
+    def test_disables_hub_progress_bars_by_default(self, monkeypatch) -> None:
+        import huggingface_hub.utils as hf_utils
+
+        from schemabrain.enrichment import embeddings
+
+        calls: list[bool] = []
+        monkeypatch.setattr(hf_utils, "disable_progress_bars", lambda *a, **k: calls.append(True))
+        monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS", raising=False)
+
+        embeddings._quiet_model_download_progress()
+
+        assert calls == [True]
+
+    def test_respects_explicit_opt_in(self, monkeypatch) -> None:
+        import huggingface_hub.utils as hf_utils
+
+        from schemabrain.enrichment import embeddings
+
+        calls: list[bool] = []
+        monkeypatch.setattr(hf_utils, "disable_progress_bars", lambda *a, **k: calls.append(True))
+        monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+
+        embeddings._quiet_model_download_progress()
+
+        assert calls == []  # operator opted in — bars left on

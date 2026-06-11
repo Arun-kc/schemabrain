@@ -2,7 +2,7 @@
   "schema_version": "17",
   "sources": [
     {
-      "source_connection_id": "6e04b1c8f8789f48",
+      "source_connection_id": "87c80af69c3b0547",
       "entities": [
         {
           "name": "api_key",
@@ -84,7 +84,17 @@
               "pii_categories": []
             }
           ],
-          "joins": [],
+          "joins": [
+            {
+              "name": "workspace_api_keys",
+              "description": "Links each API key on file to the workspace that owns it.",
+              "source_entity": "api_key",
+              "target_entity": "workspace",
+              "on_clause": "\"api_key\".\"workspace_id\" = \"workspace\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            }
+          ],
           "metrics": []
         },
         {
@@ -155,10 +165,8 @@
               "is_primary_key": false,
               "is_identity": false,
               "description": null,
-              "pii_sensitivity": "pii",
-              "pii_categories": [
-                "contact"
-              ]
+              "pii_sensitivity": "public",
+              "pii_categories": []
             },
             {
               "name": "created_at",
@@ -171,7 +179,17 @@
               "pii_categories": []
             }
           ],
-          "joins": [],
+          "joins": [
+            {
+              "name": "workspace_billing_profile",
+              "description": "Links each workspace to its single legal / tax billing profile.",
+              "source_entity": "billing_profile",
+              "target_entity": "workspace",
+              "on_clause": "\"billing_profile\".\"workspace_id\" = \"workspace\".\"id\"",
+              "cardinality": "one_to_one",
+              "provenance": "Operator-authored"
+            }
+          ],
           "metrics": []
         },
         {
@@ -878,7 +896,17 @@
               "pii_categories": []
             }
           ],
-          "joins": [],
+          "joins": [
+            {
+              "name": "workspace_support_tickets",
+              "description": "Links each support ticket to the workspace that filed it.",
+              "source_entity": "support_ticket",
+              "target_entity": "workspace",
+              "on_clause": "\"support_ticket\".\"workspace_id\" = \"workspace\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            }
+          ],
           "metrics": []
         },
         {
@@ -1116,10 +1144,8 @@
               "is_primary_key": false,
               "is_identity": false,
               "description": null,
-              "pii_sensitivity": "pii",
-              "pii_categories": [
-                "contact"
-              ]
+              "pii_sensitivity": "public",
+              "pii_categories": []
             },
             {
               "name": "slug",
@@ -1183,6 +1209,24 @@
               "provenance": "Operator-authored"
             },
             {
+              "name": "workspace_api_keys",
+              "description": "Links each API key on file to the workspace that owns it.",
+              "source_entity": "api_key",
+              "target_entity": "workspace",
+              "on_clause": "\"api_key\".\"workspace_id\" = \"workspace\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            },
+            {
+              "name": "workspace_billing_profile",
+              "description": "Links each workspace to its single legal / tax billing profile.",
+              "source_entity": "billing_profile",
+              "target_entity": "workspace",
+              "on_clause": "\"billing_profile\".\"workspace_id\" = \"workspace\".\"id\"",
+              "cardinality": "one_to_one",
+              "provenance": "Operator-authored"
+            },
+            {
               "name": "workspace_payment_methods",
               "description": "Links each payment method on file to its workspace.",
               "source_entity": "payment_method",
@@ -1197,6 +1241,15 @@
               "source_entity": "subscription",
               "target_entity": "workspace",
               "on_clause": "\"subscription\".\"workspace_id\" = \"workspace\".\"id\"",
+              "cardinality": "many_to_one",
+              "provenance": "Operator-authored"
+            },
+            {
+              "name": "workspace_support_tickets",
+              "description": "Links each support ticket to the workspace that filed it.",
+              "source_entity": "support_ticket",
+              "target_entity": "workspace",
+              "on_clause": "\"support_ticket\".\"workspace_id\" = \"workspace\".\"id\"",
               "cardinality": "many_to_one",
               "provenance": "Operator-authored"
             },
