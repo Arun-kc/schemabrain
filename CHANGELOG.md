@@ -7,8 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - UNRELEASED
+
+**Highlights** — the marketed launch. The dashboard grows from 4 surfaces into a **graph-led, 9-surface** experience: a signature **Knowledge Graph**, an **Overview** home, an **Entities** index, a **Data Dictionary**, an editable **Policy** editor, and a **Drift** view join the PII / Refusals / Audit trio. Audit logs are now **browser-verifiable** via a derived Merkle root, the marketing **landing moves to a standalone site**, and the product is repositioned from "SQL firewall" to the **trust + intelligence layer**.
+
+> **Upgrade note** — this release migrates the store schema (`SCHEMA_VERSION` 14 → 15) to persist the graph projection; it applies automatically and crash-atomically on first open (chaining v13 → v14 → v15), no manual step. The project is now **Apache-2.0** licensed. Install the dashboard with `pip install schemabrain[ui]`; `schemabrain dashboard` still binds to `127.0.0.1` only.
+
+### Added
+- **Knowledge Graph surface** (`/graph`) — a persisted, read-only graph projection of entities and their joins with edge cardinality, three-state PII node levels, refusal-hotspot attribution, and a floating-panel canvas; backed by `GET /api/graph`. ([#202], [#203], [#204], [#205], [#208])
+- **Overview home surface** + `GET /api/overview` aggregate — the dashboard's new landing surface. ([#218])
+- **Entities surface** — a sortable index plus a drilldown sheet showing columns, PII, metrics, and canonical joins. ([#206])
+- **Data Dictionary** — a `/dict` dashboard surface + `GET /api/dict` with byte-for-byte Markdown export parity, and a `schemabrain docs` generator CLI that dogfoods the same model. ([#192], [#207])
+- **Editable Policy editor** (`/policy`) — the handoff-exact 3-way block / redact / allow grid, scaled to multi-table schemas (collapsible table groups, search/filter, PII-only default) with always-on PII-floor disclosure. ([#195], [#196])
+- **Drift surface** (`/drift`) + `GET /api/drift` — surfaces config and enrichment drift the store can verify, with copy-the-CLI actions. ([#197])
+- **Browser-verifiable audit** — a derived Merkle root + per-row inclusion proofs (RFC-6962); "Verify" runs both a whole-log chain walk and per-row proofs. ([#201])
+- **Column × category PII-confidence heatmap** + an index-time PII-confidence band (advisory, never gates). ([#198], [#199])
+- **Refusals timeline ledger** — a protective-framed view of what was refused and why. ([#200])
+- **Standalone marketing site** — the landing page moves out of the wheel into a separate Vercel app; the shipped dashboard roots at `/overview`. ([#219])
+- **Dashboard design system** — dual-theme (light/dark) oklch tokens, self-hosted fonts, a shared component kit, and an app shell. ([#183], [#184], [#186])
+- `schemabrain init` now leads with the knowledge-graph payoff, and `--help` is uvx-first. ([#226])
+
 ### Changed
-- **License: MIT → Apache-2.0.** Added a `NOTICE` file and switched contribution sign-off to the [Developer Certificate of Origin](https://developercertificate.org/) (DCO; `git commit -s`). Apache-2.0 adds an explicit patent grant and patent-retaliation clause; the permissive terms users rely on are otherwise unchanged.
+- **Repositioned from "SQL firewall" to the trust + intelligence layer**, with the firewall demoted to one of six proof-points; a canonical positioning source (`positioning.py`) + sweep engine keep the public surface consistent. ([#189], [#190], [#191], [#217], [#221])
+- **License: MIT → Apache-2.0.** Added a `NOTICE` file and switched contribution sign-off to the [Developer Certificate of Origin](https://developercertificate.org/) (DCO; `git commit -s`). Apache-2.0 adds an explicit patent grant and patent-retaliation clause; the permissive terms are otherwise unchanged. ([#179])
+- **Store schema v15** — persisted graph-projection tables, reserved semantic/PII columns, `entities.group`, plus entity confidence/rationale and table row-count writers. ([#181], [#194])
+- Sidecar entity routes enriched (drilldown detail + list rollup). ([#193])
+
+### Security
+- Dashboard CSP hash-pins `script-src` and drops `'unsafe-inline'`. ([#216])
+- `--enrich` withholds sample values and value-shape hints for PII-classified columns (gated on the name-based classifier). ([#214])
+- `pyjwt` bumped to 2.13.0 (4 CVEs). ([#187])
+- `sqlglot` pinned `<27` — 30.x renamed an AST arg key and silently emptied join-mining; added a version regression tripwire and a lock-free install smoke. ([#224], [#225])
+
+### Fixed
+- The Policy editor's middle verb is labelled "open", not "redact". ([#220])
+- Confidence is derived (not asserted) for query-log + introspection tools, with explicit provenance. ([#224])
+
+### Documentation
+- **Code of Conduct** (Contributor Covenant 2.1) wired into README / ROADMAP / CONTRIBUTING. ([#226])
+- ADRs 0005–0011 (dashboard routing, read-only Apply, drift actions, policy control model, trust data contract, graph projection). ([#180], [#196], [#197], [#198], [#202])
+- README hero recast around the pain hook; pre-launch community on-ramp + surface-count accuracy. ([#215], [#217])
+
+### Internal
+- Visual-regression baselines in a pinned Playwright container + web performance budgets; a 9-surface axe a11y sweep + AA-contrast fixes; dependency bumps. ([#209], [#210], [#212], [#213], [#222], [#223])
 
 ## [0.5.0] - 2026-06-01
 
@@ -1272,3 +1313,47 @@ First public preview. Live on PyPI as `schemabrain==0.1.0a1`.
 [#172]: https://github.com/Arun-kc/schemabrain/pull/172
 [#173]: https://github.com/Arun-kc/schemabrain/pull/173
 [#174]: https://github.com/Arun-kc/schemabrain/pull/174
+[#179]: https://github.com/Arun-kc/schemabrain/pull/179
+[#180]: https://github.com/Arun-kc/schemabrain/pull/180
+[#181]: https://github.com/Arun-kc/schemabrain/pull/181
+[#183]: https://github.com/Arun-kc/schemabrain/pull/183
+[#184]: https://github.com/Arun-kc/schemabrain/pull/184
+[#186]: https://github.com/Arun-kc/schemabrain/pull/186
+[#187]: https://github.com/Arun-kc/schemabrain/pull/187
+[#189]: https://github.com/Arun-kc/schemabrain/pull/189
+[#190]: https://github.com/Arun-kc/schemabrain/pull/190
+[#191]: https://github.com/Arun-kc/schemabrain/pull/191
+[#192]: https://github.com/Arun-kc/schemabrain/pull/192
+[#193]: https://github.com/Arun-kc/schemabrain/pull/193
+[#194]: https://github.com/Arun-kc/schemabrain/pull/194
+[#195]: https://github.com/Arun-kc/schemabrain/pull/195
+[#196]: https://github.com/Arun-kc/schemabrain/pull/196
+[#197]: https://github.com/Arun-kc/schemabrain/pull/197
+[#198]: https://github.com/Arun-kc/schemabrain/pull/198
+[#199]: https://github.com/Arun-kc/schemabrain/pull/199
+[#200]: https://github.com/Arun-kc/schemabrain/pull/200
+[#201]: https://github.com/Arun-kc/schemabrain/pull/201
+[#202]: https://github.com/Arun-kc/schemabrain/pull/202
+[#203]: https://github.com/Arun-kc/schemabrain/pull/203
+[#204]: https://github.com/Arun-kc/schemabrain/pull/204
+[#205]: https://github.com/Arun-kc/schemabrain/pull/205
+[#206]: https://github.com/Arun-kc/schemabrain/pull/206
+[#207]: https://github.com/Arun-kc/schemabrain/pull/207
+[#208]: https://github.com/Arun-kc/schemabrain/pull/208
+[#209]: https://github.com/Arun-kc/schemabrain/pull/209
+[#210]: https://github.com/Arun-kc/schemabrain/pull/210
+[#212]: https://github.com/Arun-kc/schemabrain/pull/212
+[#213]: https://github.com/Arun-kc/schemabrain/pull/213
+[#214]: https://github.com/Arun-kc/schemabrain/pull/214
+[#215]: https://github.com/Arun-kc/schemabrain/pull/215
+[#216]: https://github.com/Arun-kc/schemabrain/pull/216
+[#217]: https://github.com/Arun-kc/schemabrain/pull/217
+[#218]: https://github.com/Arun-kc/schemabrain/pull/218
+[#219]: https://github.com/Arun-kc/schemabrain/pull/219
+[#220]: https://github.com/Arun-kc/schemabrain/pull/220
+[#221]: https://github.com/Arun-kc/schemabrain/pull/221
+[#222]: https://github.com/Arun-kc/schemabrain/pull/222
+[#223]: https://github.com/Arun-kc/schemabrain/pull/223
+[#224]: https://github.com/Arun-kc/schemabrain/pull/224
+[#225]: https://github.com/Arun-kc/schemabrain/pull/225
+[#226]: https://github.com/Arun-kc/schemabrain/pull/226

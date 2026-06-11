@@ -27,7 +27,7 @@ It then introspects the schema, classifies columns for PII, optionally calls Ant
   "schemabrain": {
     "command": "uvx",
     "args": [
-      "schemabrain==0.5.0",
+      "schemabrain==0.6.0",
       "serve",
       "--url-env", "SCHEMABRAIN_DATABASE_URL",
       "--store-path", "/ABSOLUTE/PATH/TO/schemabrain.db"
@@ -48,7 +48,7 @@ Open Zed's `settings.json` (Cmd+Shift+P → "zed: open settings") and merge the 
   "context_servers": {
     "schemabrain": {
       "command": "uvx",
-      "args": ["schemabrain==0.5.0", "serve", "--url-env", "SCHEMABRAIN_DATABASE_URL", "--store-path", "/ABSOLUTE/PATH/TO/schemabrain.db"],
+      "args": ["schemabrain==0.6.0", "serve", "--url-env", "SCHEMABRAIN_DATABASE_URL", "--store-path", "/ABSOLUTE/PATH/TO/schemabrain.db"],
       "env": {
         "SCHEMABRAIN_DATABASE_URL": "postgresql+psycopg://..."
       }

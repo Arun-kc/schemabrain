@@ -74,10 +74,10 @@ Notes:
 | Tag | Meaning |
 |---|---|
 | `:latest` | Latest published release (PyPI publish + Docker push together) |
-| `:0.5.0` | A specific version |
+| `:0.6.0` | A specific version |
 | `:0.4` | The latest patch in the 0.4 minor line |
 
-For production-style pinning, use a specific patch (`:0.5.0`) rather than `:latest`.
+For production-style pinning, use a specific patch (`:0.6.0`) rather than `:latest`.
 
 ## What's next
 
