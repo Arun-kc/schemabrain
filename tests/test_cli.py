@@ -3755,9 +3755,10 @@ class TestSuggestLlmProgressHelper:
 
 class TestCliHelpEpilog:
     """wsDX-cli-help: the top-level `--help` epilog must surface the
-    canonical `uvx schemabrain init` install promise so an operator who
-    runs `schemabrain --help` (or hits a usage error) sees the runner-led
-    quickstart, not a bare `schemabrain init` that assumes a global pip
+    runner-led quickstart so an operator who runs `schemabrain --help`
+    (or hits a usage error) sees `uvx schemabrain demo` to try it AND the
+    canonical `uvx schemabrain init` install promise to wire their own
+    database — not a bare `schemabrain init` that assumes a global pip
     install. The pipx fallback is kept consistent with the docs ladder.
     """
 
@@ -3765,6 +3766,9 @@ class TestCliHelpEpilog:
         from schemabrain.cli import _build_parser
 
         help_text = _build_parser().format_help()
+        # The zero-setup demo leads the get-started line (the front door).
+        assert "uvx schemabrain demo" in help_text
+        # The canonical runner-led install promise for the real-DB path.
         assert "uvx schemabrain init" in help_text
         # Keeps a runner-agnostic fallback in the same breath as the docs
         # install ladder (uvx primary, pipx fallback).

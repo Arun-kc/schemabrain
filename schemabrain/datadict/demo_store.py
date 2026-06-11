@@ -17,9 +17,11 @@ The semantic layer (entities / joins / metrics) IS loadable offline: it
 comes from the same bundled YAML packs the `schemabrain init --demo`
 wizard applies, parsed deterministically.
 
-`DICTIONARY_SOURCE_URL` mirrors the wizard's `DEMO_DATABASE_URL`, so
-`SOURCE_ID` equals the id a real `schemabrain init --demo` would assign —
-pinned by `test_demo_store.test_source_id_is_pinned`.
+`DICTIONARY_SOURCE_URL` is the `+psycopg` form of the wizard's
+`DEMO_DATABASE_URL` — the scheme `serve`/`init` silently rewrite a bare
+`postgresql://` to before hashing — so `SOURCE_ID` equals the id a real
+`schemabrain init --demo` (and `schemabrain demo --wire`) assigns, pinned
+by `test_demo_store`.
 """
 
 from __future__ import annotations
@@ -38,11 +40,14 @@ from schemabrain.joins.yaml_grammar import parse_canonical_join_yaml_file
 from schemabrain.metrics.yaml_grammar import parse_metric_yaml_file
 from schemabrain.pii import classify_column
 
-# Mirrors `setup.setup_stage.DEMO_DATABASE_URL` (bare `postgresql://`) so
-# the dogfood doc reflects the source id a real `init --demo` produces.
-DICTIONARY_SOURCE_URL = "postgresql://postgres:local@localhost:5433/postgres"
+# The `+psycopg` form of `setup.setup_stage.DEMO_DATABASE_URL`. serve and
+# init silently rewrite a bare `postgresql://` to `postgresql+psycopg://`
+# (psycopg v3) BEFORE computing the source_id, so the offline store must
+# key to the POST-rewrite hash — otherwise a wired host's `serve` resolves
+# a different id and finds no dictionary. Pinned in test_demo_store.
+DICTIONARY_SOURCE_URL = "postgresql+psycopg://postgres:local@localhost:5433/postgres"
 # == make_source_id(DICTIONARY_SOURCE_URL); pinned in test_demo_store.
-SOURCE_ID = "6e04b1c8f8789f48"
+SOURCE_ID = "87c80af69c3b0547"
 
 _SCHEMA = "public"
 _PACK = "saas"
@@ -210,6 +215,29 @@ def build_saas_dictionary_store(store_path: str | Path) -> str:
                 source_connection_id=SOURCE_ID,
                 qualified_table=f"{_SCHEMA}.{table_name}",
                 tags=tags,
+            )
+
+        # Operator reclassification of two heuristic FALSE POSITIVES. The
+        # name-based classifier tags `workspaces.name` (the `name` rule) and
+        # `billing_profiles.country_code` (the `country` rule) as `contact`,
+        # so grouping revenue/subscriptions BY account or BY billing country
+        # would refuse — but a tenant/account name is a business identifier
+        # and a 2-letter ISO country code is geography, neither is personal
+        # data. We mark them `public` via the same per-column override an
+        # operator would write in `pii_policy.yaml` (origin='operator'), so
+        # the demo dictionary reflects the supported escape hatch rather than
+        # the raw heuristic. The catastrophic floor is untouched (this guard
+        # refuses downgrading a credential/payment_card/government_id column).
+        for qualified_table, column_name in (
+            (f"{_SCHEMA}.workspaces", "name"),
+            (f"{_SCHEMA}.billing_profiles", "country_code"),
+        ):
+            store.upsert_column_pii_tag_override(
+                source_connection_id=SOURCE_ID,
+                qualified_table=qualified_table,
+                column_name=column_name,
+                sensitivity="public",
+                categories=frozenset(),
             )
 
         for path in sorted(bundled_entities_fixture_dir(pack=_PACK).glob("*.yaml")):

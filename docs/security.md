@@ -35,7 +35,7 @@ The MCP surface exposes [12 tools](mechanism/read-only.md), **none of which acce
 
 ### 2. PII propagation at the metric compiler
 
-[12 categories](mechanism/pii-taxonomy.md) grounded in GDPR / CCPA / HIPAA / PCI DSS. Each column is tagged at index time. Tags propagate through **five surfaces** at compile time — measure columns (including composite-expression operands), time-dimension columns, `group_by` columns, filter predicates, and `JOIN ON` pairs. A `get_metric` whose path touches a blocked category refuses *before* the database is queried. Three catastrophic-leak categories (`credential`, `payment_card`, `government_id`) are blocked by default on zero-config install.
+[12 categories](mechanism/pii-taxonomy.md) grounded in GDPR / CCPA / HIPAA / PCI DSS. Each column is tagged at index time. Tags propagate through **five surfaces** at compile time — measure columns (including composite-expression operands), time-dimension columns, `group_by` columns, filter predicates, and `JOIN ON` pairs. A `get_metric` whose path touches a blocked category refuses *before* the database is queried. Three catastrophic-leak categories (`credential`, `payment_card`, `government_id`) are blocked by default on zero-config install. Grouping BY a tagged column is refused as **row-level disclosure** regardless of policy — the group keys would be the raw values (`count(*) ... GROUP BY email` is `SELECT DISTINCT email` in disguise), so it is blocked on the same rule as `MIN`/`MAX` over a tagged column.
 
 ### 3. Tamper-evident audit chain
 

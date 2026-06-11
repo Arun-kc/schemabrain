@@ -23,7 +23,7 @@ from schemabrain.core.models import Column, Table
 from schemabrain.core.store import SQLiteStore
 from schemabrain.mcp.envelope import Recovery, ToolError, ToolResponse
 from schemabrain.mcp.get_metric import get_metric_impl
-from schemabrain.mcp.shapes import MetricResult
+from schemabrain.mcp.shapes import MetricFilterArg, MetricResult
 from schemabrain.semantic.compiler import PiiBlockedError
 
 SRC = "pii_test_source"
@@ -186,7 +186,13 @@ class TestPropagationAttachedToMetricResult:
         finally:
             store.close()
 
-    def test_group_by_pii_column_unions_with_measure_category(self, tmp_path: Path) -> None:
+    def test_filter_pii_column_unions_with_measure_category(self, tmp_path: Path) -> None:
+        # A non-measure surface (here a FILTER on a contact column)
+        # contributes its category to the propagated set, unioned with
+        # the measure's own category. A filter touches the column
+        # without projecting its raw values into output rows, so it is
+        # governed by the category-policy gate (not the group_by
+        # row-disclosure guard) and succeeds under the default floor.
         store = SQLiteStore(tmp_path / "sb.db")
         try:
             _seed_table_and_entity(store)
@@ -205,9 +211,42 @@ class TestPropagationAttachedToMetricResult:
                 executor=executor,
                 source_connection_id=SRC,
                 name="amount_sum",
-                group_by=("user.email",),
+                filters=(MetricFilterArg(column="user.email", op="not_null", value=None),),
             )
             assert result.pii_categories == ("contact", "financial")
+        finally:
+            store.close()
+
+    def test_group_by_pii_column_refuses_as_row_level_disclosure(self, tmp_path: Path) -> None:
+        # Grouping BY a PII-tagged column projects its raw values into
+        # the result rows as group keys — `count(*) ... GROUP BY email`
+        # is `SELECT DISTINCT email` in disguise. Like the MIN/MAX guard,
+        # this refuses INDEPENDENT of the operator's policy: even with an
+        # empty `--pii-block`, raw PII values must never appear in output
+        # rows. The refusal happens before any SQL is emitted/executed.
+        store = SQLiteStore(tmp_path / "sb.db")
+        try:
+            _seed_table_and_entity(store)
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table="public.users",
+                tags={"email": ("pii", frozenset({"contact"}))},
+            )
+            _write_metric(store, name="amount_sum", column="amount")
+            executor = _FakeExecutor()
+            with pytest.raises(PiiBlockedError) as exc_info:
+                get_metric_impl(
+                    store=store,
+                    executor=executor,
+                    source_connection_id=SRC,
+                    name="amount_sum",
+                    group_by=("user.email",),
+                    # Policy is EMPTY — proves the guard is policy-independent.
+                    pii_block=frozenset(),  # type: ignore[arg-type]
+                )
+            assert exc_info.value.blocked_categories == ("contact",)
+            assert "row-level disclosure" in str(exc_info.value)
+            assert executor.execute_calls == []
         finally:
             store.close()
 
@@ -334,7 +373,7 @@ class TestRefusalAttemptedBlockedAsymmetry:
                     executor=executor,
                     source_connection_id=SRC,
                     name="amount_sum",
-                    group_by=("user.email",),
+                    filters=(MetricFilterArg(column="user.email", op="not_null", value=None),),
                     pii_block=frozenset({"contact"}),  # type: ignore[arg-type]
                 )
             # attempted = full propagated set (both columns touched)
@@ -369,7 +408,7 @@ class TestRefusalAttemptedBlockedAsymmetry:
                     executor=executor,
                     source_connection_id=SRC,
                     name="amount_sum",
-                    group_by=("user.email",),
+                    filters=(MetricFilterArg(column="user.email", op="not_null", value=None),),
                     pii_block=frozenset({"contact"}),  # type: ignore[arg-type]
                 )
             message = str(exc_info.value)
@@ -419,7 +458,10 @@ class TestRefusalAttemptedBlockedAsymmetry:
             _content, structured = asyncio.run(
                 server.call_tool(
                     "get_metric",
-                    {"name": "amount_sum", "group_by": ["user.email"]},
+                    {
+                        "name": "amount_sum",
+                        "filters": [{"column": "user.email", "op": "not_null"}],
+                    },
                 )
             )
             envelope = ToolResponse.model_validate(structured)
@@ -466,7 +508,7 @@ class TestRefusalAttemptedBlockedAsymmetry:
                     executor=executor,
                     source_connection_id=SRC,
                     name="amount_sum",
-                    group_by=("user.email",),
+                    filters=(MetricFilterArg(column="user.email", op="not_null", value=None),),
                     pii_block=frozenset({"contact"}),  # type: ignore[arg-type]
                 )
             # The exception INSTANCE preserves both sides of the
@@ -1218,7 +1260,7 @@ class TestCatastrophicFloorEnforcedOnAggregatePath:
                 executor=executor,
                 source_connection_id=SRC,
                 name="amount_sum",
-                group_by=("user.email",),
+                filters=(MetricFilterArg(column="user.email", op="not_null", value=None),),
                 pii_block=frozenset({"financial"}),  # type: ignore[arg-type]
             )
             assert result.pii_categories == ("contact",)

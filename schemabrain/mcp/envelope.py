@@ -40,9 +40,15 @@ compatible with 1.0 / 1.1):
 
 Changes in 1.1 (preserved):
   - New ErrorKinds: `pii_blocked`, `policy_blocked`, `allowlist_violation`.
-  - Reserved `refused` status — present in the Status literal so v2's
-    refuse-before-execute primitives ship the type contract on day
-    one. No current tool emits this status (charter_lint asserts).
+  - `refused` status — added to the Status literal in v1.1. It is
+    EMITTED TODAY by `get_metric` on the PII-block path
+    (`kind="pii_blocked"`); `policy_blocked` / `allowlist_violation`
+    stay reserved for v2's refuse-before-execute primitives (`execute`
+    / `validate_query`). `refused` is the firewall actively declining a
+    valid query on policy grounds — distinct from `error`, which covers
+    "I won't guess" (ambiguous / unreachable) and caller mistakes.
+    charter_lint guards that no tool emits `refused` on a HAPPY-PATH
+    (benign) call — benign args never touch PII.
   - New optional `Recovery` fields: `suggested_rewrite` and
     `widening_hint`, populated by v2's refuse-with-rewrite path.
 """
@@ -71,18 +77,21 @@ Status = Literal[
     "partial",
     "degraded",
     "error",
-    # Reserved in v1.1: no v0/v0.5/v1 tool emits `refused`. v2's
-    # `execute` / `validate_query` are the first producers, refusing
-    # queries that touch PII or violate allowlist scope before
-    # execution. Surfaces `error` populated with a v1.1 ErrorKind
-    # (`pii_blocked` / `policy_blocked` / `allowlist_violation`) and
-    # optionally `Recovery.suggested_rewrite` or `widening_hint`.
+    # Added in v1.1; EMITTED TODAY by `get_metric` (and the column path
+    # of `describe_*`) when a call touches a `--pii-block` category:
+    # surfaces `error` populated with `kind="pii_blocked"` plus the
+    # entity to retry against. `policy_blocked` / `allowlist_violation`
+    # stay reserved for v2's refuse-before-execute primitives (`execute`
+    # / `validate_query`). A `refused` response always carries a
+    # populated `error` and never `data` (same structural invariant as
+    # `error`). `refused` is the policy decline; `error` is everything
+    # else ("I won't guess", caller mistakes, internal_error) — agents
+    # branch on the finer `kind`, not on this coarse bucket.
     #
-    # TODO(v2): when v2 ships, consider splitting into
-    # `ProducerStatus` (without `refused`, for v0/v0.5/v1 tools) and
-    # the full `Status` (for envelope deserialisation). The split
-    # lets the type checker enforce the lint rule rather than relying
-    # on the runtime check in `scripts/charter_lint.py`.
+    # charter_lint asserts no tool emits `refused` on a HAPPY-PATH call
+    # (benign args never trip the PII firewall); the PII-refusal path
+    # itself is covered by tests/test_mcp_get_metric.py and
+    # tests/test_saas_store_envelopes.py.
     "refused",
 ]
 Confidence = Literal["HIGH", "MEDIUM", "LOW"]

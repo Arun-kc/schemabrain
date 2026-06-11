@@ -47,8 +47,8 @@ describe("graphStyle", () => {
     expect(mined.strokeDasharray).toBe("4 5");
 
     const resting = graphEdgeStyle({ declared: true });
-    expect(resting.stroke).toBe("var(--hair)");
-    expect(resting.opacity).toBe(0.5);
+    expect(resting.stroke).toBe("var(--ink-3)");
+    expect(resting.opacity).toBe(0.7);
   });
 
   it("fades a resting edge under a focus overlay, but never an emphasised one", () => {

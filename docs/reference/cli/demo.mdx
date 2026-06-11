@@ -1,0 +1,107 @@
+---
+title: "schemabrain demo"
+description: "Zero-setup showcase: builds the bundled SaaS layer + a seeded audit chain, then opens the dashboard, runs a terminal firewall showcase, or wires an MCP host. No API key; no Docker for the dashboard / showcase paths."
+---
+
+# `schemabrain demo`
+
+One command, zero prompts. Builds the offline SaaS demo store — **12 entities, 11 canonical joins, 5 metrics, real PII tags, a populated knowledge graph, and a tamper-evident audit chain of mixed refused / error / success calls** — then offers a guided choice of what to do with it. No API key, no Postgres, and no Docker for the dashboard and showcase paths (only the host-wire path provisions the demo Postgres, because a live agent needs real rows to query).
+
+```bash
+uvx schemabrain demo
+```
+
+```
+◇ building the demo store (12 entities · 11 joins · 5 metrics · audit chain)…
+✓ demo store ready · ~/.schemabrain/demo.db
+
+Demo ready. What now?
+
+  1. Open the dashboard     · 9 visual surfaces, no API key
+  2. Run the CLI showcase   · refusals + audit verify, in the terminal
+  3. Wire Claude Desktop    · try it in your own agent (starts demo Postgres)
+  4. Quit                   · print the commands to do these later
+
+  Choice [1]:
+```
+
+The store is keyed by the same `source_connection_id` as the live demo Postgres, so picking **Wire Claude Desktop** reuses the exact store you just built — `serve` compiles against its dictionary and executes against the freshly-provisioned database.
+
+---
+
+## Flags
+
+Pass a flag to skip the menu and run an action directly (useful for CI, scripts, or a second run).
+
+| Flag | Purpose |
+|---|---|
+| `--dashboard` | Skip the menu and open the dashboard directly (needs the `[ui]` extra). |
+| `--showcase` | Skip the menu and run the terminal firewall showcase. Self-contained — no browser, no key, no Docker. |
+| `--wire [--host NAME]` | Skip the menu and wire an MCP host. Provisions the demo Postgres first (needs Docker). `--host` defaults to auto-detect; `--host manual` prints the snippet. |
+| `--store-path PATH` | Where to build the demo store (default: `~/.schemabrain/demo.db`). Rebuilt fresh on every run. |
+| `--port N` | Dashboard port on `127.0.0.1` (default: `7878`). |
+| `--no-open` | Skip auto-opening the browser for the dashboard. CI / headless should pass this. |
+
+`--dashboard`, `--showcase`, and `--wire` are mutually exclusive. With no action flag and no TTY (piped output / CI), the command seeds the store and prints next-step commands instead of blocking on the menu.
+
+---
+
+## The CLI showcase
+
+`schemabrain demo --showcase` replays five questions through the **real** MCP server and prints each envelope as it happens, then verifies the audit chain. The refusals are decided at the firewall boundary before any SQL runs, so they are genuine even though execution is stubbed:
+
+```
+  ✓ Revenue by plan tier
+      computed from a curated metric — the agent never wrote SQL
+  ✕ Count our users, broken down by email address → refused (pii_blocked)
+      grouping by a PII column is row-level disclosure, refused before any SQL runs
+  ⚠ Usage volume by plan tier → error (unreachable_entity)
+      no modeled join from usage to plan; the agent gets a resolve_join recovery
+  ⚠ Total revenue over time → error (ambiguous_time_dimension)
+      multiple candidate timestamps; the agent disambiguates instead of guessing
+  ✕ Count accounts by their password-hash column → refused (pii_blocked)
+      credential — the always-on catastrophic floor
+  ✓ audit chain intact (5 calls, tamper-evident)
+```
+
+---
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Action completed (or the dashboard served until Ctrl+C, or next-steps were printed). |
+| `2` | A chosen action's prerequisite is missing — Docker for `--wire`, or the `[ui]` extra for the dashboard. The store is still built; re-run once the prerequisite is present. |
+
+---
+
+## Demo vs `init`
+
+| | `schemabrain demo` | `schemabrain init` |
+|---|---|---|
+| Purpose | Showcase the features fast | Wire SchemaBrain into your own agent + database |
+| Prompts | None (one menu) | DB source · MCP host · PII policy |
+| Data | Bundled SaaS sample | Your database (or the sample) |
+| Needs Docker | Only for `--wire` | Yes on the sample-data path |
+| Needs API key | No | Optional (LLM curation on your own DB) |
+
+Use `demo` to see what SchemaBrain does; use [`init`](/reference/cli/init) when you're ready to point it at a real database.
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="schemabrain init" icon="wand-magic-sparkles" href="/reference/cli/init">
+    Wire your own database into an MCP host.
+  </Card>
+  <Card title="schemabrain dashboard" icon="chart-line" href="/reference/cli/dashboard">
+    Serve the read-only dashboard against any store.
+  </Card>
+  <Card title="Dashboard overview" icon="grid-2" href="/dashboard/overview">
+    What the nine surfaces show.
+  </Card>
+  <Card title="schemabrain audit" icon="signature" href="/reference/cli/audit">
+    Verify the tamper-evident chain.
+  </Card>
+</CardGroup>

@@ -361,9 +361,9 @@ class TestToolResponseSerialization:
 # v1.1 is an additive minor bump per the Versioning section of the charter.
 # Three additions:
 #   1. New ErrorKinds: `pii_blocked`, `policy_blocked`, `allowlist_violation`
-#   2. Reserved `refused` status — present in the Status literal but not
-#      emitted by any current tool. v2's `execute` / `validate_query` will
-#      be the first producers.
+#   2. `refused` status — added to the Status literal in v1.1. Emitted
+#      today by `get_metric` on the PII-block path (`pii_blocked`);
+#      `policy_blocked` / `allowlist_violation` stay reserved for v2.
 #   3. New optional Recovery fields: `suggested_rewrite` (SuggestedRewrite),
 #      `widening_hint` (WideningHint).
 #
@@ -382,9 +382,11 @@ class TestCharterV11WireVersion:
 
 
 class TestStatusV11Refused:
-    """`refused` joins the Status literal but no current tool emits it.
-    Reserved so v2 refuse-before-execute primitives ship the type
-    contract on day one, not retrofitted later."""
+    """`refused` joins the Status literal in v1.1 and is emitted today by
+    `get_metric` on the PII-block path. These tests pin the literal + its
+    structural invariants (error populated, data forbidden); the live
+    PII-refusal envelope is exercised in test_mcp_get_metric.py and
+    test_saas_store_envelopes.py."""
 
     def test_refused_status_in_literal(self) -> None:
         """A ToolResponse with status='refused' must construct without

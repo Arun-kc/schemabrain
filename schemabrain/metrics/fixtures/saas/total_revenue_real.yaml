@@ -9,3 +9,15 @@ entity: subscription_item
 measure:
   agg: sum
   expression: unit_price_cents * seats
+# NO `time_dimension` — on purpose, and load-bearing. `subscription_item`
+# has no timestamp column of its own, so asking for a `time_grain` makes
+# the resolver BFS the canonical-join graph and reach FOUR candidate
+# timestamps (subscription.started_at / canceled_at / trial_ends_at, then
+# workspace.created_at) — it refuses to guess and returns
+# `ambiguous_time_dimension` with the candidate list as structured
+# recovery. This is the S5 ambiguous-time demo beat (the engine's
+# refuse-don't-fabricate thesis applied to time semantics). Adding a
+# `time_dimension` here would silently kill that beat. Pinned by
+# tests/test_demo_fixture_consistency.py::
+# test_saas_total_revenue_real_has_no_time_dimension and exercised end to
+# end in tests/test_saas_store_envelopes.py::TestAmbiguousTimeDimension.

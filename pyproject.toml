@@ -1,6 +1,6 @@
 [project]
 name = "schemabrain"
-version = "0.5.0"
+version = "0.6.0"
 description = "The trust and intelligence layer between AI agents and your database."
 readme = "README.md"
 requires-python = ">=3.11"

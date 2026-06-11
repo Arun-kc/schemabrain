@@ -52,6 +52,24 @@ def test_source_id_is_pinned() -> None:
     assert make_source_id(DICTIONARY_SOURCE_URL) == SOURCE_ID
 
 
+def test_source_id_matches_what_serve_computes_for_the_demo_db() -> None:
+    # A wired host (`schemabrain demo --wire`) runs `serve` against
+    # DEMO_DATABASE_URL. serve resolves that URL through the silent
+    # `+psycopg` rewrite BEFORE hashing, so the source_id it computes is
+    # the post-rewrite hash. The offline store MUST key to that same id,
+    # or the wired agent finds no dictionary for its source and every
+    # metric fails. Regression: SOURCE_ID was the pre-rewrite (bare)
+    # hash, so wiring built a store the live server could never resolve.
+    from urllib.parse import urlparse
+
+    from schemabrain.errors import silent_rewrite_to_psycopg
+    from schemabrain.setup.setup_stage import DEMO_DATABASE_URL
+
+    scheme = urlparse(DEMO_DATABASE_URL).scheme
+    as_serve_resolves_it = silent_rewrite_to_psycopg(scheme, DEMO_DATABASE_URL) or DEMO_DATABASE_URL
+    assert make_source_id(as_serve_resolves_it) == SOURCE_ID
+
+
 def test_builder_writes_every_saas_table(tmp_path: Path) -> None:
     build_saas_dictionary_store(tmp_path / "dict.db")
     with SQLiteStore(tmp_path / "dict.db") as store:

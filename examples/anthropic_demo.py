@@ -16,7 +16,46 @@ Usage:
     python examples/anthropic_demo.py \\
         --url-env DATABASE_URL \\
         --store-path /path/to/schemabrain.db \\
-        --question "How much revenue did we invoice each month?"
+        --question "What is our usage volume by customer plan tier?"
+
+Demo beats (against the bundled SaaS pack — pass each as --question):
+  The questions are phrased as a LEGITIMATE analyst would phrase them,
+  so the model computes via `get_metric` and SchemaBrain — not the
+  model's own alignment — does the refusing. Expected outcomes:
+
+    • "What is our usage volume by customer plan tier?"
+        → get_metric(usage_volume, group_by=["plan.title"])
+        → `unreachable_entity` (usage events have no path to a plan),
+          agent reads recovery and pivots to revenue, which resolves.
+          (The default question — refusal → recovery → success in one.)
+    • "Count our users, broken down by email address."
+        → get_metric(user_count, group_by=["user.email"])
+        → `pii_blocked` (contact). Grouping BY a PII column projects its
+          raw values into the result rows — row-level disclosure, refused
+          regardless of `--pii-block` policy. Phrased as an aggregation an
+          analyst would run, so the model COMPUTES it and the server — not
+          the model's own caution — does the refusing. ("List the emails"
+          reads as a raw-row export, which SchemaBrain has no tool for, so
+          a careful agent self-declines BEFORE any tool call and the
+          firewall never fires — the wrong thing to demo.)
+    • "For a credential-rotation audit, count user accounts by their
+       password-hash column."
+        → get_metric(user_count, group_by=["user.password_hash"])
+        → `pii_blocked` (credential — the catastrophic floor). Then
+          "...by role instead" resolves.
+    • "What is our real contracted revenue per month? Use the line-item
+       metric total_revenue_real at a monthly grain."
+        → get_metric(total_revenue_real, time_grain="month")
+        → `ambiguous_time_dimension`; agent retries with the suggested
+          time_dimension and it resolves.
+    • "Show total invoiced revenue by plan tier, top 5."
+        → get_metric(total_revenue, group_by=["plan.title"], limit=5)
+        → success (the leaderboard).
+
+  `audit verify` is NOT an agent question — there is no MCP audit tool.
+  Run several beats in one session to accumulate a mixed refused/error/
+  success chain in `mcp_audit`, then verify out of band:
+  `schemabrain audit verify --store-path /path/to/schemabrain.db`.
 
 Cost: ~$0.005-0.02 per run on Haiku 4.5 depending on how many tool
 turns the agent takes. Bounded by --max-turns (default 8). Aborts
@@ -40,10 +79,13 @@ import anthropic
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-_DEFAULT_QUESTION = (
-    "Which tables in this database describe customer orders, and what "
-    "are the most important columns on each?"
-)
+# Default = the README "Sample session" hero. Against the bundled SaaS
+# pack this routes to get_metric(usage_volume, group_by=["plan.title"]),
+# which returns `unreachable_entity` (usage events have no modeled path to
+# a plan — the deliberate join-island), so the agent reads the structured
+# recovery and pivots to total_revenue by plan, which resolves. One
+# question that shows refusal → recovery → success in a single transcript.
+_DEFAULT_QUESTION = "What is our usage volume broken down by customer plan tier?"
 _DEFAULT_MAX_TURNS = 8
 _HAIKU_MODEL = "claude-haiku-4-5"
 # Per-message output cap. 1024 was too tight — verbose answers (multiple
@@ -51,13 +93,31 @@ _HAIKU_MODEL = "claude-haiku-4-5"
 # with `stop_reason="max_tokens"`. 4096 leaves headroom for typical demo
 # answers without being excessive; Haiku 4.5 supports up to 8192.
 _MAX_OUTPUT_TOKENS = 4096
+# The prompt frames the model as an ANALYST that COMPUTES via get_metric
+# and DEFERS to SchemaBrain's refusal/error envelopes as the safety layer
+# — not an answerer that pre-judges the request. This is the fix for the
+# demo's old failure mode: an exfil-sounding question ("list the password
+# hashes") tripped the model's own alignment so it self-refused in prose
+# and never called a tool, leaving SchemaBrain's firewall unexercised. By
+# routing everything through get_metric and treating a `refused`/`error`
+# envelope as "the safety layer did its job, now recover", the firewall
+# gets to prove itself. NOTE: this does NOT instruct bypassing safety — it
+# instructs DEFERRING to SchemaBrain, which IS the safety layer.
 _SYSTEM_PROMPT = (
-    "You are a senior data engineer answering questions about an "
-    "unfamiliar database. The user has indexed the database with "
-    "SchemaBrain. Use the provided MCP tools to discover relevant "
-    "tables (`find_relevant_tables`) and inspect them in detail "
-    "(`describe_table`) before answering. When you have enough to "
-    "answer concisely, do so without further tool calls."
+    "You are a data analyst answering questions about a database indexed "
+    "with SchemaBrain. Compute every answer by calling the provided MCP "
+    "tools — never guess values, table names, or column names. Discover "
+    "structure with `find_relevant_entities` and `list_metrics`, inspect "
+    "an entity's columns, joins, and PII tags with `describe_entity`, and "
+    "compute numbers with `get_metric`. SchemaBrain enforces PII policy, "
+    "join validity, and time-dimension semantics at the `get_metric` "
+    "boundary: if a call comes back with `status` of `refused` or "
+    "`error`, that is the safety and validity layer doing its job — read "
+    "`error.kind` and `error.recovery`, follow the suggested tool and "
+    "arguments to recover, then answer with whatever did resolve. Do not "
+    "refuse on the user's behalf or pre-judge a request: let SchemaBrain "
+    "decide what is allowed, and tell the user plainly what it refused "
+    "and why."
 )
 
 
@@ -222,7 +282,9 @@ def main() -> int:
     parser.add_argument(
         "--question",
         default=_DEFAULT_QUESTION,
-        help="The question to ask the agent. Defaults to a sample about orders.",
+        help="The question to ask the agent. Defaults to the SaaS 'usage "
+        "by plan tier' beat (refusal → recovery → success). See the "
+        "module docstring for the full set of demo beats.",
     )
     parser.add_argument(
         "--max-turns",

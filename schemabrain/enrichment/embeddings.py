@@ -105,6 +105,27 @@ def _resolve_fastembed_cache_dir() -> Path:
     return Path.home() / ".cache" / "fastembed"
 
 
+def _quiet_model_download_progress() -> None:
+    """Silence huggingface_hub's tqdm progress bars during model load.
+
+    The bge-small fetch runs through ``huggingface_hub.snapshot_download``
+    (both our eager pre-fetch and fastembed's own loader), which prints a
+    ``Fetching N files`` bar to stderr on *every* call — even when the
+    model is already cached and nothing downloads, where it flashes
+    ``Download complete: 0.00B`` and exits. That noise leaks into
+    ``doctor --verify``, ``serve``, the dashboard sidecar, and scripted
+    agent runs. We disable it by default; operators who want the bar back
+    (e.g. to watch a slow cold-start download) can set
+    ``HF_HUB_DISABLE_PROGRESS_BARS=0``.
+    """
+    if os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS") == "0":
+        return  # explicit opt-in — leave hub progress bars on
+    with contextlib.suppress(Exception):
+        from huggingface_hub.utils import disable_progress_bars
+
+        disable_progress_bars()
+
+
 def _ensure_model_files_present(cache_dir: Path, model_name: str) -> None:
     """Eager-fetch the model files via ``huggingface_hub.snapshot_download``.
 
@@ -371,6 +392,9 @@ class FastEmbedEmbedder:
 
     def _ensure_model(self) -> Any:
         if self._model is None:
+            # Kill the huggingface_hub `Fetching N files` tqdm bar before
+            # any download path runs (our pre-fetch + fastembed's loader).
+            _quiet_model_download_progress()
             # Imported lazily so test-only paths (FakeEmbedder) never pay
             # the cost of importing onnxruntime.
             from fastembed import TextEmbedding

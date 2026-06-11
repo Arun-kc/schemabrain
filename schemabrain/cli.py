@@ -618,6 +618,14 @@ def _dispatch(argv: list[str] | None) -> int:
             port=args.port,
             open_browser=args.open_browser,
         )
+    if args.command == "demo":
+        return _cmd_demo(
+            action=args.demo_action,
+            store_path=args.store_path,
+            host=args.host,
+            port=args.port,
+            open_browser=args.open_browser,
+        )
     if args.command == "policy":
         if args.policy_action == "show":
             return _cmd_policy_show(
@@ -759,6 +767,7 @@ class _GroupedInitHelpAction(argparse.Action):
 
 _CLI_EPILOG = """\
 First hour:
+  demo                  Zero-setup showcase — sample data + firewall + dashboard (no API key)
   init                  Wire SchemaBrain into a Claude Desktop / Cursor / Windsurf host
   doctor                Verify the wiring (--verify for a no-API-key mock-agent smoke)
   dashboard             Serve the local read-only UI (requires `pip install schemabrain[ui]`)
@@ -781,7 +790,7 @@ Developer:
   eval · mine-queries · fixture-path
                         Bench harness + query-log mining.
 
-Get started: `uvx schemabrain init`  (or `pipx run schemabrain init`).
+Get started: `uvx schemabrain demo` to see it in action  ·  `uvx schemabrain init` (or `pipx run schemabrain init`) to wire your own database.
 """
 
 
@@ -2679,6 +2688,60 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_false",
         default=True,
         help="Skip auto-opening the default browser. CI / headless setups should pass this.",
+    )
+
+    p_demo = sub.add_parser(
+        "demo",
+        help="Zero-setup showcase: sample SaaS data + firewall + dashboard (no API key, "
+        "no Docker for the dashboard / CLI paths)",
+    )
+    g_demo_action = p_demo.add_mutually_exclusive_group()
+    g_demo_action.add_argument(
+        "--dashboard",
+        dest="demo_action",
+        action="store_const",
+        const="dashboard",
+        help="Skip the menu and open the dashboard directly.",
+    )
+    g_demo_action.add_argument(
+        "--showcase",
+        dest="demo_action",
+        action="store_const",
+        const="showcase",
+        help="Skip the menu and run the terminal firewall showcase.",
+    )
+    g_demo_action.add_argument(
+        "--wire",
+        dest="demo_action",
+        action="store_const",
+        const="wire",
+        help="Skip the menu and wire an MCP host (starts the demo Postgres — needs Docker).",
+    )
+    p_demo.set_defaults(demo_action=None)
+    p_demo.add_argument(
+        "--host",
+        choices=("claude-desktop", "claude-code", "cursor", "windsurf", "manual"),
+        default=None,
+        help="Host to wire with --wire (default: auto-detect). `manual` prints the snippet.",
+    )
+    p_demo.add_argument(
+        "--store-path",
+        default=None,
+        help="Where to build the demo store (default: ~/.schemabrain/demo.db). "
+        "Rebuilt fresh on every run.",
+    )
+    p_demo.add_argument(
+        "--port",
+        type=int,
+        default=_DASHBOARD_DEFAULT_PORT,
+        help=f"Dashboard port on 127.0.0.1 (default: {_DASHBOARD_DEFAULT_PORT}).",
+    )
+    p_demo.add_argument(
+        "--no-open",
+        dest="open_browser",
+        action="store_false",
+        default=True,
+        help="Skip auto-opening the browser for the dashboard. CI / headless should pass this.",
     )
 
     return parser
@@ -4671,7 +4734,16 @@ def _cmd_entities_list(
         return 2
 
     if not entities:
+        # Mirror the metrics-list empty-state: tell the operator the next
+        # command instead of dead-ending on a parenthetical.
         print("(no entities in the store)")
+        print(
+            "  next: hand-author `<entity>.yaml` files and run "
+            "`schemabrain entities apply ./entities`, or run "
+            "`schemabrain entities suggest --out-dir ./entities` to propose "
+            "them from the indexed schema first. (Index the source before "
+            "either: `schemabrain index --url-env DBURL`.)"
+        )
         return 0
 
     for entity in entities:
@@ -5843,7 +5915,15 @@ def _cmd_joins_list(
         return 2
 
     if not joins:
+        # Mirror the metrics-list empty-state: name the next command.
         print("(no canonical joins in the store)")
+        print(
+            "  next: hand-author `<join>.yaml` files and run "
+            "`schemabrain joins apply ./joins`, or run "
+            "`schemabrain joins suggest --out-dir ./joins` to mine them from "
+            "FK constraints first. Joins reference entities, so apply "
+            "entities before joins."
+        )
         return 0
 
     for join in joins:
@@ -9979,6 +10059,63 @@ def _cmd_dashboard(*, store_path: str, port: int, open_browser: bool) -> int:
         port=port,
         open_browser=open_browser,
     )
+
+
+def _cmd_demo(
+    *,
+    action: str | None,
+    store_path: str | None,
+    host: str | None,
+    port: int,
+    open_browser: bool,
+) -> int:
+    """Zero-setup showcase. Builds the offline SaaS store (12 entities /
+    11 joins / 5 metrics + seeded audit chain — no Docker, no API key,
+    no Postgres), then either runs the requested action directly or, when
+    interactive and no action flag was passed, offers a guided menu.
+
+    Exit codes: 0 success / served-until-Ctrl+C; 2 when an action's
+    prerequisite is missing (e.g. Docker for --wire, the `[ui]` extra for
+    the dashboard).
+    """
+    from pathlib import Path as _Path
+
+    from schemabrain.setup import demo as _demo
+
+    console = _stderr_console()
+    path = _Path(store_path) if store_path else _demo.DEMO_STORE_PATH
+    console.print(
+        "[bright_black]◇ building the demo store "
+        "(12 entities · 11 joins · 5 metrics · audit chain)…[/]"
+    )
+    source_id = _demo.seed_demo_store(path)
+    console.print(f"[green]✓[/] demo store ready [bright_black]· {path}[/]")
+
+    if action == "dashboard":
+        return _demo.open_dashboard(
+            store_path=path,
+            source_id=source_id,
+            port=port,
+            open_browser=open_browser,
+            console=console,
+        )
+    if action == "showcase":
+        return _demo.run_showcase(store_path=path, source_id=source_id, console=console)
+    if action == "wire":
+        return _demo.wire_demo_host(
+            store_path=path, source_id=source_id, host=host, console=console
+        )
+
+    if _stderr_is_interactive_tty():
+        return _demo.run_demo_menu(
+            store_path=path,
+            source_id=source_id,
+            console=console,
+            port=port,
+            open_browser=open_browser,
+        )
+    _demo.print_next_steps(path, console)
+    return 0
 
 
 def _cmd_fixture_path(name: str) -> int:

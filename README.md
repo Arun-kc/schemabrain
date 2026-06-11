@@ -54,7 +54,7 @@ uvx schemabrain init
 
 **Cost:** **$0** to run the bundled demo (pre-curated pack, no API key) · ~$0.03 to LLM-index a fresh 84-column schema · **$0** to re-index unchanged schemas. Detail in [Sample session](#sample-session).
 
-**Status: 0.5.0 (beta).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap.
+**Status: 0.6.0 (beta).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap.
 
 ---
 
@@ -77,6 +77,8 @@ uvx schemabrain init
 ---
 
 ## Quickstart
+
+> **Just want to see what it does?** `uvx schemabrain demo` — one command, zero prompts. Builds the sample SaaS layer, then lets you open the dashboard or run a terminal firewall showcase. **No API key, and no Docker** for the dashboard / showcase paths. The steps below are for wiring SchemaBrain into your own agent against your own database.
 
 Three steps from `uvx schemabrain init` to a working Claude Desktop integration. If you paste your own Postgres URL — no Docker needed, ~30s. Press Enter for the bundled demo and `init` invokes Docker + downloads a ~67 MB embedding model first time; ~45s once cached.
 
@@ -109,7 +111,7 @@ SchemaBrain init — activation wizard
   [2/7] Index schema       ✓ 12 tables, 84 columns indexed
   [3/7] Curate entities    ✓ 12 entities applied (bundled demo pack)
   [4/7] Curate metrics     ✓ 5 metrics applied (bundled demo pack)
-  [5/7] Curate joins       ✓ 8 canonical joins applied (bundled demo pack)
+  [5/7] Curate joins       ✓ 11 canonical joins applied (bundled demo pack)
   [6/7] Wire host          ✓ wrote schemabrain entry to claude_desktop_config.json
                            (default; switch with --host claude-code|cursor|windsurf|manual)
   [7/7] Next               ✓ restart your MCP host, then ask: "list the entities SchemaBrain knows about"
@@ -162,10 +164,10 @@ schemabrain audit verify   # exit 0 = chain clean
 
 ### 4. Failure is a contract, not a string
 
-Refused and degraded calls return a structured `recovery.suggested_args` block — not a message to parse. PII blocks ship the entity to retry; ambiguous dimensions ship the candidate to pick; unknown joins ship the next tool to call.
+Every non-success call — refused, error, or degraded — returns a structured `recovery.suggested_args` block, not a message to parse. PII blocks (`status: "refused"`) ship the entity to retry; ambiguous dimensions and unreachable entities (`status: "error"`) ship the candidate to pick or the next tool to call. Only policy refusals are `refused`; "I won't guess" is `error` with a recovery payload.
 
 ```json
-{ "status": "refused", "kind": "ambiguous_time_dimension",
+{ "status": "error", "kind": "ambiguous_time_dimension",
   "recovery": { "suggested_tool": "get_metric",
                 "suggested_args": {"time_dimension": "order.placed_at"} } }
 ```
@@ -192,11 +194,17 @@ schemabrain dashboard
 # → http://127.0.0.1:7878
 ```
 
-It's a viewer, not a console — no settings, no entity editor, no SQL pad. Three surfaces, each answering an operator question the MCP envelope alone never surfaces visually:
+It's a viewer, not a console — no settings, no SQL pad, no write path. **Nine read-only surfaces**, each answering an operator question the MCP envelope alone never surfaces visually. The signature surface is the **Knowledge Graph** — your schema rendered as the same entity-relationship projection the semantic layer compiles joins against:
 
+- **Knowledge Graph** (`/graph`) — *how does my schema actually connect?* Entities as nodes, canonical joins as cardinality-labelled edges, PII-bearing entities flagged, and refusal hotspots highlighted — the schema as a graph, not a table list.
+- **Overview** (`/overview`) — the home surface: entity / metric / join / catastrophic-PII counts at a glance.
+- **Entities** (`/entities`) — a sortable index; drill into any entity's columns, PII, metrics, and canonical joins.
+- **Data Dictionary** (`/dict`) — every table, column, type, PII class, join, and metric, with one-click Markdown export (the same artifact `schemabrain docs` writes).
 - **PII Ledger** (`/pii`) — *which entities carry sensitive data?* A heatmap with one row per confirmed entity and one column per PII category, each cell counting how many columns inside that entity carry that category. Entities holding a catastrophic-leak category (`credential`, `payment_card`, `government_id`) get a gutter marker — so you can see at a glance which entities will trip the default `--pii-block` policy, and catch a `payment_card` column hiding inside `users` before you point an agent at a new schema. Each row also carries the entity's origin, inference method, and validation state for triaging mis-tags.
 - **Refusals** (`/refusals`) — *what did SchemaBrain block, and what did the agent see?* A two-pane timeline: refused incidents on the left, the full envelope on the right — the reason that fired (`pii_blocked`, `allowlist_violation`, `fragment_unsafe`, `cost_cap_exceeded`, `ambiguous_resolution`, `schema_drift`), the exact category set that intersected the policy, and the `follow_up_hints` the agent got back to recover. Use it to triage "the agent says it can't access that" and to review whether those hints actually helped.
-- **Audit Viewer** (`/audit`) — *is the audit chain still intact?* The visual face of the tamper-evident log: every tool call writes exactly one row — whatever the outcome — anchored by `chain_hash = sha256(prev_hash || canonical(row))`. A ribbon shows **Chain Intact** / **Mismatch**, the **Verify ledger** button re-walks the chain server-side, and selecting a row opens the full body (tool, status, cost class, PII categories, fingerprint, and the prev → row → next hash linkage). Live calls stream in over SSE.
+- **Audit Viewer** (`/audit`) — *is the audit chain still intact?* The visual face of the tamper-evident log: every tool call writes exactly one row — whatever the outcome — anchored by `chain_hash = sha256(prev_hash || canonical(row))`. A ribbon shows **Chain Intact** / **Mismatch**, the **Verify** button re-walks the chain *and* checks per-row Merkle inclusion proofs server-side, and selecting a row opens the full body (tool, status, cost class, PII categories, fingerprint, and the prev → row → next hash linkage). Live calls stream in over SSE.
+- **Policy** (`/policy`) — the block / redact / allow grid the firewall enforces, with the always-on catastrophic-leak floor disclosed (it can't be removed). Changes are made via copy-the-CLI actions — the dashboard never writes.
+- **Drift** (`/drift`) — config and enrichment drift the store can detect, each with a copy-the-CLI fix.
 
 <p align="center">
   <img src="docs/assets/dashboard-pii-ledger.png" alt="PII Ledger — catastrophic-exposure counter and an entity × PII-category heatmap" width="100%"><br>
@@ -264,7 +272,7 @@ We don't ship per-framework adapters; the framework's standard MCP client is suf
 
 ### Not yet supported (cloud / HTTPS hosts)
 
-SchemaBrain v0.5 ships stdio only — no HTTPS / SSE transport. Clients that require a cloud HTTPS endpoint do **not** work today:
+SchemaBrain v0.6 ships stdio only — no HTTPS / SSE transport. Clients that require a cloud HTTPS endpoint do **not** work today:
 
 - **ChatGPT Connectors** — see the [honest gap page](docs/setup/chatgpt.md) for workarounds and the v0.5+ roadmap
 - **Hosted MCP gateways** — by design (local-first wedge; see [vs Querybear](docs/compare/querybear.mdx))
@@ -277,7 +285,7 @@ If you need ChatGPT support today, a community stdio→HTTPS bridge (`mcp-remote
 
 ## Sample session
 
-Real Claude Desktop session against the bundled SaaS fixture (12 tables, 84 columns, 12 entities):
+Real Claude Desktop session against the bundled SaaS fixture (12 tables, 84 columns, 12 entities). Condensed for length — a real agent explores `list_metrics` / `suggest_joins` first, then concludes the path is unreachable:
 
 > **You:** Using SchemaBrain, compute our usage volume broken down by plan tier.
 >
@@ -320,7 +328,7 @@ Real Claude Desktop session against the bundled SaaS fixture (12 tables, 84 colu
 
 The differentiator is what *didn't* happen: most LLM-over-database tools, asked for usage-by-plan, would confidently emit `JOIN plans p ON usage_events.plan_id = p.id` against a `plan_id` column that doesn't exist. SchemaBrain refused — `get_metric` returned `kind: unreachable_entity` with `recovery.suggested_tool: resolve_join`, not prose. The agent **acted on the structured recovery contract programmatically** instead of fabricating a join. Refusal-not-fabrication is the safety mechanism, demonstrated live.
 
-**Cost.** ~$0.001/column with Claude Haiku 4.5 + Sonnet 4.6 (Sonnet for the structured curation prompt). The bundled 12-table fixture (84 columns, 12 entities + 5 metrics + 8 joins) ships pre-curated, so the demo path applies it for **$0** — no API key. Indexing those 84 columns with LLM column descriptions measured **~$0.034**. The Pagila DVD-rental sample (87 columns after partition deduplication) runs for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
+**Cost.** ~$0.001/column with Claude Haiku 4.5 + Sonnet 4.6 (Sonnet for the structured curation prompt). The bundled 12-table fixture (84 columns, 12 entities + 5 metrics + 11 joins) ships pre-curated, so the demo path applies it for **$0** — no API key. Indexing those 84 columns with LLM column descriptions measured **~$0.034**. The Pagila DVD-rental sample (87 columns after partition deduplication) runs for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
 
 To verify Claude's SQL is mechanically correct (and that flagged caveats are the actual data behavior), see [Validating SQL Claude generates](docs/setup/manual.md#6-validating-sql-claude-generates).
 
@@ -344,7 +352,7 @@ So the engineering order is **schema intelligence → semantic substrate → tru
 
 The full, living roadmap — including explicit non-goals and how to influence priorities — lives in [`ROADMAP.md`](ROADMAP.md).
 
-### Now — shipping today (v0.5.x on PyPI)
+### Now — shipping today (v0.6.x on PyPI)
 
 What you get from `pip install schemabrain` right now:
 
@@ -390,7 +398,7 @@ Everything on this roadmap is open source.
 
 The five most common first-run failures. Full troubleshooter in [`docs/setup/manual.md`](docs/setup/manual.md#5-troubleshooting).
 
-- **`pip install schemabrain` gave me an older version.** Check `schemabrain --version`. If it doesn't match the [latest release](https://pypi.org/project/schemabrain/) your pip cache is stale — run `pip install --upgrade schemabrain`. `schemabrain init` writes the same version into the Claude Desktop snippet so it stays reproducible across restarts. When `uv` is on your PATH the snippet runs `uvx schemabrain==<pin>` (bump the pin manually after a pip upgrade); otherwise it pins the installed `schemabrain` entry point directly, which tracks pip upgrades automatically.
+- **`pip install schemabrain` gave me an older version.** Check `schemabrain --version`. If it doesn't match the [latest release](https://pypi.org/project/schemabrain/) your pip cache is stale — run `pip install --upgrade schemabrain`. `schemabrain init` writes the same version into the Claude Desktop snippet so it stays reproducible across restarts. When you installed from PyPI **and** `uv` is on your PATH, the snippet runs `uvx schemabrain==<pin>` (bump the pin manually after a pip upgrade); otherwise — a non-PyPI install (local wheel, editable, or git checkout) or no `uvx` — it pins the absolute path of the installed `schemabrain` entry point, which tracks the environment you ran `init` from.
 - **`init` reports `source unreachable`.** Postgres may not be ready on first run — wait a few seconds and re-run. For your own database, verify host, port, and credentials. Connection URLs in any form are accepted (`postgresql://`, `postgres://`, `postgresql+psycopg://`).
 - **The first `init` or `schemabrain index` hangs for ~60 seconds.** Normal. The first index downloads the ONNX embedding model (~67 MB) and makes one LLM call per column. Subsequent runs are fast.
 - **`init` fails at stage 6 "wire host".** Claude Desktop must be installed first — SchemaBrain writes into its config file, which doesn't exist until Claude Desktop has launched at least once.

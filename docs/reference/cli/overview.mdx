@@ -1,6 +1,6 @@
 ---
 title: "CLI reference"
-description: "Eighteen top-level subcommands span indexing, serving, semantic-layer curation, audit, and the local dashboard. This page is the catalog; per-command pages cover flags and behaviour."
+description: "Nineteen top-level subcommands span the zero-setup demo, indexing, serving, semantic-layer curation, audit, and the local dashboard. This page is the catalog; per-command pages cover flags and behaviour."
 ---
 
 # CLI reference
@@ -16,7 +16,7 @@ $ schemabrain --help
 usage: schemabrain [-h] [--version] [--verbose]
                    {index,eval,serve,mine-queries,fixture-path,entities,
                     import,joins,metrics,doctor,apply,diff,init,tail,
-                    audit,check,inspect,dashboard} ...
+                    audit,check,inspect,dashboard,demo} ...
 ```
 
 ---
@@ -37,6 +37,9 @@ For `serve` under Claude Desktop or another host that swallows CLI flags, set `S
 ### Setup and serve
 
 <CardGroup cols={2}>
+  <Card title="schemabrain demo" icon="wand-magic-sparkles" href="/reference/cli/demo">
+    Zero-setup showcase. Sample SaaS data, the firewall, and the dashboard — no API key.
+  </Card>
   <Card title="schemabrain init" icon="rocket" href="/reference/cli/init">
     Activation wizard. Index, curate, wire your MCP host in one command.
   </Card>

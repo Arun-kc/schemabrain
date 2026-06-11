@@ -110,6 +110,10 @@ The compiler-layer propagation closes the Simon-Willison "lethal trifecta" attac
 
 The same defense applies if the password column appears only in a JOIN ON pair or only as a composite-measure operand — every surface walks every column. A row-level filter would have been too late.
 
+### Grouping by a PII column is row-level disclosure
+
+Walking the `group_by` surface (above) feeds the policy intersection — but `group_by` is special in a second way: the grouped column's **distinct values become the result rows**. `count(*) ... GROUP BY email` returns every email — the same data as `SELECT DISTINCT email`. That is row-level disclosure, not aggregation. So, exactly like `MIN`/`MAX` over a tagged column, grouping by a column with **any** non-empty PII category is refused **independent of `--pii-block`** — even under an empty policy, raw PII values never reach the output rows. Aggregating OVER or filtering BY a tagged column stays governed by the category-policy gate (no raw values leave the database); only the `group_by` projection is categorically refused. This generalises the Willison Mirror defense above from the catastrophic floor to every category: the `staff.password` example refuses on the floor, and `user.email` (`contact`) refuses on the same row-level-disclosure rule.
+
 ---
 
 ## 4. Catastrophic-leak defaults — `credential` / `payment_card` / `government_id`
@@ -129,7 +133,7 @@ CATASTROPHIC_LEAK_CATEGORIES: frozenset[PIICategory] = frozenset(
   2. **`describe_entity` always redacts the column description** when any of these categories appears, even with an empty `--pii-block`. The agent never reads "password hash" or "social security number" semantics regardless of operator policy. Override is possible per-column but requires deliberate configuration.
 </Note>
 
-The closed set is auditable; additions are a minor charter bump. `contact` is *not* in the set — there are legitimate aggregate analytics over contact data (newsletter open rates by region, etc.), so blocking it by default would break common workflows.
+The closed set is auditable; additions are a minor charter bump. `contact` is *not* in the set — there are legitimate aggregate analytics over contact data (newsletter open rates by region, etc.), so blocking the *aggregate* by default would break common workflows. **Grouping BY a `contact` column is a different matter**: it projects raw emails/names into the result rows, so it is refused as row-level disclosure regardless of policy (see §"Grouping by a PII column is row-level disclosure" above). The "by region" workflow still works because `region` classifies `public`; a name-based-tagged-but-benign column like `country_code` (which the classifier marks `contact`) is reclassified `public` to group by it.
 
 ---
 

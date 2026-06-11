@@ -25,6 +25,76 @@ All three are agent-visible through dedicated MCP tools and compile to parameter
 
 The five physical-schema tools (`find_relevant_tables`, `describe_table`, `describe_column`, `suggest_joins`, `get_example_queries`) sit below them. Full reference: [the MCP tool reference](/reference/mcp-tools/overview).
 
+## Author from scratch (no LLM)
+
+Every definition is a small YAML file you can write by hand — the `suggest` commands in the sections below are just an LLM-assisted shortcut for producing the same files. To build a layer manually, follow three steps in order.
+
+**1. Index the source first.** Entities bind to physical tables, so the store must know the schema before any definition will apply:
+
+```bash
+schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+**2. Apply in dependency order.** The store enforces references between definitions — an entity must exist before a join or metric can point at it — so apply **entities → joins → metrics**:
+
+```bash
+schemabrain entities apply ./entities --url-env DATABASE_URL --store-path ./schemabrain.db
+schemabrain joins    apply ./joins    --url-env DATABASE_URL --store-path ./schemabrain.db
+schemabrain metrics  apply ./metrics  --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+A minimal three-file layer (`origin: manual` marks a hand-authored definition):
+
+```yaml
+# entities/order.yaml
+version: 1
+name: order
+description: A customer order.
+binding:
+  single_table: public.orders
+identity: id
+origin: manual
+```
+
+```yaml
+# metrics/total_revenue.yaml
+version: 1
+name: total_revenue
+description: Sum of order totals per requested grain.
+entity: order
+measure:
+  agg: sum
+  column: total_cents
+time_dimension: order.placed_at
+time_grains: [day, week, month]
+```
+
+```yaml
+# joins/order_customer.yaml
+version: 1
+name: order_customer
+description: Links each order to the customer who placed it.
+source_entity: order
+target_entity: customer
+"on":
+  - source: user_id
+    target: id
+cardinality: many_to_one
+```
+
+**3. Verify it resolves.** Column references — a metric's measure column, a join's `on` columns, an entity's `identity` — are validated when a query **compiles**, not when it applies. So `apply` accepting a file is not proof the layer works; confirm it end to end:
+
+```bash
+schemabrain entities list --store-path ./schemabrain.db   # are all three present?
+schemabrain metrics  list --store-path ./schemabrain.db
+```
+
+Then ask the agent (or call `get_metric`) for one real number. A typo in a column name surfaces here as an `unknown_name` envelope listing the valid columns — not as a silent success at apply time.
+
+<Warning>
+**Use the same database URL everywhere.** The store keys everything by a `source_connection_id` derived from the connection URL, so `schemabrain index` and every later `apply` / `serve` must pass the **same** URL — same host, port, and scheme. Index under `postgresql://…` and apply under `postgresql+psycopg://…` and they key to different stores: the second command reports an empty / unindexed source even though the tables are right there. Pick one URL form and pass it consistently.
+</Warning>
+
 ## Entities
 
 ```bash

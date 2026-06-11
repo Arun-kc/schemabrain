@@ -345,6 +345,41 @@ def _resolve_pii_categories(
                     anchor_entity=plan.metric.entity,
                 )
 
+    # Grouping BY a PII-tagged column projects that column's raw values
+    # into the result rows as the group keys: `count(*) ... GROUP BY
+    # email` returns every distinct email, indistinguishable from
+    # `SELECT DISTINCT email`. That is row-level disclosure, not
+    # aggregation — so, exactly like the MIN/MAX guard above, refusal is
+    # independent of the operator's `--pii-block` policy: raw PII values
+    # must never appear in output rows. Aggregating OVER or filtering BY
+    # a tagged column stays governed by the category-policy gate further
+    # down (no raw values leave the database); only the group_by
+    # projection is categorically refused. group_by columns may live on
+    # joined tables (multi-hop), so look them up grouped by qualified
+    # table.
+    group_by_by_table: dict[str, set[str]] = {}
+    for gb_resolved in plan.group_by_columns:
+        group_by_by_table.setdefault(gb_resolved.qualified_table, set()).add(gb_resolved.column)
+    for gb_table, gb_columns in group_by_by_table.items():
+        gb_tags = store.get_column_pii_tags(
+            source_connection_id=source_connection_id,
+            qualified_table=gb_table,
+            columns=gb_columns,
+        )
+        for col in sorted(gb_columns):
+            _sensitivity, categories = gb_tags.get(col, ("public", frozenset()))
+            if categories:
+                cats_tuple = cast(tuple[PIICategory, ...], tuple(sorted(categories)))
+                raise PiiBlockedError(
+                    f"get_metric refused: group_by column {col!r} projects "
+                    f"its raw values into result rows — grouping by a "
+                    f"PII-tagged column is row-level disclosure, not "
+                    f"aggregation. Group by a non-PII column instead.",
+                    attempted_categories=cats_tuple,
+                    blocked_categories=cats_tuple,
+                    anchor_entity=plan.metric.entity,
+                )
+
     by_table: dict[str, set[str]] = {}
 
     # Composite-expression measures (`measure.expression is not None`)

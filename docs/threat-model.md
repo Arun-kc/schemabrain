@@ -47,6 +47,7 @@ and the audit log that records every call.
 | T1.5 | Connection pool reuses a connection with poisoned session state | Medium |
 | T1.6 | Agent reads a PII row value through `MAX`/`MIN` over a tagged column | High |
 | T1.7 | Operator runs `--pii-block` against an unclassified source and the firewall silently fails open | High |
+| T1.8 | Agent enumerates raw PII values through `group_by` on a tagged column (e.g. `count(*) ... GROUP BY email`) | High |
 
 **Current mitigations**
 
@@ -87,8 +88,25 @@ and the audit log that records every call.
   policy. The operator's policy governs which *aggregate* categories may
   pass; MIN/MAX of a tagged column isn't aggregation. `SUM`, `COUNT`,
   `COUNT_DISTINCT`, and `AVG` remain pure aggregates and continue to flow
-  through the existing `--pii-block` gate. Composite expressions
+  through the existing `--pii-block` gate — **unless the metric groups
+  BY a tagged column**, which projects raw values into the result rows
+  regardless of the aggregate (see T1.8). Composite expressions
   (`expression: a * b`) under MIN/MAX refuse if any operand is tagged.
+- T1.8: `group_by` on a PII-tagged column projects that column's raw
+  values into the result rows as the group keys — `count(*) ... GROUP BY
+  email` returns every distinct email, indistinguishable from `SELECT
+  DISTINCT email`. `_resolve_pii_categories` in
+  [schemabrain/mcp/get_metric.py](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/mcp/get_metric.py)
+  refuses any metric that groups by a column with non-empty PII
+  categories, independent of the operator's `--pii-block` policy — the
+  same row-level-disclosure rule as T1.6 (MIN/MAX), applied to the
+  projection surface. Aggregating OVER or filtering BY a tagged column
+  stays governed by the `--pii-block` category gate (no raw values leave
+  the database); only the `group_by` projection is categorically refused.
+  The refusal happens before any SQL is emitted. The escape hatch for a
+  benign-but-tagged column (e.g. a 2-letter `country_code` the name-based
+  classifier tags `contact`) is to reclassify it `public`, not to weaken
+  the rule.
 - T1.7: When `--pii-block` enforcement is active but the store returns
   zero PII tag rows across every column touched, the call refuses with
   `PiiBlockedError` rather than letting the empty lookup pose as

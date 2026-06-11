@@ -71,26 +71,33 @@ export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"
 python anthropic_demo.py \
     --url-env DATABASE_URL \
     --store-path ./schemabrain.db \
-    --question "Where do we store customer order totals?"
+    --question "What is our usage volume by customer plan tier?"
 ```
 
-You'll see something like:
+You'll see the firewall refuse a join the schema can't support, then the agent recover — all through structured envelopes, not a raised error:
 
 ```
-[discovered tools] ['find_relevant_tables', 'describe_table', ...]  # 12 total
+[discovered tools] ['find_relevant_entities', 'list_metrics', 'get_metric', ...]  # 12 total
 
-[user] Where do we store customer order totals?
+[user] What is our usage volume by customer plan tier?
 
-[tool call] find_relevant_tables({"query": "customer order totals", "limit": 5})
-[tool result] is_error=False, text=[{"qualified_name":"public.orders",...
+[tool call] get_metric({"name": "usage_volume", "group_by": ["plan.title"]})
+[tool result] is_error=False, text={"status":"error","error":{"kind":"unreachable_entity",
+  "message":"entity 'plan' is not reachable from metric anchor 'usage_event'...",
+  "recovery":{"suggested_tool":"resolve_join","suggested_args":{"entity_a":"usage_event","entity_b":"plan"}}}}
 
-[tool call] describe_table({"qualified_name": "public.orders"})
-[tool result] is_error=False, text={"qualified_name":"public.orders",...
+[assistant turn 2] There's no modeled join from usage events to a plan, so I won't
+invent one. Let me show invoiced revenue by plan tier instead, which does resolve.
 
-[assistant turn 3] Customer order totals are stored in `public.orders.total_cents` (INTEGER, in cents). The orders table joins to `public.users` via `user_id`...
+[tool call] get_metric({"name": "total_revenue", "group_by": ["plan.title"]})
+[tool result] is_error=False, text={"status":"success","data":{"rows":[...]}}
+
+[assistant turn 3] Revenue by plan tier: Enterprise $..., Pro $..., Free $0...
 
 [done] stopped at turn 3, stop_reason='end_turn'
 ```
+
+The refusal comes back as a normal tool result (`is_error=False`) carrying `status:"error"` and a structured `recovery` block — so the agent reads it and pivots instead of failing. PII blocks behave the same way: ask *"count our users, broken down by email address"* and `get_metric(user_count, group_by=["user.email"])` comes back `status:"refused"`, `kind:"pii_blocked"` — grouping by a PII column projects raw values into the result rows (row-level disclosure), so the firewall refuses regardless of policy and the agent reports the block instead of leaking the list. Phrase it as an aggregation, not *"list the emails"* — the latter reads as a raw-row export (which SchemaBrain has no tool for), so a careful agent self-declines before the firewall is ever exercised.
 
 The script is **bounded by `--max-turns` (default 8)** and aborts cleanly if the agent doesn't converge. Cost on Haiku 4.5 is typically $0.005–0.02 per run.
 

@@ -395,12 +395,13 @@ test.describe("Knowledge graph polish (PR-17c)", () => {
     await routeGraph(page, GRAPH);
     await page.goto("/graph");
 
-    // The off-path mined edge rests at 0.5 opacity. reactflow tags the edge
-    // group with `data-testid` (not `data-id`, which only nodes carry).
+    // The off-path mined edge rests at 0.7 opacity (the readable resting
+    // stroke). reactflow tags the edge group with `data-testid` (not
+    // `data-id`, which only nodes carry).
     const minedPath = page.locator(
       '[data-testid="rf__edge-user_plan_mined"] .react-flow__edge-path',
     );
-    await expect(minedPath).toHaveCSS("opacity", "0.5");
+    await expect(minedPath).toHaveCSS("opacity", "0.7");
 
     // Select `plan` via the URL — selection IS the URL (ADR 0005), so this
     // exercises the exact same `selectedIncident` path as a click, without
