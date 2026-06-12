@@ -31,14 +31,18 @@ What you get from `pip install schemabrain` right now:
   compile from definitions you control, with read-only execution enforced at
   the database layer plus statement timeouts and row caps.
 - **Schema-intelligence engine** — index Postgres into a local SQLite store;
-  cost-capped LLM semantic enrichment; on-device embeddings
-  (BAAI/bge-small ONNX); entity identification with rationale + confidence;
-  declared-FK and query-log join mining; a canonical join graph with
-  multi-hop BFS; and a metrics layer.
-- **Trust & safety** — PII classification (60 rules across 12 categories),
-  tag propagation, a catastrophic-leak floor, an editable policy
+  cost-capped LLM semantic enrichment (with opt-in Sonnet routing for cryptic
+  columns via `--enable-sonnet`); on-device embeddings (BAAI/bge-small ONNX);
+  hybrid retrieval (bge query-prefix + BM25 via RRF); entity identification
+  with rationale + confidence; declared-FK, query-log, and dbt-`relationships`
+  join mining; a persisted canonical join graph with multi-hop BFS; and a
+  metrics layer.
+- **Trust & safety** — PII classification (60 rules across 12 categories) with
+  per-column confidence, tag propagation, a catastrophic-leak floor (grouping
+  *by* a PII column refuses as row-level disclosure), an editable policy
   (block / redact / allow plus per-column overrides), and a tamper-evident
-  sha256 hash-chained audit log with `audit verify`.
+  sha256 hash-chained audit log with browser-verifiable RFC-6962 Merkle proofs
+  and `audit verify`.
 - **Dashboard, 9 surfaces** — Overview, Knowledge Graph, Entities, Data
   Dictionary, PII Ledger, Audit Viewer, Refusals, Policy, and Drift. Opt-in,
   read-only, `127.0.0.1`-only.
@@ -46,23 +50,6 @@ What you get from `pip install schemabrain` right now:
   `entities`, `joins`, `metrics`, `policy {show, apply, tag}`, `docs`,
   `dashboard`, `doctor`, `serve`, `audit`. Distributed on PyPI (Apache-2.0)
   and as a headless Docker image.
-
-## Next — at launch (in active development, not yet on PyPI)
-
-The vision-launch feature set. These are merged or in flight on `main` and
-ship with the next release:
-
-- **Graph-first dashboard, dual-theme reskin** — an interactive Knowledge
-  Graph (the signature surface), an Entities index, an Entity drilldown with
-  a semantic pane, a Data Dictionary with Export-to-Markdown, plus the
-  existing PII matrix, Refusals, Audit, an editable Policy editor, and Drift
-  intelligence.
-- **New capabilities** — a persisted knowledge graph behind `/api/graph`; a
-  `schemabrain docs` CLI that emits a Markdown/HTML data dictionary;
-  per-column PII confidence; RFC-6962 Merkle-root audit proofs; hybrid
-  retrieval (bge query-prefix + BM25 via RRF); two-tier model routing.
-- **Openness** — good-first-issues and GitHub
-  Discussions (this `ROADMAP` and a [`Code of Conduct`](CODE_OF_CONDUCT.md) have landed).
 
 ## Later — direction, not commitments
 

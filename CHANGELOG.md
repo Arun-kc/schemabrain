@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.0] - UNRELEASED
+## [0.6.0] - 2026-06-12
 
-**Highlights** — the marketed launch. The dashboard grows from 4 surfaces into a **graph-led, 9-surface** experience: a signature **Knowledge Graph**, an **Overview** home, an **Entities** index, a **Data Dictionary**, an editable **Policy** editor, and a **Drift** view join the PII / Refusals / Audit trio. Audit logs are now **browser-verifiable** via a derived Merkle root, the marketing **landing moves to a standalone site**, and the product is repositioned from "SQL firewall" to the **trust + intelligence layer**.
+**Highlights** — the marketed launch. The dashboard grows from 4 surfaces into a **graph-led, 9-surface** experience: a signature **Knowledge Graph**, an **Overview** home, an **Entities** index, a **Data Dictionary**, an editable **Policy** editor, and a **Drift** view join the PII / Refusals / Audit trio. Audit logs are now **browser-verifiable** via a derived Merkle root, the marketing **landing moves to a standalone site**, and the product is repositioned from "SQL firewall" to the **trust + intelligence layer**. A zero-setup `schemabrain demo` command tells the whole story offline in seconds, the PII firewall now refuses **grouping by** a PII column as row-level disclosure, and `import dbt` imports `relationships` tests as canonical joins.
 
 > **Upgrade note** — this release migrates the store schema (`SCHEMA_VERSION` 14 → 15) to persist the graph projection; it applies automatically and crash-atomically on first open (chaining v13 → v14 → v15), no manual step. The project is now **Apache-2.0** licensed. Install the dashboard with `pip install schemabrain[ui]`; `schemabrain dashboard` still binds to `127.0.0.1` only.
 
@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Standalone marketing site** — the landing page moves out of the wheel into a separate Vercel app; the shipped dashboard roots at `/overview`. ([#219])
 - **Dashboard design system** — dual-theme (light/dark) oklch tokens, self-hosted fonts, a shared component kit, and an app shell. ([#183], [#184], [#186])
 - `schemabrain init` now leads with the knowledge-graph payoff, and `--help` is uvx-first. ([#226])
+- **`schemabrain demo`** — a zero-setup command (no Docker, API key, or Postgres) that builds an offline SaaS store, knowledge graph, and seeded audit chain, then offers a dashboard, terminal showcase, or host-wiring payoff via a guided menu. ([#233])
+- **dbt `relationships` → canonical joins** — `import dbt` now turns generic `relationships` schema tests into `dbt_import`-origin canonical joins (single-column, idempotent, FK-safe — both endpoint entities must be imported), completing the dbt-import path beyond entities. ([#237])
+- **Type- and nullability-aware drift** — `schemabrain check` adds `type_mismatch` and `nullability_change` drift kinds compared against the indexed column snapshot, closing the existence-only silent-correctness gap; additive (reports drift without cascade-suppressing dependents). ([#236])
+- **`init --enable-sonnet`** — the opt-in two-tier router (Sonnet 4.6 for cryptic column names, Haiku 4.5 otherwise) is now reachable from the onboarding wizard, with the same off-by-default semantics as `index --enable-sonnet`. ([#235])
 
 ### Changed
 - **Repositioned from "SQL firewall" to the trust + intelligence layer**, with the firewall demoted to one of six proof-points; a canonical positioning source (`positioning.py`) + sweep engine keep the public surface consistent. ([#189], [#190], [#191], [#217], [#221])
@@ -38,15 +42,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--enrich` withholds sample values and value-shape hints for PII-classified columns (gated on the name-based classifier). ([#214])
 - `pyjwt` bumped to 2.13.0 (4 CVEs). ([#187])
 - `sqlglot` pinned `<27` — 30.x renamed an AST arg key and silently emptied join-mining; added a version regression tripwire and a lock-free install smoke. ([#224], [#225])
+- `get_metric` refuses grouping **by** any PII-tagged column as row-level disclosure, independent of policy — mirrors the existing MIN/MAX raw-value guard; aggregating over or filtering by a contact column still answers. MCP server instructions tightened: raw-row access is out of scope by design, and the server never emits or offers SQL for refused or absent data. ([#233])
 
 ### Fixed
 - The Policy editor's middle verb is labelled "open", not "redact". ([#220])
 - Confidence is derived (not asserted) for query-log + introspection tools, with explicit provenance. ([#224])
+- The `init` wizard no longer misclassifies a user's own Postgres as the bundled demo — demo detection probes the SaaS-specific `workspaces` table instead of suffix-matching the demo URL tail. ([#234])
+- `import dbt` on a never-indexed store now fails fast with a guided "run `schemabrain index` first" pre-flight instead of a per-model foreign-key error. ([#234])
+- Quieted the Hugging Face download progress bar that printed even when the embedding model was already cached. ([#233])
 
 ### Documentation
 - **Code of Conduct** (Contributor Covenant 2.1) wired into README / ROADMAP / CONTRIBUTING. ([#226])
 - ADRs 0005–0011 (dashboard routing, read-only Apply, drift actions, policy control model, trust data contract, graph projection). ([#180], [#196], [#197], [#198], [#202])
 - README hero recast around the pain hook; pre-launch community on-ramp + surface-count accuracy. ([#215], [#217])
+- Claim-truth sweep from the full-scope E2E audit: SQLite framed as a roadmap **source** connector (the local store is SQLite; no SQLite source connector ships yet), per-column enrichment cost `~$0.0004`, `--max-cost` default `$1`, audit framed best-effort, two-tier routing opt-in, ROADMAP at 9 surfaces / v0.6.x; 68 broken `mechanism/*` doc links fixed and ADRs 0006–0012 registered in `docs.json`. ([#234])
+- ADR 0012 — group-by-PII row-level disclosure — plus threat-model, PII-taxonomy, security, and semantic-layer updates. ([#233])
 
 ### Internal
 - Visual-regression baselines in a pinned Playwright container + web performance budgets; a 9-surface axe a11y sweep + AA-contrast fixes; dependency bumps. ([#209], [#210], [#212], [#213], [#222], [#223])
@@ -1237,7 +1247,8 @@ First public preview. Live on PyPI as `schemabrain==0.1.0a1`.
 - MIT license; SSH-signed commits; CI on Python 3.11 + 3.12 (Linux
   unit) plus Docker Postgres integration with `--cov-fail-under=99`.
 
-[Unreleased]: https://github.com/Arun-kc/schemabrain/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Arun-kc/schemabrain/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Arun-kc/schemabrain/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Arun-kc/schemabrain/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Arun-kc/schemabrain/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Arun-kc/schemabrain/compare/v0.2.0a1...v0.3.0
@@ -1357,3 +1368,8 @@ First public preview. Live on PyPI as `schemabrain==0.1.0a1`.
 [#224]: https://github.com/Arun-kc/schemabrain/pull/224
 [#225]: https://github.com/Arun-kc/schemabrain/pull/225
 [#226]: https://github.com/Arun-kc/schemabrain/pull/226
+[#233]: https://github.com/Arun-kc/schemabrain/pull/233
+[#234]: https://github.com/Arun-kc/schemabrain/pull/234
+[#235]: https://github.com/Arun-kc/schemabrain/pull/235
+[#236]: https://github.com/Arun-kc/schemabrain/pull/236
+[#237]: https://github.com/Arun-kc/schemabrain/pull/237

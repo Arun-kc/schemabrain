@@ -352,24 +352,16 @@ So the engineering order is **schema intelligence → semantic substrate → tru
 
 The full, living roadmap — including explicit non-goals and how to influence priorities — lives in [`ROADMAP.md`](ROADMAP.md).
 
-### Now — shipping today (v0.6.x on PyPI)
+### Now — shipping in v0.6.x
 
-What you get from `pip install schemabrain` right now:
+What you get from `pip install schemabrain`:
 
 - **MCP server, 12 read-only tools** — `find_relevant_tables`, `find_relevant_entities`, `describe_table`, `describe_column`, `describe_entity`, `list_entities`, `list_metrics`, `list_joins`, `suggest_joins`, `resolve_join`, `get_example_queries`, `get_metric`.
 - **Def-driven compilation** — the agent never writes raw SQL; answers compile from definitions you control, with read-only execution enforced at the database layer plus statement timeouts and row caps.
-- **Schema-intelligence engine** — index Postgres into a local SQLite store; cost-capped LLM semantic enrichment; on-device embeddings (BAAI/bge-small ONNX); entity identification with rationale + confidence; declared-FK and query-log join mining; a canonical join graph with multi-hop BFS; and a metrics layer.
-- **Trust & safety** — PII classification (60 rules across 12 categories), tag propagation, a catastrophic-leak floor, an editable policy (block / redact / allow plus per-column overrides), and a tamper-evident sha256 hash-chained audit log with `audit verify`.
-- **Dashboard, 3 surfaces** — the PII Ledger (with a read-only policy view), Refusals, and an Audit Viewer.
-- **CLI** — `init`, `index`, `inspect`, `diff`, `check`, `policy {show, apply, tag}`, `dashboard`, `doctor`, `serve`. Distributed on PyPI (Apache-2.0 licensed) and as a headless Docker image.
-
-### At the launch — next (not yet shipped)
-
-The vision-launch feature set. These are in active development and **not** on PyPI yet:
-
-- **Graph-first dashboard, 9 surfaces, dual-theme reskin** — an interactive Knowledge Graph (the signature surface), Entities index, Entity drilldown with a semantic pane, Data dictionary with Export-to-Markdown, plus the existing PII matrix, Refusals, Audit, an editable Policy editor, and Drift intelligence.
-- **New capabilities** — a persisted knowledge graph behind `/api/graph`; a `schemabrain docs` CLI that emits a Markdown/HTML data dictionary; per-column PII confidence; RFC-6962 Merkle-root audit proofs; hybrid retrieval (bge query-prefix + BM25 via RRF); opt-in Sonnet routing for cryptic columns (`--enable-sonnet`).
-- **Openness** — good-first-issues and GitHub Discussions. ([`ROADMAP.md`](ROADMAP.md) and a [`Code of Conduct`](CODE_OF_CONDUCT.md) have landed.)
+- **Schema-intelligence engine** — index Postgres into a local SQLite store; cost-capped LLM semantic enrichment (with opt-in Sonnet routing for cryptic columns, `--enable-sonnet`); on-device embeddings (BAAI/bge-small ONNX); hybrid retrieval (bge query-prefix + BM25 via RRF); entity identification with rationale + confidence; declared-FK, query-log, and dbt-`relationships` join mining; a persisted canonical join graph with multi-hop BFS; and a metrics layer.
+- **Trust & safety** — PII classification (60 rules across 12 categories) with per-column confidence, tag propagation, a catastrophic-leak floor (grouping *by* a PII column refuses as row-level disclosure), an editable policy (block / redact / allow plus per-column overrides), and a tamper-evident sha256 hash-chained audit log with browser-verifiable RFC-6962 Merkle proofs and `audit verify`.
+- **Graph-led dashboard, 9 surfaces** — a signature interactive **Knowledge Graph**, plus **Overview**, **Entities** (sortable index + drilldown with a semantic pane), **Data Dictionary** (Export-to-Markdown), **PII Ledger**, **Refusals**, **Audit Viewer**, an editable **Policy** editor, and **Drift** intelligence. Dual-theme, opt-in, read-only, `127.0.0.1`-only.
+- **CLI** — `init`, `demo`, `index`, `import dbt`, `inspect`, `diff`, `check`, `entities`, `joins`, `metrics`, `policy {show, apply, tag}`, `docs`, `dashboard`, `doctor`, `serve`, `audit`. Distributed on PyPI (Apache-2.0 licensed) and as a headless Docker image.
 
 ### Later — roadmap (deferred; future direction only)
 
@@ -434,7 +426,7 @@ The five most common first-run failures. Full troubleshooter in [`docs/setup/man
 Only LLM-enriched column descriptions and the redacted sample values that feed them. Three regex passes (email, US SSN, credit-card-shaped digit runs) run on every sample before it leaves the profiler module — see [`schemabrain/profiler/stats.py`](schemabrain/profiler/stats.py). The Anthropic API call sends column metadata + redacted samples + sibling-column context — no raw rows. Embeddings are generated locally via `fastembed` (BAAI/bge-small-en-v1.5, ONNX, ~67 MB).
 
 **What databases work today?**
-Postgres 16+ (primary target) and SQLite (for development and demos). Adding Snowflake / BigQuery / MySQL is mostly a new `DataSource` implementation plus a profiler tweak — on the v1.x roadmap.
+Postgres 16+ is the only **source** connector today (the local store itself is a SQLite file). A SQLite *source* connector, plus Snowflake / BigQuery / MySQL, is mostly a new `DataSource` implementation plus a profiler tweak — on the v1.x roadmap.
 
 **Why MCP and not a REST API?**
 The consumer is an agent, not a service. MCP standardizes tool registration, schema description, and request/response transport. Agents discover SchemaBrain natively and get its tool surface — no API wrapper, no SDK to maintain per language.
