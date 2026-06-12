@@ -144,4 +144,4 @@ Per-host setup pages (~60-second wiring each):
 - [First 5 queries](/first-5-queries) — exercises each load-bearing firewall property in ~10 minutes.
 - `schemabrain eval` — score retrieval quality against the bundled SaaS golden set (or your own).
 - Re-run `schemabrain index` whenever your schema changes — it's idempotent and cache-aware.
-- For schemas with cryptic column names (`acct_dim_v3`, `pmt_fct_h`), pass `--enable-sonnet` at index time to route those to Claude Sonnet 4.6 for better decoding (~5x cost per affected column).
+- For schemas with cryptic column names (`acct_dim_v3`, `pmt_fct_h`), pass `--enable-sonnet` — on `schemabrain index` or `schemabrain init` — to route those columns to Claude Sonnet 4.6 for better decoding (~5x cost per affected column). Off by default (Haiku-only).
