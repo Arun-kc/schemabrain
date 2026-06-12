@@ -21,7 +21,7 @@ intelligence story, so the intelligence ships first.
 
 ---
 
-## Now — shipping today (`v0.5.x` on PyPI)
+## Now — shipping in `v0.6.x`
 
 What you get from `pip install schemabrain` right now:
 
@@ -39,11 +39,13 @@ What you get from `pip install schemabrain` right now:
   tag propagation, a catastrophic-leak floor, an editable policy
   (block / redact / allow plus per-column overrides), and a tamper-evident
   sha256 hash-chained audit log with `audit verify`.
-- **Dashboard, 3 surfaces** — the PII Ledger (with a read-only policy view),
-  Refusals, and an Audit Viewer. Opt-in, read-only, `127.0.0.1`-only.
-- **CLI** — `init`, `index`, `inspect`, `diff`, `check`,
-  `policy {show, apply, tag}`, `dashboard`, `doctor`, `serve`. Distributed
-  on PyPI (Apache-2.0) and as a headless Docker image.
+- **Dashboard, 9 surfaces** — Overview, Knowledge Graph, Entities, Data
+  Dictionary, PII Ledger, Audit Viewer, Refusals, Policy, and Drift. Opt-in,
+  read-only, `127.0.0.1`-only.
+- **CLI** — `init`, `demo`, `index`, `import dbt`, `inspect`, `diff`, `check`,
+  `entities`, `joins`, `metrics`, `policy {show, apply, tag}`, `docs`,
+  `dashboard`, `doctor`, `serve`, `audit`. Distributed on PyPI (Apache-2.0)
+  and as a headless Docker image.
 
 ## Next — at launch (in active development, not yet on PyPI)
 

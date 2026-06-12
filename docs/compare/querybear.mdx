@@ -69,7 +69,7 @@ The mechanism differences that we believe are load-bearing:
 
 Querybear ships a `run_query` tool that takes a SQL string from the agent. Their parser rejects non-SELECT, the role is read-only, the transaction is `READ ONLY` — three layers of defense. But the attack surface (a `run_query` tool whose input is a SQL string the agent's LLM authored) is the surface their defenses live around.
 
-SchemaBrain ships [12 tools](../mechanism/read-only.md), none of which accept SQL. There is no `execute_query`, no `run_sql`, no `validate_query`. The agent calls structured-argument tools (`get_metric(name="customer_revenue", group_by=["category.name"])`); SchemaBrain's compiler emits parameterized SQL from operator-validated definitions. The agent cannot author SQL because there's no path to do so — not because parsing rejected its SQL.
+SchemaBrain ships [12 tools](/mechanism/read-only), none of which accept SQL. There is no `execute_query`, no `run_sql`, no `validate_query`. The agent calls structured-argument tools (`get_metric(name="customer_revenue", group_by=["category.name"])`); SchemaBrain's compiler emits parameterized SQL from operator-validated definitions. The agent cannot author SQL because there's no path to do so — not because parsing rejected its SQL.
 
 This is a different *shape* of guarantee. A parse-level firewall stops what it recognizes as unsafe; an architectural-read-only firewall doesn't have a write surface in the first place.
 
@@ -77,19 +77,19 @@ This is a different *shape* of guarantee. A parse-level firewall stops what it r
 
 Querybear's column blocklist matches column names. If you have a `users` table with a `password_hash` column, you blocklist `password_hash`.
 
-SchemaBrain [tags each column with one or more of 12 categories](../mechanism/pii-taxonomy.md) grounded in real regulation (GDPR, CCPA, HIPAA, PCI DSS). `password` → `credential`; `card_number` → `payment_card`; `ssn` → `government_id`. Three of those (`credential`, `payment_card`, `government_id`) are blocked by default on a zero-config install — no plausible aggregate-analytics use case justifies grouping by SSN.
+SchemaBrain [tags each column with one or more of 12 categories](/mechanism/pii-taxonomy) grounded in real regulation (GDPR, CCPA, HIPAA, PCI DSS). `password` → `credential`; `card_number` → `payment_card`; `ssn` → `government_id`. Three of those (`credential`, `payment_card`, `government_id`) are blocked by default on a zero-config install — no plausible aggregate-analytics use case justifies grouping by SSN.
 
-The tags propagate through the [metric compiler](../mechanism/pii-taxonomy.md#3-propagation-through-joins-and-aggregations--the-compiler-layer-mechanism) across five surfaces — `group_by` columns, `JOIN ON` pairs, filter predicates, measure columns (including composite-expression operands), and time-dimension columns. If a query *touches* a blocked-category column anywhere on the chain, the compiler refuses *before* the database is queried. This catches the Simon-Willison "lethal trifecta" pattern (innocent metric × adversarial group_by × external communication) — see the [Willison Mirror scenario](../mechanism/pii-taxonomy.md#the-willison-mirror-scenario).
+The tags propagate through the [metric compiler](/mechanism/pii-taxonomy#3-propagation-through-joins-and-aggregations--the-compiler-layer-mechanism) across five surfaces — `group_by` columns, `JOIN ON` pairs, filter predicates, measure columns (including composite-expression operands), and time-dimension columns. If a query *touches* a blocked-category column anywhere on the chain, the compiler refuses *before* the database is queried. This catches the Simon-Willison "lethal trifecta" pattern (innocent metric × adversarial group_by × external communication) — see the [Willison Mirror scenario](/mechanism/pii-taxonomy#the-willison-mirror-scenario).
 
 ### 3. Audit is tamper-evident, not just queryable
 
-Querybear's audit log records who ran what and when. SchemaBrain's [audit chain](../mechanism/audit-chain.md) does that and then some: every row carries `chain_hash[N] = sha256(chain_hash[N-1] || canonical(row[N]))`. Two SQL triggers (`mcp_audit_no_update`, `mcp_audit_no_delete`) forbid mutations at the SQLite layer. `schemabrain audit verify` re-walks the chain and exits non-zero if any past row was rewritten.
+Querybear's audit log records who ran what and when. SchemaBrain's [audit chain](/mechanism/audit-chain) does that and then some: every row carries `chain_hash[N] = sha256(chain_hash[N-1] || canonical(row[N]))`. Two SQL triggers (`mcp_audit_no_update`, `mcp_audit_no_delete`) forbid mutations at the SQLite layer. `schemabrain audit verify` re-walks the chain and exits non-zero if any past row was rewritten.
 
 The difference matters in adversarial review (someone with filesystem write access tries to cover their tracks) and in compliance contexts that require cryptographic integrity, not just access logs.
 
 ### 4. Refusals are structured recovery contracts
 
-Querybear's failures are messages. SchemaBrain's are [typed recovery contracts](../mechanism/structured-recovery.md):
+Querybear's failures are messages. SchemaBrain's are [typed recovery contracts](/mechanism/structured-recovery):
 
 ```json
 {
@@ -148,7 +148,7 @@ SchemaBrain is Apache-2.0-licensed on GitHub. You can read the [PII classifier](
 
 - Querybear positioning: [querybear.com](https://querybear.com)
 - Querybear's compare-page template (we mirrored their format honestly): [querybear.com/compare/anthropic-postgres-mcp](https://querybear.com/compare/anthropic-postgres-mcp)
-- SchemaBrain's full mechanism docs: [`/mechanism/read-only`](../mechanism/read-only.md) · [`/mechanism/pii-taxonomy`](../mechanism/pii-taxonomy.md) · [`/mechanism/audit-chain`](../mechanism/audit-chain.md) · [`/mechanism/structured-recovery`](../mechanism/structured-recovery.md) · [`/mechanism/trust-signal`](../mechanism/trust-signal.md)
+- SchemaBrain's full mechanism docs: [`/mechanism/read-only`](/mechanism/read-only) · [`/mechanism/pii-taxonomy`](/mechanism/pii-taxonomy) · [`/mechanism/audit-chain`](/mechanism/audit-chain) · [`/mechanism/structured-recovery`](/mechanism/structured-recovery) · [`/mechanism/trust-signal`](/mechanism/trust-signal)
 - Try SchemaBrain in 60 seconds: [`/setup/claude-desktop`](../setup/claude-desktop.md) · [`/setup/cursor`](../setup/cursor.md) · [`/setup/windsurf`](../setup/windsurf.md) · [`/setup/claude-code`](../setup/claude-code.md)
 - Project memory of competitive intel: [docs/landscape.md](../landscape.md)
 

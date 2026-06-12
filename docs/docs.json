@@ -194,7 +194,14 @@
               "adr/0002-store-protocol-seam",
               "adr/0003-versioning-policy",
               "adr/0004-observability-event-bus",
-              "adr/0005-dashboard-routing-under-static-export"
+              "adr/0005-dashboard-routing-under-static-export",
+              "adr/0006-policy-apply-under-read-only-sidecar",
+              "adr/0007-policy-editor-control-model",
+              "adr/0008-policy-editor-handoff-verb-mapping",
+              "adr/0009-trust-surface-confidence-data-contract",
+              "adr/0010-graph-projection-backend",
+              "adr/0011-graph-projection-enrichment",
+              "adr/0012-group-by-pii-row-level-disclosure"
             ]
           }
         ]

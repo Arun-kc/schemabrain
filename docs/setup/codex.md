@@ -59,10 +59,10 @@ If Codex's agent calls `list_entities` and reports `user`, `order`, etc., you're
 
 ## What you get
 
-- **12 MCP tools, none of which can write.** Full list in [`/mechanism/read-only`](../mechanism/read-only.md).
-- **PII-aware refusal at the `get_metric` boundary.** SchemaBrain defaults to blocking `credential`, `payment_card`, and `government_id`. Details in [`/mechanism/pii-taxonomy`](../mechanism/pii-taxonomy.md).
-- **Tamper-evident audit chain.** Every tool call lands in an append-only `mcp_audit` table with a SHA256 chain hash. Details in [`/mechanism/audit-chain`](../mechanism/audit-chain.md).
-- **Structured recovery envelopes.** When `get_metric` refuses or fails, the response is a typed contract Codex's agent can act on programmatically. Details in [`/mechanism/structured-recovery`](../mechanism/structured-recovery.md).
+- **12 MCP tools, none of which can write.** Full list in [`/mechanism/read-only`](/mechanism/read-only).
+- **PII-aware refusal at the `get_metric` boundary.** SchemaBrain defaults to blocking `credential`, `payment_card`, and `government_id`. Details in [`/mechanism/pii-taxonomy`](/mechanism/pii-taxonomy).
+- **Tamper-evident audit chain.** Every tool call lands in an append-only `mcp_audit` table with a SHA256 chain hash. Details in [`/mechanism/audit-chain`](/mechanism/audit-chain).
+- **Structured recovery envelopes.** When `get_metric` refuses or fails, the response is a typed contract Codex's agent can act on programmatically. Details in [`/mechanism/structured-recovery`](/mechanism/structured-recovery).
 
 ---
 
