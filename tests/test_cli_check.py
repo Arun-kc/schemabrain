@@ -43,13 +43,25 @@ SOURCE_ID = "0d8753a94d271485"
 
 
 def _make_table(schema: str, name: str, columns: list[tuple[str, bool]]) -> Table:
+    # Column shapes mirror the seeded store snapshots so a clean state
+    # reports no type/nullability drift (`check` now compares column
+    # shape against the indexed baseline): `id` / `*_id` / `*_cents` are
+    # `int`, `*_at` is `timestamptz`, else `text`; PKs + int/timestamp
+    # columns are NOT NULL.
+    def _data_type(col: str) -> str:
+        if col == "id" or col.endswith(("_id", "_cents")):
+            return "int"
+        if col.endswith("_at"):
+            return "timestamptz"
+        return "text"
+
     cols = tuple(
         Column(
             name=c,
             table_name=name,
             schema_name=schema,
-            data_type="text",
-            nullable=not pk,
+            data_type=_data_type(c),
+            nullable=not (pk or c.endswith(("_id", "_cents", "_at"))),
             ordinal_position=i + 1,
             is_primary_key=pk,
         )

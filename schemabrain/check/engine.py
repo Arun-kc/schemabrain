@@ -48,6 +48,16 @@ DriftKind = Literal[
     "measure_column_missing",
     "time_dimension_column_missing",
     "join_column_missing",
+    # The column still EXISTS but its shape changed since index time.
+    # These are "soft" drifts: the definition resolves structurally, so
+    # they are reported additively without cascade-suppressing dependent
+    # definitions (a type change on an entity's identity column doesn't
+    # make its metrics' column checks meaningless the way a dropped
+    # table would). Baseline = the indexed column snapshot in the store;
+    # `index` and `check` share the same introspection path, so an
+    # unchanged column compares equal.
+    "type_mismatch",
+    "nullability_change",
 ]
 
 _VALID_DEF_KINDS: frozenset[str] = frozenset(get_args(DefKind))
@@ -154,6 +164,71 @@ class CheckReport:
         }
 
 
+def _column_shape_drifts(
+    *,
+    def_kind: DefKind,
+    def_name: str,
+    qualified_table: str,
+    column_name: str,
+    stored_table: Table | None,
+    live_col: Any,
+) -> list[Drift]:
+    """Compare a present live column against its indexed baseline.
+
+    Existence is the caller's responsibility — this only runs once the
+    column is confirmed present on the live table. Returns a `type_mismatch`
+    drift when the textual `data_type` changed (compared
+    case-insensitively, whitespace-stripped; the index and check paths
+    share one introspection routine, so an unchanged column is byte-equal)
+    and a `nullability_change` drift when the `NOT NULL` constraint
+    flipped. Degrades to an empty list when there is no stored baseline
+    for the column (e.g. a never-indexed store, or a column the snapshot
+    doesn't carry) — drift detection without a baseline would be guessing.
+    """
+    if stored_table is None:  # pragma: no cover — caller only passes FK-backed tables
+        return []
+    stored_col = stored_table.get_column(column_name)
+    if stored_col is None:
+        # The column exists live + is referenced by the definition, but
+        # the indexed snapshot never recorded it (e.g. a hand-authored
+        # metric on a column added after the last index). No baseline →
+        # no shape comparison; existence already passed upstream.
+        return []
+    out: list[Drift] = []
+    if stored_col.data_type.strip().lower() != live_col.data_type.strip().lower():
+        out.append(
+            Drift(
+                def_kind=def_kind,
+                def_name=def_name,
+                drift_kind="type_mismatch",
+                detail=(
+                    f"{qualified_table}.{column_name}: indexed "
+                    f"{stored_col.data_type!r}, live {live_col.data_type!r}"
+                ),
+                fix_hint=(
+                    "re-run `schemabrain index` to refresh the baseline, then confirm "
+                    "the definition still holds (numeric aggregations need a numeric column)"
+                ),
+            )
+        )
+    if stored_col.nullable != live_col.nullable:
+        was = "nullable" if stored_col.nullable else "NOT NULL"
+        now = "nullable" if live_col.nullable else "NOT NULL"
+        out.append(
+            Drift(
+                def_kind=def_kind,
+                def_name=def_name,
+                drift_kind="nullability_change",
+                detail=f"{qualified_table}.{column_name}: indexed {was}, live {now}",
+                fix_hint=(
+                    "re-run `schemabrain index` to refresh the baseline; a "
+                    "NOT NULL→nullable change can shift aggregate semantics (NULLs are skipped)"
+                ),
+            )
+        )
+    return out
+
+
 def check_drift(
     *,
     store: Store,
@@ -205,6 +280,22 @@ def check_drift(
                 raise
         return table_cache[key]
 
+    # `(schema, table) -> stored Table | None` — the indexed baseline
+    # snapshot, used to compare a present column's type/nullability
+    # against what `index` recorded. Cached per run for the same reason
+    # as the live cache. `None` means the store has no snapshot for that
+    # table (never indexed for this source) — column-shape drift then
+    # degrades to "not checked" rather than guessing.
+    stored_cache: dict[tuple[str, str], Table | None] = {}
+
+    def _stored_table(schema: str, name: str) -> Table | None:
+        key = (schema, name)
+        if key not in stored_cache:
+            stored_cache[key] = store.get_table(
+                schema, name, source_connection_id=source_connection_id
+            )
+        return stored_cache[key]
+
     drifts: list[Drift] = []
 
     # Set of entity names that have *any* drift. Metrics anchored on
@@ -233,7 +324,8 @@ def check_drift(
             )
             drifted_entity_names.add(entity.name)
             continue
-        if live.get_column(entity.identity) is None:
+        live_identity = live.get_column(entity.identity)
+        if live_identity is None:
             drifts.append(
                 Drift(
                     def_kind="entity",
@@ -248,6 +340,21 @@ def check_drift(
             )
             drifted_entity_names.add(entity.name)
             continue
+        # Identity column present — compare its shape against the indexed
+        # baseline. A type/nullability change is reported but does NOT
+        # cascade (the entity still resolves), so dependent metric/join
+        # checks below stay meaningful.
+        identity_drifts = _column_shape_drifts(
+            def_kind="entity",
+            def_name=entity.name,
+            qualified_table=entity.qualified_table,
+            column_name=entity.identity,
+            stored_table=_stored_table(schema, table),
+            live_col=live_identity,
+        )
+        if identity_drifts:
+            drifts.extend(identity_drifts)
+            continue  # reported, not healthy — but not cascade-suppressed
         entities_healthy += 1
 
     # ----- metrics ------------------------------------------------------
@@ -300,6 +407,22 @@ def check_drift(
                 )
             )
             continue
+        # All measure columns present — compare each against the indexed
+        # baseline. Shape drift is additive (reported but not cascaded).
+        stored = _stored_table(schema, table)
+        metric_has_shape_drift = False
+        for col in sorted(metric.measure.measure_columns):
+            shape_drifts = _column_shape_drifts(
+                def_kind="metric",
+                def_name=metric.name,
+                qualified_table=anchor.qualified_table,
+                column_name=col,
+                stored_table=stored,
+                live_col=live.get_column(col),
+            )
+            if shape_drifts:
+                drifts.extend(shape_drifts)
+                metric_has_shape_drift = True
         if metric.time_dimension is not None:
             # v1 metric validator guarantees time_dimension is
             # `<entity>.<column>` form, and at v1 the prefix entity
@@ -317,7 +440,8 @@ def check_drift(
                     f"entity {metric.entity!r}; cross-entity time "
                     f"dimensions are not supported at v1"
                 )
-            if live.get_column(td_col) is None:
+            live_td = live.get_column(td_col)
+            if live_td is None:
                 drifts.append(
                     Drift(
                         def_kind="metric",
@@ -332,7 +456,19 @@ def check_drift(
                     )
                 )
                 continue
-        metrics_healthy += 1
+            td_drifts = _column_shape_drifts(
+                def_kind="metric",
+                def_name=metric.name,
+                qualified_table=anchor.qualified_table,
+                column_name=td_col,
+                stored_table=stored,
+                live_col=live_td,
+            )
+            if td_drifts:
+                drifts.extend(td_drifts)
+                metric_has_shape_drift = True
+        if not metric_has_shape_drift:
+            metrics_healthy += 1
 
     # ----- canonical joins ---------------------------------------------
     joins_healthy = 0
@@ -368,7 +504,10 @@ def check_drift(
         # surfacing every pair would amplify noise in junction-table
         # cases. Trade-off documented; revisit if junction-table
         # drift becomes a common operator complaint.
-        join_drifted = False
+        # Phase 1 (structural, first-wins): every `on:` column must
+        # still exist. A missing column is the canonical drift — shape
+        # checks below would be downstream noise, so we stop here.
+        join_structurally_broken = False
         for pair in join.on:
             if src_live.get_column(pair.source_column) is None:
                 drifts.append(
@@ -383,7 +522,7 @@ def check_drift(
                         ),
                     )
                 )
-                join_drifted = True
+                join_structurally_broken = True
                 break
             if tgt_live.get_column(pair.target_column) is None:
                 drifts.append(
@@ -398,9 +537,34 @@ def check_drift(
                         ),
                     )
                 )
-                join_drifted = True
+                join_structurally_broken = True
                 break
-        if not join_drifted:
+        if join_structurally_broken:
+            continue
+        # Phase 2 (shape): both endpoints of every pair are present —
+        # compare each join column against its indexed baseline. A type
+        # mismatch on a join key is a real correctness risk (the join
+        # predicate may now compare across incompatible types).
+        src_stored = _stored_table(src_schema, src_table)
+        tgt_stored = _stored_table(tgt_schema, tgt_table)
+        join_has_shape_drift = False
+        for pair in join.on:
+            for qualified, column, stored_t, live_t in (
+                (src_ent.qualified_table, pair.source_column, src_stored, src_live),
+                (tgt_ent.qualified_table, pair.target_column, tgt_stored, tgt_live),
+            ):
+                pair_drifts = _column_shape_drifts(
+                    def_kind="canonical_join",
+                    def_name=join.name,
+                    qualified_table=qualified,
+                    column_name=column,
+                    stored_table=stored_t,
+                    live_col=live_t.get_column(column),
+                )
+                if pair_drifts:
+                    drifts.extend(pair_drifts)
+                    join_has_shape_drift = True
+        if not join_has_shape_drift:
             joins_healthy += 1
 
     return CheckReport(

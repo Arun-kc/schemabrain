@@ -72,14 +72,43 @@ class FakeDataSource:
 # ----- fixtures -------------------------------------------------------------
 
 
-def _table(schema: str, name: str, columns: list[tuple[str, bool]]) -> Table:
+# Live-table column shapes mirror the indexed seed snapshots
+# (`_seed_customers_table_row` / `_seed_orders_table_row`) so a healthy
+# store reports NO shape drift. Keep this convention in sync with the
+# seeds: `id` / `*_id` / `*_cents` are `int`, `*_at` is `timestamptz`,
+# everything else `text`; PKs and the int/timestamp columns are NOT NULL.
+def _seed_data_type(column: str) -> str:
+    if column == "id" or column.endswith(("_id", "_cents")):
+        return "int"
+    if column.endswith("_at"):
+        return "timestamptz"
+    return "text"
+
+
+def _seed_nullable(column: str, is_pk: bool) -> bool:
+    return not (is_pk or column.endswith(("_id", "_cents", "_at")))
+
+
+def _table(
+    schema: str,
+    name: str,
+    columns: list[tuple[str, bool]],
+    *,
+    data_types: dict[str, str] | None = None,
+    nullables: dict[str, bool] | None = None,
+) -> Table:
+    """Build a live `Table` whose column shapes mirror the indexed seeds
+    by default. Pass `data_types` / `nullables` to inject a deliberate
+    shape mismatch for type/nullability drift tests."""
+    data_types = data_types or {}
+    nullables = nullables or {}
     cols = tuple(
         Column(
             name=c,
             table_name=name,
             schema_name=schema,
-            data_type="text",
-            nullable=not pk,
+            data_type=data_types.get(c, _seed_data_type(c)),
+            nullable=nullables.get(c, _seed_nullable(c, pk)),
             ordinal_position=i + 1,
             is_primary_key=pk,
         )
@@ -823,3 +852,228 @@ class TestReportShape:
             total_joins=0,
         )
         assert report.exit_code == 0
+
+
+class TestColumnShapeDrift:
+    """`check` flags columns whose TYPE or NULLability changed since
+    index, even when the column still exists. Baseline = the indexed
+    snapshot in the store; the live `_table` helper mirrors that snapshot
+    by default, so a deliberate `data_types=` / `nullables=` override is
+    what injects the drift. Shape drift is additive: it is reported and
+    marks the definition not-healthy, but does NOT cascade-suppress
+    dependent definitions (the structure is intact)."""
+
+    def test_entity_identity_type_mismatch(self, store: SQLiteStore) -> None:
+        _seed_customers_table_row(store)  # stored id = int
+        _seed_customer_entity(store)
+        source = FakeDataSource(
+            {
+                ("public", "customers"): _table(
+                    "public",
+                    "customers",
+                    [("id", True), ("email", False)],
+                    data_types={"id": "text"},  # int -> text
+                ),
+            }
+        )
+        report = check_drift(store=store, source=source, source_connection_id=SOURCE_ID)
+        assert report.exit_code == 1
+        assert report.entities_healthy == 0  # reported -> not healthy
+        drift = next(d for d in report.drifts if d.drift_kind == "type_mismatch")
+        assert drift.def_kind == "entity"
+        assert "public.customers.id" in drift.detail
+        assert "int" in drift.detail and "text" in drift.detail
+
+    def test_entity_identity_nullability_change(self, store: SQLiteStore) -> None:
+        _seed_customers_table_row(store)  # stored id = NOT NULL
+        _seed_customer_entity(store)
+        source = FakeDataSource(
+            {
+                ("public", "customers"): _table(
+                    "public",
+                    "customers",
+                    [("id", True), ("email", False)],
+                    nullables={"id": True},  # NOT NULL -> nullable
+                ),
+            }
+        )
+        report = check_drift(store=store, source=source, source_connection_id=SOURCE_ID)
+        drift = next(d for d in report.drifts if d.drift_kind == "nullability_change")
+        assert drift.def_kind == "entity"
+        assert "public.customers.id" in drift.detail
+
+    def test_shape_drift_does_not_cascade_to_dependent_metric(self, store: SQLiteStore) -> None:
+        # An entity's identity-column TYPE change must NOT suppress its
+        # metrics' checks (unlike a missing table/column). The entity is
+        # reported + not-healthy, but the metric is still evaluated.
+        _seed_orders_table_row(store)
+        _seed_order_entity(store)
+        store.write_metric(
+            Metric(
+                name="total_revenue",
+                description="",
+                entity="order",
+                measure=MetricMeasure(agg="sum", column="total_cents"),
+                time_dimension="order.placed_at",
+                time_grains=("day",),
+            ),
+            source_connection_id=SOURCE_ID,
+        )
+        source = FakeDataSource(
+            {
+                ("public", "orders"): _table(
+                    "public",
+                    "orders",
+                    [("id", True), ("total_cents", False), ("placed_at", False)],
+                    data_types={"id": "text"},  # identity type drift only
+                ),
+            }
+        )
+        report = check_drift(store=store, source=source, source_connection_id=SOURCE_ID)
+        entity_drifts = [d for d in report.drifts if d.def_kind == "entity"]
+        metric_drifts = [d for d in report.drifts if d.def_kind == "metric"]
+        assert len(entity_drifts) == 1
+        assert entity_drifts[0].drift_kind == "type_mismatch"
+        assert metric_drifts == []  # metric evaluated, not suppressed
+        assert report.metrics_healthy == 1  # and found healthy
+
+    def test_metric_measure_type_mismatch(self, store: SQLiteStore) -> None:
+        _seed_orders_table_row(store)  # stored total_cents = int
+        _seed_order_entity(store)
+        store.write_metric(
+            Metric(
+                name="total_revenue",
+                description="",
+                entity="order",
+                measure=MetricMeasure(agg="sum", column="total_cents"),
+                time_dimension=None,
+                time_grains=(),
+            ),
+            source_connection_id=SOURCE_ID,
+        )
+        source = FakeDataSource(
+            {
+                ("public", "orders"): _table(
+                    "public",
+                    "orders",
+                    [("id", True), ("total_cents", False)],
+                    data_types={"total_cents": "text"},  # SUM over text now errors
+                ),
+            }
+        )
+        report = check_drift(store=store, source=source, source_connection_id=SOURCE_ID)
+        assert report.metrics_healthy == 0
+        drift = next(d for d in report.drifts if d.def_kind == "metric")
+        assert drift.drift_kind == "type_mismatch"
+        assert "total_cents" in drift.detail
+
+    def test_metric_time_dimension_nullability_change(self, store: SQLiteStore) -> None:
+        _seed_orders_table_row(store)  # stored placed_at = NOT NULL
+        _seed_order_entity(store)
+        store.write_metric(
+            Metric(
+                name="total_revenue",
+                description="",
+                entity="order",
+                measure=MetricMeasure(agg="sum", column="total_cents"),
+                time_dimension="order.placed_at",
+                time_grains=("day",),
+            ),
+            source_connection_id=SOURCE_ID,
+        )
+        source = FakeDataSource(
+            {
+                ("public", "orders"): _table(
+                    "public",
+                    "orders",
+                    [("id", True), ("total_cents", False), ("placed_at", False)],
+                    nullables={"placed_at": True},  # NOT NULL -> nullable
+                ),
+            }
+        )
+        report = check_drift(store=store, source=source, source_connection_id=SOURCE_ID)
+        drift = next(d for d in report.drifts if d.drift_kind == "nullability_change")
+        assert "placed_at" in drift.detail
+
+    def test_join_column_type_mismatch(self, store: SQLiteStore) -> None:
+        _seed_customers_table_row(store)
+        _seed_orders_table_row(store)  # stored orders.customer_id = int
+        _seed_customer_entity(store)
+        _seed_order_entity(store)
+        store.write_canonical_join(
+            CanonicalJoin(
+                name="customer_orders",
+                description="",
+                source_entity="customer",
+                target_entity="order",
+                on=(JoinColumnPair(source_column="id", target_column="customer_id"),),
+            ),
+            source_connection_id=SOURCE_ID,
+        )
+        source = FakeDataSource(
+            {
+                ("public", "customers"): _table(
+                    "public", "customers", [("id", True), ("email", False)]
+                ),
+                ("public", "orders"): _table(
+                    "public",
+                    "orders",
+                    [("id", True), ("customer_id", False)],
+                    data_types={"customer_id": "text"},  # join key type drift
+                ),
+            }
+        )
+        report = check_drift(store=store, source=source, source_connection_id=SOURCE_ID)
+        assert report.joins_healthy == 0
+        drift = next(d for d in report.drifts if d.def_kind == "canonical_join")
+        assert drift.drift_kind == "type_mismatch"
+        assert "customer_id" in drift.detail
+
+    def test_no_stored_baseline_for_column_skips_shape_check(self, store: SQLiteStore) -> None:
+        # The indexed snapshot lacks `total_cents` (column added after
+        # the last index, metric hand-authored against it). Existence
+        # passes against live; with no baseline there is no shape check,
+        # so the metric is healthy rather than falsely drifted.
+        store.write_table(
+            Table(
+                schema_name="public",
+                name="orders",
+                columns=(
+                    Column(
+                        name="id",
+                        table_name="orders",
+                        schema_name="public",
+                        data_type="int",
+                        nullable=False,
+                        ordinal_position=1,
+                        is_primary_key=True,
+                    ),
+                ),
+            ),
+            source_connection_id=SOURCE_ID,
+        )
+        _seed_order_entity(store)
+        store.write_metric(
+            Metric(
+                name="total_revenue",
+                description="",
+                entity="order",
+                measure=MetricMeasure(agg="sum", column="total_cents"),
+                time_dimension=None,
+                time_grains=(),
+            ),
+            source_connection_id=SOURCE_ID,
+        )
+        source = FakeDataSource(
+            {
+                ("public", "orders"): _table(
+                    "public",
+                    "orders",
+                    [("id", True), ("total_cents", False)],
+                    data_types={"total_cents": "numeric"},
+                ),
+            }
+        )
+        report = check_drift(store=store, source=source, source_connection_id=SOURCE_ID)
+        assert report.drifts == ()
+        assert report.metrics_healthy == 1
