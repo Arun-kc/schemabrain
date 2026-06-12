@@ -1657,19 +1657,36 @@ def _run_entities_from_dbt(
 
 
 def _is_demo_source(source_url: str) -> bool:
-    """Return True iff `source_url` matches the wizard's pinned demo URL.
+    """Return True iff `source_url` is genuinely the bundled SaaS demo.
 
-    Uses a string-suffix match against the host/port/db tail of
-    `DEMO_DATABASE_URL` so the silent `+psycopg` rewrite (applied to
-    bare `postgresql://` URLs in cli.py before they reach the wizard)
-    doesn't break the comparison. Both `postgresql://` and
-    `postgresql+psycopg://` variants of the demo URL share the
-    `@localhost:5433/postgres` tail.
+    Two conditions must hold:
+
+    1. The URL tail matches `DEMO_DATABASE_URL`. We suffix-match the
+       `postgres:local@localhost:5433/postgres` tail (creds included) so
+       the silent `+psycopg` rewrite — applied to bare `postgresql://`
+       URLs in cli.py before they reach the wizard — doesn't break the
+       comparison. A user's own database has a different tail and
+       short-circuits here, paying zero probe cost.
+    2. The saas-specific `public.workspaces` table is actually present.
+       The repo's own `docker-compose.yml` binds an *ecommerce* fixture
+       to the SAME host:port:db:creds, so the tail match alone is not
+       proof of provenance. `_detect_stale_demo_fixture` returns True
+       exactly when public tables exist but `workspaces` does not (the
+       ecommerce case); treating that as the demo would apply the
+       bundled SaaS YAML pack against ecommerce tables and silently
+       break every entity bind. Probe failure / a fresh-but-empty
+       container both degrade to "not stale", preserving the demo path
+       for the pinned URL.
     """
-    from schemabrain.setup.setup_stage import DEMO_DATABASE_URL
+    from schemabrain.setup.setup_stage import (
+        DEMO_DATABASE_URL,
+        _detect_stale_demo_fixture,
+    )
 
     demo_tail = DEMO_DATABASE_URL.split("://", 1)[1]
-    return source_url.endswith(demo_tail)
+    if not source_url.endswith(demo_tail):
+        return False
+    return not _detect_stale_demo_fixture(url=source_url)
 
 
 def _apply_bundled_demo_yamls(

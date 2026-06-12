@@ -112,6 +112,7 @@ from schemabrain.entities.yaml_grammar import (
 from schemabrain.errors import (
     GuidedError,
     anthropic_auth_failed,
+    dbt_import_store_not_indexed,
     postgres_operational_error,
     render_error,
     silent_rewrite_to_psycopg,
@@ -5359,21 +5360,32 @@ def _cmd_import_dbt(
     factory = _source_factory or (lambda url: PostgresDataSource(url))
     metric_summary: tuple[int, tuple] | None = None
     try:
-        with SQLiteStore(store_path) as store, factory(source_url) as source:
-            plan = plan_dbt_import(manifest, source, store, source_connection_id=source_id)
-            if dry_run:
-                result = None
-            else:
-                result = apply_dbt_import_plan(plan, store, source_connection_id=source_id)
-            if include_metrics:
-                metric_summary = _apply_dbt_metrics(
-                    manifest_path=Path(manifest_path),
-                    plan=plan,
-                    apply_result=result,
-                    store=store,
-                    source_connection_id=source_id,
-                    dry_run=dry_run,
-                )
+        with SQLiteStore(store_path) as store:
+            # Pre-flight: the import binds every model's entity to a row
+            # in the `tables` index. If this source URL was never indexed
+            # into this store, EVERY model fails the bound-table FK at
+            # write time — one source round-trip per model before the
+            # first error, with the index-first requirement buried in the
+            # runtime string. Short-circuit to a guided error BEFORE
+            # opening the source connection or doing any plan work.
+            if not store.list_tables(source_connection_id=source_id):
+                _render_guided(dbt_import_store_not_indexed(store_path))
+                return 2
+            with factory(source_url) as source:
+                plan = plan_dbt_import(manifest, source, store, source_connection_id=source_id)
+                if dry_run:
+                    result = None
+                else:
+                    result = apply_dbt_import_plan(plan, store, source_connection_id=source_id)
+                if include_metrics:
+                    metric_summary = _apply_dbt_metrics(
+                        manifest_path=Path(manifest_path),
+                        plan=plan,
+                        apply_result=result,
+                        store=store,
+                        source_connection_id=source_id,
+                        dry_run=dry_run,
+                    )
     except OperationalError as exc:
         # Postgres connection failure (wrong host, bad password,
         # timeout) — same handler shape as `_cmd_index` / `_cmd_serve`
