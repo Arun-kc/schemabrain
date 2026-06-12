@@ -178,7 +178,7 @@ Once applied, the agent-facing `resolve_join` MCP tool returns the canonical joi
 
 ## Import from dbt
 
-If you already curate entities in dbt, point SchemaBrain at your compiled `target/manifest.json` and dbt becomes the source of truth. Two entry points:
+If you already curate models in dbt, point SchemaBrain at your compiled `target/manifest.json` and import them as entities. Scope today: each dbt **model** with a single-column primary key becomes a SchemaBrain **entity** (dbt owns those rows), and dbt **metrics** import opt-in via `--include-metrics`. dbt **relationships are not yet imported as canonical joins** — joins still come from FK + query-log mining, so run `schemabrain joins suggest` after importing to enable multi-table queries. Two entry points:
 
 **During `init` (auto-detected or explicit):** the wizard's stage 1 auto-detects a manifest from `$DBT_PROJECT_DIR/target/manifest.json` or by walking up from the cwd looking for `dbt_project.yml`. When found, stages 3 (entities) and 4 (metrics) route through the importer instead of the LLM. Force a specific manifest with `--from-dbt PATH`:
 
@@ -188,18 +188,25 @@ schemabrain init --url-env DATABASE_URL --from-dbt /path/to/dbt/target/manifest.
 
 Stage 5 (joins) still uses FK + query-log mining since dbt has no canonical-join concept.
 
-**Standalone import:** if you've already run `init` (or want to import without going through the wizard), point the importer directly at a manifest:
+**Standalone import:** if you want to import without going through the wizard, point the importer directly at a manifest. The importer binds each model to a table in the local index, so the store must already be indexed for the **same** source URL:
 
 ```bash
-schemabrain import dbt path/to/target/manifest.json --url-env DATABASE_URL
+# Step 0 — index the schema first (skip if you already ran `init` against this URL).
+schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db   # add --no-enrich for a cost-free index
+
+# Step 1 — import the dbt models as entities.
+schemabrain import dbt path/to/target/manifest.json --url-env DATABASE_URL --store-path ./schemabrain.db
 ```
+
+Run `import dbt` against a store that was never indexed for this URL and it short-circuits with a guided *"run `schemabrain index` first"* error rather than failing per-model. The importer also needs the physical tables to exist (run `dbt run`, not just `dbt compile`) since it verifies each model against the live schema — even under `--dry-run`.
 
 Each dbt model with a single-column primary key lands as a SchemaBrain entity with `origin="dbt_import"`. Re-running is idempotent; entities that previously had `origin="manual"` or `"suggested"` flip to `"dbt_import"` (dbt takes ownership). Subsequent manual edits to dbt-owned rows are refused at the store boundary.
 
 | Flag | Behaviour |
 |---|---|
-| _(default)_ | Plan + apply. |
-| `--dry-run` | Compute the plan; write nothing. |
+| _(default)_ | Plan + apply (entities only). |
+| `--include-metrics` | Also import `type=simple` dbt metrics (off by default). |
+| `--dry-run` | Compute the plan; write nothing (still connects to the live DB). |
 | `--report report.json` | Emit a CI-friendly JSON report. |
 
 A bundled fixture demonstrates the flow:

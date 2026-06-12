@@ -5692,3 +5692,60 @@ class TestLlmFailureNextStep:
                 "overloaad",  # type: ignore[arg-type] — testing the bad case
                 apply_command="schemabrain entities apply",
             )
+
+
+class TestIsDemoSource:
+    """`_is_demo_source` gates whether the wizard applies the bundled
+    SaaS YAML pack (stages 3/4/5). It must key on real demo provenance —
+    the saas-specific ``public.workspaces`` table — and NOT on the pinned
+    demo URL tail alone: the repo's own ``docker-compose.yml`` binds an
+    *ecommerce* fixture to the same ``postgres:local@localhost:5433/postgres``
+    host:port:db:creds, and misclassifying it as the demo would apply the
+    SaaS pack to ecommerce tables (entity binds fail, broken layer).
+    """
+
+    _DEMO_TAILS = (
+        "postgresql://postgres:local@localhost:5433/postgres",
+        "postgresql+psycopg://postgres:local@localhost:5433/postgres",
+    )
+
+    def test_non_demo_url_is_never_demo_and_skips_the_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A user's own database must short-circuit on the URL tail BEFORE
+        # any DB probe — production users pay zero probe cost and can
+        # never be misclassified as the demo.
+        probed: list[str] = []
+
+        def _spy(*, url: str) -> bool:
+            probed.append(url)
+            return False
+
+        monkeypatch.setattr("schemabrain.setup.setup_stage._detect_stale_demo_fixture", _spy)
+        assert wizard._is_demo_source("postgresql://u:p@prod.acme.com:5432/analytics") is False
+        assert probed == []  # a non-demo source is never probed
+
+    @pytest.mark.parametrize("url", _DEMO_TAILS)
+    def test_demo_url_with_saas_fixture_present_is_demo(
+        self, url: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `workspaces` present -> _detect_stale_demo_fixture False -> demo.
+        monkeypatch.setattr(
+            "schemabrain.setup.setup_stage._detect_stale_demo_fixture",
+            lambda *, url: False,
+        )
+        assert wizard._is_demo_source(url) is True
+
+    @pytest.mark.parametrize("url", _DEMO_TAILS)
+    def test_demo_url_tail_with_stale_ecommerce_fixture_is_not_demo(
+        self, url: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # REGRESSION (E2E audit 2026-06-12): the docker-compose ecommerce
+        # fixture shares the demo URL tail but has no `workspaces` table.
+        # It must NOT be treated as the demo, or the bundled SaaS pack
+        # mis-binds against ecommerce tables.
+        monkeypatch.setattr(
+            "schemabrain.setup.setup_stage._detect_stale_demo_fixture",
+            lambda *, url: True,
+        )
+        assert wizard._is_demo_source(url) is False

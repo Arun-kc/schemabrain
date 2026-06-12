@@ -71,10 +71,10 @@ If Cursor's agent calls `list_entities` and reports the entities curated during 
 
 ## What you get
 
-- **12 MCP tools, none of which can write.** Full list in [`/mechanism/read-only`](../mechanism/read-only.md).
-- **PII-aware refusal at the `get_metric` boundary.** Defaults block `credential`, `payment_card`, `government_id`. `--pii-block` **replaces** the set rather than extending it, so widen by listing the full target set, e.g. `--pii-block credential,payment_card,government_id,contact,health`. Details in [`/mechanism/pii-taxonomy`](../mechanism/pii-taxonomy.md).
-- **Tamper-evident audit chain.** Verify with `schemabrain audit verify`. Details in [`/mechanism/audit-chain`](../mechanism/audit-chain.md).
-- **Structured recovery envelopes.** Refusals ship typed contracts Cursor's agent can act on programmatically. Details in [`/mechanism/structured-recovery`](../mechanism/structured-recovery.md).
+- **12 MCP tools, none of which can write.** Full list in [`/mechanism/read-only`](/mechanism/read-only).
+- **PII-aware refusal at the `get_metric` boundary.** Defaults block `credential`, `payment_card`, `government_id`. `--pii-block` **replaces** the set rather than extending it, so widen by listing the full target set, e.g. `--pii-block credential,payment_card,government_id,contact,health`. Details in [`/mechanism/pii-taxonomy`](/mechanism/pii-taxonomy).
+- **Tamper-evident audit chain.** Verify with `schemabrain audit verify`. Details in [`/mechanism/audit-chain`](/mechanism/audit-chain).
+- **Structured recovery envelopes.** Refusals ship typed contracts Cursor's agent can act on programmatically. Details in [`/mechanism/structured-recovery`](/mechanism/structured-recovery).
 
 ## Sample refusal
 
