@@ -32,8 +32,8 @@ Five MCP-compatible hosts with first-class wiring. The activation wizard detects
 
 ## Compare
 
-- [vs. Querybear](https://github.com/Arun-kc/schemabrain/blob/main/docs/compare/querybear.md): Both projects sit between AI agents and your database. SchemaBrain is the firewall layer; Querybear is the analytics agent on top.
-- [vs. Anthropic Postgres MCP](https://github.com/Arun-kc/schemabrain/blob/main/docs/compare/anthropic-postgres-mcp.md): The Anthropic reference MCP server ships one tool that accepts arbitrary SQL. SchemaBrain refuses SQL at the type level.
+- [vs. Querybear](https://github.com/Arun-kc/schemabrain/blob/main/docs/compare/querybear.mdx): Both projects sit between AI agents and your database. SchemaBrain is the trust and intelligence layer; Querybear is the analytics agent on top.
+- [vs. Anthropic Postgres MCP](https://github.com/Arun-kc/schemabrain/blob/main/docs/compare/anthropic-postgres-mcp.mdx): The Anthropic reference MCP server ships one tool that accepts arbitrary SQL. SchemaBrain refuses SQL at the type level.
 
 ## MCP tool reference
 
