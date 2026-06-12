@@ -112,6 +112,7 @@ from schemabrain.entities.yaml_grammar import (
 from schemabrain.errors import (
     GuidedError,
     anthropic_auth_failed,
+    dbt_import_store_not_indexed,
     postgres_operational_error,
     render_error,
     silent_rewrite_to_psycopg,
@@ -508,6 +509,7 @@ def _dispatch(argv: list[str] | None) -> int:
             skip_llm_confirm=args.skip_llm_confirm,
             pii_block_csv=args.pii_block,
             emit_yaml_dir=args.emit_yaml_dir,
+            enable_sonnet=args.enable_sonnet,
         )
     if args.command == "tail":
         return _cmd_tail(
@@ -2118,6 +2120,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "3.12+ where `fastembed`'s `onnxruntime` dependency has no wheel. "
         "Degrades `find_relevant_entities` from vector similarity to "
         "keyword/substring matching; everything else works unchanged.",
+    )
+    g_stages.add_argument(
+        "--enable-sonnet",
+        dest="enable_sonnet",
+        action="store_true",
+        help="During the index stage (needs --enrich + ANTHROPIC_API_KEY), "
+        "route cryptic column names (heavily abbreviated, e.g. `acct_dim_v3`) "
+        "to Claude Sonnet 4.6 instead of Haiku 4.5. Sonnet is ~5x more "
+        "expensive per call but produces better descriptions for hard-to-decode "
+        "names. Default off (Haiku-only) to keep runs cheap; same opt-in as "
+        "`schemabrain index --enable-sonnet`.",
     )
 
     g_host = p_init.add_argument_group(
@@ -5359,21 +5372,32 @@ def _cmd_import_dbt(
     factory = _source_factory or (lambda url: PostgresDataSource(url))
     metric_summary: tuple[int, tuple] | None = None
     try:
-        with SQLiteStore(store_path) as store, factory(source_url) as source:
-            plan = plan_dbt_import(manifest, source, store, source_connection_id=source_id)
-            if dry_run:
-                result = None
-            else:
-                result = apply_dbt_import_plan(plan, store, source_connection_id=source_id)
-            if include_metrics:
-                metric_summary = _apply_dbt_metrics(
-                    manifest_path=Path(manifest_path),
-                    plan=plan,
-                    apply_result=result,
-                    store=store,
-                    source_connection_id=source_id,
-                    dry_run=dry_run,
-                )
+        with SQLiteStore(store_path) as store:
+            # Pre-flight: the import binds every model's entity to a row
+            # in the `tables` index. If this source URL was never indexed
+            # into this store, EVERY model fails the bound-table FK at
+            # write time — one source round-trip per model before the
+            # first error, with the index-first requirement buried in the
+            # runtime string. Short-circuit to a guided error BEFORE
+            # opening the source connection or doing any plan work.
+            if not store.list_tables(source_connection_id=source_id):
+                _render_guided(dbt_import_store_not_indexed(store_path))
+                return 2
+            with factory(source_url) as source:
+                plan = plan_dbt_import(manifest, source, store, source_connection_id=source_id)
+                if dry_run:
+                    result = None
+                else:
+                    result = apply_dbt_import_plan(plan, store, source_connection_id=source_id)
+                if include_metrics:
+                    metric_summary = _apply_dbt_metrics(
+                        manifest_path=Path(manifest_path),
+                        plan=plan,
+                        apply_result=result,
+                        store=store,
+                        source_connection_id=source_id,
+                        dry_run=dry_run,
+                    )
     except OperationalError as exc:
         # Postgres connection failure (wrong host, bad password,
         # timeout) — same handler shape as `_cmd_index` / `_cmd_serve`
@@ -7320,6 +7344,7 @@ def _cmd_init(
     skip_llm_confirm: bool = False,
     pii_block_csv: str | None = None,
     emit_yaml_dir: str | None = None,
+    enable_sonnet: bool = False,
 ) -> int:
     """Run the activation wizard and render the multi-stage outcome.
 
@@ -7584,6 +7609,7 @@ def _cmd_init(
         "metrics_max_cost_usd": metrics_max_cost_usd,
         "no_joins": no_joins,
         "no_embed": no_embed,
+        "enable_sonnet": enable_sonnet,
         "from_dbt": Path(from_dbt) if from_dbt else None,
         "skip_llm_confirm": effective_skip_llm_confirm,
     }

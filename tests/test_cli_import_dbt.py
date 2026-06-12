@@ -683,3 +683,73 @@ class TestReportWriteFailures:
             )
         assert entity is not None
         assert entity.origin == "dbt_import"
+
+
+class TestStoreNotIndexedPreflight:
+    """Regression (E2E audit 2026-06-12): on a store never indexed for
+    the import's source URL, `import dbt` used to verify + write every
+    model and only surface the bound-table FK failure per model — one
+    round-trip each before the first error, with the index-first
+    requirement buried in the runtime error string. An up-front
+    pre-flight short-circuits to a guided 'index first' error before
+    opening the source or doing any plan work.
+    """
+
+    def test_unindexed_store_short_circuits_before_opening_source(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        manifest = _write_minimal_manifest(tmp_path)
+        store_path = tmp_path / "fresh.db"
+        with SQLiteStore(store_path):  # create an empty store (schema, no tables)
+            pass
+
+        opened: list[str] = []
+
+        def _exploding_factory(url: str) -> _FakeDataSource:
+            opened.append(url)
+            raise AssertionError("source must NOT be opened when the store has no indexed tables")
+
+        exit_code = _cmd_import_dbt(
+            manifest_path=str(manifest),
+            positional_url=_TEST_URL,
+            url_env=None,
+            store_path=str(store_path),
+            dry_run=False,
+            report_path=None,
+            _source_factory=_exploding_factory,
+        )
+
+        assert exit_code == 2
+        assert opened == []  # short-circuited before the source connection
+        err = capsys.readouterr().err.lower()
+        assert "index" in err  # guides the user to index first
+
+    def test_store_indexed_for_other_source_still_short_circuits(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A store indexed for a DIFFERENT source has no tables for THIS
+        # source_id, so the same guard must fire.
+        from schemabrain.cli import _make_source_id
+
+        manifest = _write_minimal_manifest(tmp_path)
+        store_path = tmp_path / "store.db"
+        other_table = _live_table(
+            "unrelated", _live_column("id", table="unrelated", is_primary_key=True)
+        )
+        with SQLiteStore(store_path) as store:
+            store.write_table(
+                other_table,
+                source_connection_id=_make_source_id("postgresql://x:y@other:5432/db"),
+            )
+
+        exit_code = _cmd_import_dbt(
+            manifest_path=str(manifest),
+            positional_url=_TEST_URL,
+            url_env=None,
+            store_path=str(store_path),
+            dry_run=False,
+            report_path=None,
+            _source_factory=_factory_for(),
+        )
+        assert exit_code == 2
+        assert "index" in capsys.readouterr().err.lower()

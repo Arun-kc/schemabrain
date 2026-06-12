@@ -38,10 +38,10 @@ If Claude calls `list_entities` and reports `user`, `order`, etc., you're done. 
 
 ## What you get
 
-- **12 MCP tools, none of which can write.** Full list and propagation rules in [`/mechanism/read-only`](../mechanism/read-only.md).
-- **PII-aware refusal at the `get_metric` boundary.** SchemaBrain defaults to blocking `credential`, `payment_card`, and `government_id`. `--pii-block` **replaces** the set rather than extending it, so widen by listing the full target set, e.g. `--pii-block credential,payment_card,government_id,contact,health`. Details in [`/mechanism/pii-taxonomy`](../mechanism/pii-taxonomy.md).
-- **Tamper-evident audit chain.** Every tool call lands in an append-only `mcp_audit` table with a SHA256 chain hash. Verify with `schemabrain audit verify`. Details in [`/mechanism/audit-chain`](../mechanism/audit-chain.md).
-- **Structured recovery envelopes.** When `get_metric` refuses or fails, the response is a typed contract (`recovery.suggested_tool`, `recovery.suggested_args`) Claude can act on programmatically. Details in [`/mechanism/structured-recovery`](../mechanism/structured-recovery.md).
+- **12 MCP tools, none of which can write.** Full list and propagation rules in [`/mechanism/read-only`](/mechanism/read-only).
+- **PII-aware refusal at the `get_metric` boundary.** SchemaBrain defaults to blocking `credential`, `payment_card`, and `government_id`. `--pii-block` **replaces** the set rather than extending it, so widen by listing the full target set, e.g. `--pii-block credential,payment_card,government_id,contact,health`. Details in [`/mechanism/pii-taxonomy`](/mechanism/pii-taxonomy).
+- **Tamper-evident audit chain.** Every tool call lands in an append-only `mcp_audit` table with a SHA256 chain hash. Verify with `schemabrain audit verify`. Details in [`/mechanism/audit-chain`](/mechanism/audit-chain).
+- **Structured recovery envelopes.** When `get_metric` refuses or fails, the response is a typed contract (`recovery.suggested_tool`, `recovery.suggested_args`) Claude can act on programmatically. Details in [`/mechanism/structured-recovery`](/mechanism/structured-recovery).
 
 ## Sample refusal envelope
 

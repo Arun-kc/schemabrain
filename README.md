@@ -32,7 +32,7 @@ Three guarantees that close the trust gap between AI agents and your database:
 
 - **[Read-only by architecture](#1-read-only-by-architecture-not-configuration)** — twelve MCP tools, none of which can write. No `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database.
 - **[PII refusal at retrieval](#2-pii-aware-refusal-at-the-get_metric-tool-boundary)** — PII tags propagate from the physical schema through joins and metrics. If a query touches a blocked category, SchemaBrain refuses before the database is queried.
-- **[Cryptographic audit chain](#3-tamper-evident-audit-log)** — every call, refusal, and recovery lands in a SHA256-hashed append-only log. `audit verify` exits non-zero if any past row was rewritten.
+- **[Cryptographic audit chain](#3-tamper-evident-audit-log)** — every call, refusal, and recovery is recorded in a SHA256-hashed append-only log (best-effort: a disk-full or no-writer configuration logs a warning and continues rather than failing the query). `audit verify` exits non-zero if any past row was rewritten.
 
 **See it in action** — ask for something the schema can't answer, and it refuses instead of fabricating a join:
 
@@ -54,7 +54,7 @@ uvx schemabrain init
 
 **Cost:** **$0** to run the bundled demo (pre-curated pack, no API key) · ~$0.03 to LLM-index a fresh 84-column schema · **$0** to re-index unchanged schemas. Detail in [Sample session](#sample-session).
 
-**Status: 0.6.0 (beta).** Postgres + SQLite supported today. Snowflake / BigQuery / MySQL on the roadmap.
+**Status: 0.6.0 (beta).** Postgres supported today (the local store itself is SQLite). SQLite / Snowflake / BigQuery / MySQL source connectors on the roadmap.
 
 ---
 
@@ -328,7 +328,7 @@ Real Claude Desktop session against the bundled SaaS fixture (12 tables, 84 colu
 
 The differentiator is what *didn't* happen: most LLM-over-database tools, asked for usage-by-plan, would confidently emit `JOIN plans p ON usage_events.plan_id = p.id` against a `plan_id` column that doesn't exist. SchemaBrain refused — `get_metric` returned `kind: unreachable_entity` with `recovery.suggested_tool: resolve_join`, not prose. The agent **acted on the structured recovery contract programmatically** instead of fabricating a join. Refusal-not-fabrication is the safety mechanism, demonstrated live.
 
-**Cost.** ~$0.001/column with Claude Haiku 4.5 + Sonnet 4.6 (Sonnet for the structured curation prompt). The bundled 12-table fixture (84 columns, 12 entities + 5 metrics + 11 joins) ships pre-curated, so the demo path applies it for **$0** — no API key. Indexing those 84 columns with LLM column descriptions measured **~$0.034**. The Pagila DVD-rental sample (87 columns after partition deduplication) runs for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
+**Cost.** ~$0.0004/column with Claude Haiku 4.5 (cryptic-name columns can opt into Sonnet 4.6 via `--enable-sonnet`). The bundled 12-table fixture (84 columns, 12 entities + 5 metrics + 11 joins) ships pre-curated, so the demo path applies it for **$0** — no API key. Indexing those 84 columns with LLM column descriptions measured **~$0.034**. The Pagila DVD-rental sample (87 columns after partition deduplication) runs for **$0.0299 in 105s**. Re-indexing an unchanged schema is **$0** — content-addressable fingerprinting skips the LLM call entirely.
 
 To verify Claude's SQL is mechanically correct (and that flagged caveats are the actual data behavior), see [Validating SQL Claude generates](docs/setup/manual.md#6-validating-sql-claude-generates).
 
@@ -368,7 +368,7 @@ What you get from `pip install schemabrain` right now:
 The vision-launch feature set. These are in active development and **not** on PyPI yet:
 
 - **Graph-first dashboard, 9 surfaces, dual-theme reskin** — an interactive Knowledge Graph (the signature surface), Entities index, Entity drilldown with a semantic pane, Data dictionary with Export-to-Markdown, plus the existing PII matrix, Refusals, Audit, an editable Policy editor, and Drift intelligence.
-- **New capabilities** — a persisted knowledge graph behind `/api/graph`; a `schemabrain docs` CLI that emits a Markdown/HTML data dictionary; per-column PII confidence; RFC-6962 Merkle-root audit proofs; hybrid retrieval (bge query-prefix + BM25 via RRF); two-tier model routing.
+- **New capabilities** — a persisted knowledge graph behind `/api/graph`; a `schemabrain docs` CLI that emits a Markdown/HTML data dictionary; per-column PII confidence; RFC-6962 Merkle-root audit proofs; hybrid retrieval (bge query-prefix + BM25 via RRF); opt-in Sonnet routing for cryptic columns (`--enable-sonnet`).
 - **Openness** — good-first-issues and GitHub Discussions. ([`ROADMAP.md`](ROADMAP.md) and a [`Code of Conduct`](CODE_OF_CONDUCT.md) have landed.)
 
 ### Later — roadmap (deferred; future direction only)
