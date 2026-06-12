@@ -850,3 +850,213 @@ class TestDataclassShapes:
         tests = DbtColumnTests()
         assert tests.is_unique is False
         assert tests.is_not_null is False
+
+
+def _relationships_test_node(
+    *,
+    from_unique_id: str,
+    from_column: str,
+    to_model: str,
+    to_field: str,
+    project: str = "demo_project",
+) -> dict:
+    """Build a dbt `relationships` test node (FK declaration)."""
+    uid = f"test.{project}.relationships_{from_unique_id.replace('.', '_')}_{from_column}.xyz"
+    return uid, {
+        "resource_type": "test",
+        "unique_id": uid,
+        "name": "relationships",
+        "attached_node": from_unique_id,
+        "column_name": from_column,
+        "test_metadata": {
+            "name": "relationships",
+            "kwargs": {"to": f"ref('{to_model}')", "field": to_field, "column_name": from_column},
+        },
+    }
+
+
+class TestRelationshipsParsing:
+    """`relationships` schema tests parse into `DbtRelationship` FK edges."""
+
+    def _two_model_manifest(self, tmp_path: Path, *extra_nodes: tuple[str, dict]) -> Path:
+        order = _model_node(name="orders", columns={"id": {}, "customer_id": {}})
+        customer = _model_node(name="customers", columns={"id": {}})
+        nodes = dict([order, customer, *extra_nodes])
+        return _write_manifest(
+            tmp_path, {"metadata": _minimal_metadata(), "nodes": nodes, "sources": {}}
+        )
+
+    def test_relationships_test_becomes_fk_edge(self, tmp_path: Path) -> None:
+        from schemabrain.imports.dbt import DbtRelationship
+
+        rel_node = _relationships_test_node(
+            from_unique_id="model.demo_project.orders",
+            from_column="customer_id",
+            to_model="customers",
+            to_field="id",
+        )
+        manifest = parse_dbt_manifest(self._two_model_manifest(tmp_path, rel_node))
+        assert manifest.relationships == (
+            DbtRelationship(
+                from_model_unique_id="model.demo_project.orders",
+                from_column="customer_id",
+                to_model_name="customers",
+                to_column="id",
+            ),
+        )
+
+    def test_no_relationships_tests_yields_empty(self, tmp_path: Path) -> None:
+        manifest = parse_dbt_manifest(self._two_model_manifest(tmp_path))
+        assert manifest.relationships == ()
+
+    def test_two_arg_ref_form_parses_model_name(self, tmp_path: Path) -> None:
+        # dbt's package-qualified `ref('pkg', 'model')` — the model name
+        # is the LAST quoted token.
+        uid = "test.demo_project.rel_pkgform.xyz"
+        node = (
+            uid,
+            {
+                "resource_type": "test",
+                "unique_id": uid,
+                "name": "relationships",
+                "attached_node": "model.demo_project.orders",
+                "column_name": "customer_id",
+                "test_metadata": {
+                    "name": "relationships",
+                    "kwargs": {"to": 'ref("analytics", "customers")', "field": "id"},
+                },
+            },
+        )
+        manifest = parse_dbt_manifest(self._two_model_manifest(tmp_path, node))
+        assert manifest.relationships[0].to_model_name == "customers"
+
+    def test_non_ref_to_expression_is_skipped(self, tmp_path: Path) -> None:
+        uid = "test.demo_project.rel_sourceref.xyz"
+        node = (
+            uid,
+            {
+                "resource_type": "test",
+                "unique_id": uid,
+                "name": "relationships",
+                "attached_node": "model.demo_project.orders",
+                "column_name": "customer_id",
+                "test_metadata": {
+                    "name": "relationships",
+                    "kwargs": {"to": "source('raw', 'customers')", "field": "id"},
+                },
+            },
+        )
+        manifest = parse_dbt_manifest(self._two_model_manifest(tmp_path, node))
+        assert manifest.relationships == ()
+
+    def test_relationships_test_missing_field_is_skipped(self, tmp_path: Path) -> None:
+        uid = "test.demo_project.rel_nofield.xyz"
+        node = (
+            uid,
+            {
+                "resource_type": "test",
+                "unique_id": uid,
+                "name": "relationships",
+                "attached_node": "model.demo_project.orders",
+                "column_name": "customer_id",
+                "test_metadata": {"name": "relationships", "kwargs": {"to": "ref('customers')"}},
+            },
+        )
+        manifest = parse_dbt_manifest(self._two_model_manifest(tmp_path, node))
+        assert manifest.relationships == ()
+
+
+class TestRelationshipsToJoins:
+    """`dbt_relationships_to_joins` maps FK edges to canonical joins."""
+
+    def _manifest(self, relationships: tuple) -> DbtManifest:
+        return DbtManifest(
+            manifest_version=12,
+            dbt_project_name="demo_project",
+            models=(
+                DbtModelNode(
+                    unique_id="model.demo_project.orders",
+                    name="orders",
+                    database="db",
+                    schema_name="public",
+                    identifier="orders",
+                    description="",
+                    columns=(),
+                    depends_on_sources=(),
+                ),
+                DbtModelNode(
+                    unique_id="model.demo_project.customers",
+                    name="customers",
+                    database="db",
+                    schema_name="public",
+                    identifier="customers",
+                    description="",
+                    columns=(),
+                    depends_on_sources=(),
+                ),
+            ),
+            sources_by_id={},
+            skipped=DbtSkipCounts(),
+            relationships=relationships,
+        )
+
+    def test_relationship_becomes_canonical_join(self) -> None:
+        from schemabrain.imports.dbt import DbtRelationship, dbt_relationships_to_joins
+
+        joins, skips = dbt_relationships_to_joins(
+            self._manifest(
+                (
+                    DbtRelationship(
+                        from_model_unique_id="model.demo_project.orders",
+                        from_column="customer_id",
+                        to_model_name="customers",
+                        to_column="id",
+                    ),
+                )
+            )
+        )
+        assert skips == ()
+        assert len(joins) == 1
+        join = joins[0]
+        assert join.source_entity == "orders"
+        assert join.target_entity == "customers"
+        assert join.origin == "dbt_import"
+        assert join.on[0].source_column == "customer_id"
+        assert join.on[0].target_column == "id"
+
+    def test_endpoint_not_imported_is_skipped(self) -> None:
+        from schemabrain.imports.dbt import DbtRelationship, dbt_relationships_to_joins
+
+        joins, skips = dbt_relationships_to_joins(
+            self._manifest(
+                (
+                    DbtRelationship(
+                        from_model_unique_id="model.demo_project.orders",
+                        from_column="warehouse_id",
+                        to_model_name="warehouses",  # not in manifest
+                        to_column="id",
+                    ),
+                )
+            )
+        )
+        assert joins == ()
+        assert len(skips) == 1
+        assert skips[0].reason == "endpoint_not_imported"
+
+    def test_self_join_is_skipped(self) -> None:
+        from schemabrain.imports.dbt import DbtRelationship, dbt_relationships_to_joins
+
+        joins, skips = dbt_relationships_to_joins(
+            self._manifest(
+                (
+                    DbtRelationship(
+                        from_model_unique_id="model.demo_project.orders",
+                        from_column="parent_id",
+                        to_model_name="orders",  # same entity
+                        to_column="id",
+                    ),
+                )
+            )
+        )
+        assert joins == ()
+        assert skips[0].reason == "self_join"

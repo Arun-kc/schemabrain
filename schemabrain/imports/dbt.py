@@ -50,6 +50,7 @@ from typing import Literal, get_args
 from schemabrain.connectors.base import DataSource
 from schemabrain.connectors.errors import TableNotFoundError
 from schemabrain.core.entity import DbtOwnedEntityError, Entity, Origin, SingleTableBinding
+from schemabrain.core.join import CanonicalJoin, JoinColumnPair
 from schemabrain.core.store_protocol import Store
 
 _logger = logging.getLogger(__name__)
@@ -73,6 +74,17 @@ _SCHEMA_URL_RE = re.compile(r"manifest/v(\d+)\.json$")
 # `DbtColumnTests` record per column.
 _UNIQUE_TEST_NAME = "unique"
 _NOT_NULL_TEST_NAME = "not_null"
+# dbt's generic `relationships` schema test encodes a foreign-key
+# reference: the attached (model, column) is the FK side, and the test's
+# `kwargs.to` (a `ref('...')` string) + `kwargs.field` name the
+# referenced model + column. This is the source for canonical-join
+# import — dbt has no first-class join concept, but `relationships`
+# tests ARE declared FKs.
+_RELATIONSHIPS_TEST_NAME = "relationships"
+# Pull the model name out of a dbt `ref('model')` / `ref("model")`
+# (optionally package-qualified `ref('pkg', 'model')`) string. The last
+# quoted token is the model name in both the 1-arg and 2-arg forms.
+_REF_MODEL_RE = re.compile(r"""ref\(\s*(?:['"][^'"]+['"]\s*,\s*)?['"](?P<model>[^'"]+)['"]\s*\)""")
 
 # Constraint-type names used in identity resolution. Matches dbt's
 # `columns.<col>.constraints[].type` literals.
@@ -262,6 +274,25 @@ class DbtSourceNode:
 
 
 @dataclass(frozen=True)
+class DbtRelationship:
+    """A dbt `relationships` test distilled to a foreign-key edge.
+
+    `from_model_unique_id` + `from_column` are the FK side (the model
+    the test is attached to and its `column_name`). `to_model_name` +
+    `to_column` are the referenced side, parsed from the test's
+    `kwargs.to` (`ref('...')`) and `kwargs.field`. The model NAME is
+    carried (not the unique_id) because that is what `dbt_model_to_entity`
+    uses as the entity name, so the join resolver can map both endpoints
+    to entities without re-walking the manifest.
+    """
+
+    from_model_unique_id: str
+    from_column: str
+    to_model_name: str
+    to_column: str
+
+
+@dataclass(frozen=True)
 class DbtSkipCounts:
     """Counts of non-model resource types the parser skipped.
 
@@ -317,6 +348,10 @@ class DbtManifest:
     models: tuple[DbtModelNode, ...]
     sources_by_id: Mapping[str, DbtSourceNode]
     skipped: DbtSkipCounts
+    # `relationships` schema tests distilled to FK edges. Empty tuple
+    # when the manifest declares none. Appended last so existing
+    # positional/keyword constructions of `DbtManifest` stay valid.
+    relationships: tuple[DbtRelationship, ...] = ()
 
     def __post_init__(self) -> None:
         # Mapping proxy — frozen=True blocks `manifest.sources_by_id =
@@ -352,6 +387,7 @@ def parse_dbt_manifest(path: Path) -> DbtManifest:
     sources_by_id = _parse_sources(raw["sources"])
     column_test_aggregates = _aggregate_column_tests(raw["nodes"])
     models, skipped = _parse_nodes(raw["nodes"], column_test_aggregates)
+    relationships = _aggregate_relationships(raw["nodes"])
 
     return DbtManifest(
         manifest_version=manifest_version,
@@ -359,6 +395,7 @@ def parse_dbt_manifest(path: Path) -> DbtManifest:
         models=models,
         sources_by_id=sources_by_id,
         skipped=skipped,
+        relationships=relationships,
     )
 
 
@@ -480,6 +517,55 @@ def _aggregate_column_tests(
         key: DbtColumnTests(is_unique=bucket["unique"], is_not_null=bucket["not_null"])
         for key, bucket in aggregates.items()
     }
+
+
+def _aggregate_relationships(nodes_raw: dict) -> tuple[DbtRelationship, ...]:
+    """Walk `test.*` nodes; distill each `relationships` test to an FK edge.
+
+    A `relationships` test carries `attached_node` (the FK-side model),
+    `column_name` (the FK column), and `test_metadata.kwargs` with
+    `to` (a `ref('model')` string → referenced model) and `field` (the
+    referenced column). Tests missing any of these — or whose `to`
+    doesn't parse as a `ref(...)` — are skipped silently (partial-build
+    states and non-ref `to` expressions are legitimate, not errors).
+    Sorted deterministically so the import surface is stable across runs.
+    """
+    out: list[DbtRelationship] = []
+    for entry in nodes_raw.values():
+        if entry.get("resource_type") != "test":
+            continue
+        meta = entry.get("test_metadata") or {}
+        if meta.get("name") != _RELATIONSHIPS_TEST_NAME:
+            continue
+        kwargs = meta.get("kwargs") or {}
+        from_model = entry.get("attached_node")
+        from_column = entry.get("column_name") or kwargs.get("column_name")
+        to_column = kwargs.get("field")
+        to_raw = kwargs.get("to")
+        if not (from_model and from_column and to_column and to_raw):
+            _logger.debug(
+                "dbt relationships test %r missing attached_node/column_name/field/to; skipped.",
+                entry.get("unique_id", "<unknown>"),
+            )
+            continue
+        match = _REF_MODEL_RE.search(str(to_raw))
+        if match is None:
+            _logger.debug(
+                "dbt relationships test %r has a non-ref `to` (%r); skipped.",
+                entry.get("unique_id", "<unknown>"),
+                to_raw,
+            )
+            continue
+        out.append(
+            DbtRelationship(
+                from_model_unique_id=from_model,
+                from_column=from_column,
+                to_model_name=match.group("model"),
+                to_column=to_column,
+            )
+        )
+    out.sort(key=lambda r: (r.from_model_unique_id, r.from_column, r.to_model_name, r.to_column))
+    return tuple(out)
 
 
 def _parse_nodes(
@@ -807,6 +893,101 @@ def _resolve_upstream_sources(model: DbtModelNode, manifest: DbtManifest) -> tup
 # ----- live-schema verification ---------------------------------------------
 
 
+JoinSkipReason = Literal["endpoint_not_imported", "self_join", "invalid_shape"]
+_VALID_JOIN_SKIP_REASONS: frozenset[str] = frozenset(get_args(JoinSkipReason))
+
+
+@dataclass(frozen=True)
+class DbtJoinSkip:
+    """One `relationships` test that did NOT map to a canonical join.
+
+    `reason` (closed Literal): `endpoint_not_imported` — one side
+    references a model not in this manifest's importable set;
+    `self_join` — both endpoints resolve to the same entity (not
+    canonical); `invalid_shape` — the FK/referenced column isn't a
+    valid SchemaBrain identifier. `detail` is the human breadcrumb.
+    """
+
+    detail: str
+    reason: JoinSkipReason
+
+    def __post_init__(self) -> None:
+        if self.reason not in _VALID_JOIN_SKIP_REASONS:
+            raise ValueError(
+                f"reason must be one of {sorted(_VALID_JOIN_SKIP_REASONS)} (got {self.reason!r})"
+            )
+
+
+def dbt_relationships_to_joins(
+    manifest: DbtManifest,
+) -> tuple[tuple[CanonicalJoin, ...], tuple[DbtJoinSkip, ...]]:
+    """Map a manifest's `relationships` tests to canonical joins.
+
+    A `relationships` test is a declared FK: the attached (model,
+    column) references another model's column. Each maps to a
+    `CanonicalJoin(origin="dbt_import")` between the two models'
+    entities (entity name == model name). Pure / deterministic.
+
+    A relationship is skipped (not an error) when either endpoint
+    isn't an importable model in THIS manifest, when both endpoints are
+    the same entity (self-joins aren't canonical), or when a column
+    isn't a valid identifier. Joins are sorted by name for a stable
+    import surface.
+    """
+    name_by_unique_id = {m.unique_id: m.name for m in manifest.models}
+    model_names = set(name_by_unique_id.values())
+
+    joins: list[CanonicalJoin] = []
+    skips: list[DbtJoinSkip] = []
+    for rel in manifest.relationships:
+        from_entity = name_by_unique_id.get(rel.from_model_unique_id)
+        if from_entity is None:
+            skips.append(
+                DbtJoinSkip(
+                    detail=f"{rel.from_model_unique_id}.{rel.from_column} (FK model not imported)",
+                    reason="endpoint_not_imported",
+                )
+            )
+            continue
+        if rel.to_model_name not in model_names:
+            skips.append(
+                DbtJoinSkip(
+                    detail=f"{from_entity}.{rel.from_column} → {rel.to_model_name} (referenced model not imported)",
+                    reason="endpoint_not_imported",
+                )
+            )
+            continue
+        if from_entity == rel.to_model_name:
+            skips.append(
+                DbtJoinSkip(
+                    detail=f"{from_entity}.{rel.from_column} → {rel.to_model_name}.{rel.to_column} (self-join)",
+                    reason="self_join",
+                )
+            )
+            continue
+        try:
+            join = CanonicalJoin(
+                name=f"{from_entity}_{rel.from_column}",
+                description=f"Imported from a dbt relationships test on {from_entity}.{rel.from_column}.",
+                source_entity=from_entity,
+                target_entity=rel.to_model_name,
+                on=(JoinColumnPair(source_column=rel.from_column, target_column=rel.to_column),),
+                origin="dbt_import",
+            )
+        except ValueError as exc:
+            skips.append(
+                DbtJoinSkip(
+                    detail=f"{from_entity}.{rel.from_column} → {rel.to_model_name}.{rel.to_column} ({exc})",
+                    reason="invalid_shape",
+                )
+            )
+            continue
+        joins.append(join)
+
+    joins.sort(key=lambda j: j.name)
+    return tuple(joins), tuple(skips)
+
+
 def verify_against_live_schema(
     imported: DbtImportedEntity,
     model: DbtModelNode,
@@ -962,6 +1143,12 @@ class DbtImportPlan:
     orphans: tuple[str, ...]
     skipped: tuple[DbtImportSkip, ...]
     skip_counts: DbtSkipCounts
+    # Canonical joins synthesised from `relationships` tests whose BOTH
+    # endpoint entities exist after this import (upserted by name on
+    # apply), plus the relationships that couldn't become joins.
+    # Defaults keep existing positional/keyword constructions valid.
+    joins_to_write: tuple[CanonicalJoin, ...] = ()
+    joins_skipped: tuple[DbtJoinSkip, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1070,6 +1257,36 @@ def plan_dbt_import(
         if entity.origin == "dbt_import" and name not in manifest_model_names
     ]
 
+    # Canonical joins from `relationships` tests. A join is writable only
+    # when BOTH endpoint entities will exist after this run — already in
+    # the store, or being added/updated/taken-over here. A relationship
+    # whose endpoint model parsed but failed identity resolution (so its
+    # entity was skipped) would FK-fail at write, so it is demoted to a
+    # join skip rather than attempted.
+    will_exist = (
+        set(existing_by_name)
+        | {e.entity.name for e in to_add}
+        | {e.entity.name for e in to_update}
+        | {e.entity.name for e, _ in to_take_ownership}
+    )
+    candidate_joins, join_skips = dbt_relationships_to_joins(manifest)
+    joins_to_write: list[CanonicalJoin] = []
+    extra_join_skips: list[DbtJoinSkip] = []
+    for join in candidate_joins:
+        if join.source_entity in will_exist and join.target_entity in will_exist:
+            joins_to_write.append(join)
+        else:
+            extra_join_skips.append(
+                DbtJoinSkip(
+                    detail=(
+                        f"{join.source_entity}.{join.on[0].source_column} → "
+                        f"{join.target_entity}.{join.on[0].target_column} "
+                        "(endpoint entity not imported — likely failed identity resolution)"
+                    ),
+                    reason="endpoint_not_imported",
+                )
+            )
+
     return DbtImportPlan(
         dbt_project_name=manifest.dbt_project_name,
         to_add=tuple(sorted(to_add, key=lambda e: e.entity.name)),
@@ -1078,6 +1295,8 @@ def plan_dbt_import(
         orphans=tuple(sorted(orphans)),
         skipped=tuple(sorted(skipped, key=lambda s: s.dbt_unique_id)),
         skip_counts=manifest.skipped,
+        joins_to_write=tuple(sorted(joins_to_write, key=lambda j: j.name)),
+        joins_skipped=tuple([*join_skips, *extra_join_skips]),
     )
 
 
@@ -1139,6 +1358,33 @@ def apply_dbt_import_plan(
                 dbt_project_name=plan.dbt_project_name,
             )
         )
+
+    # Joins are written AFTER entities so their entity FK is satisfied
+    # (the planner already restricted `joins_to_write` to joins whose
+    # endpoints exist after this run). `write_canonical_join` upserts by
+    # name, so a re-import is idempotent. A defensive IntegrityError
+    # (e.g. a concurrent writer dropped an endpoint entity) is captured
+    # as a write failure rather than crashing the apply.
+    for join in plan.joins_to_write:
+        try:
+            store.write_canonical_join(join, source_connection_id=source_connection_id)
+        except sqlite3.IntegrityError as exc:  # pragma: no cover — endpoints pre-checked
+            raw_failures.append(
+                DbtWriteFailure(
+                    entity_name=join.name,
+                    message=f"canonical join {join.name!r} failed to write: {exc}",
+                )
+            )
+        else:
+            _logger.info(
+                "join.imported.dbt.added",
+                extra={
+                    "join_name": join.name,
+                    "source_entity": join.source_entity,
+                    "target_entity": join.target_entity,
+                    "dbt_project_name": plan.dbt_project_name,
+                },
+            )
 
     write_failures = tuple(f for f in raw_failures if f is not None)
     return DbtImportResult(plan=plan, write_failures=write_failures)
