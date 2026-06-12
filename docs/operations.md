@@ -82,7 +82,10 @@ Exit codes: `0` rendered, `1` drilled name not found, `2` operational refusal.
 
 ## Detect drift
 
-`schemabrain check` walks every persisted entity, metric, and canonical join and confirms each one still matches the live source schema. Drops or renames at the source surface as a structured drift report — before they become bad agent answers.
+`schemabrain check` walks every persisted entity, metric, and canonical join and confirms each one still matches the live source schema. Two classes of change surface as a structured drift report — before they become bad agent answers:
+
+- **Structural** — a referenced table or column was dropped/renamed (`table_missing`, `identity_column_missing`, `measure_column_missing`, `time_dimension_column_missing`, `join_column_missing`).
+- **Shape** — a column still exists but its type or nullability changed since you indexed (`type_mismatch`, `nullability_change`), compared against the indexed baseline. These catch the silent-correctness traps a pure existence check misses (e.g. a numeric measure column flipped to `text`, so `SUM`/`AVG` now errors or coerces). Shape drift is reported without cascade-suppressing dependent definitions.
 
 ```bash
 schemabrain check --url-env DATABASE_URL --store-path ./schemabrain.db
