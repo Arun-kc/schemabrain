@@ -217,6 +217,13 @@ class WizardConfig:
     # hatch for Apple Silicon + Python 3.12+, where onnxruntime
     # (transitive via fastembed) has no wheel.
     no_embed: bool = False
+    # When True, the index stage routes cryptic (heavily-abbreviated)
+    # column names to Sonnet 4.6 instead of Haiku 4.5 during enrichment
+    # — same opt-in as `schemabrain index --enable-sonnet`. Off by
+    # default (Haiku-only) to keep automatic runs cheap; only the small
+    # subset of columns `routing.is_cryptic` flags pay the ~5x Sonnet
+    # cost. No effect unless `enrich` is also on.
+    enable_sonnet: bool = False
     from_dbt: Path | None = None
     skip_llm_confirm: bool = False
     # Default `--pii-block` categories written into the host snippet.
@@ -838,7 +845,10 @@ def _run_indexer(*, cfg: WizardConfig, source_id: str, api_key: str | None) -> I
     """
     from schemabrain.connectors.postgres import PostgresDataSource
     from schemabrain.core.store import SQLiteStore
-    from schemabrain.enrichment.anthropic_client import anthropic_haiku_45_client
+    from schemabrain.enrichment.anthropic_client import (
+        anthropic_haiku_45_client,
+        anthropic_sonnet_46_client,
+    )
     from schemabrain.enrichment.embeddings import fastembed_default
     from schemabrain.enrichment.pipeline import EnrichmentPipeline
     from schemabrain.indexer import NullReporter, index
@@ -865,7 +875,12 @@ def _run_indexer(*, cfg: WizardConfig, source_id: str, api_key: str | None) -> I
             )
             pipeline = EnrichmentPipeline(
                 client=anthropic_haiku_45_client(api_key=api_key),
-                cryptic_client=None,
+                # Opt-in two-tier routing: cryptic column names escalate
+                # to Sonnet 4.6 only when the operator passed
+                # `init --enable-sonnet`. Default stays Haiku-only.
+                cryptic_client=(
+                    anthropic_sonnet_46_client(api_key=api_key) if cfg.enable_sonnet else None
+                ),
                 max_cost_usd=enrich_cap,
                 default_concurrency=_WIZARD_INDEX_CONCURRENCY,
                 cryptic_concurrency=_WIZARD_INDEX_CRYPTIC_CONCURRENCY,

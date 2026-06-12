@@ -1291,6 +1291,75 @@ class TestRunIndexerSmoke:
         assert pkw["max_cost_usd"] == wizard._WIZARD_INDEX_ENRICH_CAP_USD
         assert pkw["default_concurrency"] == wizard._WIZARD_INDEX_CONCURRENCY
         assert pkw["cryptic_concurrency"] == wizard._WIZARD_INDEX_CRYPTIC_CONCURRENCY
+        # Two-tier routing is OPT-IN: default config leaves cryptic_client unset.
+        assert pkw["cryptic_client"] is None
+
+    def _run_with_enrich(
+        self, cfg: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> dict[str, object]:
+        """Drive `_run_indexer` with stubbed connectors/clients, returning
+        the captured `EnrichmentPipeline` kwargs."""
+        from schemabrain.indexer import IndexResult
+
+        captured: dict[str, object] = {}
+
+        class _CtxStub:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _CtxStub:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+        class _PipelineStub:
+            def __init__(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+        monkeypatch.setattr("schemabrain.connectors.postgres.PostgresDataSource", _CtxStub)
+        monkeypatch.setattr("schemabrain.profiler.postgres.PostgresProfiler", _CtxStub)
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _CtxStub)
+        monkeypatch.setattr("schemabrain.enrichment.pipeline.EnrichmentPipeline", _PipelineStub)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_haiku_45_client",
+            lambda **_kw: "haiku-client",
+        )
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda **_kw: "sonnet-client",
+        )
+        monkeypatch.setattr("schemabrain.enrichment.embeddings.fastembed_default", lambda: object())
+        monkeypatch.setattr(
+            "schemabrain.indexer.index",
+            lambda **_kw: IndexResult(
+                tables_seen=1,
+                tables_changed=1,
+                tables_unchanged=0,
+                tables_removed=0,
+                columns_added=5,
+                columns_changed=0,
+                columns_removed=0,
+            ),
+        )
+        wizard._run_indexer(cfg=cfg, source_id="abcd1234", api_key="sk-ant-test")
+        return captured
+
+    def test_enable_sonnet_wires_a_cryptic_client(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # With enable_sonnet on, the index-stage pipeline gets a Sonnet
+        # cryptic_client so `routing.is_cryptic` columns escalate.
+        cfg = _pg_config(base_config, enrich=True, enable_sonnet=True)
+        pkw = self._run_with_enrich(cfg, monkeypatch)
+        assert pkw["cryptic_client"] == "sonnet-client"
+
+    def test_enable_sonnet_off_leaves_cryptic_client_none(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config, enrich=True, enable_sonnet=False)
+        pkw = self._run_with_enrich(cfg, monkeypatch)
+        assert pkw["cryptic_client"] is None
 
 
 # ----- _stage_entities -----------------------------------------------------
