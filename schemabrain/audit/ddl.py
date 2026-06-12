@@ -17,6 +17,17 @@ from __future__ import annotations
 
 import sqlite3
 
+# The 14 ADR-0001 columns + the non-canonical `anchor_entity` (store v17).
+# `anchor_entity` is a best-effort attribution of an error/refusal row to a
+# single entity name; it drives the graph surface's refusal-hotspot overlay
+# (PR-17b). It is deliberately LAST (after `chain_hash`) and absent from
+# `audit/canonical.py::AUDIT_ROW_FIELDS`: the writer never feeds it into
+# `canonical_audit_row`, so the per-row chain hash + the derived Merkle root
+# are byte-identical to before and the append-only chain keeps verifying.
+# NULL = unattributed; `_migrate_v16_to_v17` ALTERs it onto existing stores.
+# Comments are kept OUT of the SQL string itself so `ALTER TABLE DROP COLUMN`
+# (used by the migration test harness to fabricate an older shape) can
+# re-parse the stored schema text cleanly.
 _DDL_STATEMENTS: tuple[str, ...] = (
     # Field-by-field comments live in the ADR; the SQL stays compact
     # for readability. Status, refusal_reason, and cost_class CHECK
@@ -54,7 +65,8 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         rule_id              TEXT,
         fingerprint          BLOB    NOT NULL,
         fingerprint_version  TEXT    NOT NULL,
-        chain_hash           BLOB    NOT NULL
+        chain_hash           BLOB    NOT NULL,
+        anchor_entity        TEXT
     )
     """,
     # Append-only triggers. The message body is matched by the
@@ -98,6 +110,19 @@ def ensure_audit_schema(conn: sqlite3.Connection) -> None:
     function deliberately does NOT open its own transaction so it can
     participate in a larger atomic block (e.g. core DDL + version
     stamp + audit DDL in `SQLiteStore._init_schema`).
+
+    Self-heals the v17 `anchor_entity` column: `CREATE ... IF NOT EXISTS`
+    is a no-op on a pre-v17 on-disk `mcp_audit` (created before the column
+    existed), so the additive, non-canonical column is added here when
+    missing. This keeps the `AuditWriter` — a SECOND writer of the store
+    that opens its own connection and does NOT run `SQLiteStore`'s
+    migration — correct against an older file on its own, with no
+    dependency on whether the `SQLiteStore` migration has committed first.
+    Idempotent (mirrors `_migrate_v16_to_v17`); `ADD COLUMN` is not an
+    UPDATE/DELETE so the append-only triggers do not fire.
     """
     for stmt in _DDL_STATEMENTS:
         conn.execute(stmt)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(mcp_audit)")}
+    if "anchor_entity" not in columns:
+        conn.execute("ALTER TABLE mcp_audit ADD COLUMN anchor_entity TEXT")

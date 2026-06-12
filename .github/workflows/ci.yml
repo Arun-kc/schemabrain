@@ -364,10 +364,10 @@ jobs:
 
       - name: Set up pnpm
         if: steps.filter.outputs.dashboard == 'true'
-        # Pinned to v4 (immutable major); pnpm version comes from
+        # Pinned to v6 (immutable major); pnpm version comes from
         # `web/package.json` engines.pnpm (>=9). Keep this in sync with
         # the engines field if it ever bumps.
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 9
 
@@ -387,10 +387,20 @@ jobs:
         # without regenerating the lockfile.
         run: pnpm install --frozen-lockfile
 
+      - name: Component unit tests + coverage gate (Vitest)
+        if: steps.filter.outputs.dashboard == 'true'
+        working-directory: web
+        # jsdom component tests for the design-system kit + theme hook.
+        # No sidecar or browser needed, so it runs ahead of the Chromium
+        # install + sidecar boot to fail fast on a kit regression. Coverage
+        # is scoped to components/kit + lib/useTheme (see vitest.config.ts);
+        # the run fails if any metric drops below the configured threshold.
+        run: pnpm vitest run --coverage
+
       - name: Cache Playwright browsers
         if: steps.filter.outputs.dashboard == 'true'
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           # Browser binaries live under ~/.cache/ms-playwright; cache
           # key is bound to the Playwright version so a bump
@@ -418,6 +428,15 @@ jobs:
         if: steps.filter.outputs.dashboard == 'true'
         working-directory: web
         run: pnpm run export
+
+      - name: Web perf budget (bundle size + reactflow isolation + fonts swap)
+        # Deterministic half of wsQA-perf-budget-landing for the dashboard app:
+        # asserts the /overview first-load JS/CSS stays within budget, reactflow
+        # stays dynamic-imported on /graph only (never an eager chunk), and every
+        # fetched @font-face uses font-display: swap. Reads web/.next from the
+        # export above. LCP/CLS stay a manual Lighthouse check (README).
+        if: steps.filter.outputs.dashboard == 'true'
+        run: node scripts/check_bundle_budget.mjs --app web --route '/(app)/overview/page' --js 200 --css 50 --forbid-module 'react-flow__' --fonts-swap
 
       - name: Boot dashboard sidecar (headless)
         if: steps.filter.outputs.dashboard == 'true'
@@ -468,3 +487,324 @@ jobs:
           # 7-day retention is plenty for triaging a failed run; longer
           # would just burn artifact storage.
           retention-days: 7
+
+  dashboard-visual:
+    name: Dashboard visual regression
+    # Pixel baselines are environment-specific (fonts, anti-aliasing), so this
+    # job runs ENTIRELY inside the pinned Playwright image — the SAME image used
+    # to generate the committed baselines (scripts/update_visual_baselines.sh).
+    # That keeps generation and assertion byte-identical and immune to the
+    # `ubuntu-latest` runner image drifting underneath us. The behavioural
+    # dashboard-e2e job above runs on the bare runner and `testIgnore`s
+    # visual.spec.ts, so the two never compare pixels in mismatched environments.
+    runs-on: ubuntu-latest
+    needs: lint-and-unit
+    container:
+      # Must match `@playwright/test` in web/pnpm-lock.yaml AND the image tag in
+      # scripts/update_visual_baselines.sh + playwright.visual.config.ts. Bump
+      # all four together and regenerate baselines.
+      image: mcr.microsoft.com/playwright:v1.60.0-noble
+    # Build + uv sync + container deps + 72 screenshots; generous ceiling.
+    timeout-minutes: 20
+    steps:
+      - name: Trust the workspace for git (container UID mismatch)
+        # This is the ONLY job that runs INSIDE a container (the pinned
+        # Playwright image); every other job uses the bare runner. git in
+        # the container sees the /__w checkout as owned by a different UID
+        # than the container's root user and aborts the first git op with
+        # "dubious ownership" (exit 128) — which failed checkout/paths-filter
+        # on every run since this job landed. actions/checkout only adds a
+        # TEMPORARY safe.directory that it removes in its post step, so the
+        # later steps still tripped. Writing to the SYSTEM config
+        # (/etc/gitconfig) is HOME-independent and a trusted scope for
+        # safe.directory, so every git invocation in the job — checkout,
+        # paths-filter, the visual diff — trusts the tree. Runs before
+        # checkout and unconditionally (it must precede the paths filter).
+        run: git config --system --add safe.directory '*'
+
+      - uses: actions/checkout@v6
+
+      - name: Detect dashboard-relevant changes
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            dashboard:
+              - 'web/**'
+              - 'schemabrain/dashboard/**'
+              - 'scripts/dashboard_demo.py'
+              - 'scripts/update_visual_baselines.sh'
+              - '.github/workflows/ci.yml'
+
+      - name: Install uv
+        if: steps.filter.outputs.dashboard == 'true'
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.11
+        if: steps.filter.outputs.dashboard == 'true'
+        run: uv python install 3.11
+
+      - name: Install Python dependencies (+ui extra)
+        if: steps.filter.outputs.dashboard == 'true'
+        run: uv sync --extra dev --extra ui --python 3.11
+
+      - name: Set up pnpm (corepack)
+        # The Playwright image already ships Node; corepack activates the same
+        # pnpm major as web/package.json engines (>=9), matching the local
+        # generation script. No actions/setup-node (it would fight the image's
+        # bundled Node).
+        if: steps.filter.outputs.dashboard == 'true'
+        run: corepack enable && corepack prepare pnpm@9 --activate
+
+      - name: Cache pnpm store
+        if: steps.filter.outputs.dashboard == 'true'
+        uses: actions/cache@v5
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-visual-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+
+      - name: Install web dependencies
+        if: steps.filter.outputs.dashboard == 'true'
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Build dashboard static export
+        if: steps.filter.outputs.dashboard == 'true'
+        working-directory: web
+        run: pnpm run export
+
+      - name: Boot dashboard sidecar (headless)
+        if: steps.filter.outputs.dashboard == 'true'
+        # The sidecar and Playwright share this container's loopback, so the
+        # config's default baseURL (127.0.0.1:7878) resolves with no extra
+        # networking.
+        run: |
+          uv run --python 3.11 python scripts/dashboard_demo.py --no-open &
+          echo "SIDECAR_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for sidecar health
+        if: steps.filter.outputs.dashboard == 'true'
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:7878/api/health > /dev/null; then
+              echo "sidecar healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "sidecar failed to come up within 30s" >&2
+          exit 1
+
+      - name: Run visual regression (assert against committed baselines)
+        if: steps.filter.outputs.dashboard == 'true'
+        working-directory: web
+        # Browsers are preinstalled in the image — no `playwright install`. A
+        # diff fails the job; the report (with diff PNGs) uploads below.
+        run: pnpm exec playwright test -c playwright.visual.config.ts
+
+      - name: Stop sidecar
+        if: always() && steps.filter.outputs.dashboard == 'true' && env.SIDECAR_PID != ''
+        run: kill "$SIDECAR_PID" 2>/dev/null || true
+
+      - name: Upload visual diff report on failure
+        if: failure() && steps.filter.outputs.dashboard == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-report
+          path: |
+            web/playwright-report/
+            web/test-results/
+          retention-days: 7
+
+  site-build:
+    name: Marketing site (build + E2E)
+    # The standalone marketing landing (site/) is a separate Next static-export
+    # app deployed to Vercel — out of the pip wheel. Vercel owns the production
+    # deploy; this job is the PR-gate that the site typechecks, lints, builds,
+    # and passes its smoke. Gated on site/** so dashboard/docs/Python PRs skip
+    # it. (Brand drift between web/ and site/ is caught separately by the
+    # tests/test_brand_tokens_sync.py gate in lint-and-unit.)
+    runs-on: ubuntu-latest
+    needs: lint-and-unit
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Detect site-relevant changes
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            site:
+              - 'site/**'
+              - '.github/workflows/ci.yml'
+
+      - name: Set up pnpm
+        if: steps.filter.outputs.site == 'true'
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - name: Set up Node 20
+        if: steps.filter.outputs.site == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      - name: Install site dependencies
+        if: steps.filter.outputs.site == 'true'
+        working-directory: site
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        if: steps.filter.outputs.site == 'true'
+        working-directory: site
+        run: pnpm typecheck
+
+      - name: Lint
+        if: steps.filter.outputs.site == 'true'
+        working-directory: site
+        run: pnpm lint
+
+      - name: Build static export
+        if: steps.filter.outputs.site == 'true'
+        working-directory: site
+        run: pnpm build
+
+      - name: Landing perf budget (bundle size + fonts swap)
+        # Deterministic half of wsQA-perf-budget-landing for the marketing
+        # landing: first-load JS < 150kb / CSS < 30kb (gzip, the Landing tier),
+        # no reactflow, every fetched @font-face font-display: swap. Reads
+        # site/.next from the build above. LCP/CLS = manual Lighthouse.
+        if: steps.filter.outputs.site == 'true'
+        run: node scripts/check_bundle_budget.mjs --app site --route '/page' --js 150 --css 30 --forbid-module 'react-flow__' --fonts-swap
+
+      - name: Cache Playwright browsers
+        if: steps.filter.outputs.site == 'true'
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-site-${{ runner.os }}-${{ hashFiles('site/pnpm-lock.yaml') }}
+
+      - name: Install Playwright Chromium (+OS deps)
+        if: steps.filter.outputs.site == 'true'
+        working-directory: site
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Playwright smoke
+        if: steps.filter.outputs.site == 'true'
+        working-directory: site
+        run: pnpm test:e2e
+
+      - name: Upload Playwright artifacts on failure
+        if: failure() && steps.filter.outputs.site == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-playwright-report
+          path: |
+            site/playwright-report/
+            site/test-results/
+          retention-days: 7
+
+  lockfree-install-smoke:
+    name: Lock-free install smoke (fresh resolver)
+    # Catches dependency-resolution drift that uv.lock hides. Every other
+    # job installs via `uv sync`, which pins to uv.lock — but end users run
+    # `pip install schemabrain`, which resolves dependency RANGES fresh
+    # against PyPI. A wide upper bound (e.g. `sqlglot<27`, `fastapi<1.0`,
+    # `anthropic<1.0`) resolving to a newer breaking release is invisible to
+    # the locked suite and ships silently to users. (Concretely: sqlglot 30.x
+    # renamed the `exp.Select` "from" arg key to "from_", silently emptying
+    # join mining — CI stayed green on the locked 26.x while a fresh
+    # `pip install` resolved the broken 30.x.) This job builds the wheel,
+    # installs it into a clean venv with pip's resolver (NO uv.lock), and
+    # smoke-tests the CLI, the MCP import surface, and the join-mining path
+    # (mirrors tests/test_joins_mining.py::TestSqlglotVersionRegression).
+    runs-on: ubuntu-latest
+    needs: lint-and-unit
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Detect dependency / source changes
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          # Dependency ranges live in pyproject.toml; a source change can
+          # also break import on a fresh resolve. Skip docs-only PRs to keep
+          # the typical critical path fast.
+          filters: |
+            deps:
+              - 'pyproject.toml'
+              - 'schemabrain/**'
+              - '.github/workflows/ci.yml'
+
+      - name: Install uv
+        if: steps.filter.outputs.deps == 'true'
+        # Same point-tag pin as the rest of this workflow (see lint-and-unit
+        # for the @v8-is-unsafe rationale). Used only to build the wheel and
+        # provision Python — the install itself goes through pip so the
+        # resolver matches what a `pip install` end user actually gets.
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.11
+        if: steps.filter.outputs.deps == 'true'
+        run: uv python install 3.11
+
+      - name: Build wheel
+        # `--wheel` (not bare `uv build`) so bundled artifacts (eval golden
+        # sets + SQL fixtures) ride along; the sdist target strips gitignored
+        # artifacts. Matches the release packaging step in publish.yml.
+        if: steps.filter.outputs.deps == 'true'
+        run: uv build --wheel
+
+      - name: Install the wheel with a FRESH pip resolver (no uv.lock)
+        # A clean, seeded venv + `pip install` of the built wheel resolves
+        # every dependency range against PyPI from scratch — exactly the path
+        # `pip install schemabrain[ui]` takes for an end user. The `[ui]`
+        # extra is included so the fastapi/uvicorn/sse-starlette upper bounds
+        # resolve fresh too, not just the core deps. The wheel filename is
+        # captured into a var so the `[ui]` extra isn't mangled by shell glob
+        # bracket-expansion.
+        if: steps.filter.outputs.deps == 'true'
+        run: |
+          uv venv --seed --python 3.11 "$RUNNER_TEMP/freshenv"
+          WHEEL=$(ls dist/schemabrain-*.whl | head -1)
+          "$RUNNER_TEMP/freshenv/bin/pip" install "${WHEEL}[ui]"
+
+      - name: Smoke the shipped wheel
+        # Run from $RUNNER_TEMP so the repo's source tree is NOT on sys.path:
+        # `import schemabrain` then resolves to the installed wheel, not the
+        # checkout. Asserts the CLI entry point works, the MCP import surface
+        # loads, and join mining resolves the FROM-side table — the exact path
+        # sqlglot 30.x silently empties. A drift here fails the build loudly
+        # instead of shipping an empty join-mining path to users.
+        if: steps.filter.outputs.deps == 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/freshenv/bin/schemabrain" --version
+          "$RUNNER_TEMP/freshenv/bin/python" - <<'PY'
+          import sqlglot
+          print("resolved sqlglot:", sqlglot.__version__)
+          from schemabrain.mcp.server import build_server
+          assert callable(build_server), "MCP build_server is not importable"
+          from schemabrain.joins.mining import extract_join_predicates
+          sql = "SELECT * FROM public.users u JOIN public.orders o ON u.id = o.user_id"
+          result = extract_join_predicates(sql)
+          assert result, (
+              "join mining returned an empty set on a fresh resolve — likely a "
+              "sqlglot major bump renaming the FROM arg key (30.x: 'from'->'from_'); "
+              "see the sqlglot pin in pyproject.toml"
+          )
+          tables = {t for j in result for t in (j.table_a, j.table_b)}
+          assert tables == {"orders", "users"}, f"unexpected tables resolved: {tables}"
+          print("lock-free smoke OK — CLI, MCP import, and join mining all green")
+          PY

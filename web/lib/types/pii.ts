@@ -65,6 +65,29 @@ export function isCatastrophic(category: PIICategory): boolean {
 }
 
 /**
+ * Index-time PII-confidence band (ADR 0009) — an ADVISORY signal on a
+ * classified column, never an enforcement gate. `floor_locked` marks a
+ * catastrophic-floor column (locked); `high`/`medium`/`low` grade a
+ * non-floor classification's corroboration. The classifier emits only
+ * `floor_locked`/`high`/`medium` in v1 — `low` stays reserved (withholding
+ * it under-states sensitivity, the safe direction). A column with no band
+ * (legacy / SQLite / unclassified) serialises as null and renders '—',
+ * never a faked 0. The raw 0..1 score stays internal: only the band crosses
+ * the API.
+ *
+ * SOURCE: schemabrain/pii/categories.py PiiConfidenceBand — DO NOT EDIT
+ * WITHOUT BUMPING CHARTER (test_ts_charter_sync).
+ */
+export type PiiConfidenceBand = "floor_locked" | "high" | "medium" | "low";
+
+export const PII_CONFIDENCE_BANDS: readonly PiiConfidenceBand[] = [
+  "floor_locked",
+  "high",
+  "medium",
+  "low",
+] as const;
+
+/**
  * Per-column PII tag — the (sensitivity, categories) pair the Python
  * side calls `ColumnPiiTag`. Serialised by the sidecar route
  * /api/entities/{name}/columns.
@@ -135,4 +158,30 @@ export interface PolicyResponse {
   diff_preview: PolicyDiffPreview;
   yaml_parse_error: string | null;
   policy_drift: PolicyDriftState;
+}
+
+/* ───────── Policy preview (GET /api/pii/policy/preview) ───────── */
+
+export type PolicyDiffKind = "context" | "add" | "remove";
+
+export interface PolicyDiffLine {
+  kind: PolicyDiffKind;
+  text: string;
+}
+
+/**
+ * Server-rendered preview of a *staged* policy (ADR 0006/0007). The
+ * editor posts its staged block set + column overrides as query params
+ * and the sidecar returns the canonical `policy_to_yaml` rendering plus
+ * the line diff against the current on-disk policy. The dashboard never
+ * re-implements the YAML grammar — `staged_yaml` is the byte-exact text
+ * `schemabrain policy apply` will parse.
+ */
+export interface PolicyPreviewResponse {
+  staged_yaml: string;
+  current_yaml: string;
+  diff_lines: readonly PolicyDiffLine[];
+  changed: boolean;
+  staged_block: readonly PIICategory[];
+  current_parse_error: string | null;
 }

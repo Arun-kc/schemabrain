@@ -1,12 +1,12 @@
 # SchemaBrain
 
-> The semantic firewall between AI agents and your database. Read-only, PII-aware, audit-evident — by architecture, not by trust.
+> The trust and intelligence layer between AI agents and your database. Read-only, PII-aware, audit-evident — by architecture, not by trust.
 
 SchemaBrain sits between LLM-powered agents and production Postgres, exposing 12 Pydantic-typed MCP tools (no `execute_query`, no `run_sql`, no path from an agent prompt to a write). Every column carries a typed PII tag that propagates through joins at compile time so `get_metric` refuses unsafe queries before the database is queried. Every tool call lands in a hash-chained audit log that `schemabrain audit verify` re-walks to detect tampering.
 
 ## Get started
 
-- [Introduction](https://github.com/Arun-kc/schemabrain/blob/main/docs/introduction.mdx): One-page elevator — what SchemaBrain is, the 4 firewall properties, 5-minute install ladder, host picker.
+- [Introduction](https://github.com/Arun-kc/schemabrain/blob/main/docs/introduction.mdx): One-page elevator — what SchemaBrain is, the 5-minute install ladder, and the host picker.
 - [Setup](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup.md): Activation wizard (recommended) — pick a host, run the wizard, ask the agent in ~60s.
 - [Docker install](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup/docker.md): Published image with the embedding model baked in (no first-run download).
 - [Manual flow](https://github.com/Arun-kc/schemabrain/blob/main/docs/setup/manual.md): Explicit `index` + `mine-queries`, Anthropic SDK demo, logs config, troubleshooter, MCP Inspector, SQL-validation ladder.
@@ -32,8 +32,8 @@ Five MCP-compatible hosts with first-class wiring. The activation wizard detects
 
 ## Compare
 
-- [vs. Querybear](https://github.com/Arun-kc/schemabrain/blob/main/docs/compare/querybear.md): Both projects sit between AI agents and your database. SchemaBrain is the firewall layer; Querybear is the analytics agent on top.
-- [vs. Anthropic Postgres MCP](https://github.com/Arun-kc/schemabrain/blob/main/docs/compare/anthropic-postgres-mcp.md): The Anthropic reference MCP server ships one tool that accepts arbitrary SQL. SchemaBrain refuses SQL at the type level.
+- [vs. Querybear](https://github.com/Arun-kc/schemabrain/blob/main/docs/compare/querybear.mdx): Both projects sit between AI agents and your database. SchemaBrain is the trust and intelligence layer; Querybear is the analytics agent on top.
+- [vs. Anthropic Postgres MCP](https://github.com/Arun-kc/schemabrain/blob/main/docs/compare/anthropic-postgres-mcp.mdx): The Anthropic reference MCP server ships one tool that accepts arbitrary SQL. SchemaBrain refuses SQL at the type level.
 
 ## MCP tool reference
 

@@ -1,0 +1,9 @@
+version: 1
+name: workspace_support_tickets
+description: Links each support ticket to the workspace that filed it.
+source_entity: support_ticket
+target_entity: workspace
+"on":
+  - source: workspace_id
+    target: id
+cardinality: many_to_one

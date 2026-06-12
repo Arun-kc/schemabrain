@@ -16,8 +16,8 @@ This page is the practical answer for ChatGPT users — for the broader transpor
 ## Install
 
 ```bash
-pip install schemabrain
-schemabrain init --host manual
+uvx schemabrain init --host manual
+# or install first: pipx install schemabrain (or: pip install schemabrain)
 ```
 
 The wizard prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 12-table SaaS fixture spins up in Docker; ~$0.03 to index). Press Enter to take the default (`2`).
@@ -29,7 +29,7 @@ It then introspects the schema, classifies columns for PII, optionally calls Ant
   "schemabrain": {
     "command": "uvx",
     "args": [
-      "schemabrain==0.5.0",
+      "schemabrain==0.6.0",
       "serve",
       "--url-env", "SCHEMABRAIN_DATABASE_URL",
       "--store-path", "/ABSOLUTE/PATH/TO/schemabrain.db"
@@ -59,10 +59,10 @@ If Codex's agent calls `list_entities` and reports `user`, `order`, etc., you're
 
 ## What you get
 
-- **12 MCP tools, none of which can write.** Full list in [`/mechanism/read-only`](../mechanism/read-only.md).
-- **PII-aware refusal at the `get_metric` boundary.** SchemaBrain defaults to blocking `credential`, `payment_card`, and `government_id`. Details in [`/mechanism/pii-taxonomy`](../mechanism/pii-taxonomy.md).
-- **Tamper-evident audit chain.** Every tool call lands in an append-only `mcp_audit` table with a SHA256 chain hash. Details in [`/mechanism/audit-chain`](../mechanism/audit-chain.md).
-- **Structured recovery envelopes.** When `get_metric` refuses or fails, the response is a typed contract Codex's agent can act on programmatically. Details in [`/mechanism/structured-recovery`](../mechanism/structured-recovery.md).
+- **12 MCP tools, none of which can write.** Full list in [`/mechanism/read-only`](/mechanism/read-only).
+- **PII-aware refusal at the `get_metric` boundary.** SchemaBrain defaults to blocking `credential`, `payment_card`, and `government_id`. Details in [`/mechanism/pii-taxonomy`](/mechanism/pii-taxonomy).
+- **Tamper-evident audit chain.** Every tool call lands in an append-only `mcp_audit` table with a SHA256 chain hash. Details in [`/mechanism/audit-chain`](/mechanism/audit-chain).
+- **Structured recovery envelopes.** When `get_metric` refuses or fails, the response is a typed contract Codex's agent can act on programmatically. Details in [`/mechanism/structured-recovery`](/mechanism/structured-recovery).
 
 ---
 

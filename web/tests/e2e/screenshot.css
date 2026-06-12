@@ -1,0 +1,25 @@
+/*
+ * Injected into every visual-regression screenshot (playwright.visual.config.ts
+ * `expect.toHaveScreenshot.stylePath`). Removes the two reliable sources of
+ * sub-pixel noise in full-page captures: scrollbars (their presence/width
+ * differs with content height) and the text caret. Playwright already freezes
+ * CSS animations/transitions via `animations: "disabled"`.
+ */
+
+/* Hide scrollbars without changing layout width. */
+* {
+  scrollbar-width: none !important;
+}
+*::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* Belt-and-suspenders: pin any keyframe animation to its first frame in case a
+ * surface adds one that Playwright's finite-animation handling can't settle. */
+*,
+*::before,
+*::after {
+  animation-play-state: paused !important;
+}

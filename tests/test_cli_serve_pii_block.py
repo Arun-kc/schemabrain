@@ -46,10 +46,9 @@ class TestPiiBlockArgparse:
         # {credential, payment_card, government_id} is active and the
         # operator gets a one-line stderr confirmation. A zero-config
         # operator should never silently fall through to "no PII
-        # enforcement" — the hero claim ("SQL firewall between AI
-        # agents and your production database") would not be met if
-        # `staff.password` / `customer.credit_card` / `staff.ssn`
-        # remained readable by default.
+        # enforcement" — the catastrophic-floor guarantee (one of the six
+        # safety proof-points) would not be met if `staff.password` /
+        # `customer.credit_card` / `staff.ssn` remained readable by default.
         from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES
 
         store_path = tmp_path / "store.db"

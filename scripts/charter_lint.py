@@ -224,10 +224,11 @@ _HAPPY_PATH_ARGS: dict[str, dict[str, object]] = {
 def lint_envelope_validation(server) -> list[Violation]:
     """Call each registered tool with a happy-path arg set and verify
     the structured response Pydantic-validates against `ToolResponse`
-    AND does not emit the v1.1 reserved `refused` status. `refused` is
-    type-contract-only in v1.1 — v2's `execute` / `validate_query`
-    are the first producers, and any v0.5 / v1 tool emitting it is
-    a charter violation.
+    AND does not emit `refused` on that BENIGN call. `refused` IS a live
+    status (`get_metric` emits it on the PII-block path), but a
+    happy-path call touches no PII — so a tool that refuses on benign
+    args signals a misconfiguration or an over-broad refusal, which is
+    the charter violation this guard catches.
     """
     violations: list[Violation] = []
     tools = asyncio.run(server.list_tools())
@@ -258,26 +259,28 @@ def lint_envelope_validation(server) -> list[Violation]:
                 )
             )
             continue
-        # Reserved-status guard: refused is v2-only, no current tool
-        # should emit it on any input. Caught here rather than at
-        # type-check time because the Status literal accepts it (the
-        # type contract) but the runtime contract forbids it for now.
+        # Happy-path refusal guard: a tool must not emit `refused` on a
+        # BENIGN arg set. `refused` is a live status (`get_metric` emits
+        # it on the PII-block path), but happy-path args touch no PII, so
+        # a refusal here signals a misconfiguration or an over-broad
+        # refusal. Caught at runtime because the Status literal accepts
+        # `refused` (the type contract) while this benign-call contract
+        # forbids it.
         #
-        # Coverage gap (acceptable for v1.1, address at v2): this
-        # check runs only against `_HAPPY_PATH_ARGS`. A future tool
-        # that emits `refused` on certain inputs (e.g., when PII
-        # heuristics match) would pass the lint with happy-path args.
-        # When v2 lands and real producers exist, add a refused-path
-        # probe with adversarial args.
+        # By design this probes only `_HAPPY_PATH_ARGS`, so it does NOT
+        # exercise the legitimate PII-refusal path (which needs a
+        # PII-touching group_by). That path is covered directly by
+        # tests/test_mcp_get_metric.py and tests/test_saas_store_envelopes.py.
         if structured.get("status") == "refused":
             violations.append(
                 Violation(
                     rule="reserved_status",
                     tool=tool.name,
                     detail=(
-                        "tool emitted status='refused'; this status is "
-                        "reserved in charter v1.1 for v2 refuse-before-execute "
-                        "primitives. No v0.5 / v1 tool may produce it."
+                        "tool emitted status='refused' on a HAPPY-PATH call; "
+                        "benign args touch no PII, so this signals a "
+                        "misconfiguration or an over-broad refusal. (refused is "
+                        "legitimate on the PII-block path, just not here.)"
                     ),
                 )
             )

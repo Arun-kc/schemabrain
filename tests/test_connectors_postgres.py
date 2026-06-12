@@ -243,3 +243,59 @@ class TestSourceConnectionIsReadOnly:
         with PostgresDataSource(seeded_pg_url) as ds:
             tables = list(ds.list_tables())
             assert len(tables) > 0
+
+
+class TestEstimatedRowCount:
+    """`estimated_row_count` reads `pg_class.reltuples`.
+
+    Uses a throwaway schema created through a separate writable engine
+    (the connector enforces read-only on its own connection) so the
+    assertions are deterministic and don't depend on autovacuum timing
+    against the shared seeded tables. The schema is dropped in `finally`.
+    """
+
+    def test_returns_analyzed_estimate(self, pg_url: str) -> None:
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(pg_url)
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("CREATE SCHEMA rowcount_probe"))
+                conn.execute(text("CREATE TABLE rowcount_probe.probe (id BIGINT)"))
+                conn.execute(
+                    text(
+                        "INSERT INTO rowcount_probe.probe "
+                        "SELECT g FROM generate_series(1, 500) AS g"
+                    )
+                )
+                # ANALYZE on a 500-row table samples every row, so
+                # reltuples lands exactly on 500 — no estimate fuzz.
+                conn.execute(text("ANALYZE rowcount_probe.probe"))
+            with PostgresDataSource(pg_url) as ds:
+                assert ds.estimated_row_count("probe", "rowcount_probe") == 500
+        finally:
+            with engine.begin() as conn:
+                conn.execute(text("DROP SCHEMA IF EXISTS rowcount_probe CASCADE"))
+            engine.dispose()
+
+    def test_returns_none_for_never_analyzed_table(self, pg_url: str) -> None:
+        # A freshly created, never-ANALYZE'd table has reltuples = -1 on
+        # PG14+ (the "unknown" sentinel) — must surface as None, not a
+        # fabricated 0.
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(pg_url)
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("CREATE SCHEMA rowcount_unanalyzed"))
+                conn.execute(text("CREATE TABLE rowcount_unanalyzed.fresh (id BIGINT)"))
+            with PostgresDataSource(pg_url) as ds:
+                assert ds.estimated_row_count("fresh", "rowcount_unanalyzed") is None
+        finally:
+            with engine.begin() as conn:
+                conn.execute(text("DROP SCHEMA IF EXISTS rowcount_unanalyzed CASCADE"))
+            engine.dispose()
+
+    def test_returns_none_for_missing_table(self, seeded_pg_url: str) -> None:
+        with PostgresDataSource(seeded_pg_url) as ds:
+            assert ds.estimated_row_count("does_not_exist", "public") is None

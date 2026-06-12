@@ -7,15 +7,15 @@ description: "60-second wiring: install SchemaBrain, run init — the wizard she
 
 > **60 seconds:** install SchemaBrain, run `schemabrain init`, the wizard shells out to `claude mcp add` for you. Restart Claude Code, ask about your database.
 
-SchemaBrain is the SQL firewall between Claude Code and your Postgres database — twelve read-only MCP tools, validated metrics, tamper-evident audit. Works on macOS, Linux, and Windows wherever the `claude` CLI is on PATH.
+SchemaBrain is the trust and intelligence layer between Claude Code and your Postgres database — twelve read-only MCP tools, validated metrics, tamper-evident audit. Works on macOS, Linux, and Windows wherever the `claude` CLI is on PATH.
 
 ---
 
 ## Install
 
 ```bash
-pip install schemabrain
-schemabrain init --host claude-code
+uvx schemabrain init --host claude-code
+# or install first: pipx install schemabrain (or: pip install schemabrain)
 ```
 
 The wizard prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 12-table SaaS fixture spins up in Docker; ~$0.03 to index). Press Enter to take the default (`2`).
@@ -26,7 +26,7 @@ The wizard then introspects the schema, classifies columns for PII, optionally c
 
 ```bash
 claude mcp list
-# schemabrain  uvx schemabrain==0.5.0 serve --url-env SCHEMABRAIN_DATABASE_URL --store-path ...
+# schemabrain  uvx schemabrain==0.6.0 serve --url-env SCHEMABRAIN_DATABASE_URL --store-path ...
 ```
 
 Then in a new Claude Code session:
@@ -47,7 +47,7 @@ If Claude calls `list_entities` and reports the entities curated during init, yo
 claude mcp add \
   -e SCHEMABRAIN_DATABASE_URL=postgresql+psycopg://user:pass@host:5432/db \
   schemabrain -- \
-  uvx schemabrain==0.5.0 serve --url-env SCHEMABRAIN_DATABASE_URL --store-path ./schemabrain.db
+  uvx schemabrain==0.6.0 serve --url-env SCHEMABRAIN_DATABASE_URL --store-path ./schemabrain.db
 ```
 
 The `--` separator is load-bearing — without it, Claude Code's parser would try to interpret `--url-env` as one of its own flags. The `SCHEMABRAIN_DATABASE_URL` env-var name is the wizard's default — it's prefixed to avoid colliding with any app-level `DATABASE_URL` you already have in the host's environment.
@@ -56,10 +56,10 @@ The `--` separator is load-bearing — without it, Claude Code's parser would tr
 
 ## What you get
 
-- **12 MCP tools, none of which can write.** Full list in [`/mechanism/read-only`](../mechanism/read-only.md).
-- **PII-aware refusal at the `get_metric` boundary.** Defaults block `credential`, `payment_card`, `government_id`. `--pii-block` **replaces** the set rather than extending it, so widen by listing the full target set, e.g. `--pii-block credential,payment_card,government_id,contact,health`. Details in [`/mechanism/pii-taxonomy`](../mechanism/pii-taxonomy.md).
-- **Tamper-evident audit chain.** Verify with `schemabrain audit verify`. Details in [`/mechanism/audit-chain`](../mechanism/audit-chain.md).
-- **Structured recovery envelopes.** Refusals and errors ship typed contracts Claude can act on programmatically. Details in [`/mechanism/structured-recovery`](../mechanism/structured-recovery.md).
+- **12 MCP tools, none of which can write.** Full list in [`/mechanism/read-only`](/mechanism/read-only).
+- **PII-aware refusal at the `get_metric` boundary.** Defaults block `credential`, `payment_card`, `government_id`. `--pii-block` **replaces** the set rather than extending it, so widen by listing the full target set, e.g. `--pii-block credential,payment_card,government_id,contact,health`. Details in [`/mechanism/pii-taxonomy`](/mechanism/pii-taxonomy).
+- **Tamper-evident audit chain.** Verify with `schemabrain audit verify`. Details in [`/mechanism/audit-chain`](/mechanism/audit-chain).
+- **Structured recovery envelopes.** Refusals and errors ship typed contracts Claude can act on programmatically. Details in [`/mechanism/structured-recovery`](/mechanism/structured-recovery).
 
 ## Sample interaction
 
@@ -69,7 +69,7 @@ The `--` separator is load-bearing — without it, Claude Code's parser would tr
 >
 > Enterprise leads with $379,620 in contracted revenue, ahead of Pro ($539) and Free ($54). Path fully resolved via FK constraints (`confidence: HIGH`).
 
-The trust signal comes from the v1.2 envelope — see [`/mechanism/trust-signal`](../mechanism/trust-signal.md) for how Claude knows whether to qualify its answer.
+The trust signal comes from the v1.2 envelope — see [`/mechanism/trust-signal`](/mechanism/trust-signal) for how Claude knows whether to qualify its answer.
 
 ---
 

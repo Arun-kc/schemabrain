@@ -15,8 +15,10 @@ sufficient to mask the name without requiring a cross-table simulation of
 
 from __future__ import annotations
 
+from schemabrain.core.entity import Entity
+from schemabrain.core.join import CanonicalJoin
 from schemabrain.core.store_protocol import Store
-from schemabrain.pii import PIICategory
+from schemabrain.pii import CATASTROPHIC_LEAK_CATEGORIES, PIICategory
 
 _FK_REDACTED_PLACEHOLDER = "<redacted_column>"
 
@@ -52,6 +54,54 @@ def redact_blocked_fk_columns(
         else:
             result.append(col)
     return result
+
+
+def render_join_on_clause(
+    join: CanonicalJoin,
+    *,
+    store: Store,
+    source_connection_id: str,
+    entity_by_name: dict[str, Entity],
+    effective_block: frozenset[PIICategory] = CATASTROPHIC_LEAK_CATEGORIES,
+) -> str:
+    """Render a canonical join's ``ON`` clause with catastrophic FK names masked.
+
+    The single shared composition of ``redact_blocked_fk_columns`` (applied to
+    BOTH endpoints) and ``render_on_clause`` (the canonical quoted grammar).
+    Used by the data dictionary (``datadict.aggregator``) and the dashboard
+    entity drilldown (``dashboard.sidecar``) so the two surfaces can never
+    render the same join's ON clause differently — same quoting, same
+    redaction policy.
+
+    Both endpoints are FK-guaranteed entities (``write_canonical_join``
+    enforces it at the SQLite layer), so the ``entity_by_name`` lookups
+    always resolve. ``effective_block`` defaults to the catastrophic-leak
+    set; callers may pass a wider policy.
+    """
+    # Imported lazily: `datadict`'s package __init__ eagerly imports the
+    # aggregator, which imports THIS module — a module-level import of the
+    # (pure) renderer would close that cycle. Deferring to call time breaks
+    # it; the cost is negligible (per-join, not a tight loop).
+    from schemabrain.datadict.render_common import render_on_clause
+
+    source_entity = entity_by_name[join.source_entity]
+    target_entity = entity_by_name[join.target_entity]
+    source_columns = redact_blocked_fk_columns(
+        [pair.source_column for pair in join.on],
+        qualified_table=source_entity.qualified_table,
+        store=store,
+        source_connection_id=source_connection_id,
+        effective_block=effective_block,
+    )
+    target_columns = redact_blocked_fk_columns(
+        [pair.target_column for pair in join.on],
+        qualified_table=target_entity.qualified_table,
+        store=store,
+        source_connection_id=source_connection_id,
+        effective_block=effective_block,
+    )
+    pairs = tuple(zip(source_columns, target_columns, strict=True))
+    return render_on_clause(pairs, source_alias=join.source_entity, target_alias=join.target_entity)
 
 
 def visible_allowed_columns(

@@ -85,7 +85,7 @@ Sleep 800ms
 Enter
 Type "python examples/anthropic_demo.py \\"
 Enter
-Type "    --source \"$DATABASE_URL\" \\"
+Type "    --url-env DATABASE_URL \\"
 Enter
 Type "    --store-path ./demo.db \\"
 Enter

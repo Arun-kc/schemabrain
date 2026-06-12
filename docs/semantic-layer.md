@@ -25,6 +25,76 @@ All three are agent-visible through dedicated MCP tools and compile to parameter
 
 The five physical-schema tools (`find_relevant_tables`, `describe_table`, `describe_column`, `suggest_joins`, `get_example_queries`) sit below them. Full reference: [the MCP tool reference](/reference/mcp-tools/overview).
 
+## Author from scratch (no LLM)
+
+Every definition is a small YAML file you can write by hand — the `suggest` commands in the sections below are just an LLM-assisted shortcut for producing the same files. To build a layer manually, follow three steps in order.
+
+**1. Index the source first.** Entities bind to physical tables, so the store must know the schema before any definition will apply:
+
+```bash
+schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+**2. Apply in dependency order.** The store enforces references between definitions — an entity must exist before a join or metric can point at it — so apply **entities → joins → metrics**:
+
+```bash
+schemabrain entities apply ./entities --url-env DATABASE_URL --store-path ./schemabrain.db
+schemabrain joins    apply ./joins    --url-env DATABASE_URL --store-path ./schemabrain.db
+schemabrain metrics  apply ./metrics  --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+A minimal three-file layer (`origin: manual` marks a hand-authored definition):
+
+```yaml
+# entities/order.yaml
+version: 1
+name: order
+description: A customer order.
+binding:
+  single_table: public.orders
+identity: id
+origin: manual
+```
+
+```yaml
+# metrics/total_revenue.yaml
+version: 1
+name: total_revenue
+description: Sum of order totals per requested grain.
+entity: order
+measure:
+  agg: sum
+  column: total_cents
+time_dimension: order.placed_at
+time_grains: [day, week, month]
+```
+
+```yaml
+# joins/order_customer.yaml
+version: 1
+name: order_customer
+description: Links each order to the customer who placed it.
+source_entity: order
+target_entity: customer
+"on":
+  - source: user_id
+    target: id
+cardinality: many_to_one
+```
+
+**3. Verify it resolves.** Column references — a metric's measure column, a join's `on` columns, an entity's `identity` — are validated when a query **compiles**, not when it applies. So `apply` accepting a file is not proof the layer works; confirm it end to end:
+
+```bash
+schemabrain entities list --store-path ./schemabrain.db   # are all three present?
+schemabrain metrics  list --store-path ./schemabrain.db
+```
+
+Then ask the agent (or call `get_metric`) for one real number. A typo in a column name surfaces here as an `unknown_name` envelope listing the valid columns — not as a silent success at apply time.
+
+<Warning>
+**Use the same database URL everywhere.** The store keys everything by a `source_connection_id` derived from the connection URL, so `schemabrain index` and every later `apply` / `serve` must pass the **same** URL — same host, port, and scheme. Index under `postgresql://…` and apply under `postgresql+psycopg://…` and they key to different stores: the second command reports an empty / unindexed source even though the tables are right there. Pick one URL form and pass it consistently.
+</Warning>
+
 ## Entities
 
 ```bash
@@ -108,7 +178,7 @@ Once applied, the agent-facing `resolve_join` MCP tool returns the canonical joi
 
 ## Import from dbt
 
-If you already curate entities in dbt, point SchemaBrain at your compiled `target/manifest.json` and dbt becomes the source of truth. Two entry points:
+If you already curate models in dbt, point SchemaBrain at your compiled `target/manifest.json` and import them as entities. Scope today: each dbt **model** with a single-column primary key becomes a SchemaBrain **entity** (dbt owns those rows), and dbt **metrics** import opt-in via `--include-metrics`. dbt **`relationships` tests import as canonical joins** (`origin="dbt_import"`); FK + query-log mining fills in any joins dbt doesn't declare. Two entry points:
 
 **During `init` (auto-detected or explicit):** the wizard's stage 1 auto-detects a manifest from `$DBT_PROJECT_DIR/target/manifest.json` or by walking up from the cwd looking for `dbt_project.yml`. When found, stages 3 (entities) and 4 (metrics) route through the importer instead of the LLM. Force a specific manifest with `--from-dbt PATH`:
 
@@ -116,20 +186,27 @@ If you already curate entities in dbt, point SchemaBrain at your compiled `targe
 schemabrain init --url-env DATABASE_URL --from-dbt /path/to/dbt/target/manifest.json
 ```
 
-Stage 5 (joins) still uses FK + query-log mining since dbt has no canonical-join concept.
+Stage 5 (joins) imports dbt `relationships` schema tests as canonical joins (each declared FK becomes a `source → target` join with `origin="dbt_import"`), and still mines FK constraints + the query log for joins dbt doesn't declare.
 
-**Standalone import:** if you've already run `init` (or want to import without going through the wizard), point the importer directly at a manifest:
+**Standalone import:** if you want to import without going through the wizard, point the importer directly at a manifest. The importer binds each model to a table in the local index, so the store must already be indexed for the **same** source URL:
 
 ```bash
-schemabrain import dbt path/to/target/manifest.json --url-env DATABASE_URL
+# Step 0 — index the schema first (skip if you already ran `init` against this URL).
+schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db   # add --no-enrich for a cost-free index
+
+# Step 1 — import the dbt models as entities.
+schemabrain import dbt path/to/target/manifest.json --url-env DATABASE_URL --store-path ./schemabrain.db
 ```
 
-Each dbt model with a single-column primary key lands as a SchemaBrain entity with `origin="dbt_import"`. Re-running is idempotent; entities that previously had `origin="manual"` or `"suggested"` flip to `"dbt_import"` (dbt takes ownership). Subsequent manual edits to dbt-owned rows are refused at the store boundary.
+Run `import dbt` against a store that was never indexed for this URL and it short-circuits with a guided *"run `schemabrain index` first"* error rather than failing per-model. The importer also needs the physical tables to exist (run `dbt run`, not just `dbt compile`) since it verifies each model against the live schema — even under `--dry-run`.
+
+Each dbt model with a single-column primary key lands as a SchemaBrain entity with `origin="dbt_import"`, and each `relationships` test between two imported models lands as a canonical join (`origin="dbt_import"`). Re-running is idempotent; entities that previously had `origin="manual"` or `"suggested"` flip to `"dbt_import"` (dbt takes ownership), and joins upsert by name. Subsequent manual edits to dbt-owned rows are refused at the store boundary. A relationship whose endpoint model isn't imported (or resolves to a self-join) is skipped and surfaced in the import summary.
 
 | Flag | Behaviour |
 |---|---|
-| _(default)_ | Plan + apply. |
-| `--dry-run` | Compute the plan; write nothing. |
+| _(default)_ | Plan + apply (entities only). |
+| `--include-metrics` | Also import `type=simple` dbt metrics (off by default). |
+| `--dry-run` | Compute the plan; write nothing (still connects to the live DB). |
 | `--report report.json` | Emit a CI-friendly JSON report. |
 
 A bundled fixture demonstrates the flow:

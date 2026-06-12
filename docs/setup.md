@@ -15,8 +15,8 @@ Two alternative install paths are documented separately:
 ## 1. Install + run the wizard
 
 ```bash
-pip install schemabrain
-schemabrain init
+uvx schemabrain init
+# or install first: pipx install schemabrain (or: pip install schemabrain)
 ```
 
 That's it. With no URL set, the wizard opens with a fork prompt:
@@ -48,10 +48,19 @@ SchemaBrain init — activation wizard
   [2/7] Index schema       ✓ 12 tables, 84 columns indexed
   [3/7] Curate entities    ✓ 12 entities applied (bundled demo pack)
   [4/7] Curate metrics     ✓ 5 metrics applied (bundled demo pack)
-  [5/7] Curate joins       ✓ 8 canonical joins applied (bundled demo pack)
+  [5/7] Curate joins       ✓ 11 canonical joins applied (bundled demo pack)
   [6/7] Wire host          ✓ wrote schemabrain entry to claude_desktop_config.json
-  [7/7] Next               ✓ restart your MCP host, then ask: "list the entities SchemaBrain knows about"
+  [7/7] Next               ✓ ready
+
+──────────────────────────────────────────────────────────────
+Your schema is now a knowledge graph.
+  See it:  schemabrain dashboard   → your schema as an interactive graph
+
+Restart your MCP host, then ask:
+> list the entities SchemaBrain knows about
 ```
+
+The wizard leads with the payoff: your schema is now a navigable knowledge graph you can open with `schemabrain dashboard` (needs the `[ui]` extra — `pip install 'schemabrain[ui]'`). Restarting the host is the second step, so the agent picks up the new tools.
 
 <Warning>
   **Connection scheme:** when you paste your own URL it **MUST** use `postgresql+psycopg://` (psycopg v3). A bare `postgresql://` is auto-rewritten with a one-line confirmation.
@@ -135,4 +144,4 @@ Per-host setup pages (~60-second wiring each):
 - [First 5 queries](/first-5-queries) — exercises each load-bearing firewall property in ~10 minutes.
 - `schemabrain eval` — score retrieval quality against the bundled SaaS golden set (or your own).
 - Re-run `schemabrain index` whenever your schema changes — it's idempotent and cache-aware.
-- For schemas with cryptic column names (`acct_dim_v3`, `pmt_fct_h`), pass `--enable-sonnet` at index time to route those to Claude Sonnet 4.6 for better decoding (~5x cost per affected column).
+- For schemas with cryptic column names (`acct_dim_v3`, `pmt_fct_h`), pass `--enable-sonnet` — on `schemabrain index` or `schemabrain init` — to route those columns to Claude Sonnet 4.6 for better decoding (~5x cost per affected column). Off by default (Haiku-only).

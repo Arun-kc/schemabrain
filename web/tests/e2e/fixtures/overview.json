@@ -1,0 +1,83 @@
+{
+  "source_connection_id": "demo-source",
+  "source": {
+    "label": "demo-source",
+    "tables": 2,
+    "last_indexed_at": 1781012680
+  },
+  "entities": {
+    "count": 2,
+    "catastrophic_count": 2,
+    "by_group": {
+      "identity": 1,
+      "billing": 1,
+      "activity": 0,
+      "other": 0
+    },
+    "confidence": {
+      "high": 0,
+      "medium": 0,
+      "low": 0,
+      "unrated": 2
+    }
+  },
+  "protection": {
+    "catastrophic": 2,
+    "policy_blocked": 0,
+    "allowed": 1,
+    "columns": 3
+  },
+  "freshness": {
+    "fresh": true,
+    "change_count": 0,
+    "risk": {
+      "high": 0,
+      "med": 0,
+      "low": 0
+    },
+    "last_enriched": null
+  },
+  "refusals": {
+    "count_24h": 2,
+    "recent": [
+      {
+        "tool": "describe_entity",
+        "category": "credential",
+        "occurred_at": 1781012680.835892
+      },
+      {
+        "tool": "get_metric",
+        "category": "payment_card",
+        "occurred_at": 1781012680.835834
+      }
+    ]
+  },
+  "audit": {
+    "total": 3,
+    "recent": [
+      {
+        "tool": "describe_entity",
+        "seq": 3,
+        "refused": true,
+        "summary": "pii_blocked",
+        "occurred_at": 1781012680.835892
+      },
+      {
+        "tool": "get_metric",
+        "seq": 2,
+        "refused": true,
+        "summary": "pii_blocked",
+        "occurred_at": 1781012680.835834
+      }
+    ]
+  },
+  "semantic": {
+    "metrics_count": 2,
+    "joins_count": 1,
+    "mined_count": 0,
+    "metric_names": [
+      "total_revenue",
+      "user_count"
+    ]
+  }
+}

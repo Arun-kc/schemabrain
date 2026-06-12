@@ -142,6 +142,150 @@ class TestWriteReadRoundTrip:
         assert got is not None
         assert got.origin == origin
 
+    @pytest.mark.parametrize("group", ["identity", "billing", "activity", "other"])
+    def test_group_round_trips_through_store(self, tmp_path: Path, group: str) -> None:
+        # v15: the cosmetic `group` column survives the write_entity →
+        # get_entity round-trip across every enum value (the wiring spans
+        # the INSERT, the ON CONFLICT update, the SELECT, and
+        # `_row_to_entity` — this pins all four in lock-step).
+        with SQLiteStore(tmp_path / "store.db") as store:
+            store.write_table(_users_table(), source_connection_id=SOURCE_A)
+            entity = Entity(
+                name="customer",
+                description="A shopper",
+                binding=SingleTableBinding(qualified_table="public.users"),
+                identity="id",
+                group=group,  # type: ignore[arg-type]
+            )
+            store.write_entity(entity, source_connection_id=SOURCE_A)
+            got = store.get_entity("customer", source_connection_id=SOURCE_A)
+        assert got is not None
+        assert got.group == group
+
+    def test_store_does_not_enforce_group_enum_at_sql_layer(self, tmp_path: Path) -> None:
+        # `group` is enforced by `Entity.__post_init__`, NOT by a SQL
+        # CHECK (it's a cosmetic, growth-expected enum on a single-writer
+        # cache — see core/entity.py). This pins that decision: a raw
+        # INSERT bypassing `Entity` with an out-of-enum group is accepted
+        # by the store. If a future change re-adds a CHECK, this fails
+        # loudly and the author has to reckon with the design note.
+        with SQLiteStore(tmp_path / "store.db") as store:
+            store.write_table(_users_table(), source_connection_id=SOURCE_A)
+            conn = store._require_conn()
+            conn.execute(
+                "INSERT INTO entities (source_connection_id, name, description, "
+                'binding_schema, binding_table, identity, origin, "group", '
+                "created_at, updated_at) "
+                "VALUES (?, ?, '', ?, ?, ?, 'manual', 'not_a_real_group', 0, 0)",
+                (SOURCE_A, "raw_row", "public", "users", "id"),
+            )
+            conn.commit()
+            stored_group = conn.execute(
+                'SELECT "group" FROM entities WHERE name = ?', ("raw_row",)
+            ).fetchone()["group"]
+        # The store accepted the out-of-enum value — enforcement lives in
+        # the application layer, not the database.
+        assert stored_group == "not_a_real_group"
+
+
+class TestBindConfidenceRationaleRoundTrip:
+    """v15: the model self-rating columns survive write → read.
+
+    Pins the four-point wiring (INSERT, ON CONFLICT update, SELECT,
+    `_row_to_entity`) for `bind_confidence` + `rationale`, the same span
+    the `group` round-trip test guards.
+    """
+
+    @pytest.mark.parametrize("level", ["high", "medium", "low"])
+    def test_bind_confidence_round_trips(self, tmp_path: Path, level: str) -> None:
+        with SQLiteStore(tmp_path / "store.db") as store:
+            store.write_table(_users_table(), source_connection_id=SOURCE_A)
+            entity = Entity(
+                name="customer",
+                description="A shopper",
+                binding=SingleTableBinding(qualified_table="public.users"),
+                identity="id",
+                origin="suggested",
+                bind_confidence=level,  # type: ignore[arg-type]
+                rationale="sole table with a customer-shaped identity",
+            )
+            store.write_entity(entity, source_connection_id=SOURCE_A)
+            got = store.get_entity("customer", source_connection_id=SOURCE_A)
+        assert got == entity
+        assert got is not None
+        assert got.bind_confidence == level
+        assert got.rationale == "sole table with a customer-shaped identity"
+
+    def test_null_confidence_and_empty_rationale_round_trip(self, tmp_path: Path) -> None:
+        # Hand-authored entities never set these — NULL / '' must survive
+        # so a manual entity is value-equal across the round-trip.
+        with SQLiteStore(tmp_path / "store.db") as store:
+            store.write_table(_users_table(), source_connection_id=SOURCE_A)
+            entity = _customer_entity()
+            store.write_entity(entity, source_connection_id=SOURCE_A)
+            got = store.get_entity("customer", source_connection_id=SOURCE_A)
+        assert got == entity
+        assert got is not None
+        assert got.bind_confidence is None
+        assert got.rationale == ""
+
+    def test_upsert_overwrites_confidence_and_rationale(self, tmp_path: Path) -> None:
+        # A re-suggest that lands a new rating must replace the prior one,
+        # not keep a stale value — the ON CONFLICT update has to set both.
+        with SQLiteStore(tmp_path / "store.db") as store:
+            store.write_table(_users_table(), source_connection_id=SOURCE_A)
+            store.write_entity(
+                Entity(
+                    name="customer",
+                    description="A shopper",
+                    binding=SingleTableBinding(qualified_table="public.users"),
+                    identity="id",
+                    origin="suggested",
+                    bind_confidence="high",
+                    rationale="first pass",
+                ),
+                source_connection_id=SOURCE_A,
+            )
+            store.write_entity(
+                Entity(
+                    name="customer",
+                    description="A shopper",
+                    binding=SingleTableBinding(qualified_table="public.users"),
+                    identity="id",
+                    origin="suggested",
+                    bind_confidence="low",
+                    rationale="second pass, weaker signal",
+                ),
+                source_connection_id=SOURCE_A,
+            )
+            got = store.get_entity("customer", source_connection_id=SOURCE_A)
+        assert got is not None
+        assert got.bind_confidence == "low"
+        assert got.rationale == "second pass, weaker signal"
+
+    def test_confidence_round_trips_through_list_entities(self, tmp_path: Path) -> None:
+        # list_entities shares `_row_to_entity` but has its own SELECT —
+        # pin that it hydrates the v15 columns too (the sidecar entities
+        # rollup reads confidence off this path).
+        with SQLiteStore(tmp_path / "store.db") as store:
+            store.write_table(_users_table(), source_connection_id=SOURCE_A)
+            store.write_entity(
+                Entity(
+                    name="customer",
+                    description="A shopper",
+                    binding=SingleTableBinding(qualified_table="public.users"),
+                    identity="id",
+                    origin="suggested",
+                    bind_confidence="medium",
+                    rationale="ok",
+                ),
+                source_connection_id=SOURCE_A,
+            )
+            listed = store.list_entities(source_connection_id=SOURCE_A)
+        assert len(listed) == 1
+        assert listed[0].bind_confidence == "medium"
+        assert listed[0].rationale == "ok"
+
 
 # ----- list_entities ---------------------------------------------------------
 

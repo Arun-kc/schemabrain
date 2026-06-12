@@ -72,6 +72,7 @@ __all__ = [
     "DEMO_FIXTURE_BUNDLED_NAME",
     "DEMO_FIXTURE_LOAD_COMMAND",
     "detect_docker",
+    "ensure_demo_postgres",
     "prompt_for_init_setup",
 ]
 
@@ -627,6 +628,15 @@ def _detect_stale_demo_fixture(*, url: str) -> bool:
             engine.dispose()
     except SQLAlchemyError:
         return False
+
+
+def ensure_demo_postgres(*, console: Console) -> bool:
+    """Public entry point: provision (or reuse) the `sb-demo-pg` container
+    with the bundled SaaS fixture loaded, idempotently. Returns True iff
+    the demo Postgres is ready at `DEMO_DATABASE_URL`. Thin stable wrapper
+    over the auto-docker orchestration so callers (e.g. `schemabrain demo`
+    host-wiring) don't reach into the private helper."""
+    return _try_auto_docker_demo(console=console)
 
 
 def _try_auto_docker_demo(*, console: Console) -> bool:

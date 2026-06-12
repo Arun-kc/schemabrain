@@ -7,7 +7,7 @@ description: "Procurement-friendly summary of SchemaBrain's security architectur
 
 > Procurement-friendly summary of SchemaBrain's security architecture, threat model, and disclosure process. For the full attack-surface walk-through with code citations, see [`docs/threat-model.md`](threat-model.md).
 
-SchemaBrain is the SQL firewall between AI agents and your production Postgres database. This document is the summary your security team will want to read before approving the package.
+SchemaBrain is the trust and intelligence layer between AI agents and your production Postgres database. This document is the summary your security team will want to read before approving the package.
 
 ---
 
@@ -31,19 +31,19 @@ Detail in [`docs/mechanism/`](mechanism/); summarized for security review:
 
 ### 1. Architectural read-only
 
-The MCP surface exposes [12 tools](mechanism/read-only.md), **none of which accept SQL**. There is no `execute_query`, no `run_sql`, no `validate_query`. Agents emit structured tool calls; SchemaBrain compiles parameterized SQL from operator-validated definitions. Belt-and-suspenders: `default_transaction_read_only=on` is set at the session level on every connection ([`connectors/postgres.py`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/connectors/postgres.py) and `cli.py` at both the serve-side metric executor and the query-log miner — [source](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/cli.py)), and `NullPool` eliminates the connection-reuse pollution surface across all three database engines in the binary.
+The MCP surface exposes [12 tools](/mechanism/read-only), **none of which accept SQL**. There is no `execute_query`, no `run_sql`, no `validate_query`. Agents emit structured tool calls; SchemaBrain compiles parameterized SQL from operator-validated definitions. Belt-and-suspenders: `default_transaction_read_only=on` is set at the session level on every connection ([`connectors/postgres.py`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/connectors/postgres.py) and `cli.py` at both the serve-side metric executor and the query-log miner — [source](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/cli.py)), and `NullPool` eliminates the connection-reuse pollution surface across all three database engines in the binary.
 
 ### 2. PII propagation at the metric compiler
 
-[12 categories](mechanism/pii-taxonomy.md) grounded in GDPR / CCPA / HIPAA / PCI DSS. Each column is tagged at index time. Tags propagate through **five surfaces** at compile time — measure columns (including composite-expression operands), time-dimension columns, `group_by` columns, filter predicates, and `JOIN ON` pairs. A `get_metric` whose path touches a blocked category refuses *before* the database is queried. Three catastrophic-leak categories (`credential`, `payment_card`, `government_id`) are blocked by default on zero-config install.
+[12 categories](/mechanism/pii-taxonomy) grounded in GDPR / CCPA / HIPAA / PCI DSS. Each column is tagged at index time. Tags propagate through **five surfaces** at compile time — measure columns (including composite-expression operands), time-dimension columns, `group_by` columns, filter predicates, and `JOIN ON` pairs. A `get_metric` whose path touches a blocked category refuses *before* the database is queried. Three catastrophic-leak categories (`credential`, `payment_card`, `government_id`) are blocked by default on zero-config install. Grouping BY a tagged column is refused as **row-level disclosure** regardless of policy — the group keys would be the raw values (`count(*) ... GROUP BY email` is `SELECT DISTINCT email` in disguise), so it is blocked on the same rule as `MIN`/`MAX` over a tagged column.
 
 ### 3. Tamper-evident audit chain
 
-Every tool call writes a row to an append-only [`mcp_audit`](mechanism/audit-chain.md) SQLite table. Each row carries `chain_hash[N] = sha256(chain_hash[N-1] || canonical(row[N]))`. SQL triggers forbid `UPDATE`/`DELETE` at the database layer ([`audit/ddl.py:64`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/audit/ddl.py), [`:71`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/audit/ddl.py)). `schemabrain audit verify` re-walks the chain; exit codes are 0 (intact), 1 (mismatch found), 2 (operational error).
+Every tool call writes a row to an append-only [`mcp_audit`](/mechanism/audit-chain) SQLite table. Each row carries `chain_hash[N] = sha256(chain_hash[N-1] || canonical(row[N]))`. SQL triggers forbid `UPDATE`/`DELETE` at the database layer ([`audit/ddl.py:64`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/audit/ddl.py), [`:71`](https://github.com/Arun-kc/schemabrain/blob/main/schemabrain/audit/ddl.py)). `schemabrain audit verify` re-walks the chain; exit codes are 0 (intact), 1 (mismatch found), 2 (operational error).
 
 ### 4. Structured recovery envelopes
 
-[Typed refusal contracts](mechanism/structured-recovery.md) — the agent gets back `recovery.suggested_tool` and `recovery.suggested_args` rather than English error strings. Closed `ErrorKind` Literal of 26 values means audit pipelines can switch on `error.kind` without parsing. The refusal envelope surfaces only the *blocked* category set, not the *attempted* set — closes a probe-oracle attack where iterative `group_by` calls could reconstruct the PII tagging in O(columns) calls.
+[Typed refusal contracts](/mechanism/structured-recovery) — the agent gets back `recovery.suggested_tool` and `recovery.suggested_args` rather than English error strings. Closed `ErrorKind` Literal of 26 values means audit pipelines can switch on `error.kind` without parsing. The refusal envelope surfaces only the *blocked* category set, not the *attempted* set — closes a probe-oracle attack where iterative `group_by` calls could reconstruct the PII tagging in O(columns) calls.
 
 ---
 
@@ -66,7 +66,7 @@ The full version with code citations is at [`docs/threat-model.md`](threat-model
 | Threat | Mitigation |
 |---|---|
 | Column comment overrides the enrichment system prompt | Structured JSON delimiters; descriptions are data, not code; operator can re-run `index` to overwrite |
-| Sample value contains exfiltration payload | PII-shaped values (email / SSN / credit card) redacted before reaching the prompt; generic injection payloads survive (this is a PII filter, not an injection filter) |
+| Sample value contains exfiltration payload | Two layers: email / SSN / credit-card-shaped values are redacted in place before samples reach the store, and both sample values and their shape signatures are dropped *entirely* from the enrichment prompt for any column the name-based PII classifier flags (so names, addresses, phones, and non-US IDs whose **column name** signals PII never reach the prompt). Residual gaps: free-text columns with generic names (`notes`, `bio`) classify public, and generic non-PII injection payloads in a public column's samples still survive (this is a PII filter, not an injection filter) |
 | Adversarial column name biases the LLM | Defense-in-depth via the system prompt's structured output requirement |
 
 **Residual risk:** an adversary controlling column comments can probably bias enrichment description tone. Blast radius bounded by what free-text English can express.

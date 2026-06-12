@@ -836,18 +836,22 @@ def _find_canonical_chain(
 
 
 def _structural_shortest_paths(
-    *, graph: _JoinGraph, anchor: str, target: str
+    *, graph: _JoinGraph, anchor: str, target: str, max_hops: int = 6
 ) -> list[_StructuralPath]:
     """BFS over entity pairs (collapsing parallel canonicals between
     the same pair into a single edge). Returns all shortest structural
-    paths from `anchor` to `target`. Empty list if no path within the
-    hop cap.
+    paths from `anchor` to `target`. Empty list if no path within
+    `max_hops`.
 
-    Safety cap matches the `suggest_joins` MCP tool default of 6 — a
+    `max_hops` defaults to 6 — matching the `suggest_joins` MCP tool
+    default — because the metric resolver emits SQL from the result and a
     corrupted store could in theory present a densely connected
-    adversarial graph; the cap bounds work even if it does.
+    adversarial graph; the cap bounds work for that SQL-emitting path. The
+    read-only graph projection runs over the operator's OWN persisted joins
+    and never emits SQL, so its callers (`_path_from_graph`) pass a bound
+    of the entity count instead — the true upper limit of a simple path —
+    so a deep schema's diameter is never silently truncated (ADR 0010).
     """
-    max_hops = 6
     frontier: list[tuple[str, _StructuralPath]] = [(anchor, ())]
     visited: set[str] = {anchor}
     found_paths: list[_StructuralPath] = []
@@ -947,6 +951,98 @@ def _render_structural_path_as_canonical_sequence(
             )
         names.append(canonicals_on_hop[0])
     return tuple(names)
+
+
+# ----- public canonical-path builder (graph projection / ADR 0010) -----------
+#
+# A read-only projection of the canonical-join graph, distinct from the
+# metric compiler in one load-bearing way: it NEVER raises. The metric
+# path surfaces four refusal classes (unreachable / ambiguous-path /
+# unknown-via / ambiguous-join) so the agent can be told *why* a metric
+# can't compile. The graph read-model has no `via=` disambiguation
+# surface and no caller to refuse — an absent, equal, or unreachable
+# endpoint is simply "no path" (empty). Parallel canonicals on a hop
+# collapse to the first-alphabetical name (mirroring
+# `_render_structural_path_as_canonical_sequence`), never AmbiguousJoinError.
+# These functions reuse `_build_join_graph` / `_structural_shortest_paths`
+# directly and carry ZERO `get_metric` / `resolve_metric_plan` dependency.
+
+
+@dataclasses.dataclass(frozen=True)
+class CanonicalPath:
+    """An ordered walk over canonical joins, anchor..target inclusive.
+
+    `nodes` is the entity-name sequence; `edges` is the parallel
+    canonical-join-name sequence (`len(edges) == len(nodes) - 1` for a
+    non-empty path). Both are empty for "no path".
+    """
+
+    nodes: tuple[str, ...]
+    edges: tuple[str, ...]
+
+    @property
+    def hops(self) -> int:
+        return len(self.edges)
+
+
+_EMPTY_PATH = CanonicalPath(nodes=(), edges=())
+
+
+def _path_from_graph(*, graph: _JoinGraph, anchor: str, target: str) -> CanonicalPath:
+    """Shortest canonical path anchor→target over a pre-built graph.
+
+    Deterministic (BFS order + first-alphabetical canonical per hop) and
+    non-raising. Empty when either endpoint is absent, they are equal, or
+    no path exists within the structural hop cap.
+    """
+    if anchor == target or anchor not in graph or target not in graph:
+        return _EMPTY_PATH
+    # The read-model walks the operator's own finite persisted joins, not an
+    # adversarial SQL-emitting input — bound the BFS by the entity count (the
+    # longest a simple path can be) so a deep schema's spine is never silently
+    # truncated at the metric resolver's 6-hop default (ADR 0010).
+    paths = _structural_shortest_paths(
+        graph=graph, anchor=anchor, target=target, max_hops=len(graph)
+    )
+    if not paths:
+        return _EMPTY_PATH
+    chosen = paths[0]  # BFS order is deterministic; ties already resolved upstream.
+    nodes = (chosen[0][0], *(neighbor for _predecessor, neighbor in chosen))
+    edges = _render_structural_path_as_canonical_sequence(path=chosen, graph=graph)
+    return CanonicalPath(nodes=nodes, edges=edges)
+
+
+def build_canonical_path(*, joins: list[CanonicalJoin], anchor: str, target: str) -> CanonicalPath:
+    """Public, metric-free shortest canonical path between two entities.
+
+    Reuses the resolver's structural BFS. NEVER raises: returns an empty
+    `CanonicalPath` when an endpoint is absent / the endpoints are equal /
+    no path exists. Parallel canonicals on a hop collapse to the
+    first-alphabetical join name.
+    """
+    return _path_from_graph(graph=_build_join_graph(joins), anchor=anchor, target=target)
+
+
+def longest_canonical_path(*, joins: list[CanonicalJoin]) -> CanonicalPath:
+    """The graph's diameter — its longest shortest path.
+
+    The single honest "canonical path" of a whole schema: the longest
+    canonical-join chain present. Deterministic — endpoints are scanned in
+    sorted order and ties (equal hop count) break on the lexicographically
+    smaller node sequence. Empty when fewer than two entities are
+    connected.
+    """
+    graph = _build_join_graph(joins)
+    entities = sorted(graph)
+    best = _EMPTY_PATH
+    for i, anchor in enumerate(entities):
+        for target in entities[i + 1 :]:
+            candidate = _path_from_graph(graph=graph, anchor=anchor, target=target)
+            if candidate.hops > best.hops or (
+                candidate.hops == best.hops and candidate.hops > 0 and candidate.nodes < best.nodes
+            ):
+                best = candidate
+    return best
 
 
 # ----- helpers (unchanged from v1) -------------------------------------------

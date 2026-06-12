@@ -1,11 +1,12 @@
 """FastMCP server wiring for SchemaBrain.
 
 `build_server(store, source_connection_id, embedder)` returns a
-configured `FastMCP` instance with ten tools registered. Five
+configured `FastMCP` instance with twelve tools registered. Six
 physical-schema tools: `find_relevant_tables`, `describe_table`,
-`describe_column`, `suggest_joins`, `get_example_queries`. Five
-semantic-layer tools: `find_relevant_entities`, `list_entities`,
-`describe_entity`, `resolve_join`, `get_metric`.
+`describe_column`, `suggest_joins`, `list_joins`,
+`get_example_queries`. Six semantic-layer tools:
+`find_relevant_entities`, `list_entities`, `describe_entity`,
+`resolve_join`, `list_metrics`, `get_metric`.
 
 This module is the *boundary* between SchemaBrain's pure-function tool
 implementations (in `mcp/*.py`) and the MCP transport. Two boundary
@@ -175,16 +176,23 @@ def _server_icons() -> list[Any]:
 
 
 _SERVER_INSTRUCTIONS = (
-    "SchemaBrain — a SQL firewall between AI agents and a Postgres "
-    "database. You never write raw SQL; you call these 12 read-only "
+    "SchemaBrain — the trust and intelligence layer between AI agents and "
+    "a Postgres database. You never write raw SQL; you call these 12 read-only "
     "tools to learn the schema and request validated aggregations. "
     "The firewall enforces PII and policy ONLY through these tools — "
-    "raw SQL you emit in your response text bypasses it. If a tool "
-    "errors, follow the `recovery.suggested_tool` hint in the error "
-    "envelope; if no hint, fall back to `list_entities` + "
-    "`describe_entity` + `get_metric`. NEVER write SQL in your "
-    "response to work around a tool error — that defeats the "
-    "firewall the operator deployed. "
+    "any SQL you emit in your response text bypasses it. SchemaBrain "
+    "intentionally exposes NO raw-row access: a request to list or "
+    "export individual rows (e.g. every user's email) is out of scope "
+    "BY DESIGN, not a missing feature — say so as the firewall's "
+    "boundary, and NEVER write, or offer to help the user write, SQL "
+    "to retrieve data a tool refused or does not expose; that defeats "
+    "the firewall the operator deployed. The firewall — not your own "
+    "judgment — is the PII boundary: compute what the user asks via "
+    "`get_metric` and report the returned envelope verbatim, including "
+    "a `pii_blocked` refusal; do not pre-emptively decline a computable "
+    "aggregation on your own. If a tool errors, follow the "
+    "`recovery.suggested_tool` hint in the error envelope; if no hint, "
+    "fall back to `list_entities` + `describe_entity` + `get_metric`. "
     "When the user asks about their data: call "
     "`find_relevant_entities(query)` to find what's available, then "
     "`describe_entity(name)` for fields/joins/PII tags, then "
@@ -761,10 +769,18 @@ def build_server(
             )
         except Exception as exc:
             return _wrap_internal_error(exc)
+        # Physical-schema introspection: the table shape is read straight
+        # from the live information_schema, so HIGH is legitimate. Charter
+        # v1.2 — emit `provenance.source="schema"` so the agent knows the
+        # HIGH comes from direct introspection, not an LLM guess. Direct
+        # reads have no 2D `(inference_method, validation_state)` signal,
+        # so those stay None rather than being forced into an ill-fitting
+        # InferenceMethod.
         return ToolResponse[TableDescription](
             status="success",
             data=table,
             confidence="HIGH",
+            provenance=Provenance(source="schema"),
             follow_up_hints=["describe_column", "suggest_joins"],
         )
 
@@ -856,10 +872,15 @@ def build_server(
             )
         except Exception as exc:
             return _wrap_internal_error(exc)
+        # Same physical-schema introspection contract as describe_table:
+        # column detail is read directly from information_schema, so HIGH
+        # is legitimate and `provenance.source="schema"` makes the source
+        # explicit. No derived 2D signal — those fields stay None.
         return ToolResponse[ColumnDetail](
             status="success",
             data=column,
             confidence="HIGH",
+            provenance=Provenance(source="schema"),
             follow_up_hints=["describe_table"],
         )
 
@@ -923,10 +944,17 @@ def build_server(
                 confidence=None,
                 follow_up_hints=["describe_table"],
             )
+        # Example queries are mined from observed SQL (`pg_stat_statements`),
+        # not derived from declared constraints — Charter v1.2 derives the
+        # confidence from the 2D signal `(observed_in_query_log, applied)`
+        # → MEDIUM, rather than the pre-1.2 hardcoded HIGH that conflated
+        # query-log-mined SQL with FK-derived facts. Provenance carries the
+        # same signal so the agent can tell the two apart.
         return ToolResponse[ExampleQueriesResult](
             status="success",
             data=result,
-            confidence="HIGH",
+            confidence=derive_confidence("observed_in_query_log", "applied"),
+            provenance=_provenance_from_signal("observed_in_query_log", "applied"),
             follow_up_hints=["describe_table"],
         )
 
@@ -1571,6 +1599,11 @@ def build_server(
                         suggested_args=recovery_args,
                     ),
                     pii_categories=exc.blocked_categories,
+                    # Attribute the refusal to the metric's entity so the
+                    # audit writer can persist it (non-canonically) and the
+                    # graph surface can light the refusal hotspot. None only
+                    # for callers that bypass `get_metric_impl`.
+                    anchor_entity=exc.anchor_entity,
                 ),
             )
         except UnknownMetricError as exc:

@@ -239,9 +239,11 @@ class TestLintEnvelopeValidation:
             ToolResponse.model_validate({"foo": "bar"})
 
     def test_reserved_refused_status_is_violation(self, lint: ModuleType) -> None:
-        """v1.1 reserves `refused` for v2 producers. A current tool
-        emitting it is a charter violation caught by the lint's
-        reserved_status rule."""
+        """A tool emitting `refused` on a HAPPY-PATH (benign) call is a
+        charter violation caught by the lint's reserved_status rule:
+        benign args touch no PII, so a refusal signals misconfiguration.
+        (`refused` is legitimate on the real PII-block path — see
+        test_mcp_get_metric.py — just not on benign args.)"""
         synthetic = _build_server_emitting_refused()
         violations = lint.lint_envelope_validation(synthetic)
         assert any(v.rule == "reserved_status" for v in violations), (

@@ -217,6 +217,13 @@ class WizardConfig:
     # hatch for Apple Silicon + Python 3.12+, where onnxruntime
     # (transitive via fastembed) has no wheel.
     no_embed: bool = False
+    # When True, the index stage routes cryptic (heavily-abbreviated)
+    # column names to Sonnet 4.6 instead of Haiku 4.5 during enrichment
+    # — same opt-in as `schemabrain index --enable-sonnet`. Off by
+    # default (Haiku-only) to keep automatic runs cheap; only the small
+    # subset of columns `routing.is_cryptic` flags pay the ~5x Sonnet
+    # cost. No effect unless `enrich` is also on.
+    enable_sonnet: bool = False
     from_dbt: Path | None = None
     skip_llm_confirm: bool = False
     # Default `--pii-block` categories written into the host snippet.
@@ -838,7 +845,10 @@ def _run_indexer(*, cfg: WizardConfig, source_id: str, api_key: str | None) -> I
     """
     from schemabrain.connectors.postgres import PostgresDataSource
     from schemabrain.core.store import SQLiteStore
-    from schemabrain.enrichment.anthropic_client import anthropic_haiku_45_client
+    from schemabrain.enrichment.anthropic_client import (
+        anthropic_haiku_45_client,
+        anthropic_sonnet_46_client,
+    )
     from schemabrain.enrichment.embeddings import fastembed_default
     from schemabrain.enrichment.pipeline import EnrichmentPipeline
     from schemabrain.indexer import NullReporter, index
@@ -865,7 +875,12 @@ def _run_indexer(*, cfg: WizardConfig, source_id: str, api_key: str | None) -> I
             )
             pipeline = EnrichmentPipeline(
                 client=anthropic_haiku_45_client(api_key=api_key),
-                cryptic_client=None,
+                # Opt-in two-tier routing: cryptic column names escalate
+                # to Sonnet 4.6 only when the operator passed
+                # `init --enable-sonnet`. Default stays Haiku-only.
+                cryptic_client=(
+                    anthropic_sonnet_46_client(api_key=api_key) if cfg.enable_sonnet else None
+                ),
                 max_cost_usd=enrich_cap,
                 default_concurrency=_WIZARD_INDEX_CONCURRENCY,
                 cryptic_concurrency=_WIZARD_INDEX_CRYPTIC_CONCURRENCY,
@@ -1657,19 +1672,36 @@ def _run_entities_from_dbt(
 
 
 def _is_demo_source(source_url: str) -> bool:
-    """Return True iff `source_url` matches the wizard's pinned demo URL.
+    """Return True iff `source_url` is genuinely the bundled SaaS demo.
 
-    Uses a string-suffix match against the host/port/db tail of
-    `DEMO_DATABASE_URL` so the silent `+psycopg` rewrite (applied to
-    bare `postgresql://` URLs in cli.py before they reach the wizard)
-    doesn't break the comparison. Both `postgresql://` and
-    `postgresql+psycopg://` variants of the demo URL share the
-    `@localhost:5433/postgres` tail.
+    Two conditions must hold:
+
+    1. The URL tail matches `DEMO_DATABASE_URL`. We suffix-match the
+       `postgres:local@localhost:5433/postgres` tail (creds included) so
+       the silent `+psycopg` rewrite — applied to bare `postgresql://`
+       URLs in cli.py before they reach the wizard — doesn't break the
+       comparison. A user's own database has a different tail and
+       short-circuits here, paying zero probe cost.
+    2. The saas-specific `public.workspaces` table is actually present.
+       The repo's own `docker-compose.yml` binds an *ecommerce* fixture
+       to the SAME host:port:db:creds, so the tail match alone is not
+       proof of provenance. `_detect_stale_demo_fixture` returns True
+       exactly when public tables exist but `workspaces` does not (the
+       ecommerce case); treating that as the demo would apply the
+       bundled SaaS YAML pack against ecommerce tables and silently
+       break every entity bind. Probe failure / a fresh-but-empty
+       container both degrade to "not stale", preserving the demo path
+       for the pinned URL.
     """
-    from schemabrain.setup.setup_stage import DEMO_DATABASE_URL
+    from schemabrain.setup.setup_stage import (
+        DEMO_DATABASE_URL,
+        _detect_stale_demo_fixture,
+    )
 
     demo_tail = DEMO_DATABASE_URL.split("://", 1)[1]
-    return source_url.endswith(demo_tail)
+    if not source_url.endswith(demo_tail):
+        return False
+    return not _detect_stale_demo_fixture(url=source_url)
 
 
 def _apply_bundled_demo_yamls(
@@ -2840,14 +2872,61 @@ def _wire_host_message(
 # ----- stage 7: next_step --------------------------------------------------
 
 
+def _rebuild_graph_projection_best_effort(ctx: WizardContext) -> None:
+    """Refresh the v15 graph read-model from the wizard's store.
+
+    ADR-0010 assigns this wizard graph hand-off to `wsINIT-graph-payoff`
+    (PR-22): unlike the CLI `index` / `entities apply` / `joins apply`
+    commands — which each call `_refresh_graph_projection` — the wizard's
+    own indexer (`_run_indexer`) and bundled-pack apply path never touch
+    `graph_nodes` / `graph_edges`. Without this, `schemabrain dashboard`'s
+    `/graph` surface (the init payoff) would open onto an EMPTY canvas
+    right after a successful `init`.
+
+    Best-effort by design: a read-model rebuild must never fail the
+    wizard's closing stage. The store may be absent (index skipped, or a
+    non-Postgres source), have no indexed tables yet, or the rebuild may
+    raise on an unexpected store/compiler edge — in every such case the
+    projection is simply left for the next `index` / `apply` to refresh
+    (it can only ever be structurally stale, never floor-inconsistent —
+    see ADR-0010), so swallowing here is the correct trade.
+    """
+    cfg = ctx.config
+    # The graph projection only exists for indexable (Postgres) sources,
+    # and only once the store has been written. Non-Postgres sources never
+    # reach the indexer (`_stage_index` skips them), and `_source_id_for`
+    # raises for non-Postgres URLs — so guard here before computing it.
+    if not is_postgres_url(cfg.source_url) or not cfg.store_path.exists():
+        return
+    try:
+        source_id = _source_id_for(cfg.source_url)
+
+        from schemabrain.core.store import SQLiteStore
+        from schemabrain.semantic.graph_projection import rebuild_graph_projection
+
+        with SQLiteStore(path=cfg.store_path) as store:
+            if not store.list_tables(source_connection_id=source_id):
+                # Nothing indexed for this source — an empty projection
+                # adds no payoff and the rebuild would be wasted work.
+                return
+            rebuild_graph_projection(store, source_connection_id=source_id)
+    except Exception:  # best-effort read-model refresh; see docstring
+        # Never let a projection refresh abort a wizard that has already
+        # wired the host + populated the store. The graph self-heals on
+        # the next `index` / `entities apply` / `joins apply`.
+        return
+
+
 def _stage_next_step(ctx: WizardContext) -> StageOutcome:
     """Closing stage — never fails; emits a brief status line.
 
     The renderer's closing block carries the actionable next-step
-    copy (restart prompt, example query, tail/audit hints, thesis
-    tagline), so this handler only signals that the wizard reached
-    the end successfully.
+    copy (graph payoff, restart prompt, example query, tail/audit hints,
+    thesis tagline), so this handler only signals that the wizard reached
+    the end successfully — after refreshing the graph projection so the
+    payoff opens onto a populated graph (`wsINIT-graph-payoff`, PR-22).
     """
+    _rebuild_graph_projection_best_effort(ctx)
     return StageOutcome(
         stage=7,
         name="next_step",

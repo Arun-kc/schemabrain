@@ -1,133 +1,155 @@
 /**
  * Dashboard end-to-end smoke.
  *
- * The smallest valuable browser-driven regression net for the 4 dashboard
- * surfaces (landing + PII + Refusals + Audit). Each spec navigates,
+ * The smallest valuable browser-driven regression net for the core dashboard
+ * surfaces (root→overview redirect + PII + Refusals + Audit). Each spec navigates,
  * asserts the surface's load-bearing landmark, then captures a screenshot
  * for visual review in `playwright-report/`.
  *
  * Prerequisite: a dashboard sidecar must already be running on
  * http://127.0.0.1:7878 against a store with:
  *   - at least one indexed source
- *   - at least one refused audit row (so the Refusal surface renders
- *     a populated incident card, not the empty state)
+ *   - at least one refused audit row (so the Refusals ledger renders
+ *     a held row, not the empty state)
  *
  * See `web/tests/e2e/README.md` for the canonical setup flow.
  */
 
 import { expect, test } from "@playwright/test";
+import { expectNoSeriousA11yViolations } from "./a11y";
+import { pinTheme, themeForProject } from "./theme";
 
-// Pin the dark theme via localStorage before the first Next.js hydration
-// runs. The dashboard reads `schemabrain.theme` on mount; without this
-// the spec would race between the system default and our intended
-// screenshot baseline.
-test.beforeEach(async ({ context }) => {
-  await context.addInitScript(() => {
-    try {
-      window.localStorage.setItem("schemabrain.theme", "dark");
-    } catch {
-      // localStorage can throw in private-mode-style sandboxes; the
-      // theme just falls back to the page default, which is fine for
-      // the assertions below.
-    }
-  });
+// Pin the theme via localStorage before the first Next.js hydration runs,
+// derived from the active project (chromium-dark / chromium-light) so the
+// same content assertions run under both themes without per-spec branching.
+test.beforeEach(async ({ context }, testInfo) => {
+  await pinTheme(context, themeForProject(testInfo));
 });
 
 test.describe("dashboard E2E smoke", () => {
-  test("landing page renders the three surface cards", async ({ page }) => {
+  test("root redirects to the overview surface", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
 
+    // `/` is a redirect stub now — the marketing landing moved to the
+    // separate `site/` app, and the dashboard home is /overview.
     await page.goto("/");
 
+    await expect(page).toHaveURL(/\/overview\/?$/);
     await expect(
-      page.getByRole("heading", { name: /What the SQL firewall sees/i }),
+      page.getByRole("heading", { name: /Agents are reasoning over a protected graph/ }),
     ).toBeVisible();
 
-    // Three surface cards — each is the entry point to one M1 page.
-    await expect(page.getByText("PII Visualization", { exact: false })).toBeVisible();
-    await expect(page.getByText("Refusal Experience", { exact: false })).toBeVisible();
-    await expect(page.getByText("Audit Viewer", { exact: false })).toBeVisible();
-
-    // Active-pipeline telemetry section is the hero composition the
-    // landing page is built around; missing it means the layout
-    // collapsed.
-    await expect(page.getByText(/Active Pipeline Telemetry/i)).toBeVisible();
-
-    await page.screenshot({ path: "test-results/01-landing.png", fullPage: true });
+    await page.screenshot({ path: "test-results/01-overview.png", fullPage: true });
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });
 
-  test("PII ledger renders the stat slab + entity matrix", async ({ page }) => {
+  test("PII matrix renders the confidence heatmap", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
 
     await page.goto("/pii");
 
-    await expect(page.getByText(/THE LEDGER/i)).toBeVisible();
-    // Slab label is exact-case "catastrophic exposure" (lowercase).
-    // The title-meta string "no catastrophic exposure" appears on a
-    // safe store and would shadow a case-insensitive match; an
-    // exact-case match isolates the slab block reliably either way.
-    await expect(page.getByText("catastrophic exposure", { exact: true })).toBeVisible();
+    // The surface title (a heading, so it doesn't collide with the nav link
+    // of the same name).
+    await expect(page.getByRole("heading", { name: /PII matrix/i })).toBeVisible();
+    // The honest 3-level band legend is always rendered — the heatmap's
+    // load-bearing "advisory, never gates" framing.
+    await expect(page.getByText(/never gates enforcement/i)).toBeVisible();
 
-    // The matrix must list at least one entity from the fixture.
-    // Anchor on the qualified table name (`public.users`) inside the
-    // matrix label so the assertion stays scoped to the Ledger pane
-    // even after PolicyView (which also renders the qualified-column
-    // strings in its rollup samples + per-column rows) lands on the
-    // same surface. Without the scope, strict-mode fires.
+    // The heatmap must list at least one classified column from the fixture.
+    // Anchor on the qualified table name (`public.users`) inside the matrix
+    // label so the assertion stays scoped to the grid; `.first()` because a
+    // column-row layout repeats the table name per column.
     await expect(
-      page.getByLabel("pii ledger matrix").getByText("public.users"),
+      page.getByLabel("pii matrix").getByText("public.users").first(),
     ).toBeVisible();
 
     await page.screenshot({ path: "test-results/02-pii.png", fullPage: true });
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });
 
-  test("refusal experience renders the populated incident detail", async ({ page }) => {
+  test("refusals timeline renders the protective ledger with a held row", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
 
     await page.goto("/refusals");
 
-    await expect(page.getByText(/Active Threat Telemetry Feed/i)).toBeVisible();
-    // With a seeded refused row, the detail pane shows the tool name.
-    await expect(page.getByText(/Refusal Event:/i)).toBeVisible();
-    // pii_blocked is the refusal_reason every catastrophic-PII refusal
-    // carries — its presence in the envelope properties is the
-    // crispest signal that the row → API → render chain worked.
-    await expect(page.getByText(/pii_blocked/i).first()).toBeVisible();
+    // The surface title (a heading, so it doesn't collide with the nav link
+    // of the same name) + the protective lede the ledger is framed around.
+    await expect(page.getByRole("heading", { name: /Refusals/i })).toBeVisible();
+    await expect(page.getByText(/held at the boundary/i)).toBeVisible();
+
+    // A seeded refused row renders inside the ledger as a Sensitive-data
+    // bucket row terminating in a green "held" status — proof the
+    // row → API → render chain worked. Scoped to the ledger list so the
+    // assertion stays anchored to a real row, not chrome.
+    const ledger = page.getByLabel("refusals ledger");
+    await expect(ledger.getByText("Sensitive-data").first()).toBeVisible();
+    await expect(ledger.getByText("held", { exact: true }).first()).toBeVisible();
 
     await page.screenshot({ path: "test-results/03-refusals.png", fullPage: true });
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });
 
-  test("audit viewer renders the ledger chain + block detail", async ({ page }) => {
+  test("audit ledger renders the merkle root + verifies inclusion proofs", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
 
     await page.goto("/audit");
 
-    await expect(page.getByText(/Ledger Chain Intact/i)).toBeVisible();
-    // The block-detail right pane shows when a row is selected; the
-    // first row should be auto-selected on load. "BLOCK PAYLOAD"
-    // headers the JSON pane that is the audit chain's tamper-evident
-    // payload.
-    await expect(page.getByText(/BLOCK PAYLOAD/i)).toBeVisible();
+    // The surface title (a heading, so it doesn't collide with the nav link
+    // of the same name) + the honest lede the surface is framed around.
+    await expect(page.getByRole("heading", { name: /Audit/i })).toBeVisible();
+    await expect(page.getByText(/commits to the hash of the row before it/i)).toBeVisible();
+    // The derived Merkle root is the spine of the surface.
+    await expect(page.getByText(/merkle root/i)).toBeVisible();
+
+    // A seeded row renders inside the audit list (scoped to the list so the
+    // assertion stays anchored to a real row, not chrome).
+    const ledger = page.getByLabel("audit rows");
+    await expect(ledger.getByText("list_entities()")).toBeVisible();
+
+    // The real verification: clicking Verify recomputes each row's RFC-6962
+    // inclusion proof in the browser (crypto.subtle) and reconciles it to the
+    // one global root — proof the merkle route → fetch → verify chain worked.
+    await page.getByRole("button", { name: /verify against root/i }).click();
+    await expect(page.getByText(/verified · \d+\/\d+ intact/i).first()).toBeVisible({
+      timeout: 15000,
+    });
 
     await page.screenshot({ path: "test-results/04-audit.png", fullPage: true });
     expect(errors, `console pageerror events: ${errors.join("; ")}`).toEqual([]);
   });
 
-  test("source id auto-resolves in the header strip", async ({ page }) => {
-    // The /api/meta fix from PR #126 means the dashboard pages never
-    // hardcode a source_connection_id; they call /api/meta and read
-    // `default_source_connection_id`. The header strip surfaces the
-    // resolved id.
+  test("PII matrix has no serious or critical accessibility violations", async ({ page }) => {
     await page.goto("/pii");
-    // The header strip's source-id pill displays either the seeded 'demo-source' or the hashed production ID.
-    await expect(page.getByText(/demo-source|[0-9a-f]{16}/i).first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: /PII matrix/i })).toBeVisible();
+    await expectNoSeriousA11yViolations(page);
+  });
+
+  test("refusals timeline has no serious or critical accessibility violations", async ({ page }) => {
+    await page.goto("/refusals");
+    await expect(page.getByRole("heading", { name: /Refusals/i })).toBeVisible();
+    await expectNoSeriousA11yViolations(page);
+  });
+
+  test("audit ledger has no serious or critical accessibility violations", async ({ page }) => {
+    await page.goto("/audit");
+    await expect(page.getByRole("heading", { name: /Audit/i })).toBeVisible();
+    await expectNoSeriousA11yViolations(page);
+  });
+
+  test("source id auto-resolves in the shell source selector", async ({ page }) => {
+    // The dashboard pages never hardcode a source_connection_id; they
+    // call /api/meta and read `default_source_connection_id`. With the
+    // app shell, the resolved id surfaces in the top-bar source selector
+    // (the per-surface HeaderStrip is retired) — its accessible name is
+    // `active source: <seeded 'demo-source' or hashed production id>`.
+    await page.goto("/pii");
+    await expect(
+      page.getByRole("button", { name: /active source: (demo-source|[0-9a-f]{16})/i }),
+    ).toBeVisible();
   });
 });
 

@@ -6,15 +6,15 @@ report a vulnerability, what to expect in response, and what is in scope.
 
 ## Supported Versions
 
-SchemaBrain is in pre-1.0 (current line: `0.4.x`). Only the latest
+SchemaBrain is in pre-1.0 (current line: `0.5.x`). Only the latest
 minor and the `main` branch receive security fixes today. When 1.0 ships,
 this table will list the supported minor versions.
 
 | Version          | Supported          |
 | ---------------- | ------------------ |
 | `main` (HEAD)    | :white_check_mark: |
-| Latest `0.4.x`   | :white_check_mark: |
-| `0.3.x` and older| :x:                |
+| Latest `0.5.x`   | :white_check_mark: |
+| `0.4.x` and older| :x:                |
 
 ## Reporting a Vulnerability
 
@@ -64,7 +64,7 @@ not currently offer a bug bounty.
 
 ## In Scope
 
-- The published PyPI package (`schemabrain`) on the latest alpha and the
+- The published PyPI package (`schemabrain`) on the latest release and the
   `main` branch
 - The MCP server surface (`schemabrain serve`), including all exposed
   tools
@@ -107,8 +107,15 @@ SchemaBrain currently:
   appear in argv (and emits a deprecation warning when they do)
 - Uses parameterized SQL throughout; identifier f-strings only assemble
   pre-quoted identifiers from SQLAlchemy's `identifier_preparer`
-- Redacts PII (emails, SSNs, credit-card numbers) before sample values
-  reach the store
+- Redacts emails, SSNs, and credit-card numbers from sample values
+  before they reach the local store. Additionally, before the LLM
+  enrichment prompt is built, withholds both the sample values and their
+  shape signatures *entirely* for any column the name-based PII
+  classifier flags — closing the egress for names, addresses, phone
+  numbers, and non-US national IDs that the value-level email/SSN/CC
+  redaction can't catch, for every column whose NAME signals PII.
+  (Free-text columns with generic names such as `notes` or `bio` are a
+  residual gap: the v1 classifier is name-based by design.)
 - Restricts the source-database connection to read-only access: the
   profiler issues `SELECT` queries only. No `INSERT`, `UPDATE`,
   `DELETE`, or `DROP` codepaths exist against the source database.

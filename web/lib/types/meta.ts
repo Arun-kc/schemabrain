@@ -5,7 +5,28 @@
 // into the response shapes the UI consumes.
 
 import type { InferenceMethod, ValidationState } from "./envelope";
-import type { ColumnPiiTag } from "./pii";
+import type { ColumnPiiTag, PIICategory, PiiConfidenceBand, Sensitivity } from "./pii";
+
+/**
+ * Per-source index state. Only "indexed" is emitted today — a source
+ * appears once it has persisted artifacts, and there is no in-flight
+ * indexing registry behind "indexing"/"empty". The wider union is
+ * reserved so the shell's source dot + the (future) graph indexing
+ * overlay can light up without a wire-shape change.
+ */
+export type SourceState = "indexed" | "indexing" | "empty";
+
+/** One source in the /api/meta `sources` rollup — drives the source selector. */
+export interface SourceInfo {
+  source_id: string;
+  /** "postgres" for the configured connection; null when the dialect is unknown. */
+  engine: string | null;
+  state: SourceState;
+  /** Most recent index time (Unix epoch seconds); null when no physical tables. */
+  last_indexed_at: number | null;
+  tables: number;
+  entities: number;
+}
 
 /** GET /api/meta response. */
 export interface Meta {
@@ -15,34 +36,102 @@ export interface Meta {
   store_path: string;
   default_source_connection_id: string | null;
   source_connection_ids: readonly string[];
+  sources: readonly SourceInfo[];
 }
 
 /** Origin tag carried by entity / metric / join writes. */
 export type Origin = "manual" | "suggested" | "dbt_import";
 
-/** Item shape in the /api/entities list. */
+/** v15 cosmetic graph grouping for an entity (node colour / clustering). */
+export type Group = "identity" | "billing" | "activity" | "other";
+
+/**
+ * v15 model self-rating of an LLM-suggested entity binding. Categorical,
+ * never a numeric %. Lowercase — distinct from the uppercase envelope
+ * `Confidence` (the derived trust label). Null for hand-authored entities.
+ */
+export type BindConfidence = "high" | "medium" | "low";
+
+/** Equi-join cardinality; null when authored before the column existed. */
+export type Cardinality =
+  | "one_to_one"
+  | "one_to_many"
+  | "many_to_one"
+  | "many_to_many";
+
+/**
+ * One decisive PII severity badge per entity. "catastrophic" outranks the
+ * 4-level sensitivity ladder; "none" when every column is public/untagged.
+ */
+export type PiiLevel = "catastrophic" | "pii" | "confidential" | "internal" | "none";
+
+/** Entity header shape shared by the list rows and the drilldown. */
 export interface EntitySummary {
   name: string;
   description: string;
   qualified_table: string;
   identity: string;
+  group: Group;
   origin: Origin;
   inference_method: InferenceMethod;
   validation_state: ValidationState;
+  /**
+   * v15 cached `pg_class.reltuples` estimate for the bound table; null
+   * when unknown (SQLite source, never-analyzed Postgres table). Render
+   * "—" on null — never a fabricated 0.
+   */
+  rows: number | null;
+  /** v15 model self-rating of the binding; null for hand-authored entities. */
+  confidence: BindConfidence | null;
+}
+
+/** One row in the /api/entities index — entity header + rollup counts. */
+export interface EntityListItem extends EntitySummary {
+  pii_level: PiiLevel;
+  metrics_count: number;
+  joins_count: number;
+}
+
+/**
+ * The drilldown entity header — the shared summary plus the free-text
+ * `rationale` (the model's "why this binding"; null for hand-authored or
+ * when the reviewer re-authored the YAML).
+ */
+export interface EntityDrilldownHeader extends EntitySummary {
+  rationale: string | null;
 }
 
 /** /api/entities list response. */
 export interface EntityListResponse {
   source_connection_id: string;
-  items: readonly EntitySummary[];
+  items: readonly EntityListItem[];
   count: number;
+  summary: {
+    entities: number;
+    metrics: number;
+    joins: number;
+    catastrophic_entities: number;
+  };
+}
+
+/** A column→column nearest neighbour for the drilldown "similar" field. */
+export interface SimilarColumn {
+  schema: string;
+  table: string;
+  column: string;
+  /** Cosine similarity to the reference column, in [-1, 1]. */
+  score: number;
 }
 
 /** One column inside the /api/entities/{name}/columns response. */
 export interface EntityColumn {
   name: string;
+  data_type: string;
+  /** Free-text "meaning"; null when the column is un-enriched. */
+  description: string | null;
   sensitivity: ColumnPiiTag["sensitivity"];
   pii_categories: readonly ColumnPiiTag["pii_categories"][number][];
+  similar: readonly SimilarColumn[];
 }
 
 /** One metric linked to an entity. */
@@ -63,15 +152,25 @@ export interface EntityJoin {
   description: string;
   source_entity: string;
   target_entity: string;
-  on: readonly { source_column: string; target_column: string }[];
+  /** Server-rendered, quoted, catastrophic-FK-redacted ON predicate. */
+  on_clause: string;
+  cardinality: Cardinality | null;
+  origin: Origin;
+  inference_method: InferenceMethod;
+  /** True when `inference_method === "observed_in_query_log"`. */
+  is_log_mined: boolean;
 }
 
 /** /api/entities/{name}/columns response. */
 export interface EntityDrilldownResponse {
-  entity: EntitySummary;
+  entity: EntityDrilldownHeader;
   columns: readonly EntityColumn[];
   metrics: readonly EntityMetric[];
   joins: readonly EntityJoin[];
+  referenced_by: {
+    metrics: number;
+    joins: number;
+  };
 }
 
 /** One row in the PII Viz matrix — entity × category counts. */
@@ -88,10 +187,33 @@ export interface PiiMatrixEntity {
   has_catastrophic: boolean;
 }
 
-/** /api/entities/pii-matrix response — drives The Ledger surface. */
+/**
+ * One classified column in the PII matrix's per-column projection (ADR 0009).
+ * Drives the column × 12-category confidence heatmap: a cell is lit only for
+ * a category in `categories`, and its intensity is the column's single
+ * advisory `pii_confidence` band (applied uniformly to the column's lit
+ * cells — there is no per-category score). `pii_confidence` is null on legacy
+ * / SQLite / unclassified columns and renders '—', never a faked 0.
+ */
+export interface PiiMatrixColumn {
+  entity: string;
+  qualified_table: string;
+  column_name: string;
+  sensitivity: Sensitivity;
+  /** Canonical-ordered subset of the 12 categories this column carries. */
+  categories: readonly PIICategory[];
+  pii_confidence: PiiConfidenceBand | null;
+}
+
+/** /api/entities/pii-matrix response — drives the PII matrix surface. */
 export interface PiiMatrixResponse {
   source_connection_id: string;
   entities: readonly PiiMatrixEntity[];
+  /**
+   * Per-column projection (ADR 0009) — one entry per entity-bound column,
+   * the data source for the column × category confidence heatmap.
+   */
+  columns: readonly PiiMatrixColumn[];
   /** The 12 PII categories in canonical column order for the matrix. */
   categories: readonly string[];
   /** Subset of `categories` that get the catastrophic underline + stamp treatment. */

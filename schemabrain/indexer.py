@@ -73,7 +73,7 @@ from schemabrain.core.store_protocol import Store
 from schemabrain.enrichment.embeddings import Embedder, embedding_for
 from schemabrain.enrichment.pipeline import EnrichmentPipeline
 from schemabrain.enrichment.prompts import PROMPT_VERSION
-from schemabrain.pii import classify_column
+from schemabrain.pii import classify_column, classify_pii_confidence
 from schemabrain.profiler.base import Profiler
 
 
@@ -367,10 +367,21 @@ def index(
                 embeddings[col_name] = embedding_for(desc.text, embedder=embedder)
                 embeddings_generated += 1
 
+        # Capture the cheap row-count estimate (pg_class.reltuples; None
+        # when the backend can't estimate or the table is never-analyzed)
+        # only for tables we're about to (re)write — the unchanged tables
+        # `continue`d above, so this adds no catalog query to a no-op
+        # re-index. The estimate refreshes on every structural change.
+        estimated_row_count = source.estimated_row_count(name, schema)
+
         # Now persist. write_table cascades to delete any stale
         # fingerprints/descriptions/embeddings; the writes that follow
         # repopulate them.
-        store.write_table(table, source_connection_id=source_connection_id)
+        store.write_table(
+            table,
+            source_connection_id=source_connection_id,
+            estimated_row_count=estimated_row_count,
+        )
         new_fingerprints = {
             col.name: (
                 new_structural[col.name],
@@ -429,10 +440,23 @@ def index(
                 )
                 for col in table.columns
             }
+            # ADR 0009: derive the advisory PII-matrix confidence band
+            # from the matched categories + the same raw value-shape
+            # signal, at index time while the shapes are still in
+            # memory. Keyed by the same column names as `classified` so
+            # the store writes both in one atomic swap.
+            confidence = {
+                col.name: classify_pii_confidence(
+                    classified[col.name][1],
+                    stats[col.name].shape_patterns if col.name in stats else (),
+                )
+                for col in table.columns
+            }
             store.write_column_pii_tags(
                 source_connection_id=source_connection_id,
                 qualified_table=qualified_table,
                 tags=classified,
+                confidence=confidence,
             )
 
         tables_changed += 1
@@ -471,9 +495,11 @@ def index(
     return result
 
 
-# Measured anchor for per-column LLM cost on Haiku 4.5 with the current
-# enrichment prompt (PROMPT_VERSION 2026-05-11-1). Two real-world
-# samples produced near-identical per-column costs:
+# Measured anchor for per-column LLM cost on Haiku 4.5, taken at
+# PROMPT_VERSION 2026-05-11-1. (The 2026-06-08-1 PII sample-gate only
+# drops sample-value lines for classifier-flagged columns, so the real
+# per-column cost is unchanged or slightly lower than this anchor.) Two
+# real-world samples produced near-identical per-column costs:
 #   - ecommerce fixture: $0.0074 / 24 cols = $0.000308/col
 #   - Pagila (partition-filtered): $0.0299 / 87 cols = $0.000344/col
 # Rounded to one significant figure both for honest "approximate"

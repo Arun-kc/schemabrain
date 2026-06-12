@@ -112,6 +112,7 @@ from schemabrain.entities.yaml_grammar import (
 from schemabrain.errors import (
     GuidedError,
     anthropic_auth_failed,
+    dbt_import_store_not_indexed,
     postgres_operational_error,
     render_error,
     silent_rewrite_to_psycopg,
@@ -165,6 +166,7 @@ from schemabrain.metrics.yaml_grammar import (
     parse_metric_yaml_file,
 )
 from schemabrain.mining.pipeline import mine_queries
+from schemabrain.positioning import SHORT_DESCRIPTION
 from schemabrain.profiler.postgres import PostgresProfiler
 
 if TYPE_CHECKING:
@@ -507,6 +509,7 @@ def _dispatch(argv: list[str] | None) -> int:
             skip_llm_confirm=args.skip_llm_confirm,
             pii_block_csv=args.pii_block,
             emit_yaml_dir=args.emit_yaml_dir,
+            enable_sonnet=args.enable_sonnet,
         )
     if args.command == "tail":
         return _cmd_tail(
@@ -543,6 +546,14 @@ def _dispatch(argv: list[str] | None) -> int:
     if args.command == "inspect":
         return _cmd_inspect(
             name=args.name,
+            positional_url=args.source,
+            url_env=args.url_env,
+            store_path=args.store_path,
+        )
+    if args.command == "docs":
+        return _cmd_docs(
+            fmt=args.format,
+            out=args.out,
             positional_url=args.source,
             url_env=args.url_env,
             store_path=args.store_path,
@@ -606,6 +617,14 @@ def _dispatch(argv: list[str] | None) -> int:
     if args.command == "dashboard":
         return _cmd_dashboard(
             store_path=args.store_path,
+            port=args.port,
+            open_browser=args.open_browser,
+        )
+    if args.command == "demo":
+        return _cmd_demo(
+            action=args.demo_action,
+            store_path=args.store_path,
+            host=args.host,
             port=args.port,
             open_browser=args.open_browser,
         )
@@ -750,10 +769,12 @@ class _GroupedInitHelpAction(argparse.Action):
 
 _CLI_EPILOG = """\
 First hour:
+  demo                  Zero-setup showcase — sample data + firewall + dashboard (no API key)
   init                  Wire SchemaBrain into a Claude Desktop / Cursor / Windsurf host
   doctor                Verify the wiring (--verify for a no-API-key mock-agent smoke)
   dashboard             Serve the local read-only UI (requires `pip install schemabrain[ui]`)
   inspect               Show what was curated (entities, metrics, joins)
+  docs                  Generate a data dictionary (markdown/html) from the store
   tail                  Stream MCP tool calls live
 
 Operate:
@@ -771,14 +792,14 @@ Developer:
   eval · mine-queries · fixture-path
                         Bench harness + query-log mining.
 
-Get started: `schemabrain init`.
+Get started: `uvx schemabrain demo` to see it in action  ·  `uvx schemabrain init` (or `pipx run schemabrain init`) to wire your own database.
 """
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="schemabrain",
-        description="The SQL firewall between AI agents and your production database.",
+        description=SHORT_DESCRIPTION,
         epilog=_CLI_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2100,6 +2121,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "Degrades `find_relevant_entities` from vector similarity to "
         "keyword/substring matching; everything else works unchanged.",
     )
+    g_stages.add_argument(
+        "--enable-sonnet",
+        dest="enable_sonnet",
+        action="store_true",
+        help="During the index stage (needs --enrich + ANTHROPIC_API_KEY), "
+        "route cryptic column names (heavily abbreviated, e.g. `acct_dim_v3`) "
+        "to Claude Sonnet 4.6 instead of Haiku 4.5. Sonnet is ~5x more "
+        "expensive per call but produces better descriptions for hard-to-decode "
+        "names. Default off (Haiku-only) to keep runs cheap; same opt-in as "
+        "`schemabrain index --enable-sonnet`.",
+    )
 
     g_host = p_init.add_argument_group(
         "Host",
@@ -2392,6 +2424,46 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
     )
 
+    # `docs` renders a data dictionary from the store — every indexed
+    # table, column, type, PII classification, semantic join, and metric.
+    # Store-only reader (no LLM, no live source), same shape as `inspect`.
+    p_docs = sub.add_parser(
+        "docs",
+        help="Generate a data dictionary (markdown/html) from the indexed store (no LLM)",
+    )
+    p_docs.add_argument(
+        "--format",
+        choices=["markdown", "html"],
+        default="markdown",
+        help="Output format (default: markdown).",
+    )
+    p_docs.add_argument(
+        "--out",
+        dest="out",
+        default=None,
+        help="Write the dictionary to this file. Without --out, writes to stdout.",
+    )
+    p_docs.add_argument(
+        "--source",
+        default=None,
+        help="Scope to one indexed source. Optional — required only when the "
+        "store carries more than one source. Prefer --url-env when the URL "
+        "contains a password.",
+    )
+    p_docs.add_argument(
+        "--url-env",
+        dest="url_env",
+        metavar="VARNAME",
+        default=None,
+        help="Name of the environment variable that holds the source URL. "
+        "Mutually exclusive with --source.",
+    )
+    p_docs.add_argument(
+        "--store-path",
+        default=_DEFAULT_STORE_PATH,
+        help=f"Path to the local SQLite store (default: {_DEFAULT_STORE_PATH})",
+    )
+
     # `policy` is the operator-facing surface for PII enforcement.
     # Five actions: `show` (read-only state inspection), `apply`
     # (load a pii_policy.yaml file into the store + emit a confirmation),
@@ -2631,7 +2703,75 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip auto-opening the default browser. CI / headless setups should pass this.",
     )
 
+    p_demo = sub.add_parser(
+        "demo",
+        help="Zero-setup showcase: sample SaaS data + firewall + dashboard (no API key, "
+        "no Docker for the dashboard / CLI paths)",
+    )
+    g_demo_action = p_demo.add_mutually_exclusive_group()
+    g_demo_action.add_argument(
+        "--dashboard",
+        dest="demo_action",
+        action="store_const",
+        const="dashboard",
+        help="Skip the menu and open the dashboard directly.",
+    )
+    g_demo_action.add_argument(
+        "--showcase",
+        dest="demo_action",
+        action="store_const",
+        const="showcase",
+        help="Skip the menu and run the terminal firewall showcase.",
+    )
+    g_demo_action.add_argument(
+        "--wire",
+        dest="demo_action",
+        action="store_const",
+        const="wire",
+        help="Skip the menu and wire an MCP host (starts the demo Postgres — needs Docker).",
+    )
+    p_demo.set_defaults(demo_action=None)
+    p_demo.add_argument(
+        "--host",
+        choices=("claude-desktop", "claude-code", "cursor", "windsurf", "manual"),
+        default=None,
+        help="Host to wire with --wire (default: auto-detect). `manual` prints the snippet.",
+    )
+    p_demo.add_argument(
+        "--store-path",
+        default=None,
+        help="Where to build the demo store (default: ~/.schemabrain/demo.db). "
+        "Rebuilt fresh on every run.",
+    )
+    p_demo.add_argument(
+        "--port",
+        type=int,
+        default=_DASHBOARD_DEFAULT_PORT,
+        help=f"Dashboard port on 127.0.0.1 (default: {_DASHBOARD_DEFAULT_PORT}).",
+    )
+    p_demo.add_argument(
+        "--no-open",
+        dest="open_browser",
+        action="store_false",
+        default=True,
+        help="Skip auto-opening the browser for the dashboard. CI / headless should pass this.",
+    )
+
     return parser
+
+
+def _refresh_graph_projection(store: SQLiteStore, source_id: str) -> None:
+    """Rebuild the v15 graph read-model after a semantic-layer change.
+
+    Idempotent and cheap; safe to call whenever a source's entities /
+    joins / PII tags / row-count estimates may have changed (ADR 0010), so
+    `GET /api/graph` serves a current projection. Lazy import keeps the
+    projection + compiler off the import path of CLI commands that never
+    touch the graph.
+    """
+    from schemabrain.semantic.graph_projection import rebuild_graph_projection
+
+    rebuild_graph_projection(store, source_connection_id=source_id)
 
 
 def _cmd_index(
@@ -2811,6 +2951,11 @@ def _cmd_index(
                     reporter=reporter,
                     no_pii_classify=no_pii_classify,
                 )
+                # Refresh the v15 graph read-model so GET /api/graph picks
+                # up the freshly-indexed row-counts + PII snapshot (ADR
+                # 0010). Entities/joins are written by `apply`, not `index`,
+                # so this is an empty projection until a project is applied.
+                _refresh_graph_projection(store, source_id)
         finally:
             reporter.close()
     except CostCapExceeded as e:
@@ -3798,6 +3943,75 @@ def _resolve_single_source_id(
     return source_ids[0], 0
 
 
+def _cmd_docs(
+    *,
+    fmt: str,
+    out: str | None,
+    positional_url: str | None,
+    url_env: str | None,
+    store_path: str,
+) -> int:
+    """Render a data dictionary from the store as Markdown or HTML.
+
+    Store-only reader — no LLM, no live source connection. The
+    `--source` / `--url-env` flag is optional and only needed to scope
+    the dictionary when the store carries more than one source.
+
+    Exit codes (mirroring `inspect` / `policy show`):
+      - 0: rendered successfully (to stdout or `--out`)
+      - 1: store has no indexed sources (run `index` first)
+      - 2: missing store / `--source`+`--url-env` conflict / malformed
+        URL / ambiguous multi-source / schema-version mismatch
+    """
+    from schemabrain.datadict import build_dictionary, render_html, render_markdown
+
+    store_p = Path(store_path)
+    if not store_p.exists():
+        _render_guided(
+            GuidedError(
+                kind="docs_store_missing",
+                message=f"store not found at {store_path}",
+                why="`schemabrain docs` renders the data dictionary from the "
+                "local SQLite store; without a store there is nothing to document",
+                fix=f"run `schemabrain index --url-env DBURL --store-path "
+                f"{store_path}` to populate it",
+                next_step="re-run `schemabrain docs` after `index` completes",
+            )
+        )
+        return 2
+
+    try:
+        with SQLiteStore(store_p) as store:
+            source_id, rc = _resolve_single_source_id(
+                store,
+                positional_url=positional_url,
+                url_env=url_env,
+                store_path=store_path,
+            )
+            if rc:
+                return rc
+            assert (
+                source_id is not None
+            )  # pragma: no cover — defensive; rc gate above caught all None paths
+            model = build_dictionary(store=store, source_connection_id=source_id)
+    except SchemaVersionMismatchError as exc:
+        # Same guided recovery `inspect` gives on a stale store; covered
+        # by test_docs_schema_version_mismatch_exits_2.
+        _render_guided(
+            GuidedError(
+                kind="docs_schema_version_mismatch",
+                message=str(exc),
+                why="the local store was written by a different schemabrain version",
+                fix="delete the store file and re-run `schemabrain index`",
+                next_step=f"rm {store_path} && schemabrain index --url-env DBURL",
+            )
+        )
+        return 2
+
+    body = render_html(model) if fmt == "html" else render_markdown(model)
+    return _write_yaml_body(body, out)
+
+
 def _cmd_policy_show(
     *,
     store_path: str,
@@ -4454,6 +4668,11 @@ def _cmd_entities_apply(
                         )
                     )
                     return 2
+            # Refresh the v15 graph read-model so GET /api/graph reflects
+            # the applied entities (ADR 0010). Idempotent; only when at
+            # least one entity landed.
+            if applied:
+                _refresh_graph_projection(store, source_id)
     except OSError as e:
         _render_guided(store_path_unwritable(store_path, e))
         return 2
@@ -4528,7 +4747,16 @@ def _cmd_entities_list(
         return 2
 
     if not entities:
+        # Mirror the metrics-list empty-state: tell the operator the next
+        # command instead of dead-ending on a parenthetical.
         print("(no entities in the store)")
+        print(
+            "  next: hand-author `<entity>.yaml` files and run "
+            "`schemabrain entities apply ./entities`, or run "
+            "`schemabrain entities suggest --out-dir ./entities` to propose "
+            "them from the indexed schema first. (Index the source before "
+            "either: `schemabrain index --url-env DBURL`.)"
+        )
         return 0
 
     for entity in entities:
@@ -5019,7 +5247,15 @@ def _render_apply(
         with SQLiteStore(store_path) as store:
             for candidate in result.candidates:
                 try:
-                    store.write_entity(candidate.entity, source_connection_id=source_id)
+                    # Persist the model's self-rating (bind_confidence +
+                    # rationale) alongside the clean entity. The file-
+                    # review workflow (`suggest` → edit → `apply`) keeps
+                    # these as YAML comments and resets them to NULL on
+                    # apply; the direct `--apply` path is the one that
+                    # persists them — see `to_persisted_entity`.
+                    store.write_entity(
+                        candidate.to_persisted_entity(), source_connection_id=source_id
+                    )
                 except DbtOwnedEntityError as exc:
                     _entity_error(_partial_write_message(written, total, str(exc)))
                     return 1
@@ -5136,21 +5372,32 @@ def _cmd_import_dbt(
     factory = _source_factory or (lambda url: PostgresDataSource(url))
     metric_summary: tuple[int, tuple] | None = None
     try:
-        with SQLiteStore(store_path) as store, factory(source_url) as source:
-            plan = plan_dbt_import(manifest, source, store, source_connection_id=source_id)
-            if dry_run:
-                result = None
-            else:
-                result = apply_dbt_import_plan(plan, store, source_connection_id=source_id)
-            if include_metrics:
-                metric_summary = _apply_dbt_metrics(
-                    manifest_path=Path(manifest_path),
-                    plan=plan,
-                    apply_result=result,
-                    store=store,
-                    source_connection_id=source_id,
-                    dry_run=dry_run,
-                )
+        with SQLiteStore(store_path) as store:
+            # Pre-flight: the import binds every model's entity to a row
+            # in the `tables` index. If this source URL was never indexed
+            # into this store, EVERY model fails the bound-table FK at
+            # write time — one source round-trip per model before the
+            # first error, with the index-first requirement buried in the
+            # runtime string. Short-circuit to a guided error BEFORE
+            # opening the source connection or doing any plan work.
+            if not store.list_tables(source_connection_id=source_id):
+                _render_guided(dbt_import_store_not_indexed(store_path))
+                return 2
+            with factory(source_url) as source:
+                plan = plan_dbt_import(manifest, source, store, source_connection_id=source_id)
+                if dry_run:
+                    result = None
+                else:
+                    result = apply_dbt_import_plan(plan, store, source_connection_id=source_id)
+                if include_metrics:
+                    metric_summary = _apply_dbt_metrics(
+                        manifest_path=Path(manifest_path),
+                        plan=plan,
+                        apply_result=result,
+                        store=store,
+                        source_connection_id=source_id,
+                        dry_run=dry_run,
+                    )
     except OperationalError as exc:
         # Postgres connection failure (wrong host, bad password,
         # timeout) — same handler shape as `_cmd_index` / `_cmd_serve`
@@ -5318,6 +5565,11 @@ def _render_import_dbt_summary(
         f"  orphans: {len(plan.orphans)}",
         f"  skipped: {len(plan.skipped)}",
     ]
+    if plan.joins_to_write or plan.joins_skipped:
+        verb = "would import" if dry_run else "imported"
+        lines.append(
+            f"  joins: {verb} {len(plan.joins_to_write)}, skipped {len(plan.joins_skipped)}"
+        )
     if result is not None:
         lines.append(f"  written: {written}")
         if write_failures:
@@ -5640,6 +5892,11 @@ def _cmd_joins_apply(
                             f"`schemabrain entities apply` first.",
                         )
                     )
+            # Refresh the v15 graph read-model so GET /api/graph reflects
+            # the applied joins (ADR 0010). Idempotent; only when at least
+            # one join landed.
+            if applied:
+                _refresh_graph_projection(store, source_id)
     except OSError as e:  # pragma: no cover — store-path-unwritable variant covered via `joins list` OSError test
         _render_guided(store_path_unwritable(store_path, e))
         return 2
@@ -5687,7 +5944,15 @@ def _cmd_joins_list(
         return 2
 
     if not joins:
+        # Mirror the metrics-list empty-state: name the next command.
         print("(no canonical joins in the store)")
+        print(
+            "  next: hand-author `<join>.yaml` files and run "
+            "`schemabrain joins apply ./joins`, or run "
+            "`schemabrain joins suggest --out-dir ./joins` to mine them from "
+            "FK constraints first. Joins reference entities, so apply "
+            "entities before joins."
+        )
         return 0
 
     for join in joins:
@@ -7079,6 +7344,7 @@ def _cmd_init(
     skip_llm_confirm: bool = False,
     pii_block_csv: str | None = None,
     emit_yaml_dir: str | None = None,
+    enable_sonnet: bool = False,
 ) -> int:
     """Run the activation wizard and render the multi-stage outcome.
 
@@ -7343,6 +7609,7 @@ def _cmd_init(
         "metrics_max_cost_usd": metrics_max_cost_usd,
         "no_joins": no_joins,
         "no_embed": no_embed,
+        "enable_sonnet": enable_sonnet,
         "from_dbt": Path(from_dbt) if from_dbt else None,
         "skip_llm_confirm": effective_skip_llm_confirm,
     }
@@ -7477,6 +7744,9 @@ def _emit_yaml_projection(
         starter = Policy(
             block=CATASTROPHIC_LEAK_CATEGORIES,
             description="Edit `block` to change the categories the firewall refuses.\n"
+            "The catastrophic floor (credential, payment_card, government_id) is\n"
+            "always enforced in addition to this list — removing those lines does\n"
+            "not disable it.\n"
             "`column_overrides` lets operators downgrade over-tagged columns\n"
             "(e.g. card_number_last4 per PCI-DSS Q&A — declare it `internal`\n"
             "with empty categories to allow analytics on it).",
@@ -8997,6 +9267,47 @@ def _render_abort_panel(result: object, *, total: int, console: object) -> None:
     )
 
 
+def _ui_extra_importable() -> bool:
+    """True when the optional ``[ui]`` extra is installed.
+
+    The dashboard sidecar refuses to boot without ``uvicorn`` (see
+    ``dashboard/cli.py``), so ``uvicorn`` is the canonical sentinel for
+    "the ``[ui]`` extra is present". Uses ``importlib.util.find_spec`` so
+    we never pay the (heavy) ``uvicorn`` import just to decide which
+    closing-block copy to show.
+    """
+    import importlib.util
+
+    return importlib.util.find_spec("uvicorn") is not None
+
+
+def _graph_route_in_wheel() -> bool:
+    """True when the built dashboard static export ships the ``/graph`` route.
+
+    The graph payoff points the operator at the dashboard's knowledge-graph
+    surface; that surface only exists if ``graph.html`` was bundled into the
+    wheel (``pnpm run export`` + the ``publish.yml`` per-route sentinel). A
+    bare source/sdist checkout without a built export has no ``graph.html``,
+    so the payoff falls back to a plain dashboard hint instead of dangling.
+    """
+    from schemabrain.dashboard import STATIC_DIR
+
+    return (STATIC_DIR / "graph.html").exists()
+
+
+def _graph_payoff_available() -> bool:
+    """Gate for the init closing block's graph call-to-action.
+
+    Lead with the graph payoff only when it can actually be delivered: the
+    ``[ui]`` extra is importable AND the ``/graph`` route shipped in the
+    wheel. Otherwise the closing block keeps the restart prompt as the lead
+    and shows an install/dashboard hint (wsINIT-graph-payoff). This is a
+    printed call-to-action only — init never launches a browser, so the
+    "no auto-open in CI" invariant holds by construction.
+    """
+    return _ui_extra_importable() and _graph_route_in_wheel()
+
+
 def _render_closing_block(
     wizard_result: object,
     *,
@@ -9038,6 +9349,21 @@ def _render_closing_block(
     if not isinstance(host_result, InitResult):
         return  # pragma: no cover — defensive; caller only calls this after a stage-4 success
     console.print("[dim]" + "─" * 62 + "[/]")  # type: ignore[attr-defined]
+    # wsINIT-graph-payoff: when the dashboard graph view can actually be
+    # shown ([ui] importable + /graph in the wheel), LEAD with it — the
+    # signature payoff of an init run is "your schema is now a navigable
+    # knowledge graph", not "go restart your MCP host". The host-restart
+    # prompt stays (agents still need the reload to discover the tools) but
+    # becomes the secondary step by position. Nothing auto-opens here — this
+    # is a printed call-to-action, so CI / headless runs are safe by default.
+    graph_payoff = _graph_payoff_available()
+    if graph_payoff:
+        console.print("Your schema is now a [bold]knowledge graph[/].")  # type: ignore[attr-defined]
+        console.print(  # type: ignore[attr-defined]
+            "  See it:  [bold]schemabrain dashboard[/]  "
+            "[dim]→ your schema as an interactive graph[/]"
+        )
+        console.print()  # type: ignore[attr-defined]
     if host_result.state == "printed_only":
         console.print("Add the snippet above to your host config, then ask:")  # type: ignore[attr-defined]
     else:
@@ -9077,15 +9403,27 @@ def _render_closing_block(
     console.print("See what was curated:  [bold]schemabrain inspect[/]")  # type: ignore[attr-defined]
     console.print("Verify the wiring:     [bold]schemabrain doctor[/]")  # type: ignore[attr-defined]
     console.print("Detect schema drift:   [bold]schemabrain check[/]")  # type: ignore[attr-defined]
-    # Dashboard is opt-in via the `[ui]` extra. An indie dev who ran
-    # `pip install schemabrain` (no extras) would otherwise never
-    # discover this surface exists, since it doesn't show up in the
-    # init flow or any `--help`-level catalog. Single dim line —
-    # tells you both the command and how to install it.
-    console.print(  # type: ignore[attr-defined]
-        "Open the local UI:     [bold]schemabrain dashboard[/]  "
-        "[dim](pip install 'schemabrain[ui]')[/]"
-    )
+    # Dashboard discovery line — only when we did NOT already lead with the
+    # graph payoff (avoids duplicating the CTA). The dashboard is opt-in via
+    # the `[ui]` extra: an indie dev who ran `pip install schemabrain` (no
+    # extras) would otherwise never discover this surface exists, since it
+    # doesn't show up in the init flow or any `--help`-level catalog. When
+    # the extra is present but the export isn't built (dev/sdist), just name
+    # the command; when it's missing, append the install hint.
+    if not graph_payoff:
+        if _ui_extra_importable():
+            console.print(  # type: ignore[attr-defined]
+                "See your schema as a graph:  [bold]schemabrain dashboard[/]"
+            )
+        else:
+            # `\[ui]` escapes the bracket so Rich renders a literal
+            # `schemabrain[ui]` rather than parsing `[ui]` as a (dropped)
+            # markup tag — the un-escaped form silently shipped
+            # `pip install 'schemabrain'` (the extra vanished).
+            console.print(  # type: ignore[attr-defined]
+                "See your schema as a graph:  [bold]schemabrain dashboard[/]  "
+                "[dim](pip install 'schemabrain\\[ui]')[/]"
+            )
     console.print()  # type: ignore[attr-defined]
     console.print("[dim]The agent reads. It doesn't write. That's the whole point.[/]")  # type: ignore[attr-defined]
 
@@ -9752,6 +10090,63 @@ def _cmd_dashboard(*, store_path: str, port: int, open_browser: bool) -> int:
         port=port,
         open_browser=open_browser,
     )
+
+
+def _cmd_demo(
+    *,
+    action: str | None,
+    store_path: str | None,
+    host: str | None,
+    port: int,
+    open_browser: bool,
+) -> int:
+    """Zero-setup showcase. Builds the offline SaaS store (12 entities /
+    11 joins / 5 metrics + seeded audit chain — no Docker, no API key,
+    no Postgres), then either runs the requested action directly or, when
+    interactive and no action flag was passed, offers a guided menu.
+
+    Exit codes: 0 success / served-until-Ctrl+C; 2 when an action's
+    prerequisite is missing (e.g. Docker for --wire, the `[ui]` extra for
+    the dashboard).
+    """
+    from pathlib import Path as _Path
+
+    from schemabrain.setup import demo as _demo
+
+    console = _stderr_console()
+    path = _Path(store_path) if store_path else _demo.DEMO_STORE_PATH
+    console.print(
+        "[bright_black]◇ building the demo store "
+        "(12 entities · 11 joins · 5 metrics · audit chain)…[/]"
+    )
+    source_id = _demo.seed_demo_store(path)
+    console.print(f"[green]✓[/] demo store ready [bright_black]· {path}[/]")
+
+    if action == "dashboard":
+        return _demo.open_dashboard(
+            store_path=path,
+            source_id=source_id,
+            port=port,
+            open_browser=open_browser,
+            console=console,
+        )
+    if action == "showcase":
+        return _demo.run_showcase(store_path=path, source_id=source_id, console=console)
+    if action == "wire":
+        return _demo.wire_demo_host(
+            store_path=path, source_id=source_id, host=host, console=console
+        )
+
+    if _stderr_is_interactive_tty():
+        return _demo.run_demo_menu(
+            store_path=path,
+            source_id=source_id,
+            console=console,
+            port=port,
+            open_browser=open_browser,
+        )
+    _demo.print_next_steps(path, console)
+    return 0
 
 
 def _cmd_fixture_path(name: str) -> int:

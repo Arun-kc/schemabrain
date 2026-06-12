@@ -1,0 +1,629 @@
+/*
+ * Overview surface (/overview) — the dashboard home.
+ *
+ * Ports the design handoff (app/overview.jsx + app/overview.css: .ov-hero /
+ * .ov-grid / .ov-card / .ov-lead / .ov-stack / .ov-fresh / .ov-risk /
+ * .ov-groups) onto the .sb-app dual-theme tokens (sb-theme.css) + the
+ * component kit. Tokens auto-swap per theme — no per-theme blocks.
+ *
+ * Honest adaptation: every figure is live from GET /api/overview. The
+ * protection bar's `--alarm` segment is the genuinely catastrophic share
+ * (never decorative), the freshness pill/tint reflect real drift, and
+ * confidence is a categorical distribution, not a numeric meter.
+ */
+
+/* ---------- page scaffold ---------- */
+
+.page {
+  padding: 28px 32px 64px;
+}
+
+.pageHead {
+  padding-bottom: 4px;
+}
+
+.pageHead h1 {
+  font-size: 24px;
+}
+
+.pageHead p {
+  color: var(--ink-2);
+  font-size: 14px;
+  margin-top: 6px;
+  max-width: 620px;
+  line-height: 1.55;
+}
+
+.skeleton,
+.empty {
+  color: var(--ink-3);
+  font-family: var(--f-mono);
+  font-size: 12.5px;
+  margin-top: 18px;
+}
+
+.empty {
+  margin-top: 14px;
+}
+
+.error {
+  color: var(--alarm-strong);
+  font-size: 13.5px;
+  margin-top: 18px;
+}
+
+/* ---------- system-status hero ---------- */
+
+.hero {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-top: 18px;
+  padding: 20px 24px;
+  border-radius: var(--r-xl);
+  border: 1px solid color-mix(in oklch, var(--green) 32%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in oklch, var(--green) 8%, transparent), transparent),
+    var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.heroRing {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 2px solid color-mix(in oklch, var(--green) 50%, transparent);
+  color: var(--green-strong);
+}
+
+.heroMain {
+  min-width: 0;
+}
+
+.heroMain h2 {
+  font-size: 20px;
+  letter-spacing: -0.015em;
+}
+
+.heroMain p {
+  font-size: 13.5px;
+  color: var(--ink-2);
+  margin-top: 5px;
+  line-height: 1.5;
+  max-width: 560px;
+}
+
+.heroMain p b {
+  font-family: var(--f-mono);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.heroCta {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.heroMeta {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+/* ---------- bento grid ---------- */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.card {
+  grid-column: span 2;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  padding: 17px 18px;
+  text-decoration: none;
+  color: var(--ink);
+  transition:
+    border-color var(--dur-2),
+    transform var(--dur-2);
+}
+
+.card:hover {
+  border-color: color-mix(in oklch, var(--green) 45%, transparent);
+  transform: translateY(-2px);
+}
+
+.card:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+.span3 {
+  grid-column: span 3;
+}
+
+.span4 {
+  grid-column: span 4;
+}
+
+.alarm {
+  border-color: color-mix(in oklch, var(--alarm) 32%, transparent);
+}
+
+.alarm:hover {
+  border-color: color-mix(in oklch, var(--alarm) 55%, transparent);
+}
+
+.warn {
+  border-color: color-mix(in oklch, var(--amber) 38%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in oklch, var(--amber) 7%, transparent), transparent),
+    var(--panel);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 13px;
+}
+
+.ti {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
+}
+
+.go {
+  margin-left: auto;
+  color: var(--ink-3);
+  display: inline-flex;
+  transition:
+    color var(--dur-2),
+    transform var(--dur-2);
+}
+
+.card:hover .go {
+  color: var(--green-strong);
+  transform: translate(2px, -2px);
+}
+
+.alarm:hover .go {
+  color: var(--alarm-strong);
+}
+
+.pill {
+  font-family: var(--f-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  text-transform: uppercase;
+}
+
+.pillGreen {
+  color: var(--green-strong);
+  background: color-mix(in oklch, var(--green) 14%, transparent);
+}
+
+.pillAmber {
+  color: var(--amber-strong);
+  background: color-mix(in oklch, var(--amber) 14%, transparent);
+}
+
+/* big lead number / statement */
+
+.lead {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.num {
+  font-family: var(--f-display);
+  font-weight: 600;
+  font-size: 34px;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.unit {
+  font-family: var(--f-mono);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.sub {
+  font-size: 12.5px;
+  color: var(--ink-2);
+  line-height: 1.5;
+  margin-top: 9px;
+}
+
+.sub b {
+  font-family: var(--f-mono);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* stacked protection bar */
+
+.stack {
+  display: flex;
+  height: 12px;
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  margin-top: 16px;
+  gap: 2px;
+  background: transparent;
+}
+
+.stack span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+}
+
+.segAlarm {
+  background: var(--alarm);
+}
+
+.segPolicy {
+  background: var(--cyan);
+}
+
+.segAllow {
+  background: var(--green);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-top: 13px;
+}
+
+.legrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.sw {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.swAlarm {
+  background: var(--alarm);
+}
+
+.swPolicy {
+  background: var(--cyan);
+}
+
+.swAllow {
+  background: var(--green);
+}
+
+.c {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.floorNote {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--alarm-strong);
+  padding-top: 13px;
+  border-top: 1px solid var(--hair-2);
+}
+
+/* mini list (refusals / audit) */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 14px;
+}
+
+.li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--hair-2);
+}
+
+.li:first-child {
+  border-top: none;
+}
+
+.tool {
+  font-family: var(--f-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.toolRefused {
+  color: var(--alarm-strong);
+}
+
+.summary {
+  font-size: 12px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ago {
+  margin-left: auto;
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* freshness / audit ring block */
+
+.freshRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.smallRing {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 2px solid var(--hair);
+  color: var(--ink-2);
+}
+
+.ringGreen {
+  border-color: color-mix(in oklch, var(--green) 50%, transparent);
+  color: var(--green-strong);
+}
+
+.ringAmber {
+  border-color: color-mix(in oklch, var(--amber) 50%, transparent);
+  color: var(--amber-strong);
+}
+
+.cardH3 {
+  font-size: 15px;
+}
+
+.meta {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  margin-top: 3px;
+}
+
+.risk {
+  display: flex;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.riskCell {
+  flex: 1;
+  text-align: center;
+  padding: 9px 4px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--hair);
+}
+
+.riskN {
+  font-family: var(--f-display);
+  font-weight: 600;
+  font-size: 18px;
+}
+
+.riskL {
+  font-family: var(--f-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
+
+.riskHigh .riskN {
+  color: var(--alarm-strong);
+}
+
+.riskMed .riskN {
+  color: var(--amber-strong);
+}
+
+/* entities-by-group bars */
+
+.groups {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  margin-top: 16px;
+}
+
+.grow {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dotIdentity {
+  background: var(--green);
+}
+
+.dotBilling {
+  background: var(--cyan);
+}
+
+.dotActivity {
+  background: var(--violet);
+}
+
+.gl {
+  font-family: var(--f-mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  width: 96px;
+  flex-shrink: 0;
+}
+
+.bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--hair);
+  overflow: hidden;
+}
+
+.bar i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+}
+
+.gn {
+  font-family: var(--f-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  width: 18px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.conf {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--hair-2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.confLabel {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.confDist {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.confDist b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.confMuted {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+/* semantic chips */
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 1080px) {
+  .grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .card,
+  .span3,
+  .span4 {
+    grid-column: span 1;
+  }
+
+  .wide {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 760px) {
+  .hero {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .heroCta {
+    margin-left: 0;
+    align-items: flex-start;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wide {
+    grid-column: span 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .go {
+    transition: none;
+  }
+}

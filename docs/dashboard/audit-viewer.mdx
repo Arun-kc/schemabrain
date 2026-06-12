@@ -1,72 +1,85 @@
 ---
 title: "Audit Viewer"
-description: "A visual walk through the hash-chained audit log. Every tool call lands as one row; one button re-walks the chain and proves it has not been tampered with."
+description: "A visual walk through the hash-chained audit log. Every tool call lands as one row; the page recomputes each row's Merkle inclusion proof in your browser and reconciles it to one root."
 ---
 
 # Audit Viewer
 
 <Note>
-**Route:** `/audit` on the dashboard. **Backed by:** `GET /api/audit/rows`, `GET /api/audit/rows/{id}`, `GET /api/audit/verify`. **Live updates via:** `GET /api/audit/stream` (Server-Sent Events).
+**Route:** `/audit` on the dashboard. **Backed by:** `GET /api/audit/rows`, `GET /api/audit/rows/{id}`, `GET /api/audit/verify`, `GET /api/audit/merkle/root`, `GET /api/audit/rows/{id}/proof`.
 </Note>
 
-<Frame caption="Audit Viewer — the hash-chained ledger after a server-side Verify: 'Ledger Chain Intact', with each row's previous → current chain-hash linkage in the drawer.">
-  <img src="/assets/dashboard-audit-viewer.png" alt="Audit Viewer dashboard surface — hash-chained ledger verified intact, with row detail drawer" />
+<Frame caption="Audit Viewer — the hash-chained log spined by the derived Merkle root, with a per-row 'Verify against root' inclusion-proof check.">
+  <img src="/assets/dashboard-audit-viewer.png" alt="Audit Viewer dashboard surface — append-only audit log with the derived Merkle root and per-row inclusion proofs" />
 </Frame>
 
-The Audit Viewer is the visual face of the [tamper-evident audit chain](/mechanism/audit-chain). Every MCP tool call writes exactly one row, regardless of outcome — success, empty, partial, degraded, error, or refused. Each row carries a 32-byte `chain_hash` computed as `sha256(prev_chain_hash || canonical(row))`. The viewer renders that chain as a list, lets you drill into any row, and exposes a **Verify ledger** button that re-walks the chain server-side and confirms the invariant holds.
+The Audit Viewer is the visual face of the [tamper-evident audit chain](/mechanism/audit-chain). Every MCP tool call writes exactly one row, regardless of outcome — success, empty, partial, degraded, error, or refused. Each row carries a 32-byte `chain_hash` computed as `sha256(prev_chain_hash || canonical(row))`. On top of that chain the page derives an [RFC-6962](https://www.rfc-editor.org/rfc/rfc6962) Merkle root over every row and, for any row, an O(log n) **inclusion proof** — a short list of sibling hashes that the browser folds back up to that one root. Clicking **Verify against root** re-walks the hash chain across the whole log (the tamper tripwire) and recomputes each visible row's inclusion proof locally.
 
 ---
 
 ## What the surface shows
 
-The top of the page carries a verification ribbon:
+The top of the page carries the integrity summary — the spine of the surface:
 
-- **Ledger Chain Intact** — the chain has been re-walked and every row's stored `chain_hash` matches its recomputed value.
-- **Ledger Chain Mismatch** — at least one row has been re-walked and its stored hash diverges from the recomputed one. Re-run `schemabrain audit verify` from the CLI to inspect.
+- **rows in tree** — how many audit rows the Merkle tree commits to.
+- **merkle root** — the 64-hex root over every row, computed this request. Click it to copy; archive it off-host so a later change is caught (see below).
+- **integrity** — `not verified this session` until you run a verify pass, then `proving · n/N`, `verified · n/N intact`, or `N rows edited after write` (a `failed proof` / `partial` variant covers the rarer internal-inconsistency and unverifiable cases).
+- **in view** — how many rows are loaded (the most recent page); when the log is larger than the page, the surface discloses that verify covers the rows in view while the root commits to all of them.
 
-Below the ribbon, the row list. Each entry shows:
+Below it, the formula eyebrow `H(rowₙ) = SHA256( dataₙ ‖ H(rowₙ₋₁) )` and the **Verify against root** action, then the row grid. Each row shows:
 
-- `id` — the monotonic rowid.
-- `occurred_at` — ISO 8601 timestamp.
-- `tool_name` — which MCP tool was called.
-- `status` — the Charter envelope status.
-- `cost_class` — `small`, `medium`, `large`, or `refused`.
-- `chain_hash` (truncated) — the row's anchor in the chain.
+- `time` — relative age plus an HH:MM clock.
+- `row` — the monotonic rowid (`#N`).
+- `tool · caller` — which MCP tool was called and the caller id.
+- `cost` — `small`, `medium`, `large`, or `refused`.
+- `chain hash` (truncated, cyan) — the row's anchor in the chain. Refused rows are calm (a `ban` marker), never alarm-colored.
+- `idx` — the row's 0-based **leaf index** in the tree (oldest = 0). Audit rows render newest-first but are indexed oldest-first; this column makes that mapping explicit.
+- `proof` — the row's state in the current verify pass (`proving`, `proven`, `edited`, `no proof`, `log grew`, `missing`).
 
-Selecting a row opens a drawer with the full row body, including:
+Selecting a row expands its detail in place (an accordion, not a separate drawer):
 
-- The previous row's `chain_hash` (or `genesis_block_anchor` for row 1).
-- The full `pii_categories` list, refusal reason, `ast_shape_hash`, `rule_id`, `fingerprint`, and `fingerprint_version`.
-- The `chain_hash` of the row itself.
+- The **inclusion proof ladder** — the leaf hash, each sibling hash on its rung with the `0x00`/`0x01` fold notes, terminating in `= root … · matches the root` (or a divergence verdict). This is the actual proof the browser just recomputed.
+- The **audit row** chain link — leaf index, source, `fingerprint`, and `chain_hash`, all copyable.
+- The **row payload** — the structured columns hashed into the row. The original request text is never stored.
 
-This is the same information `schemabrain audit list --json` exposes from the CLI — the dashboard adds a stable visual representation of the prev-hash → row → next-hash linkage.
+This is the same information `schemabrain audit list --json` exposes from the CLI — the dashboard adds the visual proof ladder and the prev-hash → row → root linkage.
 
 ---
 
-## Verify ledger
+## Verify against root
 
-The **Verify ledger** button calls `GET /api/audit/verify`, which is a thin wrapper around the same chain re-walk that `schemabrain audit verify --full` runs from the CLI:
+The **Verify against root** button does a *real* check, not a cosmetic animation. It runs two complementary passes:
 
-```python
-chain_hash[N]  =  sha256(  chain_hash[N-1]  ||  canonical(row[N])  )
-```
+1. Fetches the **whole-log chain walk** (`GET /api/audit/verify?full=true`) and the global root (`GET /api/audit/merkle/root`) once. The chain walk is the tamper tripwire — it covers every row, not just the visible ones, so its result drives the integrity verdict.
+2. For each visible row (oldest-first, the leaf order), if the chain walk flagged it the row reads `edited`; otherwise the browser fetches `GET /api/audit/rows/{id}/proof` and recomputes the root from the leaf hash and the audit path using the Web Crypto API (`crypto.subtle`), folding with the same RFC-6962 `0x00` leaf / `0x01` node prefixes the server uses, and requires the result to equal the global root.
 
-For every row, the sidecar recomputes the chain hash from the previous *stored* chain hash plus the canonical bytes of the current row, and compares against the stored value. The endpoint returns one of two states:
+A row that folds to the root reads `proven`; every row the chain walk flagged is shown `edited` (the pass does not stop at the first), and the integrity stat counts them all — including edited rows outside the visible window. Because the browser recomputes the hashes itself, "verified" means the cryptography held — not that a timer finished.
 
-- `intact` — every row preserved the invariant.
-- `mismatch` — at least one row failed. The CLI surface (`schemabrain audit verify --full`) gives you the specific row IDs and the diff.
+<Note>
+**What this proves, precisely.** Every visible row reconciles to one self-consistent root that the sidecar computed now. It does **not** prove the underlying data is authentic — the browser is given each row's leaf hash by the same sidecar that computed the root. The honest, external defence is archiving the root (next section).
+</Note>
+
+The older server-side chain walk is still available: `GET /api/audit/verify` (and `schemabrain audit verify --full` from the CLI) re-walks the stored-vs-recomputed `chain_hash` for every row. It answers a slightly different question — "does each stored chain hash still match its recomputed value?" — and supports `--since <hash-prefix>` cursors for scoped forensic walks. See [audit verify](/reference/cli/audit).
 
 <Warning>
-The verify endpoint walks the entire chain on every call. On stores with hundreds of thousands of rows this can take noticeable time. For ad-hoc forensic walks scoped to a known-good anchor, use `schemabrain audit verify --since <hash-prefix>` from the CLI — see [audit verify](/reference/cli/audit) for the cursor semantics.
+The root and the proofs are recomputed per request from the rows on disk. On stores with hundreds of thousands of rows this can take noticeable time. The chain walk covers the whole log (so an edited row outside the visible window still trips the verdict), while the per-row inclusion proofs are recomputed only for the rows in view — the surface discloses that when the log is larger than the page.
 </Warning>
 
 ---
 
-## Live updates via SSE
+## Tamper-evident, not tamper-proof
 
-The dashboard subscribes to `GET /api/audit/stream`, a Server-Sent Events stream that pushes new rows as they land. The tick interval is 2 seconds (matching the polling story in the v0.4 design), so new tool calls appear in the list within a couple of seconds of being written.
+The chain and the derived root are **detection, not prevention**. Anyone who can write the SQLite file could rewrite the rows and recompute a coherent new `chain_hash` and Merkle root — so the root the page shows is never, on its own, proof the data is untouched.
 
-This is **real-time enough for observation, not real-time enough for security alerting.** If you need sub-second tamper detection, drive it from a cron that runs `schemabrain audit verify --full` and compares the head hash against an externally-archived value — see the [audit chain mechanism](/mechanism/audit-chain) page for the anchoring pattern.
+The real defence is cheap: **copy the root and store it somewhere the audit file's writer cannot reach** (a different host, an object store, a ticket). A change to any earlier row produces a different root, so a later re-check against your archived value catches it. The page never claims more than this — it surfaces the root, the proofs, and the honest framing, and leaves the anchoring to you. See the [audit chain mechanism](/mechanism/audit-chain) for the cron-driven anchoring pattern.
+
+---
+
+## Freshness
+
+The list reflects the audit log as of page load (and as of the last **Verify against root** pass). It does not auto-push new rows — reload to pick up tool calls written since you opened the page. If the log happens to grow mid-verify, the surface marks the affected rows `log advanced` and invites a re-verify rather than reporting a false break. (The sidecar exposes a `GET /api/audit/stream` SSE endpoint for live row push; this surface does not subscribe to it yet.)
+
+This is an operator's after-the-fact view, **not a security-alerting channel.** For sub-second tamper detection, drive it from a cron that compares an archived root against a fresh `GET /api/audit/merkle/root`.
 
 ---
 
@@ -74,23 +87,23 @@ This is **real-time enough for observation, not real-time enough for security al
 
 The viewer is read-only and intentionally minimal:
 
-- **No filtering by tool or status in the UI yet.** Use `schemabrain audit list --tool ... --status ...` from the CLI for filtered listings.
+- **No filtering by tool or status in the UI yet.** Use `schemabrain audit list --tool ... --status ...` from the CLI.
 - **No export.** Use `schemabrain audit list --json` and pipe through `jq`.
-- **No tampering reproduction.** The "tamper, then re-verify" walkthrough lives in the [audit chain](/mechanism/audit-chain) doc — that page shows the exact SQL you would have to run to break the chain (and why it leaves a forensic signal).
+- **No tampering reproduction.** The "tamper, then re-verify" walkthrough lives in the [audit chain](/mechanism/audit-chain) doc.
 
-These are deliberate. The dashboard is a viewer that helps an operator answer "is the chain intact and what landed since I last looked?" — not a forensic toolkit. The CLI remains the source of truth for deep investigation.
+These are deliberate. The dashboard helps an operator answer "does every row reconcile to one root, and what landed since I last looked?" — not run a forensic toolkit. The CLI remains the source of truth for deep investigation.
 
 ---
 
-## When the chain shows mismatch
+## When a row is flagged
 
-If the verification ribbon flips to **Ledger Chain Mismatch**, the underlying claim is precise: at least one row's recomputed `chain_hash` no longer matches its stored value. Possible causes, in order of likelihood:
+If a verify pass flags a row **edited** (the common case — the chain walk found its stored hash no longer matches its contents) or **failed proof** (the rarer case — the browser folded its leaf up the audit path and the result did not equal the root the sidecar reported), the claim is precise. Possible causes, in order of likelihood:
 
-1. **Someone or something rewrote a row.** The append-only triggers on `mcp_audit` reject normal `UPDATE` / `DELETE`, so the rewrite required either dropping the triggers first or writing to the file outside SQLite. Either is a forensic signal worth investigating.
+1. **A row was rewritten.** The append-only triggers on `mcp_audit` reject normal `UPDATE` / `DELETE`, so the rewrite required dropping the triggers first or writing to the file outside SQLite. Either is a forensic signal worth investigating — and if you archived an earlier root, comparing it locates the change.
 2. **A schema migration changed `canonical(row)` semantics without bumping `fingerprint_version`.** This is a SchemaBrain bug — please file an issue with the row's `id`, `fingerprint_version`, and the output of `schemabrain audit verify --full`.
-3. **The file was restored from an inconsistent backup.** A partial restore that mixed rows from two timelines will fail verification on every divergent row.
+3. **The file was restored from an inconsistent backup.** A partial restore that mixed rows from two timelines will fail on every divergent row.
 
-The CLI verify command's `--full` flag enumerates every divergent row; that is the right next step from here.
+`schemabrain audit verify --full` enumerates every divergent row from the chain side; that is the right next step.
 
 ---
 
@@ -98,10 +111,10 @@ The CLI verify command's `--full` flag enumerates every divergent row; that is t
 
 <CardGroup cols={2}>
   <Card title="Tamper-evident audit chain" icon="signature" href="/mechanism/audit-chain">
-    The mechanism the viewer reflects — append-only triggers, chain hash, recovery semantics.
+    The mechanism the viewer reflects — append-only triggers, chain hash, the derived Merkle root, recovery semantics.
   </Card>
   <Card title="schemabrain audit verify" icon="terminal" href="/reference/cli/audit">
-    The CLI surface for the same re-walk, with `--since` cursor support.
+    The CLI surface for the server-side chain re-walk, with `--since` cursor support.
   </Card>
   <Card title="Refusals" icon="ban" href="/dashboard/refusals">
     Refused rows live in the chain too; this is the envelope-facing view of the same data.

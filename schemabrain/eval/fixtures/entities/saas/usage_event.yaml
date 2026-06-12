@@ -4,3 +4,4 @@ description: A metered telemetry event (api_call / login / export).
 binding:
   single_table: public.usage_events
 identity: id
+group: activity

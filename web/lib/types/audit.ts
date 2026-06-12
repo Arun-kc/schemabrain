@@ -80,6 +80,33 @@ export interface AuditRowDetail extends AuditRow {
   prev_chain_hash_hex: string | null;
 }
 
+/**
+ * Derived RFC-6962 Merkle root over every audit row (id-ASC). Returned by
+ * /api/audit/merkle/root. `root_hex` is always 64 lowercase hex chars;
+ * the empty log yields the SHA-256 of the empty string, never null.
+ */
+export interface MerkleRootResponse {
+  tree_size: number;
+  root_hex: string;
+}
+
+/**
+ * Inclusion proof for one audit row, returned by
+ * /api/audit/rows/{id}/proof. `leaf_index` is the 0-based position in
+ * id-ASC order (NOT the id-DESC render order of /api/audit/rows).
+ * `audit_path` is the leaf->root sibling-hash list (empty for a single-row
+ * tree); the browser folds it with `web/lib/merkle.ts` and reconciles to
+ * the global root. `root_hex` is the root of the tree as computed when this
+ * proof was served.
+ */
+export interface MerkleProofResponse {
+  leaf_index: number;
+  tree_size: number;
+  root_hex: string;
+  leaf_hash_hex: string;
+  audit_path: readonly string[];
+}
+
 /** Paginated wrapper for /api/audit/rows and /api/audit/refusals. */
 export interface PaginatedAuditResponse<T> {
   items: readonly T[];

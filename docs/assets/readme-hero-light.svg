@@ -35,8 +35,8 @@
   
   <g font-family="&#34;JetBrains Mono&#34;, ui-monospace, SFMono-Regular, Menlo, monospace">
     <text x="320" y="210" font-size="60" font-weight="600" fill="#0A0A0A" letter-spacing="-1.6">schemabrain</text>
-    <text x="320" y="248" font-size="17" fill="#1FA86C" letter-spacing="-0.2">// The safety and schema intelligence layer</text>
-    <text x="320" y="274" font-size="17" fill="#1FA86C" letter-spacing="-0.2">// for AI systems that interact with databases.</text>
+    <text x="320" y="248" font-size="17" fill="#1FA86C" letter-spacing="-0.2">// The trust and intelligence layer</text>
+    <text x="320" y="274" font-size="17" fill="#1FA86C" letter-spacing="-0.2">// between AI agents and your database.</text>
   </g>
   
   <g font-family="&#34;JetBrains Mono&#34;, ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#0A0A0A" opacity="0.7">

@@ -26,6 +26,7 @@ import sqlite3
 import struct
 import time
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -38,6 +39,7 @@ from schemabrain.core.entity import (
     SingleTableBinding,
 )
 from schemabrain.core.example_query import ExampleQuery
+from schemabrain.core.graph import GraphEdge, GraphNode, RefusalHotspots
 from schemabrain.core.join import CanonicalJoin, JoinColumnPair
 from schemabrain.core.metric import (
     DbtOwnedMetricError,
@@ -50,6 +52,7 @@ from schemabrain.pii.categories import (
     CATASTROPHIC_LEAK_CATEGORIES,
     ColumnPiiTag,
     PIICategory,
+    PiiConfidenceBand,
     Sensitivity,
 )
 from schemabrain.pii.policy import CatastrophicDowngradeError
@@ -169,9 +172,55 @@ __all__ = [
 #         suggested → llm_suggested/applied, dbt_import →
 #         dbt_import/applied). Pre-v13 stores still hit the mismatch
 #         error path.
-# Pre-v13 stores raise SchemaVersionMismatchError; v13 stores migrate
-# in-place to v14 via `_migrate_v13_to_v14`.
-SCHEMA_VERSION = "14"
+#   "15" → added the graph projection + a batch of semantic/PII columns
+#         in one migration (`_migrate_v14_to_v15`). New tables
+#         `graph_nodes` + `graph_edges` are a denormalised projection of
+#         entities + canonical_joins, populated at index time; they are
+#         created by the `_DDL_STATEMENTS` loop (NOT the migration fn),
+#         so a migrated store gets them EMPTY until the next `index`
+#         re-runs the projection. New columns (all ALTER-added, all
+#         backfill to NULL/default — none was persisted pre-v15, so
+#         there is no historical signal to recover): `entities.
+#         bind_confidence` (TEXT high|medium|low model self-rating,
+#         NULL for hand-authored — reserved, no writer until the suggest
+#         path persists it) + `entities.rationale` (TEXT '') + `entities.
+#         "group"` (identity|billing|activity|other, cosmetic graph
+#         colour, YAML-declarable); `tables.estimated_row_count` (INTEGER
+#         NULL — pg_class.reltuples for Postgres, NULL when unknown);
+#         `column_pii_tags.pii_confidence` (band floor_locked|high|medium
+#         |low) + `column_pii_tags.pii_confidence_score` (REAL) — both
+#         NULL until re-index; the raw shapes that feed the score are
+#         computed on un-redacted in-memory values at index time and are
+#         gone post-profile, so the number must be persisted at index
+#         time and cannot be backfilled; reserved nullable `column_
+#         descriptions` fields `semantic_type` / `meaning` /
+#         `col_confidence` (may be empty at launch). v13 stores chain
+#         13→14→15; v14 stores migrate in-place via `_migrate_v14_to_v15`.
+#         Pre-v13 still raises.
+#   v16 — `graph_edges.cardinality` (TEXT one_to_one|one_to_many|
+#         many_to_one|many_to_many, NULL otherwise): the equi-join shape,
+#         copied from the canonical join but carried ONLY for declared
+#         (FK-backed) edges so an unverified mined/inferred shape is never
+#         rendered as engine-derived (ADR 0011). Additive read-model column
+#         on the v15 graph projection; backfills to NULL and is repopulated
+#         by the next `index` / `joins apply` projection-write — no data
+#         migration beyond the ALTER. `_migrate_v15_to_v16` ALTERs an
+#         existing v15 store; a fresh store gets the column from the DDL.
+#   v17 — `mcp_audit.anchor_entity` (TEXT, NULL otherwise): a best-effort
+#         attribution of an error/refusal row to a single entity, used by
+#         the graph surface's refusal-hotspot overlay (PR-17b). NON-CANONICAL
+#         by construction — it is NOT in `audit/canonical.py::AUDIT_ROW_FIELDS`
+#         and the writer never feeds it into `canonical_audit_row`, so the
+#         per-row chain hash (and the derived Merkle root) is provably
+#         unchanged; existing chained rows keep verifying. `ALTER TABLE ADD
+#         COLUMN` is not an UPDATE/DELETE, so the append-only triggers do not
+#         fire. Backfills to NULL ("unattributed"); the writer populates it
+#         going forward. `_migrate_v16_to_v17` ALTERs an existing store; a
+#         fresh store gets the column from the audit DDL.
+# Pre-v13 stores raise SchemaVersionMismatchError; v13 stores chain to
+# v17 (13→14→15→16→17); v14/v15/v16 stores migrate in-place via the
+# `_migrate_vN_to_vN+1` chain.
+SCHEMA_VERSION = "17"
 _MEMORY_PATH = ":memory:"
 
 # 1 USD = 1_000_000 micros. Storing the ledger as INTEGER micros avoids
@@ -183,6 +232,27 @@ _MICROS_PER_USD = 1_000_000
 # float32 = 4 bytes per dim. BLOBs are little-endian packed via struct.
 _FLOAT32_FORMAT = "<f"
 _FLOAT32_BYTES = 4
+
+
+@dataclass(frozen=True)
+class SourceSummary:
+    """Per-source rollup for the dashboard source selector.
+
+    Counts are best-effort scalars read off the store, never a
+    guarantee of completeness. ``last_indexed_at`` is the most recent
+    ``tables.indexed_at`` (Unix epoch seconds) for the source, or
+    ``None`` when the source carries no physical tables — the sidecar
+    renders '—' rather than fabricating a timestamp. Engine + index
+    state are NOT stored here: the dialect is derived by the sidecar
+    from the boot connection URL (when known), and there is no
+    in-flight indexing registry, so a listed source is always treated
+    as indexed.
+    """
+
+    source_connection_id: str
+    table_count: int
+    entity_count: int
+    last_indexed_at: int | None
 
 
 class SchemaVersionMismatchError(RuntimeError):
@@ -220,8 +290,10 @@ def _migrate_v13_to_v14(conn: sqlite3.Connection) -> None:
     function does NOT guard against double-invocation because the
     ALTER TABLE statements would raise "duplicate column name" on the
     second call, which is a fail-fast signal of a programming error
-    in the caller. Wrapped in the caller's `with conn:` block so a
-    crash mid-migration rolls back the partial state.
+    in the caller. Crash-atomicity is provided by `_init_schema`, which
+    wraps the whole migration in an explicit `BEGIN`/`COMMIT` (a bare
+    `with conn:` would NOT — DDL autocommits at the legacy
+    `isolation_level=''`; see `_init_schema`).
     """
     # `{table}` is interpolated from the hardcoded tuple below — no
     # user input ever reaches the SQL string. The three nosec
@@ -264,6 +336,162 @@ def _migrate_v13_to_v14(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v14_to_v15(conn: sqlite3.Connection) -> None:
+    """Add the v15 column set in a single in-place migration.
+
+    Columns added (all backfill to NULL/default — unlike the v13→v14
+    `origin` backfill, none of these was persisted pre-v15, so there is
+    no historical signal to recover and fabricating one would be
+    theatre):
+
+      entities:            bind_confidence (TEXT NULL — reserved model
+                           self-rating, no writer until the suggest path
+                           persists it), rationale (TEXT ''),
+                           "group" (TEXT 'other', cosmetic graph bucket)
+      tables:              estimated_row_count (INTEGER NULL)
+      column_pii_tags:     pii_confidence (TEXT band NULL) +
+                           pii_confidence_score (REAL NULL). CANNOT be
+                           backfilled: the raw shapes that feed the score
+                           are computed on un-redacted in-memory values
+                           at index time and are gone post-profile, so
+                           the number is persisted at index time and is
+                           not recomputable from store state.
+      column_descriptions: semantic_type (TEXT enum NULL), meaning
+                           (TEXT NULL), col_confidence (TEXT NULL) —
+                           reserved, may stay empty at launch.
+
+    `graph_nodes` / `graph_edges` are NEW tables created by the
+    idempotent `_DDL_STATEMENTS` loop, NOT here — migrations only ALTER
+    existing tables. A migrated store therefore gets EMPTY graph tables
+    until the next `index` re-runs the projection-write.
+
+    Idempotency: the caller guards on `existing_version == "14"` (a v13
+    store reaches here only after `_migrate_v13_to_v14` first lifts it to
+    "14"). No double-invocation guard — a second ALTER raises "duplicate
+    column name", which is a fail-fast signal of a caller bug. Crash-
+    atomicity is provided by `_init_schema`'s explicit `BEGIN`/`COMMIT`
+    (a bare `with conn:` would NOT roll DDL back — it autocommits at the
+    legacy `isolation_level=''`; see `_init_schema`).
+
+    No `# nosec B608`: every statement below is a literal string with
+    zero identifier interpolation (unlike `_migrate_v13_to_v14`, which
+    f-strings `{table}` from a hardcoded tuple), so bandit B608 cannot
+    fire. `"group"` is quoted because GROUP is a reserved SQL keyword.
+    """
+    conn.execute(
+        "ALTER TABLE entities ADD COLUMN bind_confidence TEXT "
+        "CHECK (bind_confidence IS NULL OR bind_confidence IN ('high', 'medium', 'low'))"
+    )
+    conn.execute("ALTER TABLE entities ADD COLUMN rationale TEXT NOT NULL DEFAULT ''")
+    # No CHECK on `group` — the enum is app-enforced (see the `entities`
+    # CREATE for the rationale), not DB-enforced.
+    conn.execute("ALTER TABLE entities ADD COLUMN \"group\" TEXT NOT NULL DEFAULT 'other'")
+    conn.execute("ALTER TABLE tables ADD COLUMN estimated_row_count INTEGER")
+    conn.execute(
+        "ALTER TABLE column_pii_tags ADD COLUMN pii_confidence TEXT "
+        "CHECK (pii_confidence IS NULL OR "
+        "pii_confidence IN ('floor_locked', 'high', 'medium', 'low'))"
+    )
+    conn.execute("ALTER TABLE column_pii_tags ADD COLUMN pii_confidence_score REAL")
+    # No CHECK on `semantic_type` — it mirrors the app-enforced `group`
+    # enum (and has no writer yet); see the `entities` CREATE.
+    conn.execute("ALTER TABLE column_descriptions ADD COLUMN semantic_type TEXT")
+    conn.execute("ALTER TABLE column_descriptions ADD COLUMN meaning TEXT")
+    conn.execute(
+        "ALTER TABLE column_descriptions ADD COLUMN col_confidence TEXT "
+        "CHECK (col_confidence IS NULL OR col_confidence IN ('high', 'medium', 'low'))"
+    )
+    conn.execute(
+        "UPDATE schemabrain_meta SET value = ? WHERE key = ?",
+        ("15", "schema_version"),
+    )
+
+
+def _migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
+    """Add `graph_edges.cardinality` in a single in-place ALTER (v16).
+
+    One additive read-model column on the v15 graph projection: the
+    declared-FK equi-join cardinality (one_to_one / one_to_many /
+    many_to_one / many_to_many; NULL otherwise). Backfills to NULL — the
+    projection is a denormalised read-model rebuilt by the next `index` /
+    `joins apply`, which repopulates the column for declared edges, so
+    there is no data migration beyond the ALTER. The CHECK admits NULL, so
+    it evaluates true for every pre-existing row (SQLite ADD COLUMN with a
+    self-referential CHECK is permitted; mirrors the `bind_confidence` /
+    `pii_confidence` ALTERs in `_migrate_v14_to_v15`).
+
+    `graph_edges` is a v15 table created by the `_DDL_STATEMENTS` loop,
+    NOT by a migration — and that loop runs AFTER this function. So a
+    genuine v15 store HAS the table (ALTER it), but a store CHAINING up
+    from v13/v14 does not yet (the v14→v15 leg only ALTERs pre-existing
+    tables); for that store the DDL loop will shortly CREATE graph_edges
+    already carrying the column. The existence guard covers both: ALTER
+    when present, otherwise leave it to the DDL. Skipping the version
+    constant string here would bump from a name out of step with the
+    column set, so the bump stays unconditional.
+
+    Crash-atomicity: same contract as `_migrate_v14_to_v15` — the caller
+    guards on `existing_version == "15"` and wraps the whole chain in one
+    `BEGIN`/`COMMIT`. Literal SQL, no interpolation, so bandit B608 cannot
+    fire.
+    """
+    graph_edges_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'graph_edges'"
+    ).fetchone()
+    if graph_edges_exists is not None:
+        conn.execute(
+            "ALTER TABLE graph_edges ADD COLUMN cardinality TEXT "
+            "CHECK (cardinality IS NULL OR cardinality IN "
+            "('one_to_one', 'one_to_many', 'many_to_one', 'many_to_many'))"
+        )
+    conn.execute(
+        "UPDATE schemabrain_meta SET value = ? WHERE key = ?",
+        ("16", "schema_version"),
+    )
+
+
+def _migrate_v16_to_v17(conn: sqlite3.Connection) -> None:
+    """Add the non-canonical `mcp_audit.anchor_entity` column (v17).
+
+    One additive metadata column on the append-only audit log: a best-effort
+    attribution of an error/refusal row to a single entity name (the graph
+    surface's refusal-hotspot overlay groups refused rows by it; PR-17b).
+    Backfills to NULL — pre-existing rows are "unattributed" and the writer
+    populates the column going forward, so there is no data migration beyond
+    the ALTER.
+
+    SAFETY — the column is NON-CANONICAL by construction:
+      - It is NOT a member of `audit/canonical.py::AUDIT_ROW_FIELDS`, and the
+        writer builds the canonical preimage from an explicit 13-field dict
+        (never by spreading the draft), so `canonical_audit_row` never sees
+        `anchor_entity`. The per-row chain hash and the derived Merkle root
+        are therefore byte-identical to before; every previously chained row
+        keeps verifying.
+      - `ALTER TABLE ... ADD COLUMN` is a schema change, not a row UPDATE or
+        DELETE, so the `mcp_audit_no_update` / `mcp_audit_no_delete`
+        append-only triggers do not fire.
+
+    `mcp_audit` has existed since v16, so a real v16 store has the table to
+    ALTER; the existence guard mirrors `_migrate_v15_to_v16` and covers a
+    store chaining up from v13 (which also has `mcp_audit`, added at v11) and
+    the impossible-in-practice case where the audit DDL has not yet run (the
+    DDL would then create the column directly). Crash-atomicity: same
+    contract as the rest of the chain — the caller guards on
+    `existing_version == "16"` and wraps the whole chain in one
+    `BEGIN`/`COMMIT`. Literal SQL, no interpolation, so bandit B608 cannot
+    fire.
+    """
+    mcp_audit_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mcp_audit'"
+    ).fetchone()
+    if mcp_audit_exists is not None:
+        conn.execute("ALTER TABLE mcp_audit ADD COLUMN anchor_entity TEXT")
+    conn.execute(
+        "UPDATE schemabrain_meta SET value = ? WHERE key = ?",
+        ("17", "schema_version"),
+    )
+
+
 _DDL_STATEMENTS: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS schemabrain_meta (
@@ -277,6 +505,11 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         name TEXT NOT NULL,
         source_connection_id TEXT NOT NULL,
         indexed_at INTEGER NOT NULL,
+        -- v15: cached row-count estimate (pg_class.reltuples for
+        -- Postgres sources). NULL = unknown / not yet profiled; the
+        -- graph projection renders NULL as "—". Added by
+        -- `_migrate_v14_to_v15`.
+        estimated_row_count INTEGER,
         PRIMARY KEY (schema_name, name, source_connection_id)
     )
     """,
@@ -342,6 +575,18 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         output_tokens INTEGER NOT NULL,
         cost_usd REAL NOT NULL,
         generated_at INTEGER NOT NULL,
+        -- v15: reserved structured-description fields. `semantic_type`
+        -- mirrors the entity `group` enum (app-enforced, no SQL CHECK —
+        -- see `entities`); `meaning` is the structured counterpart of the
+        -- free-text `description`; `col_confidence` is the model's self-
+        -- rating of the description. All nullable and inert at launch (no
+        -- writer / reader yet) — added now so the future structured-
+        -- ColumnDescription PR needs no schema bump. Added by
+        -- `_migrate_v14_to_v15`.
+        semantic_type TEXT,
+        meaning TEXT,
+        col_confidence TEXT
+            CHECK (col_confidence IS NULL OR col_confidence IN ('high', 'medium', 'low')),
         PRIMARY KEY (schema_name, table_name, column_name, source_connection_id),
         FOREIGN KEY (schema_name, table_name, source_connection_id)
             REFERENCES tables (schema_name, name, source_connection_id)
@@ -502,6 +747,24 @@ _DDL_STATEMENTS: tuple[str, ...] = (
             )),
         validation_state TEXT NOT NULL DEFAULT 'applied'
             CHECK (validation_state IN ('draft', 'applied', 'confirmed')),
+        -- v15: `bind_confidence` is the model's self-rating of the
+        -- binding (orthogonal to `validation_state`, the human-gate
+        -- axis). Reserved — no writer persists it until the suggest
+        -- path learns to; NULL for hand-authored. `rationale` is the
+        -- free-text "why this binding" companion. `"group"` is a
+        -- cosmetic graph-projection bucket, YAML-declarable, default
+        -- 'other'. All added in-place by `_migrate_v14_to_v15`.
+        bind_confidence TEXT
+            CHECK (bind_confidence IS NULL OR bind_confidence IN ('high', 'medium', 'low')),
+        rationale TEXT NOT NULL DEFAULT '',
+        -- `group` carries NO SQL CHECK by design: the closed enum
+        -- (identity|billing|activity|other) is a cosmetic, growth-
+        -- expected set enforced solely at the single write chokepoint
+        -- (`Entity.__post_init__` + `_VALID_GROUPS` in core/entity.py).
+        -- A CHECK would tax every future enum addition with a SQLite
+        -- table rebuild (no ALTER-CONSTRAINT) for ~zero integrity gain on
+        -- a single-writer, rebuildable cache. Do NOT re-add it.
+        "group" TEXT NOT NULL DEFAULT 'other',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (source_connection_id, name),
@@ -667,6 +930,19 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         origin TEXT NOT NULL
             CHECK (origin IN ('heuristic', 'operator')),
         classified_at INTEGER NOT NULL,
+        -- v15: per-column PII confidence. `pii_confidence_score` is the
+        -- index-time-computed raw number (source of truth);
+        -- `pii_confidence` is the display band derived from it
+        -- (`floor_locked` = a catastrophic-floor column whose tag is
+        -- locked regardless of score). Both NULL until a re-index
+        -- populates them — the raw shapes that feed the score are gone
+        -- post-profile, so neither can be backfilled. Added by
+        -- `_migrate_v14_to_v15`; no writer persists them yet (the
+        -- index-time score writer lands in a follow-up).
+        pii_confidence TEXT
+            CHECK (pii_confidence IS NULL OR
+                pii_confidence IN ('floor_locked', 'high', 'medium', 'low')),
+        pii_confidence_score REAL,
         PRIMARY KEY (source_connection_id, qualified_table, column_name)
     )
     """,
@@ -679,6 +955,74 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     # A secondary index on `(source_connection_id, qualified_table)`
     # would be a strict subset of the PK prefix; the planner would
     # never choose it.
+    #
+    # v15 graph projection. `graph_nodes` + `graph_edges` are a
+    # denormalised read-model of `entities` + `canonical_joins`,
+    # populated at index time (idempotent DELETE+INSERT) so the graph
+    # UI reads a flat shape without re-walking the FK graph on every
+    # request. They live in `_DDL_STATEMENTS` (not the migration fn) so
+    # a fresh store AND a migrated store both get the tables; a migrated
+    # store gets them EMPTY until the next `index` runs the projection.
+    # One node per entity carries its cosmetic `"group"`, a catastrophic-
+    # PII flag, and the cached row-count. Provenance lives on the EDGE
+    # (`edge_origin`: declared FK vs log-mined vs inferred) — a node is
+    # one-per-entity regardless of how it was derived, so nodes carry no
+    # origin. CASCADE on the entity / join rows keeps the projection
+    # from orphaning past a delete.
+    """
+    CREATE TABLE IF NOT EXISTS graph_nodes (
+        source_connection_id TEXT NOT NULL,
+        entity_name TEXT NOT NULL,
+        -- No CHECK on `group` (app-enforced enum — see `entities`).
+        "group" TEXT NOT NULL DEFAULT 'other',
+        is_catastrophic INTEGER NOT NULL DEFAULT 0,
+        row_count INTEGER,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (source_connection_id, entity_name),
+        FOREIGN KEY (source_connection_id, entity_name)
+            REFERENCES entities (source_connection_id, name)
+            ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS graph_edges (
+        source_connection_id TEXT NOT NULL,
+        join_name TEXT NOT NULL,
+        source_entity TEXT NOT NULL,
+        target_entity TEXT NOT NULL,
+        edge_origin TEXT NOT NULL DEFAULT 'declared'
+            CHECK (edge_origin IN ('declared', 'log_mined', 'inferred')),
+        canonical_path_rank INTEGER NOT NULL DEFAULT 0
+            CHECK (canonical_path_rank IN (0, 1, 2)),
+        -- v16: equi-join cardinality, carried ONLY for declared (FK-backed)
+        -- edges (the projection writer drops it for log_mined / inferred so
+        -- an unverified shape is never rendered as engine-derived). NULL =
+        -- not declared, not yet projected, or uniqueness unconfirmed.
+        cardinality TEXT
+            CHECK (cardinality IS NULL OR cardinality IN
+                ('one_to_one', 'one_to_many', 'many_to_one', 'many_to_many')),
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (source_connection_id, join_name),
+        FOREIGN KEY (source_connection_id, join_name)
+            REFERENCES canonical_joins (source_connection_id, name)
+            ON DELETE CASCADE,
+        FOREIGN KEY (source_connection_id, source_entity)
+            REFERENCES entities (source_connection_id, name)
+            ON DELETE CASCADE,
+        FOREIGN KEY (source_connection_id, target_entity)
+            REFERENCES entities (source_connection_id, name)
+            ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_graph_edges_by_pair
+        ON graph_edges (
+            source_connection_id,
+            target_entity,
+            source_entity,
+            join_name
+        )
+    """,
 )
 
 
@@ -691,10 +1035,14 @@ def _row_to_entity(row: sqlite3.Row) -> Entity:
     origin-enum validation defensively — a corrupt row would otherwise
     surface much later in MCP-tool callers.
 
-    v14 columns `inference_method` and `validation_state` round-trip
-    directly into the matching dataclass fields. Pre-v14 stores
-    migrated in-place (`_migrate_v13_to_v14`) so the columns are
-    always present.
+    v14 columns `inference_method` and `validation_state` and the v15
+    `"group"`, `bind_confidence`, and `rationale` columns round-trip
+    directly into the matching dataclass fields. Stores are migrated
+    in-place on open (v13 chains 13→14→15, v14 runs
+    `_migrate_v14_to_v15`) so the columns are always present.
+    `bind_confidence` is NULL for hand-authored entities (only the
+    LLM-suggest `--apply` path persists it) and `rationale` defaults to
+    '' — both round-trip as-is.
     """
     return Entity(
         name=row["name"],
@@ -706,6 +1054,9 @@ def _row_to_entity(row: sqlite3.Row) -> Entity:
         origin=row["origin"],
         inference_method=row["inference_method"],
         validation_state=row["validation_state"],
+        group=row["group"],
+        bind_confidence=row["bind_confidence"],
+        rationale=row["rationale"],
     )
 
 
@@ -842,6 +1193,122 @@ def _unpack_vector(blob: bytes, dimension: int) -> tuple[float, ...]:
     return struct.unpack(f"<{dimension}f", blob)
 
 
+def _cosine_topk(
+    rows: list[sqlite3.Row],
+    q: np.ndarray,
+    *,
+    k: int,
+    source_connection_id: str,
+) -> list[tuple[str, str, str, float]]:
+    """Score pre-fetched embedding rows against query vector `q`, return top-`k`.
+
+    The shared cosine core behind `search_embeddings_topk` (query from a
+    caller-supplied list) and `nearest_columns` (query from a stored
+    embedding) — extracted so the two retrieval seams can never disagree
+    on scoring, dimension validation, or tiebreak ordering.
+
+    Preconditions the callers MUST satisfy:
+      - `rows` is non-empty (the empty-store short-circuit lives upstream,
+        before any dimension validation) and exposes `schema_name`,
+        `table_name`, `column_name`, `dimension`, `vector`.
+      - `rows` is SQL-ordered by `(schema_name, table_name, column_name)`
+        ascending so the score-tie tiebreak is deterministic.
+      - `q` is already validated finite with non-zero norm.
+
+    Validation of the STORED side happens here (callers can't):
+      - query/stored dimension mismatch raises with "dimension" in the
+        message (the substring `EmbeddingRetriever` matches on);
+      - a per-row dimension or blob-length disagreement raises likewise.
+
+    Zero-norm STORED rows score 0.0 (never NaN); any non-finite score is
+    clamped to 0.0 so a poisoned blob can't rank #1.
+    """
+    expected_dim = int(q.shape[0])
+    q_norm = float(np.linalg.norm(q))
+
+    # All stored vectors should share a dimension under one
+    # `source_connection_id` (one embedder model per source), but
+    # don't trust SQL — validate per-row below after this fast check.
+    stored_dim = int(rows[0]["dimension"])
+    if stored_dim != expected_dim:
+        raise ValueError(
+            f"dimension mismatch: query has {expected_dim}, stored has "
+            f"{stored_dim}. The embedder used at retrieval time differs "
+            f"from the one used at index time. Wipe the store and "
+            f"re-index with the new embedder."
+        )
+
+    m = len(rows)
+    expected_blob_len = expected_dim * _FLOAT32_BYTES
+    matrix = np.empty((m, expected_dim), dtype=np.float32)
+    for i, row in enumerate(rows):
+        row_dim = int(row["dimension"])
+        if row_dim != expected_dim:
+            # Mixed dimensions within one source — possible if the
+            # embedder was swapped mid-index (rare; guarded here for
+            # defense-in-depth, not as a normal path). Include
+            # `source_connection_id` so a multi-source store doesn't
+            # require row-by-row triage to find the bad data.
+            raise ValueError(
+                f"dimension mismatch within store: row "
+                f"({row['schema_name']!r}, {row['table_name']!r}, "
+                f"{row['column_name']!r}) under "
+                f"source {source_connection_id!r} has dimension "
+                f"{row_dim}, expected {expected_dim}"
+            )
+        blob = row["vector"]
+        if len(blob) != expected_blob_len:
+            # Blob length disagrees with declared dimension. The
+            # per-table read path (`get_table_embeddings` →
+            # `_unpack_vector`) catches this, but `np.frombuffer`
+            # silently truncates — without this guard, a 512-float
+            # blob declared at dim 384 would read the first 384
+            # floats and produce wrong scores.
+            raise ValueError(
+                f"column_embeddings: blob length {len(blob)} for row "
+                f"({row['schema_name']!r}, {row['table_name']!r}, "
+                f"{row['column_name']!r}) does not match expected "
+                f"{expected_blob_len} bytes for dimension {expected_dim}"
+            )
+        matrix[i] = np.frombuffer(blob, dtype="<f4")
+
+    # Cosine = (M @ q) / (||row|| * ||q||). Replace zero-norm rows'
+    # divisor with 1.0 so we don't divide by zero, then overwrite
+    # those scores to 0.0 — a zero-norm row has no direction so the
+    # only safe answer is "no alignment".
+    row_norms = np.linalg.norm(matrix, axis=1)
+    safe_norms = np.where(row_norms == 0.0, 1.0, row_norms)
+    raw_scores = matrix @ q
+    scores = raw_scores / (safe_norms * q_norm)
+    scores = np.where(row_norms == 0.0, 0.0, scores)
+    # Defense in depth: even with write-side finiteness validation
+    # in `write_table_embeddings`, a NaN/inf could in principle
+    # arrive via a bypass (manual SQL poke, future store backend
+    # that skipped the write guard). NaN scores propagate silently
+    # through `EmbeddingRetriever`'s `score <= 0.0` filter (NaN
+    # comparisons always return False) and can rank as the top
+    # result. Clamp non-finite scores to 0.0 so they're treated as
+    # "no signal" instead of poisoning the ranking.
+    scores = np.where(np.isfinite(scores), scores, 0.0)
+
+    # Full sort by (-score, schema, table, column) for deterministic
+    # tiebreaks at the k boundary. M is bounded by the store's
+    # embedding count; full sort is a few ms in practice at v1 scale
+    # (<10k columns), enforced by the pytest-benchmark perf gate.
+    # `np.argpartition` is a possible optimisation when scales grow.
+    indexed = [
+        (
+            rows[i]["schema_name"],
+            rows[i]["table_name"],
+            rows[i]["column_name"],
+            float(scores[i]),
+        )
+        for i in range(m)
+    ]
+    indexed.sort(key=lambda r: (-r[3], r[0], r[1], r[2]))
+    return indexed[:k]
+
+
 def _decode_pii_categories(stored: str) -> frozenset[str]:
     """Inverse of the storage shape for `example_queries.pii_categories`.
 
@@ -946,11 +1413,26 @@ class SQLiteStore:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
-    def write_table(self, table: Table, *, source_connection_id: str) -> None:
+    def write_table(
+        self,
+        table: Table,
+        *,
+        source_connection_id: str,
+        estimated_row_count: int | None = None,
+    ) -> None:
         """Idempotent upsert of one Table (and its columns + FKs).
 
         Replaces all existing rows for `(schema, name, source_connection_id)`.
         Atomic: if any insert fails, the entire write rolls back.
+
+        `estimated_row_count` is the v15 cached `pg_class.reltuples`
+        estimate captured at index time. It rides an explicit kwarg
+        rather than the `Table` model so the model stays a
+        pure schema-shape; `None` (the default) persists as SQL NULL,
+        which is correct for SQLite sources and never-analyzed Postgres
+        tables. Because this is a delete+insert, a re-index always
+        refreshes the estimate (or clears it back to NULL if a later run
+        can't produce one).
         """
         conn = self._require_conn()
         with conn:
@@ -961,13 +1443,15 @@ class SQLiteStore:
             )
             conn.execute(
                 "INSERT INTO tables "
-                "(schema_name, name, source_connection_id, indexed_at) "
-                "VALUES (?, ?, ?, ?)",
+                "(schema_name, name, source_connection_id, indexed_at, "
+                "estimated_row_count) "
+                "VALUES (?, ?, ?, ?, ?)",
                 (
                     table.schema_name,
                     table.name,
                     source_connection_id,
                     int(time.time()),
+                    estimated_row_count,
                 ),
             )
             conn.executemany(
@@ -1168,6 +1652,45 @@ class SQLiteStore:
             )
             for row in rows
         }
+
+    def latest_enriched_at(self, *, source_connection_id: str) -> int | None:
+        """Most recent ``column_descriptions.generated_at`` for the source.
+
+        Epoch seconds of the newest enrichment write, or ``None`` when the
+        source has no descriptions yet (never enriched, or indexed with
+        ``--no-enrich``, which writes the table but no description rows).
+        The Drift surface renders ``None`` as "—", never a fabricated ``0``.
+        ``MAX`` over zero rows yields a single ``NULL`` row → ``None``.
+        """
+        conn = self._require_conn()
+        row = conn.execute(
+            "SELECT MAX(generated_at) AS last FROM column_descriptions "
+            "WHERE source_connection_id = ?",
+            (source_connection_id,),
+        ).fetchone()
+        last: int | None = row["last"]
+        return last
+
+    def has_stale_prompt_version(
+        self, *, source_connection_id: str, current_prompt_version: str
+    ) -> bool:
+        """True iff any persisted description for the source was generated
+        with a prompt version other than ``current_prompt_version``.
+
+        The enrichment-drift signal for the Drift surface: a prompt-version
+        mismatch means the AI context predates the live prompt, so a
+        ``schemabrain index --enrich`` would regenerate it. ``False`` when
+        every description matches (fresh) or the source has none (nothing
+        to be stale). ``LIMIT 1`` — existence only, never loads all rows.
+        """
+        conn = self._require_conn()
+        row = conn.execute(
+            "SELECT 1 FROM column_descriptions "
+            "WHERE source_connection_id = ? AND prompt_version != ? "
+            "LIMIT 1",
+            (source_connection_id, current_prompt_version),
+        ).fetchone()
+        return row is not None
 
     def write_table_descriptions(
         self,
@@ -1580,88 +2103,86 @@ class SQLiteStore:
             # store has no "expected dimension" yet.
             return []
 
-        # All stored vectors should share a dimension under one
-        # `source_connection_id` (one embedder model per source), but
-        # don't trust SQL — validate per-row.
-        expected_dim = int(q.shape[0])
-        stored_dim = int(rows[0]["dimension"])
-        if stored_dim != expected_dim:
-            raise ValueError(
-                f"dimension mismatch: query has {expected_dim}, stored has "
-                f"{stored_dim}. The embedder used at retrieval time differs "
-                f"from the one used at index time. Wipe the store and "
-                f"re-index with the new embedder."
-            )
+        # Score, sort, top-k via the shared cosine core. `q` is already
+        # validated finite + non-zero norm; `rows` is non-empty and
+        # SQL-sorted for the deterministic tiebreak.
+        return _cosine_topk(rows, q, k=k, source_connection_id=source_connection_id)
 
-        m = len(rows)
-        expected_blob_len = expected_dim * _FLOAT32_BYTES
-        matrix = np.empty((m, expected_dim), dtype=np.float32)
-        for i, row in enumerate(rows):
-            row_dim = int(row["dimension"])
-            if row_dim != expected_dim:
-                # Mixed dimensions within one source — possible if the
-                # embedder was swapped mid-index (rare; guarded here for
-                # defense-in-depth, not as a normal path). Include
-                # `source_connection_id` so a multi-source store doesn't
-                # require row-by-row triage to find the bad data.
-                raise ValueError(
-                    f"dimension mismatch within store: row "
-                    f"({row['schema_name']!r}, {row['table_name']!r}, "
-                    f"{row['column_name']!r}) under "
-                    f"source {source_connection_id!r} has dimension "
-                    f"{row_dim}, expected {expected_dim}"
-                )
-            blob = row["vector"]
-            if len(blob) != expected_blob_len:
-                # Blob length disagrees with declared dimension. The
-                # per-table read path (`get_table_embeddings` →
-                # `_unpack_vector`) catches this, but `np.frombuffer`
-                # silently truncates — without this guard, a 512-float
-                # blob declared at dim 384 would read the first 384
-                # floats and produce wrong scores.
-                raise ValueError(
-                    f"column_embeddings: blob length {len(blob)} for row "
-                    f"({row['schema_name']!r}, {row['table_name']!r}, "
-                    f"{row['column_name']!r}) does not match expected "
-                    f"{expected_blob_len} bytes for dimension {expected_dim}"
-                )
-            matrix[i] = np.frombuffer(blob, dtype="<f4")
+    def nearest_columns(
+        self,
+        schema_name: str,
+        table_name: str,
+        column_name: str,
+        *,
+        source_connection_id: str,
+        k: int,
+    ) -> list[tuple[str, str, str, float]]:
+        """Return the top-`k` columns most similar to one reference column.
 
-        # Cosine = (M @ q) / (||row|| * ||q||). Replace zero-norm rows'
-        # divisor with 1.0 so we don't divide by zero, then overwrite
-        # those scores to 0.0 — a zero-norm row has no direction so the
-        # only safe answer is "no alignment".
-        row_norms = np.linalg.norm(matrix, axis=1)
-        safe_norms = np.where(row_norms == 0.0, 1.0, row_norms)
-        raw_scores = matrix @ q
-        scores = raw_scores / (safe_norms * q_norm)
-        scores = np.where(row_norms == 0.0, 0.0, scores)
-        # Defense in depth: even with write-side finiteness validation
-        # in `write_table_embeddings`, a NaN/inf could in principle
-        # arrive via a bypass (manual SQL poke, future store backend
-        # that skipped the write guard). NaN scores propagate silently
-        # through `EmbeddingRetriever`'s `score <= 0.0` filter (NaN
-        # comparisons always return False) and can rank as the top
-        # result. Clamp non-finite scores to 0.0 so they're treated as
-        # "no signal" instead of poisoning the ranking.
-        scores = np.where(np.isfinite(scores), scores, 0.0)
+        Powers the entity drilldown's "similar columns" field: given one
+        reference column, find the columns ELSEWHERE in the same source's
+        schema whose embeddings are closest by cosine. The query vector is
+        the reference column's own stored embedding, so this is a
+        column→column nearest-neighbour over the same vector space
+        `search_embeddings_topk` searches (and shares its cosine core).
 
-        # Full sort by (-score, schema, table, column) for deterministic
-        # tiebreaks at the k boundary. M is bounded by the store's
-        # embedding count; full sort is a few ms in practice at v1 scale
-        # (<10k columns), enforced by the pytest-benchmark perf gate.
-        # `np.argpartition` is a possible optimisation when scales grow.
-        indexed = [
-            (
-                rows[i]["schema_name"],
-                rows[i]["table_name"],
-                rows[i]["column_name"],
-                float(scores[i]),
-            )
-            for i in range(m)
-        ]
-        indexed.sort(key=lambda r: (-r[3], r[0], r[1], r[2]))
-        return indexed[:k]
+        Exclusions (REQUIRED):
+          - the reference column itself, and
+          - every other column in the reference column's table.
+        Table-mates are the same record's other attributes, not "similar
+        columns found elsewhere", so they're dropped via a single
+        same-table filter (which also subsumes self-exclusion).
+
+        Ordering matches `search_embeddings_topk`: descending cosine,
+        ties broken ascending by `(schema, table, column)`. Returns up to
+        `k` rows; fewer when fewer candidates exist.
+
+        Degenerate INPUTS return `[]` rather than raising — a read-surface
+        drilldown must render "no similar columns", not a 500:
+          - empty store / no candidates after the same-table filter,
+          - the reference column has no stored embedding (no query
+            direction),
+          - the reference embedding has zero norm (cosine undefined).
+
+        Raises `ValueError` on the caller bug `k < 1` and — like
+        `search_embeddings_topk`, via the shared cosine core — on a
+        corrupt or mixed-dimension store (a blob whose length disagrees
+        with its declared dimension, or candidates whose dimension
+        differs from the reference). Those are defense-in-depth guards
+        against a manual SQL poke; they are unreachable through the
+        write path, where `ColumnEmbedding` pins `dimension == len(vector)`
+        and one embedder runs per source.
+        """
+        if k < 1:
+            raise ValueError(f"k must be >= 1, got {k}")
+        conn = self._require_conn()
+        ref = conn.execute(
+            "SELECT dimension, vector FROM column_embeddings "
+            "WHERE schema_name = ? AND table_name = ? AND column_name = ? "
+            "AND source_connection_id = ?",
+            (schema_name, table_name, column_name, source_connection_id),
+        ).fetchone()
+        if ref is None:
+            # No embedding for the reference column → no query direction.
+            return []
+        # Stored vectors are write-guarded finite (`write_table_embeddings`),
+        # so the only degenerate case left is a zero-norm reference, which
+        # has no direction — cosine is undefined, so there is no similarity
+        # signal to return.
+        q = np.asarray(_unpack_vector(ref["vector"], ref["dimension"]), dtype=np.float32)
+        if float(np.linalg.norm(q)) == 0.0:
+            return []
+        rows = conn.execute(
+            "SELECT schema_name, table_name, column_name, dimension, vector "
+            "FROM column_embeddings "
+            "WHERE source_connection_id = ? "
+            "AND NOT (schema_name = ? AND table_name = ?) "
+            "ORDER BY schema_name, table_name, column_name",
+            (source_connection_id, schema_name, table_name),
+        ).fetchall()
+        if not rows:
+            return []
+        return _cosine_topk(rows, q, k=k, source_connection_id=source_connection_id)
 
     def write_example_queries(
         self,
@@ -1819,6 +2340,183 @@ class SQLiteStore:
             ).fetchall()
         return [(row["schema_name"], row["name"]) for row in rows]
 
+    def estimated_row_counts(self, *, source_connection_id: str) -> dict[str, int | None]:
+        """Map `schema.table` -> cached `pg_class.reltuples` estimate.
+
+        One round-trip for the whole source so the entities-index rollup
+        can `.get(entity.qualified_table)` per row without an N+1. The
+        value is the v15 `estimated_row_count` column verbatim: `None`
+        for tables indexed from a backend that can't cheaply estimate
+        (SQLite, never-analyzed Postgres). Empty source → empty map.
+        """
+        conn = self._require_conn()
+        rows = conn.execute(
+            "SELECT schema_name, name, estimated_row_count FROM tables "
+            "WHERE source_connection_id = ?",
+            (source_connection_id,),
+        ).fetchall()
+        return {f"{row['schema_name']}.{row['name']}": row["estimated_row_count"] for row in rows}
+
+    # ----- v15 graph projection (ADR 0010) -----------------------------------
+
+    def write_graph_projection(
+        self,
+        *,
+        source_connection_id: str,
+        nodes: list[GraphNode],
+        edges: list[GraphEdge],
+    ) -> None:
+        """Replace the whole graph projection for a source atomically.
+
+        Idempotent DELETE+INSERT: every existing `graph_nodes` /
+        `graph_edges` row for the source is deleted, then the supplied
+        projection is inserted — both in ONE transaction. A re-projection
+        therefore never duplicates rows and never exposes a partial-state
+        read window (mirrors `write_column_pii_tags`).
+
+        Empty `nodes` / `edges` is a valid call: it wipes the projection
+        for the source (the structural "nothing to project yet" shape).
+
+        Edges are deleted BEFORE nodes and inserted AFTER nodes so the
+        `graph_edges → entities` FK is always satisfied within the
+        transaction. The caller is responsible for ordering that matches
+        the FK to `canonical_joins` (each edge's `join_name` must name a
+        live canonical join); an orphan edge raises `sqlite3.IntegrityError`
+        and rolls the whole projection back.
+        """
+        conn = self._require_conn()
+        now = int(time.time())
+        with conn:
+            conn.execute(
+                "DELETE FROM graph_edges WHERE source_connection_id = ?",
+                (source_connection_id,),
+            )
+            conn.execute(
+                "DELETE FROM graph_nodes WHERE source_connection_id = ?",
+                (source_connection_id,),
+            )
+            if nodes:
+                conn.executemany(
+                    "INSERT INTO graph_nodes "
+                    '(source_connection_id, entity_name, "group", '
+                    "is_catastrophic, row_count, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            source_connection_id,
+                            node.entity_name,
+                            node.group,
+                            1 if node.is_catastrophic else 0,
+                            node.row_count,
+                            now,
+                        )
+                        for node in nodes
+                    ],
+                )
+            if edges:
+                conn.executemany(
+                    "INSERT INTO graph_edges "
+                    "(source_connection_id, join_name, source_entity, "
+                    "target_entity, edge_origin, canonical_path_rank, "
+                    "cardinality, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            source_connection_id,
+                            edge.join_name,
+                            edge.source_entity,
+                            edge.target_entity,
+                            edge.edge_origin,
+                            edge.canonical_path_rank,
+                            edge.cardinality,
+                            now,
+                        )
+                        for edge in edges
+                    ],
+                )
+
+    def list_graph_nodes(self, *, source_connection_id: str) -> list[GraphNode]:
+        """Read the projected nodes for a source, ordered by `entity_name`.
+
+        Pure read (no transaction wrap). `is_catastrophic` is coerced from
+        the stored 0/1 INTEGER back to a bool; `row_count` stays `None`
+        when the projection wrote no estimate. Empty source → empty list.
+        """
+        conn = self._require_conn()
+        rows = conn.execute(
+            'SELECT entity_name, "group", is_catastrophic, row_count '
+            "FROM graph_nodes WHERE source_connection_id = ? "
+            "ORDER BY entity_name",
+            (source_connection_id,),
+        ).fetchall()
+        return [
+            GraphNode(
+                entity_name=row["entity_name"],
+                group=row["group"],
+                is_catastrophic=bool(row["is_catastrophic"]),
+                row_count=row["row_count"],
+            )
+            for row in rows
+        ]
+
+    def list_graph_edges(self, *, source_connection_id: str) -> list[GraphEdge]:
+        """Read the projected edges for a source, ordered by `join_name`.
+
+        Pure read (no transaction wrap). Empty source → empty list.
+        """
+        conn = self._require_conn()
+        rows = conn.execute(
+            "SELECT join_name, source_entity, target_entity, edge_origin, "
+            "canonical_path_rank, cardinality FROM graph_edges "
+            "WHERE source_connection_id = ? ORDER BY join_name",
+            (source_connection_id,),
+        ).fetchall()
+        return [
+            GraphEdge(
+                join_name=row["join_name"],
+                source_entity=row["source_entity"],
+                target_entity=row["target_entity"],
+                edge_origin=row["edge_origin"],
+                canonical_path_rank=row["canonical_path_rank"],
+                cardinality=row["cardinality"],
+            )
+            for row in rows
+        ]
+
+    def refusal_counts_by_entity(self, *, source_connection_id: str) -> RefusalHotspots:
+        """Live per-entity refusal tally + the unattributed remainder.
+
+        Aggregates append-only `mcp_audit` rows with ``status='refused'`` for
+        the source by the non-canonical ``anchor_entity`` column (v17), in one
+        grouped round-trip. A refused row with a NULL ``anchor_entity`` (the
+        engine could not pin it to one entity) is summed into
+        ``RefusalHotspots.unattributed`` rather than dropped, so a graph badge
+        total always reconciles with the audit log — a refusal is never
+        silently uncounted.
+
+        Pure read (no transaction wrap, no DDL). `mcp_audit` and its
+        ``anchor_entity`` column are guaranteed present by `_init_schema`
+        (`ensure_audit_schema` + the v16→v17 migration both run at open), so
+        no missing-table/column guard is needed and the route stays
+        write-free. A source with no refused rows yields an empty map and 0.
+        """
+        conn = self._require_conn()
+        rows = conn.execute(
+            "SELECT anchor_entity, count(*) AS c FROM mcp_audit "
+            "WHERE source_connection_id = ? AND status = 'refused' "
+            "GROUP BY anchor_entity",
+            (source_connection_id,),
+        ).fetchall()
+        by_entity: dict[str, int] = {}
+        unattributed = 0
+        for row in rows:
+            entity = row["anchor_entity"]
+            if entity is None:
+                unattributed += row["c"]
+            else:
+                by_entity[entity] = row["c"]
+        return RefusalHotspots(by_entity=by_entity, unattributed=unattributed)
+
     def list_distinct_source_connection_ids(self) -> list[str]:
         """Union of `source_connection_id` values across the four data
         tables (`tables`, `entities`, `metrics`, `canonical_joins`).
@@ -1857,6 +2555,43 @@ class SQLiteStore:
             ") ORDER BY source_connection_id"
         ).fetchall()
         return [row["source_connection_id"] for row in rows]
+
+    def summarize_sources(self) -> list[SourceSummary]:
+        """Per-source rollup (table/entity counts + last index time).
+
+        One entry per distinct source, in the same sorted order as
+        ``list_distinct_source_connection_ids``. The dashboard source
+        selector consumes this to render the source list and each
+        source's freshness dot.
+
+        Read-only and per-source (one COUNT pair per source). The
+        source count is tiny in practice — typically one, occasionally
+        a handful — so the per-source round-trips are cheaper than a
+        join and keep every branch reachable: ``COUNT(*)`` is ``0`` and
+        ``MAX(indexed_at)`` is ``NULL`` (→ ``None``) for a source with
+        no physical tables, with no defensive default to leave untested.
+        """
+        conn = self._require_conn()
+        summaries: list[SourceSummary] = []
+        for sid in self.list_distinct_source_connection_ids():
+            table_row = conn.execute(
+                "SELECT COUNT(*) AS n, MAX(indexed_at) AS last "
+                "FROM tables WHERE source_connection_id = ?",
+                (sid,),
+            ).fetchone()
+            entity_row = conn.execute(
+                "SELECT COUNT(*) AS n FROM entities WHERE source_connection_id = ?",
+                (sid,),
+            ).fetchone()
+            summaries.append(
+                SourceSummary(
+                    source_connection_id=sid,
+                    table_count=int(table_row["n"]),
+                    entity_count=int(entity_row["n"]),
+                    last_indexed_at=table_row["last"],
+                )
+            )
+        return summaries
 
     # ----- Entities ------------------------------------------------
     #
@@ -1908,9 +2643,10 @@ class SQLiteStore:
                 "INSERT INTO entities ("
                 "source_connection_id, name, description, "
                 "binding_schema, binding_table, identity, origin, "
-                "inference_method, validation_state, "
+                'inference_method, validation_state, "group", '
+                "bind_confidence, rationale, "
                 "created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (source_connection_id, name) DO UPDATE SET "
                 "description = excluded.description, "
                 "binding_schema = excluded.binding_schema, "
@@ -1919,6 +2655,9 @@ class SQLiteStore:
                 "origin = excluded.origin, "
                 "inference_method = excluded.inference_method, "
                 "validation_state = excluded.validation_state, "
+                '"group" = excluded."group", '
+                "bind_confidence = excluded.bind_confidence, "
+                "rationale = excluded.rationale, "
                 "updated_at = excluded.updated_at",
                 (
                     source_connection_id,
@@ -1930,6 +2669,9 @@ class SQLiteStore:
                     entity.origin,
                     entity.inference_method,
                     entity.validation_state,
+                    entity.group,
+                    entity.bind_confidence,
+                    entity.rationale,
                     now,
                     now,
                 ),
@@ -1939,7 +2681,8 @@ class SQLiteStore:
         conn = self._require_conn()
         row = conn.execute(
             "SELECT name, description, binding_schema, binding_table, "
-            "identity, origin, inference_method, validation_state "
+            "identity, origin, inference_method, validation_state, "
+            '"group", bind_confidence, rationale '
             "FROM entities "
             "WHERE source_connection_id = ? AND name = ?",
             (source_connection_id, name),
@@ -1961,14 +2704,16 @@ class SQLiteStore:
         if source_connection_id is None:
             rows = conn.execute(
                 "SELECT name, description, binding_schema, binding_table, "
-                "identity, origin, inference_method, validation_state "
+                "identity, origin, inference_method, validation_state, "
+                '"group", bind_confidence, rationale '
                 "FROM entities "
                 "ORDER BY name, source_connection_id"
             ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT name, description, binding_schema, binding_table, "
-                "identity, origin, inference_method, validation_state "
+                "identity, origin, inference_method, validation_state, "
+                '"group", bind_confidence, rationale '
                 "FROM entities "
                 "WHERE source_connection_id = ? ORDER BY name",
                 (source_connection_id,),
@@ -2332,6 +3077,7 @@ class SQLiteStore:
         source_connection_id: str,
         qualified_table: str,
         tags: Mapping[str, ColumnPiiTag],
+        confidence: Mapping[str, tuple[PiiConfidenceBand | None, float | None]] | None = None,
     ) -> None:
         """Replace all PII tags for `qualified_table` atomically.
 
@@ -2351,12 +3097,22 @@ class SQLiteStore:
         `_encode_pii_categories` helper handles the serialisation so
         round-trips are byte-identical.
 
+        `confidence` (ADR 0009) is the optional index-time
+        `column_name → (band, score)` map. A column absent from it — or
+        the whole argument omitted — writes NULL into both
+        `pii_confidence` and `pii_confidence_score`, which is the
+        pre-spike behaviour. The band/score are advisory PII-matrix
+        metadata only; they never gate enforcement. Because the atomic
+        delete+insert replaces every row, a re-index that no longer
+        corroborates a tag cleanly overwrites a stale higher band.
+
         Always writes `origin='heuristic'` at v12 — operator overrides
         land via a follow-up PR that writes `origin='operator'`
         through a separate code path.
         """
         conn = self._require_conn()
         now = int(time.time())
+        confidence = confidence or {}
         with conn:
             conn.execute(
                 "DELETE FROM column_pii_tags "
@@ -2373,8 +3129,9 @@ class SQLiteStore:
             conn.executemany(
                 "INSERT INTO column_pii_tags "
                 "(source_connection_id, qualified_table, column_name, "
-                "sensitivity, categories, origin, classified_at) "
-                "VALUES (?, ?, ?, ?, ?, 'heuristic', ?)",
+                "sensitivity, categories, origin, classified_at, "
+                "pii_confidence, pii_confidence_score) "
+                "VALUES (?, ?, ?, ?, ?, 'heuristic', ?, ?, ?)",
                 [
                     (
                         source_connection_id,
@@ -2383,6 +3140,7 @@ class SQLiteStore:
                         sensitivity,
                         _encode_pii_categories(categories),
                         now,
+                        *confidence.get(column_name, (None, None)),
                     )
                     for column_name, (sensitivity, categories) in tags.items()
                 ],
@@ -2425,6 +3183,46 @@ class SQLiteStore:
                 _decode_pii_categories(row["categories"]),
             )
             for row in rows
+        }
+
+    def get_column_pii_confidence(
+        self,
+        *,
+        source_connection_id: str,
+        qualified_table: str,
+        columns: Iterable[str],
+    ) -> dict[str, tuple[str | None, float | None]]:
+        """Bulk-fetch the per-column PII confidence band + raw score.
+
+        Returns `column_name → (band, score)` ONLY for columns that have
+        a stored `column_pii_tags` row. `band` is the display bucket
+        (`floor_locked` / `high` / `medium` / `low`) or `None`; `score`
+        is the index-time-computed raw number (the source of truth the
+        band derives from) or `None`. Both are `None` until a re-index
+        populates them — the raw shapes that feed the score are computed
+        on un-redacted in-memory values at index time and cannot be
+        recomputed from store state, so they are NULL on every row a
+        v14 store carried forward and on every freshly-classified row
+        until the index-time score writer lands in a follow-up.
+
+        Mirrors `get_column_pii_tags`'s lookup shape (same PK-prefix
+        point scan, same dedup-at-boundary contract) so the two reads
+        compose over one table without a second index.
+        """
+        unique = tuple(dict.fromkeys(columns))
+        if not unique:
+            return {}
+        conn = self._require_conn()
+        placeholders = ",".join("?" * len(unique))
+        rows = conn.execute(
+            f"SELECT column_name, pii_confidence, pii_confidence_score "  # nosec B608 — placeholders only
+            f"FROM column_pii_tags "
+            f"WHERE source_connection_id = ? AND qualified_table = ? "
+            f"AND column_name IN ({placeholders})",
+            (source_connection_id, qualified_table, *unique),
+        ).fetchall()
+        return {
+            row["column_name"]: (row["pii_confidence"], row["pii_confidence_score"]) for row in rows
         }
 
     def upsert_column_pii_tag_override(
@@ -2646,40 +3444,87 @@ class SQLiteStore:
         from schemabrain.audit.ddl import ensure_audit_schema
 
         conn = self._require_conn()
-        # Single atomic block: in-place migration (if needed) + core DDL
-        # + version stamp + audit DDL all commit together. A crash
-        # mid-block rolls back, so a half-migrated v13.5 state cannot
-        # land on disk.
-        with conn:
-            # Ensure `schemabrain_meta` exists before reading the
-            # version row — on a brand-new store the table doesn't
-            # exist yet, and a bare SELECT would raise.
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS schemabrain_meta ("
-                "key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-            )
-            existing_version_row = conn.execute(
-                "SELECT value FROM schemabrain_meta WHERE key = ?",
-                ("schema_version",),
-            ).fetchone()
-            existing_version: str | None = (
-                existing_version_row["value"] if existing_version_row else None
-            )
+        # Single ATOMIC schema-init: meta-table create + version read +
+        # in-place migration (if needed) + core DDL + version stamp +
+        # audit DDL either all land or none do.
+        #
+        # This MUST be an explicit `BEGIN`/`COMMIT` — NOT a bare
+        # `with conn:`. The connection runs at the legacy
+        # `isolation_level=''` default, under which Python's sqlite3
+        # driver executes DDL (CREATE / ALTER / DROP) in AUTOCOMMIT,
+        # *outside* the implicit transaction `with conn:` manages. Under
+        # `with conn:`, every migration `ALTER TABLE` would commit
+        # individually; a crash between two ALTERs would persist a
+        # half-migrated shape while the version row stayed behind, and
+        # the next open would re-enter the migration and raise
+        # "duplicate column name" — permanently bricking the store. The
+        # blast radius grows with each migration (v14→v15 alone is nine
+        # ALTERs across four tables). Forcing `isolation_level = None`
+        # plus an explicit `BEGIN` holds all the DDL inside one
+        # transaction that rolls back atomically on any failure. Idiom
+        # mirrors `add_spend_usd`; `isolation_level` is restored in the
+        # `finally` so the store's other `with conn:` writers are
+        # unaffected.
+        saved_isolation = conn.isolation_level
+        conn.isolation_level = None
+        try:
+            conn.execute("BEGIN")
+            try:
+                # Ensure `schemabrain_meta` exists before reading the
+                # version row — on a brand-new store the table doesn't
+                # exist yet, and a bare SELECT would raise.
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS schemabrain_meta ("
+                    "key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                )
+                existing_version_row = conn.execute(
+                    "SELECT value FROM schemabrain_meta WHERE key = ?",
+                    ("schema_version",),
+                ).fetchone()
+                existing_version: str | None = (
+                    existing_version_row["value"] if existing_version_row else None
+                )
 
-            # In-place migration v13 → v14. Runs BEFORE the DDL block
-            # so the new ALTER TABLE statements land on the existing
-            # tables rather than fighting `CREATE TABLE IF NOT EXISTS`
-            # (which is a no-op when the table exists).
-            if existing_version == "13":
-                _migrate_v13_to_v14(conn)
+                # In-place migrations run BEFORE the DDL block so the
+                # ALTER TABLE statements land on the existing tables
+                # rather than fighting `CREATE TABLE IF NOT EXISTS` (a
+                # no-op when the table exists). The guards CHAIN via the
+                # `existing_version` reassignment: a v13 store migrates
+                # 13→14→15→16→17 in a single open; a v14 store runs
+                # 14→15→16→17; a v15 store runs 15→16→17; a v16 store runs
+                # only 16→17. Pre-v13 stores match no guard and hit the
+                # mismatch-error path below.
+                if existing_version == "13":
+                    _migrate_v13_to_v14(conn)
+                    existing_version = "14"
+                if existing_version == "14":
+                    _migrate_v14_to_v15(conn)
+                    existing_version = "15"
+                if existing_version == "15":
+                    _migrate_v15_to_v16(conn)
+                    existing_version = "16"
+                if existing_version == "16":
+                    _migrate_v16_to_v17(conn)
 
-            for stmt in _DDL_STATEMENTS:
-                conn.execute(stmt)
-            conn.execute(
-                "INSERT OR IGNORE INTO schemabrain_meta (key, value) VALUES (?, ?)",
-                ("schema_version", SCHEMA_VERSION),
-            )
-            ensure_audit_schema(conn)
+                for stmt in _DDL_STATEMENTS:
+                    conn.execute(stmt)
+                conn.execute(
+                    "INSERT OR IGNORE INTO schemabrain_meta (key, value) VALUES (?, ?)",
+                    ("schema_version", SCHEMA_VERSION),
+                )
+                ensure_audit_schema(conn)
+                conn.execute("COMMIT")
+            except BaseException:
+                # ROLLBACK may itself fail if no transaction is active or
+                # the connection is degraded; suppress the whole
+                # DatabaseError family so the original failure — the
+                # load-bearing signal — propagates unmasked (mirrors
+                # `add_spend_usd`).
+                with contextlib.suppress(sqlite3.DatabaseError):
+                    conn.execute("ROLLBACK")
+                raise
+        finally:
+            conn.isolation_level = saved_isolation
         stored = conn.execute(
             "SELECT value FROM schemabrain_meta WHERE key = ?", ("schema_version",)
         ).fetchone()
@@ -2689,9 +3534,10 @@ class SQLiteStore:
                 f"expected {SCHEMA_VERSION!r}. Pre-v13 stores are pre-alpha "
                 f"and do not have a migration path — delete or move the "
                 f"store file (path passed to SQLiteStore) and re-run "
-                f"`schemabrain index` to rebuild from scratch. v13 → v14 "
-                f"migrates in-place; if you're seeing this message with "
-                f"a v13 store the migration itself failed and the rollback "
+                f"`schemabrain index` to rebuild from scratch. v13 stores "
+                f"chain to v17 (13→14→15→16→17) and v14/v15/v16 stores "
+                f"migrate in-place; if you're seeing this message with a "
+                f"v13-v16 store the migration itself failed and the rollback "
                 f"left the version unchanged."
             )
 

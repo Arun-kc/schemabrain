@@ -64,7 +64,7 @@ jobs:
       # build, minus the paths-filter guards — a release always rebuilds
       # the export unconditionally.
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 9
 
@@ -110,7 +110,10 @@ jobs:
           wheel=$(ls dist/*.whl)
           echo "Inspecting $wheel"
           listing=$(unzip -l "$wheel")
-          # index.html + the _next bundle = the SPA shell loads at all.
+          # index.html is the root redirect stub (forwards `/` → `/overview`,
+          # the dashboard home — the marketing landing now ships separately in
+          # site/). Its presence + the _next bundle prove the export ran at all;
+          # the real "home loads" guard is the overview.html route check below.
           echo "$listing" | grep -q "schemabrain/dashboard/static/index.html" \
             || { echo "BLOCKED: wheel ships no dashboard/static/index.html (empty dashboard)"; exit 1; }
           next_count=$(echo "$listing" | grep -c "/dashboard/static/_next/" || true)
@@ -118,11 +121,19 @@ jobs:
             || { echo "BLOCKED: wheel ships no dashboard/static/_next/* assets"; exit 1; }
           # Per-route sentinels — a PARTIAL export (index.html present but a
           # surface route missing) would otherwise pass the index-only check.
-          for route in pii audit refusals; do
+          # Every built surface (nav.ts `built: true`) must export its route.
+          for route in overview graph entities dict pii audit refusals policy drift; do
             echo "$listing" | grep -q "schemabrain/dashboard/static/$route.html" \
               || { echo "BLOCKED: wheel missing dashboard surface route '$route.html' (partial export)"; exit 1; }
           done
-          echo "OK: dashboard bundled — index.html + pii/audit/refusals routes + $next_count _next assets"
+          # CSP hash manifest (issue #185) — the sidecar reads this to build a
+          # hash-pinned script-src. If it is MISSING from the wheel, the sidecar
+          # silently falls back to strict `script-src 'self'`, which refuses
+          # every inline bootstrap script and breaks the dashboard at runtime.
+          # `pnpm run export` writes it via scripts/inject-csp-hashes.mjs.
+          echo "$listing" | grep -q "schemabrain/dashboard/static/csp-script-hashes.json" \
+            || { echo "BLOCKED: wheel missing csp-script-hashes.json (CSP script-src would break the dashboard at runtime)"; exit 1; }
+          echo "OK: dashboard bundled — index.html + overview/graph/entities/dict/pii/audit/refusals/policy/drift routes + csp-script-hashes.json + $next_count _next assets"
 
       - name: Show built artifacts
         run: ls -la dist/
@@ -229,7 +240,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

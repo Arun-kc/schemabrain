@@ -4,3 +4,4 @@ description: A tenant account — the org boundary that owns users, subscription
 binding:
   single_table: public.workspaces
 identity: id
+group: identity

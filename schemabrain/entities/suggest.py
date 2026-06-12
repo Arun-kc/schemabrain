@@ -23,7 +23,7 @@ Module layout:
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any, Literal, get_args
 
@@ -105,6 +105,36 @@ class EntityCandidate:
         # pii_hints after construction. dict() copy first so a later
         # mutation of the source dict doesn't leak in either.
         object.__setattr__(self, "pii_hints", MappingProxyType(dict(self.pii_hints)))
+
+    def to_persisted_entity(self) -> Entity:
+        """Return the Entity to persist on the direct `--apply` path.
+
+        The wrapped `entity` is the persisted-clean shape (no inference
+        artifacts). v15 adds two store columns — `bind_confidence` and
+        `rationale` — that capture the model's self-rating of the
+        binding. This is the one seam that threads the transient
+        envelope fields onto the persisted Entity, so the apply path
+        (`_render_apply`) can't silently drop them or drift in how it
+        maps them.
+
+        `confidence` is already validated against the same `{high,
+        medium, low}` set as `Entity.bind_confidence`, so the `replace`
+        re-running `Entity.__post_init__` is a no-op guard, not a risk.
+
+        Note the asymmetry with the file-review workflow: `entities
+        suggest` (without `--apply`) writes YAML whose envelope fields
+        are *comments*, and `entity_to_yaml` never emits these two
+        fields, so an export→edit→apply round-trip resets them to NULL.
+        That is intentional — once an operator edits the YAML they have
+        authored the binding, and the model's transient self-rating no
+        longer applies (the same reset `inference_method` /
+        `validation_state` already get).
+        """
+        return replace(
+            self.entity,
+            bind_confidence=self.confidence,
+            rationale=self.rationale,
+        )
 
 
 @dataclass(frozen=True)

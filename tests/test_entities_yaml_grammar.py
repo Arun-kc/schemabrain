@@ -253,6 +253,33 @@ class TestOriginField:
             parse_entity_yaml(yaml_text)
 
 
+# ----- group ------------------------------------------------------------------
+
+
+class TestGroupField:
+    def test_group_defaults_to_other(self) -> None:
+        entity = parse_entity_yaml(_MINIMAL_YAML)
+        assert entity.group == "other"
+
+    @pytest.mark.parametrize("group", ["identity", "billing", "activity", "other"])
+    def test_all_group_literals_accepted(self, group: str) -> None:
+        yaml_text = _MINIMAL_YAML + f"group: {group}\n"
+        entity = parse_entity_yaml(yaml_text)
+        assert entity.group == group
+
+    def test_unknown_group_rejected(self) -> None:
+        # A typo'd group is a hard parse error, not a silent downgrade
+        # to "other" — the operator should learn the value is invalid.
+        yaml_text = _MINIMAL_YAML + "group: financial\n"
+        with pytest.raises(EntityParseError, match="group"):
+            parse_entity_yaml(yaml_text)
+
+    def test_non_string_group_rejected(self) -> None:
+        yaml_text = _MINIMAL_YAML + "group: 7\n"
+        with pytest.raises(EntityParseError, match="group must be a string"):
+            parse_entity_yaml(yaml_text)
+
+
 # ----- name + structural -----------------------------------------------------
 
 
@@ -459,3 +486,33 @@ class TestEntityToYamlRoundTrip:
         # operator edited the file, so they ARE manually-authored now.
         assert round_tripped.inference_method == "manually_authored"
         assert round_tripped.validation_state == "applied"
+
+    def test_non_default_group_round_trips(self) -> None:
+        """An entity with a non-`other` group emits a `group:` line and
+        round-trips value-equal — unlike the trust-signal fields, `group`
+        is operator-declarable, so it survives export → edit → apply.
+        """
+        original = Entity(
+            name="customer",
+            description="",
+            binding=SingleTableBinding(qualified_table="public.customers"),
+            identity="id",
+            group="billing",
+        )
+        body = entity_to_yaml(original)
+        assert "group: billing" in body
+        assert parse_entity_yaml(body) == original
+
+    def test_default_group_omitted_from_body(self) -> None:
+        """An entity with the default `group="other"` round-trips to YAML
+        that does NOT contain a `group:` line — the parser fills it back.
+        """
+        entity = Entity(
+            name="customer",
+            description="",
+            binding=SingleTableBinding(qualified_table="public.customers"),
+            identity="id",
+        )
+        body = entity_to_yaml(entity)
+        assert "group:" not in body
+        assert parse_entity_yaml(body) == entity

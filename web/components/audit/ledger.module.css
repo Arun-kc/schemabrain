@@ -1,354 +1,927 @@
 /*
- * Stylesheet for the Cryptographic Audit Viewer surface.
- * Designed to look like an immutable cryptographic ledger explorer.
+ * THE PROOF — the Audit integrity surface (/audit).
+ *
+ * The third instrument-grid sibling of /pii ("THE READOUT") and /refusals
+ * ("THE LEDGER"): an uppercase display title strip, a bordered stat strip
+ * carrying the derived Merkle root, a docked verify bar (formula eyebrow +
+ * "Verify against root"), one panel of hairline rows on a shared grid, and
+ * a bottom legend. Each tool call is one row; clicking a row expands its
+ * RFC-6962 inclusion proof (the fold ladder), the audit row's chain link,
+ * and the reconstructed payload in place (accordion, never a 2-pane).
+ *
+ * Honesty lives in the markup/copy, not here. --alarm is used only for a
+ * genuinely edited/broken row (never refused rows, never decorative) PLUS the
+ * top of the cost-class escalation ladder (small=green · medium=amber ·
+ * large=alarm), the same semantic-cost convention the other surfaces use. The
+ * hash accent stays on --cyan, and motion is transform/opacity only
+ * (reduced-motion clamped at the bottom).
  */
+
+/* ---------- Surface shell ---------- */
 
 .shell {
   margin: 0 auto;
-  max-width: 88rem;
+  max-width: 82rem;
   padding-inline: 2.5rem;
   padding-block: 2.5rem 4rem;
 }
 
-/* Verification Ribbon */
-.ribbon {
+/* ---------- Title strip + lede ---------- */
+
+.titleStrip {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1.5rem;
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.04), rgba(5, 150, 105, 0.01));
-  border: 1px solid var(--border-subtle);
-  padding: 1.5rem 2rem;
-  border-radius: 8px;
-  margin-bottom: 2.5rem;
-  position: relative;
+  gap: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--hair-2);
+}
+
+.surfaceTitle {
+  font-family: var(--font-display);
+  font-size: 1.375rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.titleMeta {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+}
+
+.lede {
+  margin-top: 1rem;
+  margin-bottom: 1.75rem;
+  max-width: 48rem;
+  font-family: var(--font-body);
+  font-size: 1.0625rem;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+
+/* ---------- Stat strip (root bar) ---------- */
+
+.summaryStrip {
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: 1.25rem;
+  border: 1px solid var(--hair-2);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  overflow: hidden;
+  transition: border-color var(--dur-2) var(--ease);
+}
+
+/* the strip gains a green/alarm border once a verify pass settles */
+.summaryStrip[data-state="done"] {
+  border-color: color-mix(in oklch, var(--green) 45%, var(--hair-2));
+}
+.summaryStrip[data-state="broken"] {
+  border-color: color-mix(in oklch, var(--alarm) 50%, var(--hair-2));
+}
+
+.stat {
+  flex: 1 1 9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 1rem 1.25rem;
+  border-left: 1px solid var(--hair-2);
+}
+
+.stat:first-child {
+  border-left: none;
+}
+
+/* the root stat is wider — it holds the full 64-hex value */
+.rootStat {
+  flex: 2 1 22rem;
+}
+
+.statNum {
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.statNum[data-tone="alarm"] {
+  color: var(--alarm-strong);
+}
+.statNum[data-tone="cyan"] {
+  color: var(--cyan-strong);
+}
+.statNum[data-tone="green"] {
+  color: var(--green-strong);
+}
+
+.statLabel {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
+}
+
+.statSub {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  color: var(--ink-3);
+  margin-top: 0.1rem;
+}
+
+/* the copyable root value — cyan, monospace, wraps inside its stat cell */
+.rootValue {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--cyan-strong);
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  text-align: left;
+  word-break: break-all;
+  line-height: 1.35;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.rootValue:hover {
+  color: color-mix(in oklch, var(--cyan) 75%, var(--ink));
+}
+
+.rootValue:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+.rootCopyIcon {
+  color: var(--ink-3);
+  flex-shrink: 0;
+  align-self: center;
+}
+
+/* ---------- Verify bar (formula + action) ---------- */
+
+.verifyBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  margin-bottom: 1.5rem;
+  padding: 0.85rem 1.25rem;
+  border: 1px solid var(--hair-2);
+  border-radius: var(--r-lg);
+  background: var(--bg-1);
+}
+
+.formula {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.formula b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.verifySpacer {
+  flex: 1 1 1rem;
+}
+
+.verifyStatus {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--ink-3);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+
+.verifyStatus[data-state="done"] {
+  color: var(--green-strong);
+}
+.verifyStatus[data-state="broken"] {
+  color: var(--alarm-strong);
+}
+.verifyStatus[data-state="advanced"] {
+  color: var(--amber-strong);
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
+  transform-origin: center;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- Broken / advanced banner ---------- */
+
+.banner {
+  display: grid;
+  grid-template-columns: 1.25rem 1fr;
+  column-gap: 0.75rem;
+  align-items: start;
+  margin-bottom: 1.25rem;
+  padding: 0.9rem 1.1rem;
+  border-radius: var(--r-md);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+
+.bannerBroken {
+  border: 1px solid color-mix(in oklch, var(--alarm) 50%, transparent);
+  background: color-mix(in oklch, var(--alarm) 8%, transparent);
+  color: var(--ink);
+}
+
+.bannerBroken .bannerIcon {
+  color: var(--alarm-strong);
+}
+
+.bannerAdvanced {
+  border: 1px solid color-mix(in oklch, var(--amber) 45%, transparent);
+  background: color-mix(in oklch, var(--amber) 8%, transparent);
+  color: var(--ink-2);
+}
+
+.bannerAdvanced .bannerIcon {
+  color: var(--amber-strong);
+}
+
+.bannerIcon {
+  line-height: 1.2;
+}
+
+/* ---------- Ledger panel ---------- */
+
+.ledgerPanel {
+  /* 7 grid tracks declared once and reused by head + every row so the
+     columns line up like an instrument readout:
+     time · row# · tool·caller · cost · hash · idx · proof */
+  --cols: 4.5rem 3.5rem minmax(8rem, 1fr) 4.5rem minmax(6rem, 11rem) 3rem 8rem;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-lg);
+  background: var(--panel);
   overflow: hidden;
 }
 
-[data-theme="dark"] .ribbon {
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(19, 25, 34, 0.4));
-  border-color: rgba(16, 185, 129, 0.15);
+.ledgerHead {
+  display: grid;
+  grid-template-columns: var(--cols);
+  align-items: end;
+  gap: 0.75rem 1rem;
+  padding: 0.7rem 1.25rem 0.6rem;
+  border-bottom: 1px solid var(--hair);
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
 }
 
-.ribbon::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 4px;
-  height: 100%;
-  background: var(--color-signal-green);
+.headProof {
+  text-align: right;
 }
 
-.ribbonText h2 {
-  font-family: var(--font-display);
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 0.25rem;
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rowWrap {
+  border-bottom: 1px solid var(--hair-2);
+}
+
+.rowWrap:last-child {
+  border-bottom: none;
+}
+
+/* The row is the accordion toggle (a full-width button on the shared grid).
+   No nested interactive content — copy buttons live in the expand region. */
+.row {
+  display: grid;
+  grid-template-columns: var(--cols);
+  align-items: center;
+  gap: 0.75rem 1rem;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  background: transparent;
+  border: none;
+  padding: 1.15rem 1.25rem;
+  cursor: pointer;
+  box-shadow: inset 3px 0 0 var(--rail, transparent);
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.row:hover {
+  background-color: var(--panel-2);
+}
+
+.row:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: -2px;
+}
+
+.rowOpen {
+  background-color: var(--panel-2);
+}
+
+/* A genuinely broken proof — the ONLY alarm use on this surface. */
+.rowBroken {
+  --rail: var(--alarm);
+  background: color-mix(in oklch, var(--alarm) 6%, transparent);
+}
+.rowBroken:hover {
+  background: color-mix(in oklch, var(--alarm) 10%, transparent);
+}
+
+/* time cell */
+.timeCell {
   display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.timeAgo {
+  font-size: 0.75rem;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.timeClock {
+  font-size: 0.625rem;
+  color: var(--ink-3);
+}
+
+/* row id cell */
+.idCell {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+/* tool · caller cell */
+.toolCell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.toolName {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.callerChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+.callerName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* cost-class pill — escalation keyed on cost_class; refused stays neutral
+   (the row's refused chip carries the meaning, never alarm here). */
+.costChip {
+  justify-self: start;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border-radius: var(--r-pill);
+  padding: 2px 9px;
+  border: 1px solid var(--hair);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.costChip[data-cost="small"] {
+  color: var(--green-strong);
+  border-color: color-mix(in oklch, var(--green) 40%, transparent);
+  background: color-mix(in oklch, var(--green) 12%, transparent);
+}
+.costChip[data-cost="medium"] {
+  color: var(--amber-strong);
+  border-color: color-mix(in oklch, var(--amber) 45%, transparent);
+  background: color-mix(in oklch, var(--amber) 13%, transparent);
+}
+.costChip[data-cost="large"] {
+  color: var(--alarm-strong);
+  border-color: color-mix(in oklch, var(--alarm) 50%, transparent);
+  background: color-mix(in oklch, var(--alarm) 13%, transparent);
+}
+
+/* hash cell — cyan, monospace, truncated; the reserved hash accent */
+.hashCell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--cyan-strong);
+  overflow: hidden;
+}
+
+.hashCellRefused {
+  color: var(--ink-2);
+}
+
+.hashText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hashIcon {
+  color: var(--ink-3);
+  flex-shrink: 0;
+}
+
+/* idx cell — the leaf_index (graft C): position in the tree, oldest = 0 */
+.idxCell {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+
+/* proof cell — the per-row verify state */
+.proofCell {
+  justify-self: end;
+  display: inline-flex;
   align-items: center;
   gap: 0.5rem;
 }
 
-.ribbonText p {
-  font-family: var(--font-mono);
-  font-size: 0.8125rem;
-  color: var(--text-muted);
-}
-
-.actionBtn {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--color-ink-900);
-  border: 1px solid var(--color-signal-green);
-  background: var(--color-signal-green);
-  padding: 0.5rem 1rem;
-  border-radius: 4px;
-  cursor: pointer;
-  font-weight: 600;
-  transition: all var(--duration-fast);
-  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.2);
-}
-
-.actionBtn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
-}
-
-.backBtn {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--text-primary);
-  border: 1px solid var(--border-subtle);
-  background: var(--surface-overlay);
-  padding: 0.5rem 1rem;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all var(--duration-fast);
-}
-
-.backBtn:hover {
-  background: var(--surface-raised);
-  border-color: var(--border-emphasis);
-  transform: translateX(-2px);
-}
-
-/* Two pane split layout */
-.layout {
-  display: grid;
-  grid-template-columns: 1fr 24rem;
-  gap: 2.5rem;
-  align-items: start;
-}
-
-@media (max-width: 1024px) {
-  .layout {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* Table grid pane */
-.tablePane {
-  overflow-x: auto;
-  border: 1px solid var(--border-subtle);
-  background: var(--surface-overlay);
-  border-radius: 8px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.01);
-}
-
-[data-theme="dark"] .tablePane {
-  background: rgba(19, 25, 34, 0.5);
-}
-
-.table {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  font-variant-numeric: tabular-nums;
-  text-align: left;
-}
-
-.table th {
-  padding: 0.875rem 1.25rem;
+.proofState {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   font-family: var(--font-mono);
   font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--surface-raised);
-}
-
-.table td {
-  padding: 1rem 1.25rem;
-  font-family: var(--font-mono);
-  font-size: 0.8125rem;
-  color: var(--text-primary);
-  border-bottom: 1px solid var(--border-subtle);
-  transition: background-color var(--duration-fast);
+  color: var(--ink-3);
   white-space: nowrap;
 }
 
-.row {
-  cursor: pointer;
-  transition: all var(--duration-fast);
+.proofState[data-state="proven"] {
+  color: var(--green-strong);
+}
+.proofState[data-state="edited"],
+.proofState[data-state="broken"] {
+  color: var(--alarm-strong);
+}
+.proofState[data-state="advanced"] {
+  color: var(--amber-strong);
+}
+.proofState[data-state="unavailable"] {
+  color: var(--ink-3);
 }
 
-.row:hover td {
-  background: var(--surface-raised);
+.chevron {
+  color: var(--ink-3);
+  transition: transform var(--dur-2) var(--ease);
 }
 
-.activeRow td {
-  background: var(--surface-raised);
-  border-bottom-color: var(--color-signal-green);
+.chevronOpen {
+  transform: rotate(180deg);
 }
 
-/* Status Badges */
-.statusSuccess {
-  color: var(--color-signal-green);
-  background: rgba(16, 185, 129, 0.08);
-  border: 1px solid rgba(16, 185, 129, 0.2);
-  padding: 0.125rem 0.375rem;
-  border-radius: 3px;
-  font-weight: 600;
+/* ---------- Expanded proof detail ---------- */
+
+.expandRegion {
+  padding: 0 1.25rem 1.5rem;
+  animation: detailReveal var(--dur-2) var(--ease-out);
 }
 
-.statusRefused {
-  color: var(--color-signal-red);
-  background: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  padding: 0.125rem 0.375rem;
-  border-radius: 3px;
-  font-weight: 600;
+@keyframes detailReveal {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-/* Details rail pane */
-.detailPane {
+.expandInner {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 1.25rem;
+  border-top: 1px dashed var(--hair-2);
+  padding-top: 1.25rem;
 }
 
-.detailCard {
-  background: var(--surface-overlay);
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  padding: 1.75rem 2rem;
-  box-shadow: 0 10px 40px -15px rgba(0, 0, 0, 0.03);
-  position: relative;
-  overflow: hidden;
-}
-
-[data-theme="dark"] .detailCard {
-  background: rgba(19, 25, 34, 0.65);
-  backdrop-filter: blur(16px) saturate(180%);
-  -webkit-backdrop-filter: blur(16px) saturate(180%);
-  box-shadow: 0 10px 40px -15px rgba(0, 0, 0, 0.4);
-}
-
-.detailCard::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: linear-gradient(90deg, var(--color-signal-green), #059669);
-  opacity: 0.85;
-}
-
-.detailHeader {
-  border-bottom: 1px solid var(--border-subtle);
-  padding-bottom: 1rem;
-  margin-bottom: 1.25rem;
-}
-
-.detailTitle {
-  font-family: var(--font-display);
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 0.25rem;
-}
-
-.detailSubtitle {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  color: var(--text-muted);
-}
-
-/* Blockchain connector graphic */
-.chainCard {
-  background: var(--surface-raised);
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  padding: 1.25rem 1.5rem;
-  margin-bottom: 1.25rem;
-  position: relative;
-}
-
-.chainLink {
+.detailSection {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.5rem;
 }
 
-.chainHashBox {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.hashLabel {
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--text-muted);
-}
-
-.hashValue {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  color: var(--text-primary);
-  word-break: break-all;
-  background: var(--surface-base);
-  padding: 0.35rem 0.5rem;
-  border-radius: 4px;
-  border: 1px solid var(--border-subtle);
-}
-
-.chainConnectorLine {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 1.5rem;
-  position: relative;
-}
-
-.chainConnectorLine::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: dashed var(--border-emphasis);
-  border-left: 2px dashed var(--border-emphasis);
-}
-
-.chainIcon {
-  background: var(--surface-overlay);
-  border: 1px solid var(--border-subtle);
-  border-radius: 50%;
-  width: 1.5rem;
-  height: 1.5rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.75rem;
-  z-index: 10;
-  color: var(--color-signal-green);
-}
-
-/* Pre block formatting */
-.codePanel {
-  background: #0B0F14;
-  border: 1px solid #1e293b;
-  border-radius: 6px;
-  overflow: hidden;
-  margin-top: 1rem;
-}
-
-.codeHeader {
-  background: #111827;
-  border-bottom: 1px solid #1e293b;
-  padding: 0.5rem 1rem;
+.detailHead {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 1rem;
+}
+
+.detailCaption {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--ink-3);
+  line-height: 1.5;
+}
+
+/* ---------- Proof ladder (graft B) ---------- */
+
+.ladder {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  border: 1px solid var(--hair-2);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+
+.ladderRung {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr;
+  column-gap: 0.75rem;
+  align-items: baseline;
+  padding: 0.5rem 0.9rem;
+  border-bottom: 1px solid var(--hair-2);
+}
+
+.ladderRung:last-child {
+  border-bottom: none;
+}
+
+.ladderRole {
+  color: var(--ink-3);
+  text-transform: uppercase;
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+}
+
+.ladderHash {
+  color: var(--cyan-strong);
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+.ladderNote {
+  color: var(--ink-3);
+  font-size: 0.6875rem;
+}
+
+.ladderLeaf .ladderHash {
+  color: var(--ink);
+}
+
+.ladderVerdict {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem 0.9rem;
+  font-weight: 600;
+}
+
+.ladderVerdict[data-ok="true"] {
+  color: var(--green-strong);
+  background: color-mix(in oklch, var(--green) 8%, transparent);
+}
+
+.ladderVerdict[data-ok="false"] {
+  color: var(--alarm-strong);
+  background: color-mix(in oklch, var(--alarm) 8%, transparent);
+}
+
+.ladderVerdict[data-ok="pending"] {
+  color: var(--ink-3);
+}
+
+/* ---------- Spec list + copy (chain link) ---------- */
+
+.specList {
+  display: grid;
+  grid-template-columns: minmax(7rem, max-content) 1fr;
+  column-gap: 1.5rem;
+  row-gap: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  align-items: baseline;
+}
+
+.specLabel {
+  color: var(--ink-3);
+}
+
+.specValue {
+  color: var(--ink);
+  word-break: break-all;
+}
+
+.copyHash {
+  font: inherit;
+  color: var(--ink);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  word-break: break-all;
+  text-align: left;
+}
+
+.copyHash:hover {
+  color: var(--green-strong);
+}
+
+.copyHash:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+/* ---------- Code panel (payload) ---------- */
+
+.codePanel {
+  background: var(--bg-1);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+
+.codeHeader {
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--hair);
+  padding: 0.4rem 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
 }
 
 .codeTitle {
   font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  color: var(--text-muted);
+  font-size: 0.625rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+  color: var(--ink-3);
 }
 
 .codeArea {
-  padding: 1.25rem;
+  padding: 1rem;
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   line-height: 1.5;
-  color: #3ECF8E;
+  color: var(--ink-2);
   overflow-x: auto;
-  max-height: 15rem;
+  max-height: 18rem;
+}
+
+/* ---------- Legend + archive note ---------- */
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid var(--hair-2);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--ink-2);
+}
+
+.legendKey {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.legendNote {
+  margin-left: auto;
+  color: var(--ink-3);
+}
+
+/* the honest threat-model line (graft B): the root only defends if archived */
+.archiveNote {
+  margin-top: 1rem;
+  max-width: 52rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+/* ---------- Empty state ---------- */
+
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 4rem 2rem;
+  border: 1px dashed var(--hair);
+  border-radius: var(--r-lg);
+  gap: 0.75rem;
+}
+
+.emptyIcon {
+  color: var(--ink-3);
+}
+
+.emptyTitle {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 500;
+  color: var(--ink);
+  letter-spacing: 0.02em;
+}
+
+.emptyText {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+  max-width: 32rem;
+  line-height: 1.6;
+}
+
+/* ---------- Error card ---------- */
+
+.errorCard {
+  margin-top: 2rem;
+  border: 1px solid var(--hair);
+  background: var(--panel);
+  padding: 2rem 2.5rem;
+  display: grid;
+  grid-template-columns: 1.5rem 1fr;
+  column-gap: 1rem;
+  max-width: 56rem;
+  border-radius: var(--r-lg);
+}
+
+.errorIcon {
+  color: var(--ink-2);
+  line-height: 1.2;
+}
+
+.errorBody h2 {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 500;
+  color: var(--ink);
+  margin-bottom: 0.75rem;
+  letter-spacing: 0.02em;
+}
+
+.errorBody p {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--ink-2);
+  line-height: 1.6;
+  margin-bottom: 0.75rem;
+}
+
+.errorBody code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--green-strong);
+  background: var(--panel-2);
+  border: 1px solid var(--hair-2);
+  padding: 0.5rem 0.75rem;
+  margin-block: 0.25rem;
+  border-radius: var(--r-sm);
+}
+
+/* ---------- Skeleton ---------- */
+
+.skeleton {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+  padding-block: 2rem;
+}
+
+.skeleton::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--ink-3);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---------- Responsive ---------- */
+
+@media (max-width: 820px) {
+  .shell {
+    padding-inline: 1.25rem;
+  }
+  .ledgerHead {
+    display: none;
+  }
+  .row {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+    padding-block: 1rem;
+  }
+  .timeCell {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+  .proofCell {
+    justify-self: end;
+  }
+  .ladderRung {
+    grid-template-columns: 1fr;
+    row-gap: 0.2rem;
+  }
+}
+
+/* ---------- Screen-reader-only (live region) ---------- */
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .row,
+  .chevron,
+  .summaryStrip {
+    transition: none;
+  }
+  .expandRegion {
+    animation: none;
+  }
+  .skeleton::before,
+  .spin {
+    animation: none;
+  }
 }

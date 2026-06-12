@@ -1291,6 +1291,75 @@ class TestRunIndexerSmoke:
         assert pkw["max_cost_usd"] == wizard._WIZARD_INDEX_ENRICH_CAP_USD
         assert pkw["default_concurrency"] == wizard._WIZARD_INDEX_CONCURRENCY
         assert pkw["cryptic_concurrency"] == wizard._WIZARD_INDEX_CRYPTIC_CONCURRENCY
+        # Two-tier routing is OPT-IN: default config leaves cryptic_client unset.
+        assert pkw["cryptic_client"] is None
+
+    def _run_with_enrich(
+        self, cfg: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> dict[str, object]:
+        """Drive `_run_indexer` with stubbed connectors/clients, returning
+        the captured `EnrichmentPipeline` kwargs."""
+        from schemabrain.indexer import IndexResult
+
+        captured: dict[str, object] = {}
+
+        class _CtxStub:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def __enter__(self) -> _CtxStub:
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+        class _PipelineStub:
+            def __init__(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+        monkeypatch.setattr("schemabrain.connectors.postgres.PostgresDataSource", _CtxStub)
+        monkeypatch.setattr("schemabrain.profiler.postgres.PostgresProfiler", _CtxStub)
+        monkeypatch.setattr("schemabrain.core.store.SQLiteStore", _CtxStub)
+        monkeypatch.setattr("schemabrain.enrichment.pipeline.EnrichmentPipeline", _PipelineStub)
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_haiku_45_client",
+            lambda **_kw: "haiku-client",
+        )
+        monkeypatch.setattr(
+            "schemabrain.enrichment.anthropic_client.anthropic_sonnet_46_client",
+            lambda **_kw: "sonnet-client",
+        )
+        monkeypatch.setattr("schemabrain.enrichment.embeddings.fastembed_default", lambda: object())
+        monkeypatch.setattr(
+            "schemabrain.indexer.index",
+            lambda **_kw: IndexResult(
+                tables_seen=1,
+                tables_changed=1,
+                tables_unchanged=0,
+                tables_removed=0,
+                columns_added=5,
+                columns_changed=0,
+                columns_removed=0,
+            ),
+        )
+        wizard._run_indexer(cfg=cfg, source_id="abcd1234", api_key="sk-ant-test")
+        return captured
+
+    def test_enable_sonnet_wires_a_cryptic_client(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # With enable_sonnet on, the index-stage pipeline gets a Sonnet
+        # cryptic_client so `routing.is_cryptic` columns escalate.
+        cfg = _pg_config(base_config, enrich=True, enable_sonnet=True)
+        pkw = self._run_with_enrich(cfg, monkeypatch)
+        assert pkw["cryptic_client"] == "sonnet-client"
+
+    def test_enable_sonnet_off_leaves_cryptic_client_none(
+        self, base_config: WizardConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _pg_config(base_config, enrich=True, enable_sonnet=False)
+        pkw = self._run_with_enrich(cfg, monkeypatch)
+        assert pkw["cryptic_client"] is None
 
 
 # ----- _stage_entities -----------------------------------------------------
@@ -5300,6 +5369,173 @@ class TestStageNextStep:
         # actionable next-step copy.
         assert outcome.message == "Ready"
 
+    @staticmethod
+    def _pg_config(base_config: WizardConfig, store_path: Path) -> WizardConfig:
+        return _dc_replace(
+            base_config,
+            source_url="postgresql+psycopg://u:p@localhost:5432/db",
+            store_path=store_path,
+        )
+
+    @staticmethod
+    def _seed_tables_entities_join(store_path: Path, source_id: str) -> None:
+        """Seed two indexed tables + two entities + one canonical join.
+
+        Writes go through the low-level store API (`write_entity` /
+        `write_canonical_join`), which — unlike the CLI apply commands —
+        does NOT refresh the graph projection. So after seeding,
+        `graph_nodes` / `graph_edges` are still empty: the rebuild under
+        test is the only thing that can populate them.
+        """
+        from schemabrain.core.entity import Entity, SingleTableBinding
+        from schemabrain.core.join import CanonicalJoin, JoinColumnPair
+        from schemabrain.core.models import Column, Table
+        from schemabrain.core.store import SQLiteStore
+
+        def _table(store: SQLiteStore, name: str) -> None:
+            store.write_table(
+                Table(
+                    name=name,
+                    schema_name="public",
+                    columns=(
+                        Column(
+                            name="id",
+                            table_name=name,
+                            schema_name="public",
+                            data_type="bigint",
+                            nullable=False,
+                            ordinal_position=1,
+                            is_primary_key=True,
+                        ),
+                    ),
+                ),
+                source_connection_id=source_id,
+            )
+
+        with SQLiteStore(path=store_path) as store:
+            _table(store, "orders")
+            _table(store, "users")
+            store.write_entity(
+                Entity(
+                    name="order",
+                    description="",
+                    binding=SingleTableBinding(qualified_table="public.orders"),
+                    identity="id",
+                ),
+                source_connection_id=source_id,
+            )
+            store.write_entity(
+                Entity(
+                    name="user",
+                    description="",
+                    binding=SingleTableBinding(qualified_table="public.users"),
+                    identity="id",
+                ),
+                source_connection_id=source_id,
+            )
+            store.write_canonical_join(
+                CanonicalJoin(
+                    name="order_to_user",
+                    description="",
+                    source_entity="order",
+                    target_entity="user",
+                    on=(JoinColumnPair(source_column="id", target_column="id"),),
+                    cardinality="many_to_one",
+                ),
+                source_connection_id=source_id,
+            )
+
+    def test_next_step_rebuilds_graph_projection_from_store(
+        self, base_config: WizardConfig, tmp_path: Path
+    ) -> None:
+        """wsINIT-graph-payoff (PR-22, ADR-0010): the closing stage refreshes
+        the persisted graph projection so `schemabrain dashboard`'s /graph
+        surface opens onto a populated graph right after init — the wizard's
+        own index/apply path never touched `graph_nodes` / `graph_edges`.
+        """
+        from schemabrain.core.store import SQLiteStore
+
+        store_path = tmp_path / "store.db"
+        cfg = self._pg_config(base_config, store_path)
+        source_id = wizard._source_id_for(cfg.source_url)
+        self._seed_tables_entities_join(store_path, source_id)
+
+        # Precondition: the projection is empty (seeding never built it).
+        with SQLiteStore(path=store_path) as store:
+            assert store.list_graph_nodes(source_connection_id=source_id) == []
+
+        outcome = wizard._stage_next_step(WizardContext(config=cfg))
+        assert outcome.status == "done"
+
+        with SQLiteStore(path=store_path) as store:
+            nodes = {n.entity_name for n in store.list_graph_nodes(source_connection_id=source_id)}
+            edges = [e.join_name for e in store.list_graph_edges(source_connection_id=source_id)]
+        assert nodes == {"order", "user"}
+        assert edges == ["order_to_user"]
+
+    def test_next_step_skips_projection_when_no_indexed_tables(
+        self, base_config: WizardConfig, tmp_path: Path
+    ) -> None:
+        """A store that exists but has no indexed tables for the source
+        (e.g. index was skipped) gets no projection rebuild — and the
+        closing stage still reports done.
+        """
+        from schemabrain.core.store import SQLiteStore
+
+        store_path = tmp_path / "store.db"
+        cfg = self._pg_config(base_config, store_path)
+        source_id = wizard._source_id_for(cfg.source_url)
+        # Materialise an empty store (schema only, no tables for the source).
+        with SQLiteStore(path=store_path):
+            pass
+
+        outcome = wizard._stage_next_step(WizardContext(config=cfg))
+        assert outcome.status == "done"
+        with SQLiteStore(path=store_path) as store:
+            assert store.list_graph_nodes(source_connection_id=source_id) == []
+
+    def test_next_step_skips_projection_for_non_postgres_source(
+        self, base_config: WizardConfig, tmp_path: Path
+    ) -> None:
+        """A non-Postgres source (which the wizard never indexes) must not
+        crash the closing stage. Regression guard: `_source_id_for` raises
+        ValueError for non-Postgres URLs, so the rebuild has to bail BEFORE
+        computing the source id — `base_config` uses `sqlite:///:memory:`.
+        """
+        from schemabrain.core.store import SQLiteStore
+
+        store_path = tmp_path / "store.db"
+        with SQLiteStore(path=store_path):  # materialise a real store file
+            pass
+        cfg = _dc_replace(base_config, store_path=store_path)  # sqlite source
+        assert not wizard.is_postgres_url(cfg.source_url)
+
+        outcome = wizard._stage_next_step(WizardContext(config=cfg))
+        assert outcome.status == "done"
+
+    def test_next_step_swallows_projection_rebuild_errors(
+        self, base_config: WizardConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A projection rebuild failure must never abort the wizard's
+        closing stage — the host is already wired and the store populated.
+        The graph self-heals on the next `index` / `apply`.
+        """
+        import schemabrain.semantic.graph_projection as gp
+
+        store_path = tmp_path / "store.db"
+        cfg = self._pg_config(base_config, store_path)
+        source_id = wizard._source_id_for(cfg.source_url)
+        self._seed_tables_entities_join(store_path, source_id)
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("projection rebuild blew up")
+
+        monkeypatch.setattr(gp, "rebuild_graph_projection", _boom)
+
+        outcome = wizard._stage_next_step(WizardContext(config=cfg))
+        assert outcome.status == "done"
+        assert outcome.message == "Ready"
+
 
 # ----- DEFAULT_STAGES contract --------------------------------------------
 
@@ -5456,3 +5692,60 @@ class TestLlmFailureNextStep:
                 "overloaad",  # type: ignore[arg-type] — testing the bad case
                 apply_command="schemabrain entities apply",
             )
+
+
+class TestIsDemoSource:
+    """`_is_demo_source` gates whether the wizard applies the bundled
+    SaaS YAML pack (stages 3/4/5). It must key on real demo provenance —
+    the saas-specific ``public.workspaces`` table — and NOT on the pinned
+    demo URL tail alone: the repo's own ``docker-compose.yml`` binds an
+    *ecommerce* fixture to the same ``postgres:local@localhost:5433/postgres``
+    host:port:db:creds, and misclassifying it as the demo would apply the
+    SaaS pack to ecommerce tables (entity binds fail, broken layer).
+    """
+
+    _DEMO_TAILS = (
+        "postgresql://postgres:local@localhost:5433/postgres",
+        "postgresql+psycopg://postgres:local@localhost:5433/postgres",
+    )
+
+    def test_non_demo_url_is_never_demo_and_skips_the_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A user's own database must short-circuit on the URL tail BEFORE
+        # any DB probe — production users pay zero probe cost and can
+        # never be misclassified as the demo.
+        probed: list[str] = []
+
+        def _spy(*, url: str) -> bool:
+            probed.append(url)
+            return False
+
+        monkeypatch.setattr("schemabrain.setup.setup_stage._detect_stale_demo_fixture", _spy)
+        assert wizard._is_demo_source("postgresql://u:p@prod.acme.com:5432/analytics") is False
+        assert probed == []  # a non-demo source is never probed
+
+    @pytest.mark.parametrize("url", _DEMO_TAILS)
+    def test_demo_url_with_saas_fixture_present_is_demo(
+        self, url: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `workspaces` present -> _detect_stale_demo_fixture False -> demo.
+        monkeypatch.setattr(
+            "schemabrain.setup.setup_stage._detect_stale_demo_fixture",
+            lambda *, url: False,
+        )
+        assert wizard._is_demo_source(url) is True
+
+    @pytest.mark.parametrize("url", _DEMO_TAILS)
+    def test_demo_url_tail_with_stale_ecommerce_fixture_is_not_demo(
+        self, url: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # REGRESSION (E2E audit 2026-06-12): the docker-compose ecommerce
+        # fixture shares the demo URL tail but has no `workspaces` table.
+        # It must NOT be treated as the demo, or the bundled SaaS pack
+        # mis-binds against ecommerce tables.
+        monkeypatch.setattr(
+            "schemabrain.setup.setup_stage._detect_stale_demo_fixture",
+            lambda *, url: True,
+        )
+        assert wizard._is_demo_source(url) is False

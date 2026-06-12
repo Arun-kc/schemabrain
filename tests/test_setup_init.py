@@ -1447,3 +1447,23 @@ class TestResolveRunnerPypiDetection:
         with pytest.raises(InitRefusal) as exc_info:
             _resolve_runner()
         assert exc_info.value.error.kind == "init_runner_missing"
+
+
+class TestInitEnableSonnetFlag:
+    """`init --enable-sonnet` threads opt-in two-tier routing through the
+    wizard (parity with `index --enable-sonnet`). The behavior — that the
+    flag makes the index-stage pipeline build a Sonnet cryptic_client —
+    is covered in `test_setup_wizard.py::TestRunIndexerSmoke`; this pins
+    the parser surface."""
+
+    def test_flag_parses_true(self) -> None:
+        from schemabrain.cli import _build_parser
+
+        ns = _build_parser().parse_args(["init", "--enable-sonnet"])
+        assert ns.enable_sonnet is True
+
+    def test_flag_defaults_false(self) -> None:
+        from schemabrain.cli import _build_parser
+
+        ns = _build_parser().parse_args(["init"])
+        assert ns.enable_sonnet is False

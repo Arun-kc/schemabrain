@@ -1,22 +1,25 @@
 {
   "name": "schemabrain-dashboard",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
-  "description": "SchemaBrain v0.5 read-only dashboard — PII Visualization, Refusal UI, Audit Viewer.",
+  "description": "SchemaBrain v0.6 read-only dashboard — knowledge graph, PII, refusals, audit, policy.",
   "scripts": {
     "dev": "next dev --port 3000",
     "build": "next build",
-    "export": "next build && find ../schemabrain/dashboard/static -maxdepth 1 \\( -name '*.html' -o -name '*.txt' -o -name '_next' \\) -exec rm -rf {} + && cp -R out/. ../schemabrain/dashboard/static/",
+    "export": "next build && node scripts/inject-csp-hashes.mjs && find ../schemabrain/dashboard/static -maxdepth 1 \\( -name '*.html' -o -name '*.txt' -o -name '_next' -o -name 'csp-script-hashes.json' \\) -exec rm -rf {} + && cp -R out/. ../schemabrain/dashboard/static/",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:visual": "playwright test -c playwright.visual.config.ts",
+    "test:visual:update": "playwright test -c playwright.visual.config.ts --update-snapshots"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.59.0",
     "@tanstack/react-virtual": "^3.10.0",
     "clsx": "^2.1.0",
+    "lucide-react": "^0.468.0",
     "next": "^15.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -34,6 +37,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",
+    "@vitest/coverage-v8": "^2.1.0",
     "autoprefixer": "^10.4.0",
     "eslint": "^9.0.0",
     "eslint-config-next": "^15.0.0",

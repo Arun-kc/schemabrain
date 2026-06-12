@@ -1,0 +1,13 @@
+{
+  "source_connection_id": "demo-source",
+  "freshness": {
+    "fresh": true,
+    "change_count": 0,
+    "high_risk": 0,
+    "last_enriched": null,
+    "last_indexed": 1781012680,
+    "source_label": "demo-source",
+    "prompt_version": "2026-06-08-1"
+  },
+  "items": []
+}

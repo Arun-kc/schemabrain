@@ -1,16 +1,16 @@
 [project]
 name = "schemabrain"
-version = "0.5.0"
-description = "The SQL firewall between AI agents and your production database."
+version = "0.6.0"
+description = "The trust and intelligence layer between AI agents and your database."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [
     { name = "Arun K C" },
 ]
-keywords = ["mcp", "database", "semantic", "ai-agents", "postgres", "schema"]
+keywords = ["mcp", "database", "semantic", "ai-agents", "postgres", "schema", "schema-intelligence", "knowledge-graph", "agent-trust"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -19,11 +19,11 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "sqlalchemy>=2.0,<3.0",
+    "sqlalchemy>=2.0.50,<3.0",
     "psycopg[binary]>=3.1,<4.0",
     "pydantic>=2.5,<3.0",
     "structlog>=24.0,<26.0",
-    "anthropic>=0.40,<1.0",
+    "anthropic>=0.107.1,<1.0",
     "fastembed>=0.4,<1.0",
     "mcp>=1.0,<2.0",
     "rich>=13.0,<16.0",
@@ -36,10 +36,21 @@ dependencies = [
     # sqlglot is the SQL parser behind query log mining. v0.5 uses it
     # to extract the set of tables a `pg_stat_statements` row touches
     # and to filter DDL/transaction-control statements out of the
-    # example_queries write set. Pinned at the 25.x major; sqlglot
-    # bumps the parser semantics across majors, so widening the range
-    # is a deliberate review.
-    "sqlglot>=25.0,<31.0",
+    # example_queries write set. sqlglot bumps parser semantics across
+    # majors, so the upper bound is a deliberate, tested review.
+    #
+    # Capped below 27.0: sqlglot 30.x renamed the `exp.Select` arg key
+    # from `"from"` to `"from_"`, which silently breaks
+    # `joins/mining.py:_build_alias_map` — `select.args.get("from")`
+    # returns None, the FROM-side table never enters the alias map, and
+    # `extract_join_predicates` returns an empty set with NO error
+    # (see tests/test_joins_mining.py::TestSqlglotVersionRegression).
+    # The lock pins 26.x where the suite is green; the lock-free CI
+    # smoke job exercises whatever a fresh `pip install` resolves so
+    # this can't silently drift again. Widen the bound only after
+    # porting the AST walk off the version-specific `args.get("from")`
+    # key (e.g. to `select.find(exp.From)`).
+    "sqlglot>=25.0,<27.0",
     # PyYAML powers the entity YAML grammar parser
     # (`schemabrain entities apply <yaml-path>` and the in-process
     # loader behind it). It also arrives transitively via fastembed's
@@ -47,7 +58,7 @@ dependencies = [
     # contract durable: a future upstream drop can't silently break
     # the entity loader. Same pin previously held in dev-deps for
     # `tests/test_dependabot_config.py`; now lifted to runtime.
-    "pyyaml>=6.0,<7.0",
+    "pyyaml>=6.0.3,<7.0",
 ]
 
 [project.optional-dependencies]
@@ -80,11 +91,11 @@ ui = [
     # upper bound when an audited 0.137+ release is available.
     "fastapi>=0.115,!=0.136.3,<1.0",
     "uvicorn[standard]>=0.30,<1.0",
-    "sse-starlette>=2.0,<3.0",
+    "sse-starlette>=3.4.4,<4.0",
 ]
 dev = [
     "pytest>=9.0.3,<10.0",
-    "pytest-cov>=5.0,<8.0",
+    "pytest-cov>=7.1.0,<8.0",
     "ruff>=0.6,<1.0",
     "testcontainers[postgres]>=4.0,<5.0",
     # `pip-audit` runs in the `security` CI job to fail any PR that

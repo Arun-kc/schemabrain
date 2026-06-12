@@ -4,3 +4,4 @@ description: A per-seat line item on a subscription (line-level revenue grain).
 binding:
   single_table: public.subscription_items
 identity: id
+group: billing

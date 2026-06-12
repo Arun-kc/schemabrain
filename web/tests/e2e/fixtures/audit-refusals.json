@@ -1,0 +1,45 @@
+{
+  "items": [
+    {
+      "id": 3,
+      "occurred_at": "2026-06-09T13:44:40.835892Z",
+      "source_connection_id": "demo-source",
+      "caller_id": null,
+      "tool_name": "describe_entity",
+      "status": "refused",
+      "refusal_reason": "pii_blocked",
+      "cost_class": "refused",
+      "pii_categories": [
+        "credential"
+      ],
+      "ast_shape_hash_hex": null,
+      "rule_id": null,
+      "fingerprint_hex": "547c2e08a8161d419577677e188b1c90e20526d6864b4108e3d678328ffa4572",
+      "fingerprint_version": "fp-v1",
+      "chain_hash_hex": "874d7a57f522289e549e61a7df9a7f89993b45d50aeef8749ad5e46841dfdccc",
+      "envelope_reconstructed": false
+    },
+    {
+      "id": 2,
+      "occurred_at": "2026-06-09T13:44:40.835834Z",
+      "source_connection_id": "demo-source",
+      "caller_id": null,
+      "tool_name": "get_metric",
+      "status": "refused",
+      "refusal_reason": "pii_blocked",
+      "cost_class": "refused",
+      "pii_categories": [
+        "payment_card"
+      ],
+      "ast_shape_hash_hex": null,
+      "rule_id": null,
+      "fingerprint_hex": "bab6739b01e39f176cb8ccb50b74f472d18760687f2a9cba875d4a5e0fef5bed",
+      "fingerprint_version": "fp-v1",
+      "chain_hash_hex": "6b067854d304f0b55613f8bb452589861dc8ebdabdeb8c876035dff251ab6e3c",
+      "envelope_reconstructed": false
+    }
+  ],
+  "limit": 50,
+  "offset": 0,
+  "total": 2
+}

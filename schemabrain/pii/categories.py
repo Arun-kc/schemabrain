@@ -14,6 +14,7 @@ runtime views fails CI.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Literal
 
 # Layer 1 — sensitivity. Ordered `public < internal < confidential <
@@ -94,3 +95,30 @@ CATASTROPHIC_LEAK_CATEGORIES: frozenset[PIICategory] = frozenset(
 # Literal-narrowed types — and a future change to the pair shape lands
 # in exactly one declaration site.
 ColumnPiiTag = tuple[Sensitivity, frozenset[PIICategory]]
+
+# Display band for per-column PII-classification confidence (ADR 0009).
+# ADVISORY metadata for the PII matrix — it NEVER gates enforcement.
+# `floor_locked` marks a catastrophic-floor column whose tag is locked
+# regardless of any numeric score (the score is NULL for it); `high` /
+# `medium` / `low` are derived from the index-time `pii_confidence_score`.
+# Mirrors the `pii_confidence` SQL CHECK in `core/store.py`; the two stay
+# in lock-step (pinned by `tests/test_pii_categories.py`).
+PiiConfidenceBand = Literal["floor_locked", "high", "medium", "low"]
+PII_CONFIDENCE_BANDS: tuple[PiiConfidenceBand, ...] = (
+    "floor_locked",
+    "high",
+    "medium",
+    "low",
+)
+
+
+def has_catastrophic_category(categories: Iterable[str]) -> bool:
+    """True iff any category is a catastrophic-leak floor category.
+
+    The single floor predicate shared by the entity PII-severity rollup,
+    the PII matrix, and the v15 graph projection (ADR 0010) so the
+    surfaces can never disagree on what counts as catastrophic. The floor
+    is CATEGORY membership, not sensitivity level — a column is
+    catastrophic regardless of its band.
+    """
+    return any(category in CATASTROPHIC_LEAK_CATEGORIES for category in categories)

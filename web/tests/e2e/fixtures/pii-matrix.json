@@ -1,0 +1,152 @@
+{
+  "source_connection_id": "demo-source",
+  "entities": [
+    {
+      "name": "order",
+      "qualified_table": "public.orders",
+      "identity": "id",
+      "origin": "manual",
+      "inference_method": "manually_authored",
+      "validation_state": "applied",
+      "counts": {
+        "contact": 0,
+        "financial": 0,
+        "payment_card": 1,
+        "health": 0,
+        "genetic": 0,
+        "biometric": 0,
+        "behavioral": 0,
+        "online_identifier": 0,
+        "credential": 0,
+        "government_id": 0,
+        "location": 0,
+        "demographic_protected": 0
+      },
+      "catastrophic_column_count": 1,
+      "has_catastrophic": true
+    },
+    {
+      "name": "user",
+      "qualified_table": "public.users",
+      "identity": "id",
+      "origin": "manual",
+      "inference_method": "manually_authored",
+      "validation_state": "applied",
+      "counts": {
+        "contact": 1,
+        "financial": 0,
+        "payment_card": 0,
+        "health": 0,
+        "genetic": 0,
+        "biometric": 0,
+        "behavioral": 0,
+        "online_identifier": 0,
+        "credential": 1,
+        "government_id": 0,
+        "location": 0,
+        "demographic_protected": 0
+      },
+      "catastrophic_column_count": 1,
+      "has_catastrophic": true
+    }
+  ],
+  "columns": [
+    {
+      "entity": "order",
+      "qualified_table": "public.orders",
+      "column_name": "id",
+      "sensitivity": "public",
+      "categories": [],
+      "pii_confidence": null
+    },
+    {
+      "entity": "order",
+      "qualified_table": "public.orders",
+      "column_name": "user_id",
+      "sensitivity": "public",
+      "categories": [],
+      "pii_confidence": null
+    },
+    {
+      "entity": "order",
+      "qualified_table": "public.orders",
+      "column_name": "card_pan",
+      "sensitivity": "pii",
+      "categories": [
+        "payment_card"
+      ],
+      "pii_confidence": "floor_locked"
+    },
+    {
+      "entity": "order",
+      "qualified_table": "public.orders",
+      "column_name": "amount_cents",
+      "sensitivity": "public",
+      "categories": [],
+      "pii_confidence": null
+    },
+    {
+      "entity": "user",
+      "qualified_table": "public.users",
+      "column_name": "id",
+      "sensitivity": "public",
+      "categories": [],
+      "pii_confidence": null
+    },
+    {
+      "entity": "user",
+      "qualified_table": "public.users",
+      "column_name": "email",
+      "sensitivity": "pii",
+      "categories": [
+        "contact"
+      ],
+      "pii_confidence": "high"
+    },
+    {
+      "entity": "user",
+      "qualified_table": "public.users",
+      "column_name": "password_hash",
+      "sensitivity": "pii",
+      "categories": [
+        "credential"
+      ],
+      "pii_confidence": "floor_locked"
+    },
+    {
+      "entity": "user",
+      "qualified_table": "public.users",
+      "column_name": "created_at",
+      "sensitivity": "public",
+      "categories": [],
+      "pii_confidence": null
+    }
+  ],
+  "categories": [
+    "contact",
+    "financial",
+    "payment_card",
+    "health",
+    "genetic",
+    "biometric",
+    "behavioral",
+    "online_identifier",
+    "credential",
+    "government_id",
+    "location",
+    "demographic_protected"
+  ],
+  "catastrophic_categories": [
+    "credential",
+    "government_id",
+    "payment_card"
+  ],
+  "totals": {
+    "entities": 2,
+    "columns": 8,
+    "catastrophic_columns": 2,
+    "pii_columns": 3,
+    "confidential_columns": 0,
+    "internal_or_public_columns": 5
+  }
+}

@@ -21,6 +21,11 @@ lib64/
 # in CI with FileNotFoundError on the TS files. Discovered after
 # PR #125 CI 26448572653.
 !web/lib/
+# Same trap for the marketing site's `lib/` (site/lib/positioning.ts,
+# synced from the Python single source by scripts/sync_brand_tokens.py).
+# Without this the generic `lib/` rule swallows it and the site build
+# fails in CI with an unresolved positioning import.
+!site/lib/
 
 parts/
 sdist/
@@ -100,6 +105,13 @@ schemabrain-*.db
 # artifact; never belongs in source control.
 schemabrain/.serve_policy_mtime
 
+# Node / pnpm — the web/ and site/ apps own their own node_modules (ignored by
+# their local .gitignores). A root-level node_modules or .pnpm-store only appears
+# as a transient artifact (e.g. a containerized `pnpm install` leaking its store
+# onto the bind-mounted repo during visual-baseline generation). Never commit it.
+/node_modules/
+.pnpm-store/
+
 # Benchmark / cache artifacts not covered above
 .benchmarks/
 
@@ -120,6 +132,11 @@ logs/
 
 # Claude
 .claude/
+
+# Antigravity
+.antigravity/
+.antigravityignore
+.sb-fuzz-store.db
 
 # Agent review artifacts (PR-review rotation outputs)
 .review/

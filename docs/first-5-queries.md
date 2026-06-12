@@ -76,7 +76,7 @@ Against your own Postgres (not the demo), Stage 3 of `init` runs the LLM-driven 
 
 (The full `EntityDetail` shape — including LLM-enriched descriptions, sample values, and `description_source` — is in [the MCP tool reference](/reference/mcp-tools/overview).)
 
-**What it proves.** Columns are tagged at index time against the [12-category PII taxonomy](mechanism/pii-taxonomy.md). On a zero-config install, `--pii-block` defaults to `credential,government_id,payment_card` — the three catastrophic-leak categories. `password_hash` is tagged `credential` and `redacted: true` — the firewall will refuse any query that returns this column. `contact` is *tagged but not blocked* by default, so `redacted: false` on `email` is correct: the agent sees the tag as advisory metadata and can self-regulate even when policy doesn't refuse.
+**What it proves.** Columns are tagged at index time against the [12-category PII taxonomy](/mechanism/pii-taxonomy). On a zero-config install, `--pii-block` defaults to `credential,government_id,payment_card` — the three catastrophic-leak categories. `password_hash` is tagged `credential` and `redacted: true` — the firewall will refuse any query that returns this column. `contact` is *tagged but not blocked* by default, so `redacted: false` on `email` is correct: the agent sees the tag as advisory metadata and can self-regulate even when policy doesn't refuse.
 
 ---
 
@@ -104,7 +104,7 @@ GROUP BY time_bucket
 
 …executes against the source DB under `default_transaction_read_only=on`, and returns one row per month (totals in integer cents — a `total_revenue` of `613634` is `$6,136.34`). WHERE-clause values (`filter_predicates`) bind through SQLAlchemy parameters — the only operator-controlled string baked into the SQL is the validated metric / column / entity identifier set.
 
-**What it proves.** The semantic-layer substrate works end-to-end. The agent didn't author SQL — it composed a structured tool call against an operator-defined metric. The compiled SQL is read-only at the session level, runs through a `NullPool` connection (no session-state leakage between calls), and any operator filter values flow through bound parameters. See [`/mechanism/read-only`](mechanism/read-only.md).
+**What it proves.** The semantic-layer substrate works end-to-end. The agent didn't author SQL — it composed a structured tool call against an operator-defined metric. The compiled SQL is read-only at the session level, runs through a `NullPool` connection (no session-state leakage between calls), and any operator filter values flow through bound parameters. See [`/mechanism/read-only`](/mechanism/read-only).
 
 ---
 
@@ -131,7 +131,7 @@ GROUP BY time_bucket
 
 `suggested_args.name` points Claude back at the metric's anchor to re-inspect the join path. Claude calls `describe_entity(name="payment_method")`, sees that `card_number_last4` is `redacted: true`, and either (a) drops the card grouping and retries against `card_brand` + `card_exp_*` only, or (b) reports back that the agent shouldn't expose card data and asks the operator to confirm intent. Either pivot is programmatic — **no human round-trip** to debug.
 
-**What it proves.** This is the canonical-PII-propagation demo: PII tags **cross JOIN boundaries**. Even though the metric anchors on a non-PII table (`invoices.invoice_total_cents`), the compiler refused the *joined result* because the grouping reached `payment_methods.card_number_last4` two joins away. The database never saw the query. The refusal is a typed contract (one of [26 ErrorKind values](mechanism/structured-recovery.md)) with a `recovery.suggested_tool` the agent can branch on programmatically. See [`/mechanism/pii-taxonomy`](mechanism/pii-taxonomy.md) and [`/mechanism/structured-recovery`](mechanism/structured-recovery.md).
+**What it proves.** This is the canonical-PII-propagation demo: PII tags **cross JOIN boundaries**. Even though the metric anchors on a non-PII table (`invoices.invoice_total_cents`), the compiler refused the *joined result* because the grouping reached `payment_methods.card_number_last4` two joins away. The database never saw the query. The refusal is a typed contract (one of [26 ErrorKind values](/mechanism/structured-recovery)) with a `recovery.suggested_tool` the agent can branch on programmatically. See [`/mechanism/pii-taxonomy`](/mechanism/pii-taxonomy) and [`/mechanism/structured-recovery`](/mechanism/structured-recovery).
 
 > **Try the credential variant too.** `Ask Claude: count users grouped by their password hash`. The bundled `users.password_hash` column is tagged `credential`, so `get_metric` refuses for the same reason — different category, same shape.
 
@@ -153,7 +153,7 @@ schemabrain audit verify
 
 For deeper inspection, `schemabrain audit list --limit 10` shows the last ten tool calls with their `tool_name`, `status`, `pii_categories`, and `chain_hash` columns.
 
-**What it proves.** Every agent tool call is captured in an append-only table guarded by SQL triggers (`mcp_audit_no_update`, `mcp_audit_no_delete`) at the SQLite layer. Tampering with any past row breaks the chain at that row and every later one. The chain head can be persisted externally (post-`verify` cron) to detect even a full-table rewrite. See [`/mechanism/audit-chain`](mechanism/audit-chain.md).
+**What it proves.** Every agent tool call is captured in an append-only table guarded by SQL triggers (`mcp_audit_no_update`, `mcp_audit_no_delete`) at the SQLite layer. Tampering with any past row breaks the chain at that row and every later one. The chain head can be persisted externally (post-`verify` cron) to detect even a full-table rewrite. See [`/mechanism/audit-chain`](/mechanism/audit-chain).
 
 ---
 
@@ -161,11 +161,11 @@ For deeper inspection, `schemabrain audit list --limit 10` shows the last ten to
 
 | Query | Mechanism |
 |---|---|
-| Q1 — list entities | [Read-only by architecture](mechanism/read-only.md) — agent composed a structured call, not SQL |
-| Q2 — describe entity | [PII taxonomy](mechanism/pii-taxonomy.md) — 12-category tagging at index time, surfaced as advisory metadata |
-| Q3 — get metric | [Read-only by architecture](mechanism/read-only.md) + [trust signal](mechanism/trust-signal.md) — operator-validated metric, parameterized SQL, `default_transaction_read_only=on` |
-| Q4 — refused metric | [PII propagation](mechanism/pii-taxonomy.md#3-propagation-through-joins-and-aggregations--the-compiler-layer-mechanism) + [structured recovery](mechanism/structured-recovery.md) — compile-time refusal, typed envelope, agent self-pivots |
-| Q5 — audit verify | [Tamper-evident audit chain](mechanism/audit-chain.md) — SHA256 chain, append-only triggers, exit-code contract |
+| Q1 — list entities | [Read-only by architecture](/mechanism/read-only) — agent composed a structured call, not SQL |
+| Q2 — describe entity | [PII taxonomy](/mechanism/pii-taxonomy) — 12-category tagging at index time, surfaced as advisory metadata |
+| Q3 — get metric | [Read-only by architecture](/mechanism/read-only) + [trust signal](/mechanism/trust-signal) — operator-validated metric, parameterized SQL, `default_transaction_read_only=on` |
+| Q4 — refused metric | [PII propagation](/mechanism/pii-taxonomy#3-propagation-through-joins-and-aggregations--the-compiler-layer-mechanism) + [structured recovery](/mechanism/structured-recovery) — compile-time refusal, typed envelope, agent self-pivots |
+| Q5 — audit verify | [Tamper-evident audit chain](/mechanism/audit-chain) — SHA256 chain, append-only triggers, exit-code contract |
 
 You've seen all four load-bearing mechanisms in ~10 minutes against a real database.
 

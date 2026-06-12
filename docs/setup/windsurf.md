@@ -7,15 +7,15 @@ description: "60-second wiring for Windsurf / Cascade. Auto-detected by the acti
 
 > **60 seconds:** install SchemaBrain, run `schemabrain init`, restart Windsurf, ask Cascade about your database.
 
-SchemaBrain is the SQL firewall between Windsurf's Cascade agent and your Postgres database — twelve read-only MCP tools, validated metrics, tamper-evident audit. Works on macOS, Linux, and Windows.
+SchemaBrain is the trust and intelligence layer between Windsurf's Cascade agent and your Postgres database — twelve read-only MCP tools, validated metrics, tamper-evident audit. Works on macOS, Linux, and Windows.
 
 ---
 
 ## Install
 
 ```bash
-pip install schemabrain
-schemabrain init --host windsurf
+uvx schemabrain init --host windsurf
+# or install first: pipx install schemabrain (or: pip install schemabrain)
 ```
 
 The wizard prompts you to pick **1. Connect my own Postgres** (paste a `postgresql+psycopg://...` URL) or **2. Try with sample data** (a 12-table SaaS fixture spins up in Docker; ~$0.03 to index). Press Enter to take the default (`2`).
@@ -30,7 +30,7 @@ The wizard then introspects the schema, classifies columns for PII, optionally c
     "schemabrain": {
       "command": "uvx",
       "args": [
-        "schemabrain==0.5.0",
+        "schemabrain==0.6.0",
         "serve",
         "--url-env", "SCHEMABRAIN_DATABASE_URL",
         "--store-path", "/Users/you/schemabrain.db",
@@ -62,10 +62,10 @@ If Cascade calls `list_entities` and reports the entities curated during init, y
 
 ## What you get
 
-- **12 MCP tools, none of which can write.** Full list in [`/mechanism/read-only`](../mechanism/read-only.md).
-- **PII-aware refusal at the `get_metric` boundary.** Defaults block `credential`, `payment_card`, `government_id`. `--pii-block` **replaces** the set rather than extending it, so widen by listing the full target set, e.g. `--pii-block credential,payment_card,government_id,contact,health`. Details in [`/mechanism/pii-taxonomy`](../mechanism/pii-taxonomy.md).
-- **Tamper-evident audit chain.** Verify with `schemabrain audit verify`. Details in [`/mechanism/audit-chain`](../mechanism/audit-chain.md).
-- **Structured recovery envelopes.** Refusals ship typed contracts Cascade can act on programmatically. Details in [`/mechanism/structured-recovery`](../mechanism/structured-recovery.md).
+- **12 MCP tools, none of which can write.** Full list in [`/mechanism/read-only`](/mechanism/read-only).
+- **PII-aware refusal at the `get_metric` boundary.** Defaults block `credential`, `payment_card`, `government_id`. `--pii-block` **replaces** the set rather than extending it, so widen by listing the full target set, e.g. `--pii-block credential,payment_card,government_id,contact,health`. Details in [`/mechanism/pii-taxonomy`](/mechanism/pii-taxonomy).
+- **Tamper-evident audit chain.** Verify with `schemabrain audit verify`. Details in [`/mechanism/audit-chain`](/mechanism/audit-chain).
+- **Structured recovery envelopes.** Refusals ship typed contracts Cascade can act on programmatically. Details in [`/mechanism/structured-recovery`](/mechanism/structured-recovery).
 
 ## Sample interaction
 

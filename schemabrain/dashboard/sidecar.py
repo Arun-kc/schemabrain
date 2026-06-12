@@ -1,8 +1,8 @@
 """FastAPI sidecar for the v0.4 dashboard.
 
-The sidecar exposes 8 read-only JSON routes + 1 SSE stream + 1 health
-endpoint, plus serves the static Next.js export at ``/``. Architectural
-invariants:
+The sidecar exposes a set of read-only JSON routes + 1 SSE stream + 1
+health endpoint, plus serves the static Next.js export at ``/``.
+Architectural invariants:
 
   - Bind ``127.0.0.1`` only. ``create_sidecar`` accepts no ``host``
     argument by design; the CLI launcher also does not surface one.
@@ -25,19 +25,28 @@ Route inventory (full spec in ``docs/internal/v0.4_ui_rfc.md`` §3):
   6. GET  /api/audit/verify                    chain verify status
   7. GET  /api/audit/refusals                  Refusal feed
   8. GET  /api/audit/refusals/{id}             Refusal envelope detail
+  9. GET  /api/audit/merkle/root               derived Merkle root
+ 10. GET  /api/audit/rows/{id}/proof           inclusion proof
   SSE.   GET  /api/audit/stream                live audit row push
   H.     GET  /api/health                      liveness
+
+(Additional read-only routes — entities/pii-matrix, pii/policy,
+pii/policy/preview, drift — register in their own ``_register_*``
+helpers below; the list above is the audit + entity core.)
 """
 
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
+import re
 import sqlite3
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from schemabrain.dashboard import DASHBOARD_SCHEMA_VERSION, STATIC_DIR
 
@@ -59,6 +68,127 @@ DEFAULT_PORT: int = 7878
 # client can detect protocol drift without parsing the body.
 CHARTER_VERSION_HEADER: str = "X-Schemabrain-Charter-Version"
 
+# Content-Security-Policy for the static dashboard, served on EVERY
+# response (JSON, SSE, and the static export bytes). The CSP is assembled
+# per-app by ``build_content_security_policy`` because ``script-src`` is
+# hash-pinned from a build-time manifest, not a fixed string.
+#
+#  - default-src 'self': nothing loads cross-origin by default.
+#  - connect-src 'self': permits the same-origin SSE stream
+#    (/api/audit/stream) and every /api fetch; blocks exfiltration to
+#    a third-party origin.
+#  - font-src 'self': the woff2 faces are self-hosted under _next/.
+#  - img-src 'self' data:: inline SVG/data-URI assets the export emits.
+#  - script-src is HASH-pinned (issue #185), never 'unsafe-inline'. A
+#    Next.js `output: export` build emits inline bootstrap + RSC-flight
+#    <script> tags plus the pre-hydration theme <script>, and there is no
+#    server runtime to mint a per-request nonce (nonces need a server;
+#    the sidecar serves verbatim bytes). Instead, the `pnpm run export`
+#    step extracts each inline script's sha256 into a manifest
+#    (`csp-script-hashes.json`) that ships in the static dir; the sidecar
+#    reads it and lists `script-src 'self' '<hash>'…`. A pinned
+#    `generateBuildId` (web/next.config.mjs) keeps those bytes — and thus
+#    the hashes — deterministic across builds. When the manifest is
+#    absent (contributor dev, empty static) script-src collapses to a
+#    strict `'self'`: a missing manifest fails CLOSED, never open.
+#  - style-src KEEPS 'unsafe-inline' deliberately and separately. React
+#    emits inline style="" attributes governed by style-src-attr, which
+#    CSP hashes cannot cover; dropping it would require moving those to
+#    classes first (tracked separately, out of scope for #185). object-src
+#    'none' + base-uri 'self' + frame-ancestors 'none' keep the high-value
+#    sinks closed regardless; the residual risk is further bounded by the
+#    localhost-only bind, the read-only route table, React's default
+#    escaping, and the absence of any user-authored HTML.
+#
+# All CSP directives EXCEPT script-src (which is computed from the
+# build-time hash manifest). Kept as an ordered tuple so the assembled
+# CSP is byte-stable for the same manifest.
+_CSP_BASE_DIRECTIVES: tuple[str, ...] = (
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "connect-src 'self'",
+    "form-action 'self'",
+)
+
+# Build-time inline-script hash manifest the `pnpm run export` step writes
+# into the static dir. A JSON array of `sha256-<base64>` strings — the
+# deduped union of every inline <script> block across the exported HTML.
+# Gitignored (built at release); the sidecar reads it to hash-pin
+# script-src. See web/scripts/inject-csp-hashes.mjs.
+CSP_SCRIPT_HASHES_FILENAME: str = "csp-script-hashes.json"
+
+# A well-formed CSP sha256 source-hash: ``sha256-`` + standard base64
+# (with optional ``=`` padding) and NOTHING else. The strict shape is a
+# security control, not cosmetics: each accepted entry is wrapped as
+# ``'{h}'`` in the CSP, so a value carrying a quote/space/semicolon (e.g.
+# a hand-edited ``sha256-x' 'unsafe-inline``) would break out of its
+# quoted token and inject an arbitrary source-expression. Anchored
+# ``^…$`` so no such entry can pass.
+_CSP_SHA256_HASH_RE = re.compile(r"^sha256-[A-Za-z0-9+/]+=*$")
+
+
+def _load_script_hashes(static_dir: Path) -> list[str]:
+    """Read the build-time inline-script SHA-256 manifest, if present.
+
+    Returns the list of ``sha256-<base64>`` hash strings the export step
+    extracted from the emitted HTML, or ``[]`` when the manifest is
+    absent (contributor dev / tests with an empty static dir) or
+    unreadable / malformed. NEVER raises and NEVER signals a fallback to
+    ``'unsafe-inline'``: a broken manifest can only narrow ``script-src``
+    toward strict ``'self'``, never reopen it. Each entry must match the
+    strict ``sha256-<base64>`` shape (``_CSP_SHA256_HASH_RE``); malformed
+    or quote-bearing entries are dropped, so a hand-edited manifest cannot
+    inject an arbitrary source-expression (e.g. ``'unsafe-inline'``) into
+    the CSP by breaking out of its quoted token.
+    """
+    manifest = static_dir / CSP_SCRIPT_HASHES_FILENAME
+    try:
+        raw = manifest.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [h for h in data if isinstance(h, str) and _CSP_SHA256_HASH_RE.match(h)]
+
+
+def build_content_security_policy(static_dir: Path) -> str:
+    """Assemble the served CSP, hash-pinning ``script-src`` (issue #185).
+
+    ``script-src`` is ``'self'`` plus the build-time inline-script hashes
+    when the manifest is present, and a strict ``'self'`` otherwise —
+    NEVER ``'unsafe-inline'``. Read once per app at ``create_sidecar``
+    time (the manifest is a build artifact that never changes during a
+    process's life), not per request.
+    """
+    hashes = _load_script_hashes(static_dir)
+    if hashes:
+        script_src = "script-src 'self' " + " ".join(f"'{h}'" for h in hashes)
+    else:
+        script_src = "script-src 'self'"
+    return "; ".join((*_CSP_BASE_DIRECTIVES, script_src))
+
+
+# Static, request-independent hardening headers applied to every response
+# alongside the (dynamically-assembled) CSP. No HSTS: the sidecar serves
+# plain HTTP on 127.0.0.1 with no TLS, so HSTS would be meaningless (and
+# wrong) here. The CSP is NOT in this dict — it is computed per-app from
+# the hash manifest and stamped by ``_register_security_headers``.
+SECURITY_HEADERS: dict[str, str] = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+}
+
 # SSE tick interval — matches the 2s polling story in RFC §6
 # (deferred-items log). Real-time push is a v0.5 V5-2 item.
 SSE_TICK_SECONDS: float = 2.0
@@ -72,6 +202,11 @@ SSE_TICK_SECONDS: float = 2.0
 # ``_compute_policy_drift`` already uses ``.resolve()`` for the
 # equality test against the sentinel's recorded absolute path.
 SERVE_POLICY_MTIME_SENTINEL_PATH: Path = Path("./schemabrain/.serve_policy_mtime")
+
+# The canonical project-relative policy file (dbt-style project dir).
+# Shared by the policy route and the drift route so the config-drift
+# signal compares the SAME file `serve` recorded its mtime against.
+DEFAULT_POLICY_YAML_PATH: Path = Path("./schemabrain/pii_policy.yaml")
 
 
 def is_ui_available() -> bool:
@@ -159,6 +294,10 @@ def create_sidecar(config: SidecarConfig) -> FastAPI:
     _register_entity_routes(app, config)
     _register_audit_routes(app, config)
     _register_policy_route(app, config)
+    _register_drift_route(app, config)
+    _register_graph_route(app, config)
+    _register_dict_route(app, config)
+    _register_overview_route(app, config)
     _register_stream_route(app, config)
 
     has_static_export = STATIC_DIR.exists() and any(
@@ -186,7 +325,39 @@ def create_sidecar(config: SidecarConfig) -> FastAPI:
         # full React UI.
         _register_fallback_landing(app)
 
+    # Registered LAST so it is the OUTERMOST middleware (Starlette wraps
+    # most-recently-added first), which means it stamps EVERY response —
+    # including the html-fallback FileResponse, which short-circuits and
+    # returns before the inner middleware stack ever runs. A static
+    # surface (`/pii`) must carry the CSP just as the JSON routes do. The
+    # CSP is computed ONCE here from the live STATIC_DIR (respecting a
+    # monkeypatched dir in tests) — the hash manifest is a build artifact
+    # that does not change during the process's life.
+    _register_security_headers(app, build_content_security_policy(STATIC_DIR))
+
     return app
+
+
+def _register_security_headers(app: FastAPI, content_security_policy: str) -> None:
+    """Attach the CSP + hardening headers to every response.
+
+    Registered first so it is the outermost middleware (LIFO on the
+    response path), which means it stamps EVERY response — the JSON
+    routes, the SSE stream, the static-export bytes, and the HTML
+    fallback's ``FileResponse`` alike. ``content_security_policy`` is the
+    pre-assembled, hash-pinned CSP string for this app's static dir.
+    """
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    headers = {"Content-Security-Policy": content_security_policy, **SECURITY_HEADERS}
+
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next: Any) -> Response:
+        response: Response = await call_next(request)
+        for header, value in headers.items():
+            response.headers[header] = value
+        return response
 
 
 def _register_invariant_headers(app: FastAPI) -> None:
@@ -241,28 +412,160 @@ def _register_meta_route(app: FastAPI, config: SidecarConfig) -> None:
 
         with SQLiteStore(config.store_path) as store:
             source_ids = store.list_distinct_source_connection_ids()
+            summaries = store.summarize_sources()
         # Coerce config.source_connection_id to a credential-safe form
         # before echoing it back. If it's a connection URL, hash it to
         # the canonical short ID; otherwise treat it as a pre-computed
         # label and pass through. Never emit the raw URL — it carries
         # the DB password.
+        #
+        # The dialect is only knowable for THIS configured source: the
+        # store persists hashed ids, never the URL, so other sources
+        # report engine=None. `looks_like_connection_url` matches only
+        # Postgres schemes, so a recognized URL implies engine=postgres.
         configured = config.source_connection_id
+        configured_id: str | None = None
+        configured_engine: str | None = None
         if configured and looks_like_connection_url(configured):
             try:
-                configured = make_source_id(configured)
-            except ValueError:
-                # Unparseable URL — refuse to echo it back rather than
-                # leak partial credentials. Fall through to the store's
-                # indexed list.
-                configured = None
+                configured_id = make_source_id(configured)
+                configured_engine = "postgres"
+            except ValueError:  # pragma: no cover - defensive: the
+                # looks_like_connection_url guard already validated a
+                # Postgres scheme, so make_source_id cannot raise here.
+                # Kept belt-and-suspenders: refuse to echo a partial URL
+                # rather than leak credentials; fall back to the store list.
+                configured_id = None
+        elif configured:
+            # A pre-computed source_id / label, already credential-free.
+            configured_id = configured
+
+        default_source = configured_id or (source_ids[0] if source_ids else None)
+
+        # Per-source rollup for the shell source selector. `state` is
+        # always "indexed": a source only appears once it has persisted
+        # artifacts, and there is no in-flight indexing registry to back
+        # an "indexing"/"empty" value — the field stays a typed enum for
+        # forward use but is never fabricated. `last_indexed_at` is None
+        # for a source with no physical tables (UI renders '—').
+        sources = [
+            {
+                "source_id": s.source_connection_id,
+                "engine": (configured_engine if s.source_connection_id == configured_id else None),
+                "state": "indexed",
+                "last_indexed_at": s.last_indexed_at,
+                "tables": s.table_count,
+                "entities": s.entity_count,
+            }
+            for s in summaries
+        ]
+
         return {
             "charter_version": CHARTER_VERSION,
             "dashboard_schema_version": DASHBOARD_SCHEMA_VERSION,
             "fingerprint_version": FINGERPRINT_VERSION,
             "store_path": str(config.store_path),
-            "default_source_connection_id": (configured or (source_ids[0] if source_ids else None)),
+            "default_source_connection_id": default_source,
             "source_connection_ids": source_ids,
+            "sources": sources,
         }
+
+
+# Per-entity PII severity ladder for the entities-list rollup + drilldown
+# header. "catastrophic" outranks the 4-level sensitivity ladder so the
+# entities index can render one decisive badge per entity.
+_PII_LEVEL_SENSITIVITY_ORDER: tuple[str, ...] = ("pii", "confidential", "internal")
+
+# How many nearest-neighbour columns to surface per drilldown column.
+# Bounded small: the drilldown "similar" hint is a few candidates, not a
+# ranked catalogue, and each lookup is a per-source cosine scan.
+_SIMILAR_COLUMNS_K: int = 5
+
+
+def _pii_level_from_tags(
+    tag_values: Iterable[tuple[str, frozenset[str]]],
+    *,
+    catastrophic_categories: frozenset[str],
+) -> str:
+    """Collapse a table's PII tags into one entity-level severity label.
+
+    Returns "catastrophic" when any column carries a catastrophic-leak
+    category; otherwise the highest sensitivity present on the 4-level
+    ladder ("pii" > "confidential" > "internal"); "none" when every column
+    is public/untagged. Mirrors the matrix route's catastrophic +
+    sensitivity bucketing so the two surfaces never disagree on severity.
+    """
+    sensitivities: set[str] = set()
+    for sensitivity, categories in tag_values:
+        if categories & catastrophic_categories:
+            return "catastrophic"
+        sensitivities.add(sensitivity)
+    for level in _PII_LEVEL_SENSITIVITY_ORDER:
+        if level in sensitivities:
+            return level
+    return "none"
+
+
+def _entity_pii_level(
+    store: Any,
+    entity: Any,
+    *,
+    source_connection_id: str,
+    catastrophic_categories: frozenset[str],
+) -> str:
+    """Resolve one entity's PII severity label from its bound table's tags."""
+    schema_name, table_name = entity.qualified_table.split(".", 1)
+    table = store.get_table(schema_name, table_name, source_connection_id=source_connection_id)
+    if table is None:  # pragma: no cover - defensive; FK guarantees the table
+        return "none"
+    column_names = [c.name for c in table.columns]
+    tags = store.get_column_pii_tags(
+        source_connection_id=source_connection_id,
+        qualified_table=entity.qualified_table,
+        columns=column_names,
+    )
+    return _pii_level_from_tags(tags.values(), catastrophic_categories=catastrophic_categories)
+
+
+def _reconstruct_canonical_path(edges: list[Any]) -> dict[str, Any]:
+    """Order the rank-1 (primary canonical) edges into a hop sequence.
+
+    A trivial walk over the persisted spine edges — NOT a re-walk of the
+    full graph (ADR 0010). Only `canonical_path_rank == 1` (the primary
+    path) is used; rank-2 alternates (reserved for PR-17) are deliberately
+    excluded so they never fold the primary path into a cycle. The spine
+    is a simple path by construction (`longest_canonical_path`), so it has
+    exactly two degree-1 endpoints; the walk starts from the
+    lexicographically smaller one for determinism. Returns the empty path
+    when there is no spine.
+    """
+    spine = [edge for edge in edges if edge.canonical_path_rank == 1]
+    if not spine:
+        return {"nodes": [], "edges": [], "hops": 0}
+    adjacency: dict[str, list[tuple[str, str]]] = {}
+    degree: dict[str, int] = {}
+    for edge in spine:
+        adjacency.setdefault(edge.source_entity, []).append((edge.target_entity, edge.join_name))
+        adjacency.setdefault(edge.target_entity, []).append((edge.source_entity, edge.join_name))
+        degree[edge.source_entity] = degree.get(edge.source_entity, 0) + 1
+        degree[edge.target_entity] = degree.get(edge.target_entity, 0) + 1
+    endpoints = sorted(name for name, count in degree.items() if count == 1)
+    if len(endpoints) != 2:  # pragma: no cover — the spine is always a simple path
+        return {"nodes": [], "edges": [], "hops": 0}
+    nodes = [endpoints[0]]
+    edge_names: list[str] = []
+    visited = {endpoints[0]}
+    current = endpoints[0]
+    while True:
+        unvisited = [(nb, jn) for nb, jn in adjacency[current] if nb not in visited]
+        if not unvisited:
+            break
+        neighbor, join_name = unvisited[0]
+        nodes.append(neighbor)
+        edge_names.append(join_name)
+        visited.add(neighbor)
+        current = neighbor
+    return {"nodes": nodes, "edges": edge_names, "hops": len(edge_names)}
 
 
 def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
@@ -270,6 +573,7 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
     from fastapi import HTTPException
 
     from schemabrain.core.store import SQLiteStore
+    from schemabrain.mcp._redaction import render_join_on_clause
     from schemabrain.pii.categories import (
         CATASTROPHIC_LEAK_CATEGORIES,
         PII_CATEGORIES_ORDERED,
@@ -294,6 +598,7 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
             resolved_source = _resolve_source(store, config, source_connection_id)
             entities = store.list_entities(source_connection_id=resolved_source)
             matrix_entries: list[dict[str, Any]] = []
+            column_entries: list[dict[str, Any]] = []
             total_columns = 0
             total_pii = 0
             total_confidential = 0
@@ -312,6 +617,15 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                     qualified_table=entity.qualified_table,
                     columns=column_names,
                 )
+                # ADR 0009: per-column advisory confidence band, read
+                # from the index-time-populated column. Absent rows
+                # (public columns / pre-spike stores) read back as
+                # `(None, None)` — the band renders "—", never a faked 0.
+                confidence = store.get_column_pii_confidence(
+                    source_connection_id=resolved_source,
+                    qualified_table=entity.qualified_table,
+                    columns=column_names,
+                )
                 # Counts: category → number of columns in this entity
                 # that carry that category. Sensitivity counters
                 # accumulate at the entity level (1 column = 1
@@ -326,8 +640,22 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                 for col_name in column_names:
                     tag = tags.get(col_name)
                     total_columns += 1
+                    # Only the band is surfaced — the raw score stays
+                    # internal (no numeric % in the UI; the band is the
+                    # display contract, see ADR 0009 / §7 #6).
+                    band = confidence.get(col_name, (None, None))[0]
                     if tag is None:
                         total_internal_or_public += 1
+                        column_entries.append(
+                            {
+                                "entity": entity.name,
+                                "qualified_table": entity.qualified_table,
+                                "column_name": col_name,
+                                "sensitivity": "public",
+                                "categories": [],
+                                "pii_confidence": band,
+                            }
+                        )
                         continue
                     sensitivity, categories = tag
                     if sensitivity == "pii":
@@ -341,6 +669,16 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                             counts[cat] += 1
                     if any(c in CATASTROPHIC_LEAK_CATEGORIES for c in categories):
                         catastrophic_columns_here += 1
+                    column_entries.append(
+                        {
+                            "entity": entity.name,
+                            "qualified_table": entity.qualified_table,
+                            "column_name": col_name,
+                            "sensitivity": sensitivity,
+                            "categories": [c for c in PII_CATEGORIES_ORDERED if c in categories],
+                            "pii_confidence": band,
+                        }
+                    )
                 has_catastrophic = catastrophic_columns_here > 0
                 total_catastrophic_columns += catastrophic_columns_here
                 matrix_entries.append(
@@ -359,6 +697,10 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
         return {
             "source_connection_id": resolved_source,
             "entities": matrix_entries,
+            # Per-column projection (ADR 0009) for the column x category
+            # confidence heatmap — one entry per entity-bound column,
+            # canonical category order, advisory band (or null).
+            "columns": column_entries,
             "categories": list(PII_CATEGORIES_ORDERED),
             "catastrophic_categories": sorted(CATASTROPHIC_LEAK_CATEGORIES),
             "totals": {
@@ -375,29 +717,85 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
     def list_entities_route(
         source_connection_id: str | None = None,
     ) -> dict[str, Any]:
+        """Entities index: per-entity rollup + a summary strip.
+
+        Each item carries the entity's `group`, a single `pii_level`
+        badge, and `metrics_count` / `joins_count` so the index renders
+        without an N+1 drill per row — metrics + joins are fetched once
+        and counted in Python. `rows` (the v15 `estimated_row_count` for
+        the bound table) and `confidence` (the v15 `bind_confidence`
+        model self-rating) ride the same single-fetch path: row counts
+        are read once for the whole source and `confidence` comes off
+        the already-loaded entity. Both are `null` when unpopulated
+        (hand-authored entity / SQLite source / never-analyzed table) so
+        the UI renders "—" rather than a fabricated count.
+        """
         with SQLiteStore(config.store_path) as store:
             resolved_source = _resolve_source(store, config, source_connection_id)
             entities = store.list_entities(source_connection_id=resolved_source)
-        items = [
-            {
-                "name": e.name,
-                "description": e.description,
-                "qualified_table": e.qualified_table,
-                "identity": e.identity,
-                "origin": e.origin,
-                "inference_method": e.inference_method,
-                "validation_state": e.validation_state,
-            }
-            for e in entities
-        ]
+            all_metrics = store.list_metrics(source_connection_id=resolved_source)
+            all_joins = store.list_canonical_joins(source_connection_id=resolved_source)
+            row_counts = store.estimated_row_counts(source_connection_id=resolved_source)
+            items: list[dict[str, Any]] = []
+            catastrophic_entities = 0
+            for e in entities:
+                pii_level = _entity_pii_level(
+                    store,
+                    e,
+                    source_connection_id=resolved_source,
+                    catastrophic_categories=CATASTROPHIC_LEAK_CATEGORIES,
+                )
+                if pii_level == "catastrophic":
+                    catastrophic_entities += 1
+                items.append(
+                    {
+                        "name": e.name,
+                        "description": e.description,
+                        "qualified_table": e.qualified_table,
+                        "identity": e.identity,
+                        "group": e.group,
+                        "origin": e.origin,
+                        "inference_method": e.inference_method,
+                        "validation_state": e.validation_state,
+                        "rows": row_counts.get(e.qualified_table),
+                        "confidence": e.bind_confidence,
+                        "pii_level": pii_level,
+                        "metrics_count": sum(1 for m in all_metrics if m.entity == e.name),
+                        "joins_count": sum(
+                            1 for j in all_joins if e.name in (j.source_entity, j.target_entity)
+                        ),
+                    }
+                )
         return {
-            "source_connection_id": resolved_source,
+            # Coerce a URL-shaped override to its canonical hashed id before
+            # echoing — `_resolve_source` returns an operator override verbatim,
+            # so a connection URL (carrying the DB password) must not reach the
+            # body. Mirrors /api/meta and /api/drift; the store queries above
+            # still use the real `resolved_source`.
+            "source_connection_id": _credential_safe_source_label(resolved_source),
             "items": items,
             "count": len(items),
+            "summary": {
+                "entities": len(items),
+                "metrics": len(all_metrics),
+                "joins": len(all_joins),
+                "catastrophic_entities": catastrophic_entities,
+            },
         }
 
     @app.get("/api/entities/{name}/columns")
     def entity_columns_route(name: str, source_connection_id: str | None = None) -> dict[str, Any]:
+        """Entity drilldown: physical columns + semantic metrics/joins.
+
+        Columns carry `data_type`, the free-text `description` (the human
+        "meaning", null when un-enriched), and `similar` (column→column
+        nearest neighbours elsewhere in the schema — structured, no
+        free-text reason that could leak a value). Joins carry a
+        server-rendered, catastrophic-redacted `on_clause` (the client no
+        longer assembles it), plus `cardinality`, `origin`,
+        `inference_method`, and a derived `is_log_mined` flag. A
+        `referenced_by` rollup counts the anchored metrics + touching joins.
+        """
         with SQLiteStore(config.store_path) as store:
             resolved_source = _resolve_source(store, config, source_connection_id)
             entity = store.get_entity(name, source_connection_id=resolved_source)
@@ -406,8 +804,14 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                     status_code=404,
                     detail=f"entity {name!r} not found for source {resolved_source!r}",
                 )
+            # Both join endpoints must resolve to render the redacted ON
+            # clause; one list_entities call serves every join on the page.
+            entity_by_name = {
+                e.name: e for e in store.list_entities(source_connection_id=resolved_source)
+            }
             schema_name, table_name = entity.qualified_table.split(".", 1)
             table = store.get_table(schema_name, table_name, source_connection_id=resolved_source)
+            columns: list[dict[str, Any]] = []
             if table is None:  # pragma: no cover - defensive
                 # An entity bound to a table that's no longer indexed —
                 # ship the entity with zero columns rather than 500.
@@ -415,78 +819,115 @@ def _register_entity_routes(app: FastAPI, config: SidecarConfig) -> None:
                 # (`delete_table` cascades to entities), but kept as a
                 # belt-and-suspenders guard against a future store
                 # backend that breaks the cascade.
-                column_names: list[str] = []
-                pii_tags: dict[str, Any] = {}
+                pass
             else:
-                column_names = [c.name for c in table.columns]
+                ordered = sorted(table.columns, key=lambda c: c.ordinal_position)
                 raw_tags = store.get_column_pii_tags(
                     source_connection_id=resolved_source,
                     qualified_table=entity.qualified_table,
-                    columns=column_names,
+                    columns=[c.name for c in ordered],
                 )
-                pii_tags = {
-                    col: {
-                        "sensitivity": tag[0],
-                        "pii_categories": sorted(tag[1]),
-                    }
-                    for col, tag in raw_tags.items()
-                }
+                descriptions = store.get_table_descriptions(
+                    schema_name, table_name, source_connection_id=resolved_source
+                )
+                for col in ordered:
+                    sensitivity, categories = raw_tags.get(col.name, ("public", frozenset()))
+                    description = descriptions.get(col.name)
+                    similar = store.nearest_columns(
+                        schema_name,
+                        table_name,
+                        col.name,
+                        source_connection_id=resolved_source,
+                        k=_SIMILAR_COLUMNS_K,
+                    )
+                    columns.append(
+                        {
+                            "name": col.name,
+                            "data_type": col.data_type,
+                            "description": description.text if description is not None else None,
+                            "sensitivity": sensitivity,
+                            "pii_categories": sorted(categories),
+                            "similar": [
+                                {"schema": s, "table": t, "column": c, "score": score}
+                                for s, t, c, score in similar
+                            ],
+                        }
+                    )
 
-            # Fetch active metrics and joins anchored on this entity inside the with-block
             all_metrics = store.list_metrics(source_connection_id=resolved_source)
             all_joins = store.list_canonical_joins(source_connection_id=resolved_source)
 
-        columns = [
-            {
-                "name": col,
-                "sensitivity": pii_tags.get(col, {}).get("sensitivity", "public"),
-                "pii_categories": pii_tags.get(col, {}).get("pii_categories", []),
-            }
-            for col in column_names
-        ]
+            metrics = [
+                {
+                    "name": m.name,
+                    "description": m.description,
+                    "measure": {
+                        "agg": m.measure.agg,
+                        "column": m.measure.column,
+                        "expression": m.measure.expression,
+                    },
+                    "time_grains": m.time_grains,
+                }
+                for m in all_metrics
+                if m.entity == name
+            ]
 
-        metrics = [
-            {
-                "name": m.name,
-                "description": m.description,
-                "measure": {
-                    "agg": m.measure.agg,
-                    "column": m.measure.column,
-                    "expression": m.measure.expression,
-                },
-                "time_grains": m.time_grains,
-            }
-            for m in all_metrics
-            if m.entity == name
-        ]
+            # ON clauses render inside the with-block — the shared helper
+            # queries PII tags to mask catastrophic FK column names.
+            joins = [
+                {
+                    "name": j.name,
+                    "description": j.description,
+                    "source_entity": j.source_entity,
+                    "target_entity": j.target_entity,
+                    "on_clause": render_join_on_clause(
+                        j,
+                        store=store,
+                        source_connection_id=resolved_source,
+                        entity_by_name=entity_by_name,
+                    ),
+                    "cardinality": j.cardinality,
+                    "origin": j.origin,
+                    "inference_method": j.inference_method,
+                    "is_log_mined": j.inference_method == "observed_in_query_log",
+                }
+                for j in all_joins
+                if j.source_entity == name or j.target_entity == name
+            ]
 
-        joins = [
-            {
-                "name": j.name,
-                "description": j.description,
-                "source_entity": j.source_entity,
-                "target_entity": j.target_entity,
-                "on": [
-                    {"source_column": edge.source_column, "target_column": edge.target_column}
-                    for edge in j.on
-                ],
-            }
-            for j in all_joins
-            if j.source_entity == name or j.target_entity == name
-        ]
+            # Read the bound table's row estimate inside the with-block —
+            # the store closes before the return is built.
+            entity_rows = store.estimated_row_counts(source_connection_id=resolved_source).get(
+                entity.qualified_table
+            )
 
         return {
             "entity": {
                 "name": entity.name,
+                "description": entity.description,
                 "qualified_table": entity.qualified_table,
                 "identity": entity.identity,
+                "group": entity.group,
                 "origin": entity.origin,
                 "inference_method": entity.inference_method,
                 "validation_state": entity.validation_state,
+                # v15 model self-rating + row estimate. `rows` is the
+                # bound table's cached `estimated_row_count` (null when
+                # unknown); `confidence` is the model's `bind_confidence`
+                # (null for hand-authored). `rationale` maps the empty
+                # default to null so the UI omits it rather than rendering
+                # a blank line.
+                "rows": entity_rows,
+                "confidence": entity.bind_confidence,
+                "rationale": entity.rationale or None,
             },
             "columns": columns,
             "metrics": metrics,
             "joins": joins,
+            "referenced_by": {
+                "metrics": len(metrics),
+                "joins": len(joins),
+            },
         }
 
 
@@ -494,6 +935,7 @@ def _register_audit_routes(app: FastAPI, config: SidecarConfig) -> None:
     """Audit routes — rows, refusals, verify."""
     from fastapi import HTTPException
 
+    from schemabrain.audit.merkle import inclusion_proof, leaf_hash, merkle_root
     from schemabrain.audit.verify import (
         SinceCursorError,
         resolve_since_cursor,
@@ -601,6 +1043,235 @@ def _register_audit_routes(app: FastAPI, config: SidecarConfig) -> None:
                 )
         return _serialize_refusal(row, include_envelope=True)
 
+    @app.get("/api/audit/merkle/root")
+    def audit_merkle_root_route() -> dict[str, Any]:
+        """Derived RFC-6962 Merkle root over every audit row (id-ASC).
+
+        Stateless: recomputed per request from the same canonical leaf
+        preimages the chain consumes. An empty log returns the SHA-256 of
+        the empty string (never null, never all-zeros).
+        """
+        with _open_audit_conn(config) as conn:
+            leaves = _audit_leaf_preimages(conn)
+        return {"tree_size": len(leaves), "root_hex": merkle_root(leaves).hex()}
+
+    @app.get("/api/audit/rows/{row_id}/proof")
+    def audit_row_proof_route(row_id: int) -> dict[str, Any]:
+        """Inclusion proof for one audit row against the current root.
+
+        ``leaf_index`` is the 0-based position in id-ASC order — computed
+        server-side from the row's id rank, NOT from the id-DESC render
+        order of ``/api/audit/rows``. 404 if the id is absent.
+        """
+        with _open_audit_conn(config) as conn:
+            exists = conn.execute("SELECT 1 FROM mcp_audit WHERE id = ?", (row_id,)).fetchone()
+            if exists is None:
+                raise HTTPException(404, detail=f"audit row {row_id} not found")
+            rank = conn.execute(
+                "SELECT COUNT(*) AS c FROM mcp_audit WHERE id < ?", (row_id,)
+            ).fetchone()
+            leaf_index = int(rank["c"])
+            leaves = _audit_leaf_preimages(conn)
+        return {
+            "leaf_index": leaf_index,
+            "tree_size": len(leaves),
+            "root_hex": merkle_root(leaves).hex(),
+            "leaf_hash_hex": leaf_hash(leaves[leaf_index]).hex(),
+            "audit_path": [h.hex() for h in inclusion_proof(leaf_index, leaves)],
+        }
+
+
+def _audit_leaf_preimages(conn: sqlite3.Connection) -> list[bytes]:
+    """Return every ``mcp_audit`` row's canonical leaf preimage, id-ASC.
+
+    Reuses ``verify._ROW_COLUMNS`` + ``verify._row_to_canonical_dict`` +
+    ``canonical_audit_row`` — the EXACT serialisation path the chain walk
+    uses (``verify.py:126-127``) — so the Merkle tree and the hash chain
+    can never disagree on a row's bytes. id-ASC matches the chain order;
+    the resulting list index is the leaf index.
+    """
+    from fastapi import HTTPException
+
+    from schemabrain.audit.canonical import canonical_audit_row
+    from schemabrain.audit.verify import _ROW_COLUMNS, _row_to_canonical_dict
+
+    # `_ROW_COLUMNS` is a hardcoded module-level tuple of column names; no
+    # operator input enters the SELECT. ORDER BY id ASC matches walk_chain.
+    select_cols = ", ".join(_ROW_COLUMNS)
+    rows = conn.execute(
+        f"SELECT {select_cols} FROM mcp_audit ORDER BY id ASC"  # nosec B608 — column list hardcoded
+    )
+    leaves: list[bytes] = []
+    for row in rows:
+        try:
+            leaves.append(canonical_audit_row(_row_to_canonical_dict(row)))
+        except ValueError as exc:
+            # A row whose canonical shape is broken (corruption / future-schema
+            # drift) cannot be a deterministic leaf. Surface it as an actionable
+            # 422 rather than a 500 — `audit verify --full` reports exactly which
+            # row, mirroring verify.py's graceful posture toward such rows.
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"audit row {row['id']} failed canonicalisation ({exc}); "
+                    "run `schemabrain audit verify --full` to inspect the chain"
+                ),
+            ) from exc
+    return leaves
+
+
+def _compute_policy_drift(yaml_path: Path) -> dict[str, Any]:
+    """Compare ``schemabrain serve``'s recorded YAML mtime against
+    the current on-disk YAML mtime.
+
+    Shared by the policy route (``/api/pii/policy``) and the drift route
+    (``/api/drift``) — both surface the same config-drift signal, so the
+    computation lives at module level rather than inside either closure.
+
+    Returns a dict with stable keys:
+
+        {
+            "detected": bool,
+            "recorded_at": iso8601 | None,
+            "current_mtime": iso8601 | None,
+        }
+
+    ``detected`` fires when:
+      - sentinel records ``yaml_existed_at_boot=True`` AND the
+        current YAML is missing (operator removed the file),
+      - sentinel mtime differs from the current YAML mtime by
+        more than 1ms (operator edited the file),
+      - sentinel records ``yaml_existed_at_boot=False`` AND a
+        YAML appears now (operator created the file).
+
+    Returns ``detected=False`` when:
+      - no sentinel exists (no serve running OR serve used
+        ``--pii-block`` CLI override),
+      - sentinel's recorded ``policy_path`` does not resolve to
+        ``yaml_path`` (serve was watching a different file),
+      - any stat/parse error (fail-closed: better silent than
+        misleading).
+    """
+    # `json` is imported at module level; `datetime` is deferred here
+    # (only this drift computation needs it).
+    from datetime import UTC, datetime
+
+    def _iso_from_mtime(mtime: float) -> str:
+        return datetime.fromtimestamp(mtime, tz=UTC).isoformat(timespec="seconds")
+
+    def _current_mtime_iso() -> str | None:
+        try:
+            return _iso_from_mtime(yaml_path.stat().st_mtime)
+        except OSError:
+            return None
+
+    # Collapse the exists-check + read into one open to eliminate
+    # the TOCTOU window between them. FileNotFoundError is the
+    # "no sentinel" steady state; any other OSError + malformed
+    # JSON is fail-closed.
+    try:
+        sentinel_text = SERVE_POLICY_MTIME_SENTINEL_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {
+            "detected": False,
+            "recorded_at": None,
+            "current_mtime": _current_mtime_iso(),
+        }
+    except OSError:
+        return {
+            "detected": False,
+            "recorded_at": None,
+            "current_mtime": _current_mtime_iso(),
+        }
+
+    try:
+        payload = json.loads(sentinel_text)
+    except json.JSONDecodeError:
+        return {
+            "detected": False,
+            "recorded_at": None,
+            "current_mtime": _current_mtime_iso(),
+        }
+
+    # Type-narrow every field read from the JSON payload. The
+    # sentinel writer is well-behaved, but a corrupt or hand-edited
+    # file can carry any JSON type for any key — and an unguarded
+    # float() on a string crashes the whole route.
+    raw_recorded_iso = payload.get("recorded_at_iso") if isinstance(payload, dict) else None
+    recorded_iso = raw_recorded_iso if isinstance(raw_recorded_iso, str) else None
+    recorded_mtime = payload.get("recorded_at_mtime") if isinstance(payload, dict) else None
+    sentinel_path = payload.get("policy_path") if isinstance(payload, dict) else None
+    yaml_existed = bool(payload.get("yaml_existed_at_boot") if isinstance(payload, dict) else False)
+
+    try:
+        resolved_yaml = str(yaml_path.expanduser().resolve())
+    except OSError:
+        return {
+            "detected": False,
+            "recorded_at": recorded_iso,
+            "current_mtime": None,
+        }
+
+    # Sentinel watched a different file — drift signal isn't meaningful.
+    if sentinel_path != resolved_yaml:
+        return {
+            "detected": False,
+            "recorded_at": recorded_iso,
+            "current_mtime": _current_mtime_iso(),
+        }
+
+    # Collapse exists/stat into a single stat that surfaces
+    # FileNotFoundError separately from other OSError so the
+    # deletion-drift branch preserves the yaml_existed context
+    # even if the file disappears in a TOCTOU race.
+    try:
+        current_mtime_float = yaml_path.stat().st_mtime
+    except FileNotFoundError:
+        return {
+            "detected": yaml_existed,
+            "recorded_at": recorded_iso,
+            "current_mtime": None,
+        }
+    except OSError:  # pragma: no cover — defensive; same fail-closed posture as the read_text / resolve OSError branches above which ARE pinned
+        return {
+            "detected": False,
+            "recorded_at": recorded_iso,
+            "current_mtime": None,
+        }
+
+    current_iso = _iso_from_mtime(current_mtime_float)
+    if recorded_mtime is None:
+        # Serve booted with no YAML; a YAML appeared since — but
+        # only honour that interpretation when the sentinel agrees
+        # yaml DID NOT exist at boot. A sentinel claiming
+        # yaml_existed_at_boot=True with recorded_mtime=None is
+        # internally inconsistent (the writer cannot produce it);
+        # treat that as fail-closed rather than false-positive drift.
+        return {
+            "detected": not yaml_existed,
+            "recorded_at": recorded_iso,
+            "current_mtime": current_iso,
+        }
+
+    # 1ms epsilon to avoid float precision false positives. The
+    # float() coercion can raise ValueError (string like "abc") or
+    # TypeError (list/dict) on a corrupt sentinel — fail-closed so
+    # the route stays available even if the sentinel is mangled.
+    try:
+        recorded_mtime_float = float(recorded_mtime)
+    except (TypeError, ValueError):
+        return {
+            "detected": False,
+            "recorded_at": recorded_iso,
+            "current_mtime": current_iso,
+        }
+    drifted = abs(current_mtime_float - recorded_mtime_float) > 0.001
+    return {
+        "detected": drifted,
+        "recorded_at": recorded_iso,
+        "current_mtime": current_iso,
+    }
+
 
 def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
     """GET /api/pii/policy — operator-editable PII enforcement state.
@@ -625,169 +1296,38 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
     always-on catastrophic-leak floor (enforced at every read gate —
     `describe_*` AND `get_metric`); `allowed` = neither.
     """
+    from fastapi import HTTPException, Query
+
     from schemabrain.core.store import SQLiteStore
     from schemabrain.pii.categories import (
         CATASTROPHIC_LEAK_CATEGORIES,
         PII_CATEGORIES_ORDERED,
         PIICategory,
+        Sensitivity,
     )
+    from schemabrain.pii.policy import ColumnOverride, Policy
     from schemabrain.pii.policy_yaml import (
         PolicyYamlError,
         parse_policy_yaml_file,
+        policy_to_yaml,
     )
 
-    _POLICY_YAML_PATH = Path("./schemabrain/pii_policy.yaml")
-    _SENTINEL_PATH = SERVE_POLICY_MTIME_SENTINEL_PATH
+    _POLICY_YAML_PATH = DEFAULT_POLICY_YAML_PATH
+    # Bound the work a single preview request can ask for. The category
+    # block set is naturally capped by the 12-value enum; column
+    # overrides are operator-supplied and unbounded, so cap the list
+    # length to keep the (untrusted, localhost) query from forcing an
+    # arbitrarily large diff. Far above any realistic count of hand-
+    # asserted dashboard overrides; the YAML-edit + `policy apply` path
+    # carries no such cap, so a genuinely huge policy stays expressible.
+    _MAX_PREVIEW_OVERRIDES = 1000
 
-    def _compute_policy_drift(yaml_path: Path) -> dict[str, Any]:
-        """Compare ``schemabrain serve``'s recorded YAML mtime against
-        the current on-disk YAML mtime.
-
-        Returns a dict with stable keys:
-
-            {
-                "detected": bool,
-                "recorded_at": iso8601 | None,
-                "current_mtime": iso8601 | None,
-            }
-
-        ``detected`` fires when:
-          - sentinel records ``yaml_existed_at_boot=True`` AND the
-            current YAML is missing (operator removed the file),
-          - sentinel mtime differs from the current YAML mtime by
-            more than 1ms (operator edited the file),
-          - sentinel records ``yaml_existed_at_boot=False`` AND a
-            YAML appears now (operator created the file).
-
-        Returns ``detected=False`` when:
-          - no sentinel exists (no serve running OR serve used
-            ``--pii-block`` CLI override),
-          - sentinel's recorded ``policy_path`` does not resolve to
-            ``yaml_path`` (serve was watching a different file),
-          - any stat/parse error (fail-closed: better silent than
-            misleading).
-        """
-        import json
-        from datetime import UTC, datetime
-
-        def _iso_from_mtime(mtime: float) -> str:
-            return datetime.fromtimestamp(mtime, tz=UTC).isoformat(timespec="seconds")
-
-        def _current_mtime_iso() -> str | None:
-            try:
-                return _iso_from_mtime(yaml_path.stat().st_mtime)
-            except OSError:
-                return None
-
-        # Collapse the exists-check + read into one open to eliminate
-        # the TOCTOU window between them. FileNotFoundError is the
-        # "no sentinel" steady state; any other OSError + malformed
-        # JSON is fail-closed.
-        try:
-            sentinel_text = _SENTINEL_PATH.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return {
-                "detected": False,
-                "recorded_at": None,
-                "current_mtime": _current_mtime_iso(),
-            }
-        except OSError:
-            return {
-                "detected": False,
-                "recorded_at": None,
-                "current_mtime": _current_mtime_iso(),
-            }
-
-        try:
-            payload = json.loads(sentinel_text)
-        except json.JSONDecodeError:
-            return {
-                "detected": False,
-                "recorded_at": None,
-                "current_mtime": _current_mtime_iso(),
-            }
-
-        # Type-narrow every field read from the JSON payload. The
-        # sentinel writer is well-behaved, but a corrupt or hand-edited
-        # file can carry any JSON type for any key — and an unguarded
-        # float() on a string crashes the whole /api/pii/policy route.
-        raw_recorded_iso = payload.get("recorded_at_iso") if isinstance(payload, dict) else None
-        recorded_iso = raw_recorded_iso if isinstance(raw_recorded_iso, str) else None
-        recorded_mtime = payload.get("recorded_at_mtime") if isinstance(payload, dict) else None
-        sentinel_path = payload.get("policy_path") if isinstance(payload, dict) else None
-        yaml_existed = bool(
-            payload.get("yaml_existed_at_boot") if isinstance(payload, dict) else False
-        )
-
-        try:
-            resolved_yaml = str(yaml_path.expanduser().resolve())
-        except OSError:
-            return {
-                "detected": False,
-                "recorded_at": recorded_iso,
-                "current_mtime": None,
-            }
-
-        # Sentinel watched a different file — drift signal isn't meaningful.
-        if sentinel_path != resolved_yaml:
-            return {
-                "detected": False,
-                "recorded_at": recorded_iso,
-                "current_mtime": _current_mtime_iso(),
-            }
-
-        # Collapse exists/stat into a single stat that surfaces
-        # FileNotFoundError separately from other OSError so the
-        # deletion-drift branch preserves the yaml_existed context
-        # even if the file disappears in a TOCTOU race.
-        try:
-            current_mtime_float = yaml_path.stat().st_mtime
-        except FileNotFoundError:
-            return {
-                "detected": yaml_existed,
-                "recorded_at": recorded_iso,
-                "current_mtime": None,
-            }
-        except OSError:  # pragma: no cover — defensive; same fail-closed posture as the read_text / resolve OSError branches above which ARE pinned
-            return {
-                "detected": False,
-                "recorded_at": recorded_iso,
-                "current_mtime": None,
-            }
-
-        current_iso = _iso_from_mtime(current_mtime_float)
-        if recorded_mtime is None:
-            # Serve booted with no YAML; a YAML appeared since — but
-            # only honour that interpretation when the sentinel agrees
-            # yaml DID NOT exist at boot. A sentinel claiming
-            # yaml_existed_at_boot=True with recorded_mtime=None is
-            # internally inconsistent (the writer cannot produce it);
-            # treat that as fail-closed rather than false-positive drift.
-            return {
-                "detected": not yaml_existed,
-                "recorded_at": recorded_iso,
-                "current_mtime": current_iso,
-            }
-
-        # 1ms epsilon to avoid float precision false positives. The
-        # float() coercion can raise ValueError (string like "abc") or
-        # TypeError (list/dict) on a corrupt sentinel — fail-closed so
-        # the /api/pii/policy route stays available even if the sentinel
-        # is mangled.
-        try:
-            recorded_mtime_float = float(recorded_mtime)
-        except (TypeError, ValueError):
-            return {
-                "detected": False,
-                "recorded_at": recorded_iso,
-                "current_mtime": current_iso,
-            }
-        drifted = abs(current_mtime_float - recorded_mtime_float) > 0.001
-        return {
-            "detected": drifted,
-            "recorded_at": recorded_iso,
-            "current_mtime": current_iso,
-        }
+    # Repeatable query params for the preview route. Bound to singletons so
+    # the `Query(...)` call isn't evaluated in the argument default (ruff
+    # B008) — the empty-list default is FastAPI metadata, not a shared
+    # mutable arg (FastAPI builds a fresh list per request).
+    _BLOCK_QUERY = Query(default=[])
+    _OVERRIDE_QUERY = Query(default=[])
 
     def _load_active_block() -> tuple[frozenset[PIICategory], str, str | None]:
         """(active_block, source_label, error_message)."""
@@ -908,6 +1448,603 @@ def _register_policy_route(app: FastAPI, config: SidecarConfig) -> None:
             "policy_drift": _compute_policy_drift(_POLICY_YAML_PATH),
         }
 
+    def _load_current_policy() -> tuple[Policy, str | None]:
+        """(current_policy, parse_error). Mirrors `_load_active_block` but
+        returns the whole `Policy` (block + column_overrides + description)
+        so the preview can diff staged YAML against a faithful canonical
+        rendering of what's on disk. Falls back to the catastrophic-floor
+        default when no YAML exists or the file fails to parse — same
+        posture as `_load_active_block`, so the diff baseline matches what
+        the running firewall would actually enforce.
+        """
+        if not _POLICY_YAML_PATH.exists():
+            return Policy(block=CATASTROPHIC_LEAK_CATEGORIES), None
+        try:
+            return parse_policy_yaml_file(_POLICY_YAML_PATH), None
+        except PolicyYamlError as exc:
+            return Policy(block=CATASTROPHIC_LEAK_CATEGORIES), str(exc)
+
+    def _parse_override_param(raw: str) -> ColumnOverride:
+        """Decode one `override` query value into a `ColumnOverride`.
+
+        Wire shape: ``<qualified_column>|<sensitivity>|<comma-joined
+        categories>`` — e.g. ``public.users.email|internal|`` for the
+        canonical "mark safe" (empty categories) override, or
+        ``s.t.c|pii|contact,location`` for an explicit reclassification.
+        `ColumnOverride.__post_init__` validates the column shape,
+        sensitivity, and categories; any violation surfaces as a 400.
+        """
+        parts = raw.split("|")
+        if len(parts) != 3:
+            raise HTTPException(
+                400,
+                detail=(
+                    f"override must be 'qualified_column|sensitivity|categories' (got {raw!r})"
+                ),
+            )
+        qualified_column, sensitivity, categories_csv = parts
+        categories = frozenset(c for c in categories_csv.split(",") if c)
+        try:
+            return ColumnOverride(
+                qualified_column=qualified_column,
+                sensitivity=cast(Sensitivity, sensitivity),
+                categories=cast("frozenset[PIICategory]", categories),
+            )
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
+
+    def _yaml_diff(current_yaml: str, staged_yaml: str) -> list[dict[str, str]]:
+        """Line-level diff of two canonical YAML bodies as ordered
+        ``{kind, text}`` rows (``context`` / ``remove`` / ``add``). The
+        staged-diff pane renders these directly; `ndiff` hint lines
+        (``? ``) are dropped.
+        """
+        out: list[dict[str, str]] = []
+        for line in difflib.ndiff(current_yaml.splitlines(), staged_yaml.splitlines()):
+            tag, text = line[:2], line[2:]
+            if tag == "  ":
+                out.append({"kind": "context", "text": text})
+            elif tag == "- ":
+                out.append({"kind": "remove", "text": text})
+            elif tag == "+ ":
+                out.append({"kind": "add", "text": text})
+        return out
+
+    @app.get("/api/pii/policy/preview")
+    def policy_preview_route(
+        block: list[str] = _BLOCK_QUERY,
+        override: list[str] = _OVERRIDE_QUERY,
+    ) -> dict[str, Any]:
+        """Render the canonical YAML + line diff for a *staged* policy.
+
+        Pure, side-effect-free renderer (ADR 0006): the dashboard posts
+        its staged block set + column overrides as repeatable query
+        params, and this returns ``policy_to_yaml(staged)`` plus the line
+        diff against the current on-disk policy. It writes nothing and
+        reads no per-source store state — qualified columns are global
+        strings, so the rendering is source-independent.
+
+        The catastrophic-downgrade guard (`CatastrophicDowngradeError`)
+        is NOT simulated here — that's enforced at `policy apply` time by
+        the store. The dashboard never offers a floor-column override
+        (ADR 0007), so a downgrade can't be staged through the UI; a YAML
+        that would strip a floor protection still renders, and the
+        operator's own `policy apply` rejects it loudly.
+        """
+        if len(override) > _MAX_PREVIEW_OVERRIDES:
+            raise HTTPException(
+                400,
+                detail=f"too many overrides (max {_MAX_PREVIEW_OVERRIDES}, got {len(override)})",
+            )
+
+        current_policy, current_parse_error = _load_current_policy()
+        overrides = tuple(_parse_override_param(raw) for raw in override)
+        try:
+            staged_policy = Policy(
+                block=cast("frozenset[PIICategory]", frozenset(block)),
+                column_overrides=overrides,
+                # Carry the on-disk description so the diff doesn't show a
+                # spurious description add/drop the operator never made.
+                description=current_policy.description,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
+
+        current_yaml = policy_to_yaml(current_policy)
+        staged_yaml = policy_to_yaml(staged_policy)
+        return {
+            "staged_yaml": staged_yaml,
+            "current_yaml": current_yaml,
+            "diff_lines": _yaml_diff(current_yaml, staged_yaml),
+            "changed": staged_yaml != current_yaml,
+            "staged_block": sorted(staged_policy.block),
+            "current_parse_error": current_parse_error,
+        }
+
+
+def _register_drift_route(app: FastAPI, config: SidecarConfig) -> None:
+    """GET /api/drift — read-only context-health signal.
+
+    Surfaces the two drift kinds the store-only sidecar can honestly
+    verify from persisted state alone:
+
+      - ``config``: the policy YAML diverged from what ``serve`` recorded
+        at boot (reuses ``_compute_policy_drift``).
+      - ``enrichment``: a persisted column description was generated with
+        an older prompt version than the live one, so the AI context is
+        stale (reuses ``store.has_stale_prompt_version``).
+
+    SCHEMA drift (table/column missing) and YAML-vs-disk DEFINITION drift
+    are DELIBERATELY OMITTED: both require a live DB connection the
+    credential-less sidecar does not have, so emitting them would be
+    fabricated. The surface stays honest — ``fresh`` is true iff there
+    are zero items. Every action is a copy-the-CLI-command affordance
+    (ADR-0006); the route writes nothing and never flips state.
+    """
+    from schemabrain.core.store import SQLiteStore
+    from schemabrain.enrichment.prompts import PROMPT_VERSION
+
+    @app.get("/api/drift")
+    def drift(source_connection_id: str | None = None) -> dict[str, Any]:
+        with SQLiteStore(config.store_path) as store:
+            resolved_source = _resolve_source(store, config, source_connection_id)
+            # Coerce a URL-shaped override to its canonical hashed id BEFORE
+            # it touches the store query or the response — never echo a raw
+            # connection URL (it carries the DB password). A hashed id /
+            # label passes through unchanged, so the normal path is a no-op.
+            safe_source = _credential_safe_source_label(resolved_source)
+            last_enriched = store.latest_enriched_at(source_connection_id=safe_source)
+            enrichment_stale = store.has_stale_prompt_version(
+                source_connection_id=safe_source,
+                current_prompt_version=PROMPT_VERSION,
+            )
+            indexed_by_source = {
+                s.source_connection_id: s.last_indexed_at for s in store.summarize_sources()
+            }
+
+        items: list[dict[str, Any]] = []
+
+        # --- config drift: policy YAML edited since `serve` recorded it ---
+        # Global (not per-source): the policy file governs every source.
+        policy_drift = _compute_policy_drift(DEFAULT_POLICY_YAML_PATH)
+        if policy_drift["detected"]:
+            items.append(
+                {
+                    "kind": "config",
+                    "risk": "med",
+                    "title": "Policy file changed since serve started",
+                    "when": policy_drift["current_mtime"],
+                    "detail": (
+                        "pii_policy.yaml was edited after `schemabrain serve` recorded it. "
+                        "The running firewall still enforces the policy it loaded at boot — "
+                        "restart serve to apply the change."
+                    ),
+                    "action": {"label": "Copy restart command", "command": "schemabrain serve"},
+                }
+            )
+
+        # --- enrichment drift: descriptions built on an older prompt ---
+        if enrichment_stale:
+            items.append(
+                {
+                    "kind": "enrichment",
+                    "risk": "med",
+                    "title": "AI context built on an older prompt version",
+                    "when": None,
+                    "detail": (
+                        f"Some column descriptions predate the live prompt version "
+                        f"({PROMPT_VERSION}). A structural re-index will not refresh them — "
+                        f"re-enrich to regenerate the descriptions with the current prompt."
+                    ),
+                    "action": {
+                        "label": "Copy re-enrich command",
+                        "command": "schemabrain index <source> --enrich",
+                    },
+                }
+            )
+
+        return {
+            "source_connection_id": safe_source,
+            "freshness": {
+                "fresh": len(items) == 0,
+                "change_count": len(items),
+                # Every drift kind is "med" today; high_risk is a forward-
+                # compatible UI-contract field (the hero shows a high-risk
+                # count) that stays 0 until a high-risk kind ships.
+                "high_risk": sum(1 for item in items if item["risk"] == "high"),
+                # Epoch seconds; None when nothing enriched / no tables —
+                # the UI renders "—", never a fabricated 0.
+                "last_enriched": last_enriched,
+                "last_indexed": indexed_by_source.get(safe_source),
+                # Credential-safe: a URL-shaped source is hashed to its
+                # canonical id by _credential_safe_source_label before it
+                # reaches here, so this never carries the raw URL.
+                "source_label": safe_source,
+                "prompt_version": PROMPT_VERSION,
+            },
+            "items": items,
+        }
+
+
+def _register_graph_route(app: FastAPI, config: SidecarConfig) -> None:
+    """GET /api/graph — read-only knowledge-graph projection (ADR 0010).
+
+    Serves the persisted ``graph_nodes`` / ``graph_edges`` read-model: one
+    node per entity (cosmetic ``group`` + cached ``row_count``), one edge
+    per canonical join with honest ``evidence`` (declared FK / log-mined /
+    inferred — never inspected SQL) and, for declared FK edges only, the
+    equi-join ``cardinality`` (v16; null for mined/inferred so an
+    unverified shape never reads as engine-derived), plus the ordered
+    canonical path (the diameter spine) reconstructed from the rank-1 edges.
+
+    ``pii_level`` is recomputed LIVE per node from the current PII tags —
+    via the SAME ``_entity_pii_level`` helper the PII matrix uses — so the
+    graph never disagrees with /pii, even after a tag override the last
+    projection did not see. It is the full 5-state severity
+    (catastrophic / pii / confidential / internal / none), not a collapsed
+    boolean, so the surface renders the catastrophic alarm and the lighter
+    halo from one source of truth.
+
+    ``refusal_count`` per node and the response's ``unattributed_refusals``
+    are a LIVE tally of append-only ``mcp_audit`` rows with
+    ``status='refused'``, grouped by the non-canonical ``anchor_entity``
+    column (store v17) — never persisted to the projection (refusals accrue
+    between rebuilds, so a snapshot would go stale). The split is honest and
+    EXHAUSTIVE: a refusal whose ``anchor_entity`` is a current entity
+    increments that node's count; one with a NULL anchor OR an anchor that is
+    no longer a current entity (renamed/dropped since the immutable row was
+    logged) increments ``unattributed_refusals`` instead. So the per-node
+    counts PLUS ``unattributed_refusals`` always equal the log's refused-row
+    count — a refusal is never silently dropped or misattributed. Pure read —
+    the chained audit columns are never touched.
+
+    A source that exists but has no projection yields empty arrays at 200; no
+    resolvable source is a 409. The route writes nothing.
+    """
+    from schemabrain.core.store import SQLiteStore
+    from schemabrain.pii.categories import CATASTROPHIC_LEAK_CATEGORIES
+
+    @app.get("/api/graph")
+    def graph(source_connection_id: str | None = None) -> dict[str, Any]:
+        with SQLiteStore(config.store_path) as store:
+            resolved_source = _resolve_source(store, config, source_connection_id)
+            # Hash a URL-shaped override to its canonical id BEFORE it
+            # touches the store query or the response — never echo a raw
+            # connection URL (it carries the DB password).
+            safe_source = _credential_safe_source_label(resolved_source)
+            graph_nodes = store.list_graph_nodes(source_connection_id=safe_source)
+            graph_edges = store.list_graph_edges(source_connection_id=safe_source)
+            entities_by_name = {
+                entity.name: entity
+                for entity in store.list_entities(source_connection_id=safe_source)
+            }
+            # LIVE refusal tally for the refusal-hotspot overlay (PR-17b).
+            # Aggregated per request from the append-only `mcp_audit` log
+            # (status='refused', grouped by the non-canonical `anchor_entity`
+            # column) — NOT persisted to the projection, since refusals accrue
+            # between rebuilds and a snapshot would go stale immediately. Reads
+            # only; the chained columns are never touched.
+            hotspots = store.refusal_counts_by_entity(source_connection_id=safe_source)
+            # Reconciliation guard: a refusal can carry an `anchor_entity` that
+            # is no longer a current entity — the row is immutable (append-only)
+            # but the entity may have been renamed/dropped and the projection
+            # rebuilt since. Such an anchor matches no node, so its count would
+            # be shown nowhere. Fold those "orphaned" refusals into the
+            # unattributed remainder so the per-node badges PLUS this figure
+            # always equal the audit log's refused-row count — never silently
+            # dropped (the honesty guarantee the surface asserts).
+            node_names = {node.entity_name for node in graph_nodes}
+            orphaned_refusals = sum(
+                count for name, count in hotspots.by_entity.items() if name not in node_names
+            )
+            unattributed_refusals = hotspots.unattributed + orphaned_refusals
+            nodes = [
+                {
+                    "id": node.entity_name,
+                    "label": node.entity_name,
+                    "group": node.group,
+                    # LIVE PII-severity overlay: the SAME `_entity_pii_level`
+                    # the PII matrix uses, so the graph's floor can never
+                    # drift from /pii. The node→entity FK guarantees the
+                    # lookup hits. Emitting the full 5-state level (not a
+                    # collapsed boolean) lets the surface render the
+                    # catastrophic alarm AND the lighter non-catastrophic
+                    # halo from ONE source of truth — never a second
+                    # client-side re-derivation of catastrophic-ness.
+                    "pii_level": _entity_pii_level(
+                        store,
+                        entities_by_name[node.entity_name],
+                        source_connection_id=safe_source,
+                        catastrophic_categories=CATASTROPHIC_LEAK_CATEGORIES,
+                    ),
+                    "row_count": node.row_count,
+                    # LIVE per-entity refusal count (0 when none). Honest
+                    # aggregate of attributed `mcp_audit` refusals; entities
+                    # the engine could not attribute fall into the response's
+                    # top-level `unattributed_refusals` instead — never
+                    # silently folded into a node's count.
+                    "refusal_count": hotspots.by_entity.get(node.entity_name, 0),
+                }
+                for node in graph_nodes
+            ]
+
+        edges = [
+            {
+                "id": edge.join_name,
+                "source": edge.source_entity,
+                "target": edge.target_entity,
+                "evidence": edge.edge_origin,
+                "canonical_path_rank": edge.canonical_path_rank,
+                # Equi-join shape, present ONLY on declared FK edges (the
+                # projection writer drops it for log_mined / inferred so an
+                # unverified shape never reads as engine-derived); null
+                # otherwise — never a guess. See ADR 0011.
+                "cardinality": edge.cardinality,
+            }
+            for edge in graph_edges
+        ]
+        return {
+            "source_connection_id": safe_source,
+            "nodes": nodes,
+            "edges": edges,
+            "canonical_path": _reconstruct_canonical_path(graph_edges),
+            # Refused `mcp_audit` rows not shown on any visible node: a NULL
+            # `anchor_entity` (the engine could not pin it to one entity) OR an
+            # orphaned anchor naming an entity no longer in the projection.
+            # Surfaced explicitly so the badges + this figure always reconcile
+            # with the audit log — a refusal is never silently dropped.
+            "unattributed_refusals": unattributed_refusals,
+        }
+
+
+def _register_dict_route(app: FastAPI, config: SidecarConfig) -> None:
+    """GET /api/dict — read-only Data Dictionary model for one source.
+
+    Serialises the SAME ``build_dictionary`` model the ``schemabrain docs``
+    CLI renders (schema version, every entity's binding, columns with
+    type/identity-role/PII tags, semantic joins with the catastrophic-
+    redacted ON clause, and entity-anchored metrics). The dashboard's
+    Data Dictionary surface browses this model and its "Export Markdown"
+    re-renders it client-side via a TypeScript port of the Python markdown
+    serialiser — so the exported bytes match the committed CLI golden.
+
+    The ON clause is redacted by the aggregator (a catastrophic-leak FK
+    column name becomes ``<redacted_column>``); column descriptions are
+    already enrichment-time redacted in the store. The route therefore
+    reads only already-safe stored data and writes nothing. A source with
+    no curated entities yields an empty ``entities`` array at 200; a store
+    with no resolvable source is a 409.
+    """
+    from schemabrain.core.store import SQLiteStore
+    from schemabrain.datadict.aggregator import build_dictionary
+    from schemabrain.datadict.model_json import dictionary_model_to_json
+
+    @app.get("/api/dict")
+    def data_dictionary(source_connection_id: str | None = None) -> dict[str, Any]:
+        with SQLiteStore(config.store_path) as store:
+            resolved_source = _resolve_source(store, config, source_connection_id)
+            # Hash a URL-shaped override to its canonical id BEFORE it
+            # reaches the store query or the response — a raw connection
+            # URL carries the DB password and must never be echoed.
+            safe_source = _credential_safe_source_label(resolved_source)
+            model = build_dictionary(store=store, source_connection_id=safe_source)
+        return dictionary_model_to_json(model)
+
+
+def _register_overview_route(app: FastAPI, config: SidecarConfig) -> None:
+    """GET /api/overview — read-only system-status summary for the home surface.
+
+    One server-computed aggregate behind the Overview ("home") surface: the
+    same honest, store-only signals the per-surface routes expose, rolled
+    into a single read so the home page renders the whole boundary in one
+    round trip. Every figure is derived LIVE from persisted state — the
+    design prototype's hardcoded totals / literal timestamps / always-stale
+    pill are replaced by real store queries; an absent value surfaces as
+    ``null`` so the UI renders "—" rather than a fabricated 0.
+
+    Read-only: opens the store + audit log read-only (``PRAGMA query_only``)
+    and writes nothing. Every store query uses the credential-safe ``safe_source``
+    (a URL-shaped override is hashed to its canonical id before it reaches any
+    query or the response — a raw connection URL carries the DB password).
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from schemabrain.core.store import SQLiteStore
+    from schemabrain.enrichment.prompts import PROMPT_VERSION
+    from schemabrain.pii.categories import CATASTROPHIC_LEAK_CATEGORIES
+    from schemabrain.pii.policy_yaml import PolicyYamlError, parse_policy_yaml_file
+
+    def _active_block() -> frozenset[Any]:
+        """The operator's active policy block, or the catastrophic floor when
+        no YAML exists — identical resolution to the policy route's
+        ``_load_active_block`` so the posture tally can never diverge."""
+        if not DEFAULT_POLICY_YAML_PATH.exists():
+            return CATASTROPHIC_LEAK_CATEGORIES
+        try:
+            return parse_policy_yaml_file(DEFAULT_POLICY_YAML_PATH).block
+        except PolicyYamlError:
+            return CATASTROPHIC_LEAK_CATEGORIES
+
+    def _iso_to_epoch(value: str | None) -> float | None:
+        """``mcp_audit.occurred_at`` is ISO-8601 UTC TEXT (trailing Z); the UI
+        formats epoch seconds via ``relativeTime`` — normalise here. None-safe;
+        returns null on a malformed row rather than fabricating a time."""
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:  # pragma: no cover - defensive against a malformed row
+            return None
+
+    @app.get("/api/overview")
+    def overview(source_connection_id: str | None = None) -> dict[str, Any]:
+        active_block = _active_block()
+
+        with SQLiteStore(config.store_path) as store:
+            resolved_source = _resolve_source(store, config, source_connection_id)
+            # Hash a URL-shaped override to its canonical id BEFORE it reaches
+            # any query or the response — a raw connection URL carries the DB
+            # password and must never be echoed. The store persists hashed ids,
+            # so every query below uses safe_source (a no-op for an already-
+            # hashed override; correct for a URL one).
+            safe_source = _credential_safe_source_label(resolved_source)
+
+            # --- bound entities: count, catastrophic, by-group, confidence ---
+            entities = store.list_entities(source_connection_id=safe_source)
+            by_group = {"identity": 0, "billing": 0, "activity": 0, "other": 0}
+            confidence = {"high": 0, "medium": 0, "low": 0, "unrated": 0}
+            catastrophic_entities = 0
+            for entity in entities:
+                group = entity.group if entity.group in by_group else "other"
+                by_group[group] += 1
+                band = entity.bind_confidence
+                confidence[band if band in confidence else "unrated"] += 1
+                if (
+                    _entity_pii_level(
+                        store,
+                        entity,
+                        source_connection_id=safe_source,
+                        catastrophic_categories=CATASTROPHIC_LEAK_CATEGORIES,
+                    )
+                    == "catastrophic"
+                ):
+                    catastrophic_entities += 1
+
+            # --- protection posture: per-column severity partition (Option A) ---
+            # catastrophic = carries a catastrophic-floor category (always
+            # hard-blocked at every read gate — the lead number + the `--alarm`
+            # segment); policy_blocked = blocked by the operator's active policy
+            # but NOT catastrophic; allowed = neither. This is a severity-FIRST
+            # partition for the home card (catastrophic always wins), which is
+            # deliberately NOT the policy route's attribution verdict (that one
+            # is operator-block-first, so a catastrophic column the operator
+            # also lists reads as "blocked" there, "catastrophic" here). Same
+            # underlying enforcement state; `--alarm` lands only on the
+            # genuinely catastrophic share, never decoratively.
+            posture = {"catastrophic": 0, "policy_blocked": 0, "allowed": 0}
+            for _qt, _col, _sens, cats, _origin in store.list_column_pii_tags_with_origin(
+                source_connection_id=safe_source
+            ):
+                if cats & CATASTROPHIC_LEAK_CATEGORIES:
+                    posture["catastrophic"] += 1
+                elif cats & active_block:
+                    posture["policy_blocked"] += 1
+                else:
+                    posture["allowed"] += 1
+            posture["columns"] = (
+                posture["catastrophic"] + posture["policy_blocked"] + posture["allowed"]
+            )
+
+            # --- semantic layer: metrics + canonical joins + log-mined edges ---
+            metrics = store.list_metrics(source_connection_id=safe_source)
+            joins = store.list_canonical_joins(source_connection_id=safe_source)
+            mined_count = sum(
+                1
+                for edge in store.list_graph_edges(source_connection_id=safe_source)
+                if edge.edge_origin == "log_mined"
+            )
+
+            # --- freshness: the SAME two drift kinds /api/drift reports ---
+            last_enriched = store.latest_enriched_at(source_connection_id=safe_source)
+            enrichment_stale = store.has_stale_prompt_version(
+                source_connection_id=safe_source,
+                current_prompt_version=PROMPT_VERSION,
+            )
+            indexed_by_source = {
+                summary.source_connection_id: (summary.last_indexed_at, summary.table_count)
+                for summary in store.summarize_sources()
+            }
+
+        risk = {"high": 0, "med": 0, "low": 0}
+        drift_count = 0
+        # config drift (policy YAML edited since serve) is global, not per-source
+        if _compute_policy_drift(DEFAULT_POLICY_YAML_PATH)["detected"]:
+            drift_count += 1
+            risk["med"] += 1
+        if enrichment_stale:
+            drift_count += 1
+            risk["med"] += 1
+
+        # --- audit: total tool calls + 24h refusals + recent rows ---
+        # occurred_at is ISO-8601 UTC TEXT; build the cutoff in the SAME
+        # microsecond-precision-with-Z shape the writer persists so the
+        # lexicographic comparison is an exact chronological one.
+        cutoff = (datetime.now(tz=UTC) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        with _open_audit_conn(config) as conn:
+            audit_total = _count_audit_rows(conn, after_id=None, status_filter=None)
+            refusals_24h = int(
+                conn.execute(
+                    "SELECT count(*) AS c FROM mcp_audit "  # nosec B608 - static SQL, bound param
+                    "WHERE status = 'refused' AND occurred_at >= ?",
+                    (cutoff,),
+                ).fetchone()["c"]
+            )
+            recent_refusals = _select_audit_rows(
+                conn, limit=3, offset=0, after_id=None, status_filter="refused"
+            )
+            recent_rows = _select_audit_rows(
+                conn, limit=2, offset=0, after_id=None, status_filter=None
+            )
+
+        last_indexed, table_count = indexed_by_source.get(safe_source, (None, None))
+        return {
+            "source_connection_id": safe_source,
+            "source": {
+                "label": safe_source,
+                "tables": table_count,
+                "last_indexed_at": last_indexed,
+            },
+            "entities": {
+                "count": len(entities),
+                "catastrophic_count": catastrophic_entities,
+                "by_group": by_group,
+                "confidence": confidence,
+            },
+            "protection": posture,
+            "freshness": {
+                "fresh": drift_count == 0,
+                "change_count": drift_count,
+                "risk": risk,
+                "last_enriched": last_enriched,
+            },
+            "refusals": {
+                "count_24h": refusals_24h,
+                "recent": [
+                    {
+                        "tool": row["tool_name"],
+                        "category": (
+                            row["pii_categories"].split(",")[0] if row["pii_categories"] else None
+                        ),
+                        "occurred_at": _iso_to_epoch(row["occurred_at"]),
+                    }
+                    for row in recent_refusals
+                ],
+            },
+            "audit": {
+                "total": audit_total,
+                "recent": [
+                    {
+                        "tool": row["tool_name"],
+                        "seq": row["id"],
+                        "refused": row["status"] == "refused",
+                        # Honest derived summary from structured columns — the
+                        # full request text is never persisted (privacy-by-
+                        # construction); a refusal shows its reason, otherwise
+                        # the status verb. Never the agent's prompt.
+                        "summary": (row["refusal_reason"] or row["status"]),
+                        "occurred_at": _iso_to_epoch(row["occurred_at"]),
+                    }
+                    for row in recent_rows
+                ],
+            },
+            "semantic": {
+                "metrics_count": len(metrics),
+                "joins_count": len(joins),
+                "mined_count": mined_count,
+                "metric_names": [metric.name for metric in metrics],
+            },
+        }
+
 
 def _register_stream_route(app: FastAPI, config: SidecarConfig) -> None:
     """GET /api/audit/stream — SSE feed of new audit rows."""
@@ -966,8 +2103,10 @@ def _open_audit_conn(config: SidecarConfig) -> sqlite3.Connection:
 
     The sidecar never writes; the writer-discipline contract is
     enforced by code path (no INSERT/UPDATE/DELETE statements anywhere
-    in this module). WAL pragmas let the connection see rows committed
-    by a concurrent ``schemabrain serve`` process.
+    in this module) and belt-and-suspenders by ``PRAGMA query_only``.
+    The store is already in WAL mode (set by the writer in
+    ``core/store.py``); this read connection inherits it and so sees rows
+    committed by a concurrent ``schemabrain serve`` process.
     """
     conn = sqlite3.connect(str(config.store_path))
     conn.row_factory = sqlite3.Row
@@ -1000,6 +2139,26 @@ def _no_sources_http_error() -> Exception:
             "store has no indexed sources. Run `schemabrain index` against your source DB first."
         ),
     )
+
+
+def _credential_safe_source_label(source: str) -> str:
+    """Coerce a resolved source id to a form safe to echo over HTTP.
+
+    ``_resolve_source`` returns an operator-supplied ``source_connection_id``
+    override verbatim, so a URL-shaped value (which carries the DB password)
+    could otherwise reach the response body. Hash any URL-shaped source to
+    the canonical short id — the same id indexing persisted — before it is
+    emitted, mirroring the defence in ``_register_meta_route``. A normal
+    hashed id / label is not URL-shaped and passes through unchanged.
+    """
+    from schemabrain.core.source_id import looks_like_connection_url, make_source_id
+
+    if looks_like_connection_url(source):
+        try:
+            return make_source_id(source)
+        except ValueError:  # pragma: no cover - defensive: looks_like_connection_url already validated the Postgres scheme make_source_id needs, so it cannot raise; we refuse to echo a partial URL rather than leak it
+            return "source"
+    return source
 
 
 def _validate_pagination(limit: int, offset: int) -> tuple[int, int]:
@@ -1184,13 +2343,19 @@ def _register_html_fallback(app: FastAPI) -> None:
 
 
 def _register_fallback_landing(app: FastAPI) -> None:
-    """Serve a minimal landing page at ``/`` when no static export exists.
+    """Serve a minimal "sidecar is alive" probe at ``/`` when no static
+    export exists.
 
-    The page is dev-mode only — it renders when the wheel has not
-    bundled the Next.js export and when the operator is not running
-    ``pnpm dev`` separately. It fetches live data from the /api/*
-    routes and shows the operator a real surface so the sidecar feels
-    "alive" the moment it boots, instead of returning 404 at /.
+    Dev-mode only — it renders when the wheel has not bundled the
+    Next.js export and the operator is not running ``pnpm dev``
+    separately. It fetches live data from the /api/* routes so the
+    sidecar feels alive the moment it boots, instead of returning 404
+    at /. It is NOT the marketing landing (that now ships as the
+    separate ``site/`` app, deployed to the web — see
+    docs/internal/landing_site_separation_plan_2026_06_09.md). With a
+    real export present, ``/`` instead serves the dashboard's
+    ``index.html`` redirect stub, which forwards to the home at
+    ``/overview``.
 
     Inline HTML on purpose: no Jinja, no template files. The full
     React UI is the production surface; this is just a working
@@ -1312,7 +2477,7 @@ _LANDING_HTML = """<!doctype html>
   <div class="banner">
     <strong>Why am I seeing this page?</strong> The wheel does not yet
     ship a built Next.js export under <code>schemabrain/dashboard/static/</code>.
-    The sidecar still serves all 8 API routes; you can browse them
+    The sidecar still serves all of its API routes; you can browse them
     below.
   </div>
 
@@ -1340,6 +2505,7 @@ _LANDING_HTML = """<!doctype html>
     <li><a href="/api/audit/rows">/api/audit/rows</a><span>Audit Viewer table</span></li>
     <li><a href="/api/audit/refusals">/api/audit/refusals</a><span>Refusal Experience feed</span></li>
     <li><a href="/api/audit/verify">/api/audit/verify</a><span>chain verify status</span></li>
+    <li><a href="/api/audit/merkle/root">/api/audit/merkle/root</a><span>derived Merkle root</span></li>
   </ul>
 
   <h2>Get the full UI</h2>

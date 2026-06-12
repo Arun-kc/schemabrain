@@ -1,6 +1,6 @@
 ---
 title: "SchemaBrain"
-description: "The semantic firewall between AI agents and your database. Read-only, PII-aware, audit-evident — by architecture, not by trust."
+description: "The trust and intelligence layer between AI agents and your database. Read-only, PII-aware, audit-evident — by architecture, not by trust."
 ---
 
 ## Why SchemaBrain exists
@@ -14,11 +14,14 @@ SchemaBrain sits between the agent and the database and changes that contract.
 <Steps>
   <Step title="Install">
     <CodeGroup>
+    ```bash uvx
+    uvx schemabrain init
+    ```
+    ```bash pipx
+    pipx install schemabrain
+    ```
     ```bash pip
     pip install schemabrain
-    ```
-    ```bash uv
-    uv pip install schemabrain
     ```
     ```bash docker
     docker pull ghcr.io/arun-kc/schemabrain:latest
@@ -31,21 +34,21 @@ SchemaBrain sits between the agent and the database and changes that contract.
     ```
     The wizard detects your installed MCP hosts (Claude Desktop, Claude Code, Cursor, Windsurf) and shows a menu — press Enter for the detected default, or pass `--host X` to skip the prompt. It spins up a local Postgres demo with a 12-table SaaS schema and writes a ready-to-use config. Press Enter at every prompt for the demo defaults.
   </Step>
-  <Step title="Restart the host and ask">
-    Ask your agent: *"list the entities you know about, then describe the user entity."*
-
-    The demo ships a pre-curated entity pack, so this works **without an `ANTHROPIC_API_KEY`**. If you connected your own Postgres and skipped entity curation (no Anthropic key on hand), ask *"list the tables in my database"* instead — that uses the physical-schema tools, which need no entities.
-  </Step>
-  <Step title="Open the dashboard">
+  <Step title="See your schema as a graph">
     ```bash
     pip install 'schemabrain[ui]'
     schemabrain dashboard
     ```
-    Four surfaces: a PII Ledger of every tagged column, a Refusal Explorer of every blocked query, a hash-chained Audit Viewer, and an Entity drilldown that shows the semantic + physical layers side by side.
+    The payoff: your schema rendered as an interactive **knowledge graph** — entities as nodes, joins as edges, catastrophic-PII hotspots flagged — alongside a PII Ledger of every tagged column, a Refusal Explorer of every blocked query, and a hash-chained Audit Viewer. The dashboard reads the local store directly, so it works before you restart the host.
+  </Step>
+  <Step title="Restart the host and ask">
+    Restart your MCP host so the agent picks up the new tools, then ask: *"list the entities you know about, then describe the user entity."*
+
+    The demo ships a pre-curated entity pack, so this works **without an `ANTHROPIC_API_KEY`**. If you connected your own Postgres and skipped entity curation (no Anthropic key on hand), ask *"list the tables in my database"* instead — that uses the physical-schema tools, which need no entities.
   </Step>
 </Steps>
 
-Full walkthrough in [Setup](/setup). Want the 10-minute tour that fires the firewall? Start with [First 5 Queries](/first-5-queries).
+Full walkthrough in [Setup](/setup). Want the 10-minute tour where you watch an agent get refused a query it can't answer honestly? Start with [First 5 Queries](/first-5-queries).
 
 ## Why it's safe by architecture, not by trust
 
@@ -82,7 +85,7 @@ How SchemaBrain differs from the obvious neighbours in the AI-database tooling s
 
 <CardGroup cols={2}>
   <Card title="vs. Querybear" href="/compare/querybear">
-    Read-only SQL agent for analytics. SchemaBrain is the firewall layer between any agent and your database.
+    Read-only SQL agent for analytics. SchemaBrain is the trust and intelligence layer between any agent and your database — definition-driven, so the agent never writes raw SQL.
   </Card>
   <Card title="vs. Anthropic Postgres MCP" href="/compare/anthropic-postgres-mcp">
     Reference MCP server with direct SQL execution. SchemaBrain refuses SQL at the type level.

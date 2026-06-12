@@ -2078,7 +2078,7 @@ extrapolated rows assume that ratio continues; production-scale anchors
 will tighten or revise it.
 
 <Tip>
-Hard cap configurable via `--max-cost` (default \$10.00). Per-agent-query
+Hard cap configurable via `--max-cost` (default \$1.00). Per-agent-query
 cost depends on tool calls and turns; in our testing, typical questions
 cost ~\$0.005 with Haiku.
 </Tip>
@@ -2124,10 +2124,10 @@ text-to-SQL execution accuracy.
 
 ## What's validated
 
-As of v0.5.0 (2026-06-01), against two reference anchors — the e-commerce
+As of v0.6.0, against two reference anchors — the e-commerce
 fixture (8 tables / 39 columns) and the Pagila DVD-rental sample
 (15 tables / 87 columns after declarative-partition deduplication;
-22 / 129 raw). v0.5.0 also ships a SaaS demo pack (12 tables / 84 columns)
+22 / 129 raw). A SaaS demo pack (12 tables / 84 columns) ships
 as the default bundled fixture, exercised by the pre-publish smoke — PII
 refusal, audit-chain integrity, and refuse-then-pivot recovery over the
 headless Anthropic SDK:
@@ -2139,8 +2139,8 @@ headless Anthropic SDK:
 - ✅ Junction (M:N) tables are detected structurally; descriptions
   explicitly warn that joining through them multiplies result rows;
   `list_joins` synthesises logical bridges across junctions
-- ✅ Generates LLM descriptions via Anthropic Claude (Haiku 4.5 default,
-  Sonnet 4.6 for cryptic columns)
+- ✅ Generates LLM descriptions via Anthropic Claude (Haiku 4.5 default;
+  cryptic columns opt into Sonnet 4.6 via `--enable-sonnet`)
 - ✅ Local embeddings via `fastembed` (no second API vendor)
 - ✅ All 12 MCP tools tested via Claude Desktop AND headless Anthropic SDK,
   on both anchors. The 12: `list_entities`, `list_metrics`, `list_joins`,
@@ -2156,8 +2156,8 @@ headless Anthropic SDK:
   returns observed SQL with PII tagging
 - ✅ Cache-aware re-index ($0 on unchanged schemas)
 - ✅ Fresh-machine quickstart works from a stripped shell
-- ✅ Continuous integration (lint + unit + integration with 99% coverage
-  gate; 5275 tests on `main` at the v0.5.0 cut)
+- ✅ Continuous integration (lint + unit + integration with a 99% coverage
+  gate over the full test suite on `main`)
 
 <Warning>
 **Not yet validated:**
@@ -2253,9 +2253,6 @@ here is incremental hardening + scope expansion, not a re-architecture:
   but not the column name.
 - **HTTPS transport** — alongside the current stdio transport, for hosts that
   can't launch a subprocess (e.g. ChatGPT Custom Connector).
-- **Hosted offering** — a managed `serve` for teams that want the firewall
-  posture without running the binary themselves. Independently versioned from
-  the OSS package per [ADR 0003](/adr/0003-versioning-policy).
 
 ## Next steps
 

@@ -4,12 +4,19 @@
 
 import type {
   AuditChainStatus,
+  DictionaryModel,
+  DriftResponse,
   EntityDrilldownResponse,
   EntityListResponse,
+  GraphResponse,
   HealthResponse,
+  MerkleProofResponse,
+  MerkleRootResponse,
   Meta,
+  OverviewResponse,
   PaginatedAuditResponse,
   PiiMatrixResponse,
+  PolicyPreviewResponse,
   PolicyResponse,
   RefusalEntry,
 } from "@/lib/types";
@@ -65,6 +72,49 @@ export const api = {
     return getJson<PolicyResponse>(`/api/pii/policy${qs}`);
   },
 
+  drift: (sourceId?: string) => {
+    const qs = sourceId ? `?source_connection_id=${encodeURIComponent(sourceId)}` : "";
+    return getJson<DriftResponse>(`/api/drift${qs}`);
+  },
+
+  /** The knowledge-graph projection (nodes / edges / canonical path) for
+   * a source — the backend half of the graph surface (ADR 0010). */
+  graph: (sourceId?: string) => {
+    const qs = sourceId ? `?source_connection_id=${encodeURIComponent(sourceId)}` : "";
+    return getJson<GraphResponse>(`/api/graph${qs}`);
+  },
+
+  /** The full data-dictionary model (schema version + every entity's
+   * columns / joins / metrics) for a source — the SAME model the
+   * `schemabrain docs` CLI renders. Drives the Data Dictionary surface
+   * and its byte-for-byte Markdown export (dashboard 1.9). */
+  dict: (sourceId?: string) => {
+    const qs = sourceId ? `?source_connection_id=${encodeURIComponent(sourceId)}` : "";
+    return getJson<DictionaryModel>(`/api/dict${qs}`);
+  },
+
+  /** Server-computed system-status summary for the Overview ("home")
+   * surface — the whole boundary (entities, protection posture, freshness,
+   * refusals, audit, semantic layer) in one read (dashboard 1.10). */
+  overview: (sourceId?: string) => {
+    const qs = sourceId ? `?source_connection_id=${encodeURIComponent(sourceId)}` : "";
+    return getJson<OverviewResponse>(`/api/overview${qs}`);
+  },
+
+  /**
+   * Render the canonical YAML + diff for a staged policy (ADR 0006).
+   * Source-independent (qualified columns are global), so no source id.
+   * `block` / `override` are repeatable query params — see lib/policy.ts
+   * for the override wire encoding.
+   */
+  piiPolicyPreview: (params: { block: readonly string[]; override: readonly string[] }) => {
+    const qs = new URLSearchParams();
+    for (const category of params.block) qs.append("block", category);
+    for (const override of params.override) qs.append("override", override);
+    const tail = qs.toString() ? `?${qs.toString()}` : "";
+    return getJson<PolicyPreviewResponse>(`/api/pii/policy/preview${tail}`);
+  },
+
   auditRows: (params?: { limit?: number; offset?: number; status?: string }) => {
     const qs = new URLSearchParams();
     if (params?.limit) qs.set("limit", String(params.limit));
@@ -85,10 +135,21 @@ export const api = {
   auditRefusalDetail: (id: number) =>
     getJson<RefusalEntry>(`/api/audit/refusals/${id}`),
 
-  auditVerify: (since?: string) => {
-    const qs = since ? `?since=${encodeURIComponent(since)}` : "";
-    return getJson<AuditChainStatus>(`/api/audit/verify${qs}`);
+  auditVerify: (opts?: { since?: string; full?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (opts?.since) qs.set("since", opts.since);
+    if (opts?.full) qs.set("full", "true");
+    const tail = qs.toString() ? `?${qs}` : "";
+    return getJson<AuditChainStatus>(`/api/audit/verify${tail}`);
   },
+
+  /** The derived Merkle root over every audit row (id-ASC). */
+  auditMerkleRoot: () => getJson<MerkleRootResponse>("/api/audit/merkle/root"),
+
+  /** Inclusion proof for one audit row — the browser verifies it against
+   * the global root via lib/merkle.ts. 404 if the id is absent. */
+  auditRowProof: (id: number) =>
+    getJson<MerkleProofResponse>(`/api/audit/rows/${id}/proof`),
 };
 
 export { SidecarError };

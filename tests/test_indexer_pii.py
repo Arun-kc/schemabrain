@@ -100,6 +100,9 @@ class _FakeDataSource:
     def get_table(self, name: str, schema: str) -> Table:
         return self._tables[(schema, name)]
 
+    def estimated_row_count(self, name: str, schema: str) -> int | None:
+        return None
+
     def close(self) -> None:
         pass
 
@@ -356,5 +359,87 @@ class TestUnchangedTableTagsSurvive:
             )
             assert tags_after_first == tags_after_second
             assert tags_after_first["email"] == ("pii", frozenset({"contact"}))
+        finally:
+            store.close()
+
+
+def _accounts_table() -> Table:
+    """A table whose columns exercise floor / non-floor / public bands."""
+    return Table(
+        name="accounts",
+        schema_name="public",
+        columns=(
+            _col("id", table_name="accounts", ordinal=1, data_type="BIGINT", is_pk=True),
+            _col("email", table_name="accounts", ordinal=2),
+            _col("password_hash", table_name="accounts", ordinal=3),
+        ),
+    )
+
+
+class _ShapeProfiler:
+    """Profiler that attaches caller-supplied value shapes per column."""
+
+    def __init__(self, shapes: dict[str, tuple[str, ...]]) -> None:
+        self._shapes = shapes
+
+    def profile_table(self, table: Table) -> dict:
+        from schemabrain.profiler.stats import ColumnStats
+
+        return {
+            col.name: ColumnStats(
+                column_name=col.name,
+                total_rows=10,
+                null_count=0,
+                distinct_count=10,
+                shape_patterns=self._shapes.get(col.name, ()),
+            )
+            for col in table.columns
+        }
+
+
+class TestConfidenceWiring:
+    """ADR 0009 — the index-time confidence band lands in the store."""
+
+    def test_floor_non_floor_and_public_bands(self) -> None:
+        source = _FakeDataSource([_accounts_table()])
+        store = SQLiteStore(":memory:")
+        try:
+            index(
+                source=source,
+                profiler=_ShapeProfiler({}),  # no shapes → non-floor PII is medium
+                store=store,
+                source_connection_id=SOURCE_ID,
+            )
+            conf = store.get_column_pii_confidence(
+                source_connection_id=SOURCE_ID,
+                qualified_table="public.accounts",
+                columns=["id", "email", "password_hash"],
+            )
+            # password_hash → credential (catastrophic floor) → locked.
+            assert conf["password_hash"] == ("floor_locked", None)
+            # email → contact, no corroborating shape → medium.
+            assert conf["email"][0] == "medium"
+            # id → public → no band.
+            assert conf["id"] == (None, None)
+        finally:
+            store.close()
+
+    def test_value_shape_corroboration_lifts_to_high(self) -> None:
+        source = _FakeDataSource([_accounts_table()])
+        store = SQLiteStore(":memory:")
+        try:
+            index(
+                source=source,
+                profiler=_ShapeProfiler({"email": ("aaa@aaa.aaa",)}),
+                store=store,
+                source_connection_id=SOURCE_ID,
+            )
+            conf = store.get_column_pii_confidence(
+                source_connection_id=SOURCE_ID,
+                qualified_table="public.accounts",
+                columns=["email"],
+            )
+            # The email value shape corroborates the contact tag → high.
+            assert conf["email"][0] == "high"
         finally:
             store.close()

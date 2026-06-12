@@ -18,17 +18,32 @@
         "id": {
           "name": "id",
           "data_type": "bigint",
-          "description": "Primary key — internal user identifier.",
-          "constraints": [{"type": "primary_key"}]
+          "description": "Primary key \u2014 internal user identifier.",
+          "constraints": [
+            {
+              "type": "primary_key"
+            }
+          ]
         },
         "email": {
           "name": "email",
           "data_type": "text",
           "description": "Login + contact email. UNIQUE in the raw schema.",
-          "constraints": [{"type": "not_null"}, {"type": "unique"}]
+          "constraints": [
+            {
+              "type": "not_null"
+            },
+            {
+              "type": "unique"
+            }
+          ]
         }
       },
-      "depends_on": {"nodes": ["source.schemabrain_demo.raw.users_export"]}
+      "depends_on": {
+        "nodes": [
+          "source.schemabrain_demo.raw.users_export"
+        ]
+      }
     },
     "model.schemabrain_demo.order": {
       "resource_type": "model",
@@ -42,14 +57,22 @@
         "id": {
           "name": "id",
           "data_type": "bigint",
-          "description": "Primary key — internal order identifier.",
-          "constraints": [{"type": "primary_key"}]
+          "description": "Primary key \u2014 internal order identifier.",
+          "constraints": [
+            {
+              "type": "primary_key"
+            }
+          ]
         },
         "user_id": {
           "name": "user_id",
           "data_type": "bigint",
           "description": "Customer who placed this order. Foreign key to `users.id`.",
-          "constraints": [{"type": "not_null"}]
+          "constraints": [
+            {
+              "type": "not_null"
+            }
+          ]
         },
         "total_cents": {
           "name": "total_cents",
@@ -58,7 +81,9 @@
           "constraints": []
         }
       },
-      "depends_on": {"nodes": []}
+      "depends_on": {
+        "nodes": []
+      }
     },
     "model.schemabrain_demo.product": {
       "resource_type": "model",
@@ -72,8 +97,12 @@
         "id": {
           "name": "id",
           "data_type": "bigint",
-          "description": "Primary key — internal product identifier.",
-          "constraints": [{"type": "primary_key"}]
+          "description": "Primary key \u2014 internal product identifier.",
+          "constraints": [
+            {
+              "type": "primary_key"
+            }
+          ]
         },
         "sku": {
           "name": "sku",
@@ -82,7 +111,9 @@
           "constraints": []
         }
       },
-      "depends_on": {"nodes": []}
+      "depends_on": {
+        "nodes": []
+      }
     },
     "metric.schemabrain_demo.daily_revenue": {
       "resource_type": "metric",
@@ -106,9 +137,26 @@
       "resource_type": "test",
       "unique_id": "test.schemabrain_demo.unique_customer_id.abc",
       "name": "unique",
-      "test_metadata": {"name": "unique"},
+      "test_metadata": {
+        "name": "unique"
+      },
       "column_name": "id",
       "attached_node": "model.schemabrain_demo.customer"
+    },
+    "test.schemabrain_demo.relationships_order_user_id__id__ref_customer_.abc": {
+      "resource_type": "test",
+      "unique_id": "test.schemabrain_demo.relationships_order_user_id__id__ref_customer_.abc",
+      "name": "relationships",
+      "test_metadata": {
+        "name": "relationships",
+        "kwargs": {
+          "to": "ref('customer')",
+          "field": "id",
+          "column_name": "user_id"
+        }
+      },
+      "column_name": "user_id",
+      "attached_node": "model.schemabrain_demo.order"
     }
   },
   "sources": {

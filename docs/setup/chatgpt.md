@@ -52,10 +52,10 @@ When SchemaBrain ships an HTTPS transport (planned for a future minor version), 
 
 For context — when SchemaBrain ships HTTPS transport, ChatGPT users will get exactly the same guarantees as every other supported client:
 
-- **12 MCP tools, none of which can write.** Full list in [`/mechanism/read-only`](../mechanism/read-only.md).
-- **PII-aware refusal at the `get_metric` boundary.** Details in [`/mechanism/pii-taxonomy`](../mechanism/pii-taxonomy.md).
-- **Tamper-evident audit chain.** Details in [`/mechanism/audit-chain`](../mechanism/audit-chain.md).
-- **Structured recovery envelopes.** Details in [`/mechanism/structured-recovery`](../mechanism/structured-recovery.md).
+- **12 MCP tools, none of which can write.** Full list in [`/mechanism/read-only`](/mechanism/read-only).
+- **PII-aware refusal at the `get_metric` boundary.** Details in [`/mechanism/pii-taxonomy`](/mechanism/pii-taxonomy).
+- **Tamper-evident audit chain.** Details in [`/mechanism/audit-chain`](/mechanism/audit-chain).
+- **Structured recovery envelopes.** Details in [`/mechanism/structured-recovery`](/mechanism/structured-recovery).
 
 The firewall mechanism is transport-agnostic — only the wire format changes between stdio and HTTPS.
 

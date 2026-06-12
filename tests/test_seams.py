@@ -33,6 +33,7 @@ from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
 from schemabrain.core.entity import Entity
 from schemabrain.core.example_query import ExampleQuery
+from schemabrain.core.graph import GraphEdge, GraphNode, RefusalHotspots
 from schemabrain.core.join import CanonicalJoin
 from schemabrain.core.metric import Metric
 from schemabrain.core.models import Column, ForeignKey, IncomingForeignKey, Table
@@ -365,7 +366,13 @@ class TestStoreProtocolSeamUsable:
             def close(self) -> None:
                 pass
 
-            def write_table(self, table: Table, *, source_connection_id: str) -> None:
+            def write_table(
+                self,
+                table: Table,
+                *,
+                source_connection_id: str,
+                estimated_row_count: int | None = None,
+            ) -> None:
                 pass
 
             def get_table(
@@ -382,6 +389,27 @@ class TestStoreProtocolSeamUsable:
                 self, *, source_connection_id: str | None = None
             ) -> list[tuple[str, str]]:
                 return []
+
+            def estimated_row_counts(self, *, source_connection_id: str) -> dict[str, int | None]:
+                return {}
+
+            def write_graph_projection(
+                self,
+                *,
+                source_connection_id: str,
+                nodes: list[GraphNode],
+                edges: list[GraphEdge],
+            ) -> None:
+                return None
+
+            def list_graph_nodes(self, *, source_connection_id: str) -> list[GraphNode]:
+                return []
+
+            def list_graph_edges(self, *, source_connection_id: str) -> list[GraphEdge]:
+                return []
+
+            def refusal_counts_by_entity(self, *, source_connection_id: str) -> RefusalHotspots:
+                return RefusalHotspots(by_entity={}, unattributed=0)
 
             def list_distinct_source_connection_ids(self) -> list[str]:
                 return []
@@ -449,6 +477,17 @@ class TestStoreProtocolSeamUsable:
             def search_embeddings_topk(
                 self,
                 query_vector: list[float],
+                *,
+                source_connection_id: str,
+                k: int,
+            ) -> list[tuple[str, str, str, float]]:
+                return []
+
+            def nearest_columns(
+                self,
+                schema_name: str,
+                table_name: str,
+                column_name: str,
                 *,
                 source_connection_id: str,
                 k: int,
@@ -552,6 +591,15 @@ class TestStoreProtocolSeamUsable:
                 qualified_table: str,
                 columns: Iterable[str],
             ) -> dict[str, tuple[str, frozenset[str]]]:
+                return {}
+
+            def get_column_pii_confidence(
+                self,
+                *,
+                source_connection_id: str,
+                qualified_table: str,
+                columns: Iterable[str],
+            ) -> dict[str, tuple[str | None, float | None]]:
                 return {}
 
             def upsert_column_pii_tag_override(

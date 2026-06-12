@@ -27,10 +27,16 @@ from schemabrain.core.description import ColumnDescription
 from schemabrain.core.embedding import ColumnEmbedding
 from schemabrain.core.entity import Entity
 from schemabrain.core.example_query import ExampleQuery
+from schemabrain.core.graph import GraphEdge, GraphNode, RefusalHotspots
 from schemabrain.core.join import CanonicalJoin
 from schemabrain.core.metric import Metric
 from schemabrain.core.models import ForeignKey, IncomingForeignKey, Table
-from schemabrain.pii.categories import ColumnPiiTag, PIICategory, Sensitivity
+from schemabrain.pii.categories import (
+    ColumnPiiTag,
+    PIICategory,
+    PiiConfidenceBand,
+    Sensitivity,
+)
 
 
 @runtime_checkable
@@ -69,7 +75,13 @@ class Store(Protocol):  # pragma: no cover
 
     # ----- Tables ---------------------------------------------------
 
-    def write_table(self, table: Table, *, source_connection_id: str) -> None: ...
+    def write_table(
+        self,
+        table: Table,
+        *,
+        source_connection_id: str,
+        estimated_row_count: int | None = None,
+    ) -> None: ...
 
     def get_table(
         self, schema_name: str, name: str, *, source_connection_id: str
@@ -78,6 +90,58 @@ class Store(Protocol):  # pragma: no cover
     def delete_table(self, schema_name: str, name: str, *, source_connection_id: str) -> None: ...
 
     def list_tables(self, *, source_connection_id: str | None = None) -> list[tuple[str, str]]: ...
+
+    def estimated_row_counts(self, *, source_connection_id: str) -> dict[str, int | None]:
+        """Map `schema.table` -> cached `pg_class.reltuples` estimate.
+
+        Keyed by qualified name so a caller resolving an entity's bound
+        table can `.get(entity.qualified_table)` without a per-row query
+        (the entities-index rollup reads it once for the whole source).
+        The value is `None` for any table indexed from a backend that
+        can't cheaply estimate row counts (SQLite, or a never-analyzed
+        Postgres table). Read-only.
+        """
+        ...
+
+    def write_graph_projection(
+        self,
+        *,
+        source_connection_id: str,
+        nodes: list[GraphNode],
+        edges: list[GraphEdge],
+    ) -> None:
+        """Replace the whole v15 graph projection for a source atomically.
+
+        Idempotent DELETE+INSERT in one transaction (mirrors
+        `write_column_pii_tags`); empty inputs wipe the source's
+        projection. An edge whose `join_name` names no live canonical
+        join raises `sqlite3.IntegrityError` and rolls the projection
+        back. See ADR 0010.
+        """
+        ...
+
+    def list_graph_nodes(self, *, source_connection_id: str) -> list[GraphNode]:
+        """Read the projected graph nodes for a source, ordered by
+        `entity_name`. `is_catastrophic` is a bool; `row_count` is `None`
+        when no estimate was projected. Empty source → empty list.
+        Read-only."""
+        ...
+
+    def list_graph_edges(self, *, source_connection_id: str) -> list[GraphEdge]:
+        """Read the projected graph edges for a source, ordered by
+        `join_name`. Empty source → empty list. Read-only."""
+        ...
+
+    def refusal_counts_by_entity(self, *, source_connection_id: str) -> RefusalHotspots:
+        """Live per-entity refusal tally + the unattributed remainder.
+
+        Aggregates append-only `mcp_audit` rows with `status='refused'` for
+        the source by their non-canonical `anchor_entity` column (v17).
+        Rows the engine could not pin to one entity (NULL `anchor_entity`)
+        sum into `RefusalHotspots.unattributed` rather than being dropped.
+        Read-only — never touches the chained columns. Empty / no audit
+        rows → empty map, 0 unattributed."""
+        ...
 
     def list_distinct_source_connection_ids(self) -> list[str]:
         """Return every `source_connection_id` that has data in the
@@ -253,6 +317,46 @@ class Store(Protocol):  # pragma: no cover
         short-circuit to `[]` BEFORE any dimension validation — a
         caller with the wrong query dim against an empty store must
         not raise.
+        """
+        ...
+
+    def nearest_columns(
+        self,
+        schema_name: str,
+        table_name: str,
+        column_name: str,
+        *,
+        source_connection_id: str,
+        k: int,
+    ) -> list[tuple[str, str, str, float]]:
+        """Return the top-`k` columns most similar to one reference column.
+
+        The column→column nearest-neighbour counterpart of
+        `search_embeddings_topk`: the query vector is the reference
+        column's OWN stored embedding, searched over the same
+        per-source vector space. Each result is `(schema_name,
+        table_name, column_name, cosine_score)`.
+
+        Implementations MUST:
+          - exclude the reference column AND every other column in its
+            table (table-mates are the same record, not "similar
+            elsewhere"); a single same-table filter covers both;
+          - order descending by `cosine_score`, ties broken ascending by
+            `(schema_name, table_name, column_name)` — identical to
+            `search_embeddings_topk` so the two share a cosine core;
+          - return at most `k` rows, never padding.
+
+        Implementations MUST return `[]` (NOT raise) for every degenerate
+        INPUT, because the caller is a read-only drilldown surface that
+        renders "no similar columns":
+          - empty store / no candidates after the same-table filter,
+          - the reference column has no stored embedding,
+          - the reference embedding has zero norm (cosine undefined).
+
+        `ValueError` is raised on the caller bug `k < 1`, and (as in
+        `search_embeddings_topk`) may propagate from a corrupt or
+        mixed-dimension store — a defense-in-depth guard that is
+        unreachable through the write path.
         """
         ...
 
@@ -539,6 +643,7 @@ class Store(Protocol):  # pragma: no cover
         source_connection_id: str,
         qualified_table: str,
         tags: Mapping[str, ColumnPiiTag],
+        confidence: Mapping[str, tuple[PiiConfidenceBand | None, float | None]] | None = None,
     ) -> None:
         """Replace all PII tags for `qualified_table` atomically.
 
@@ -548,6 +653,12 @@ class Store(Protocol):  # pragma: no cover
         row for the table before inserting; an empty `tags` deletes
         without re-inserting (the `--no-pii-classify` opt-out depends
         on this shape).
+
+        `confidence` (ADR 0009) is the optional index-time
+        `column_name → (band, score)` map. A column absent from it — or
+        the whole argument omitted — persists NULL for both
+        `pii_confidence` and `pii_confidence_score`. The band/score are
+        advisory PII-matrix metadata and never gate enforcement.
         """
         ...
 
@@ -564,6 +675,26 @@ class Store(Protocol):  # pragma: no cover
         columns with a stored row. Columns absent from the result
         are treated as `("public", frozenset())` by callers (matches
         the propagation helper's empty-input contract).
+        """
+        ...
+
+    def get_column_pii_confidence(
+        self,
+        *,
+        source_connection_id: str,
+        qualified_table: str,
+        columns: Iterable[str],
+    ) -> dict[str, tuple[str | None, float | None]]:
+        """Bulk-fetch the per-column PII confidence band + raw score.
+
+        Returns `column_name → (band, score)` ONLY for columns with a
+        stored row. `band` is the display bucket (`floor_locked` /
+        `high` / `medium` / `low`) or `None`; `score` is the index-time
+        raw number (the source of truth) or `None`. Both are NULL until
+        a re-index populates them — the score is computed on un-redacted
+        in-memory values at index time and cannot be recomputed from
+        store state, so a v14-migrated store and freshly-classified rows
+        both read `(None, None)` until the index-time writer lands.
         """
         ...
 

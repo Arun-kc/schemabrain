@@ -405,6 +405,23 @@ class TestDescribeTableEnvelope:
         assert "describe_column" in hints
         assert "suggest_joins" in hints
 
+    def test_success_envelope_carries_schema_provenance(self, server_with_one_table) -> None:
+        # `describe_table` reads the live information_schema (physical
+        # truth), so HIGH is legitimate — but the agent must be told WHY
+        # it's HIGH. Charter v1.2: emit `provenance.source='schema'` so a
+        # client can tell direct physical introspection apart from
+        # LLM-inferred or query-log-mined data. Direct introspection has
+        # no 2D `(inference_method, validation_state)` signal — those stay
+        # None honestly rather than being forced into an ill-fitting value.
+        _content, structured = asyncio.run(
+            server_with_one_table.call_tool("describe_table", {"qualified_name": "public.users"})
+        )
+        assert structured["confidence"] == "HIGH"
+        assert structured["provenance"] is not None
+        assert structured["provenance"]["source"] == "schema"
+        assert structured["provenance"]["inference_method"] is None
+        assert structured["provenance"]["validation_state"] is None
+
     def test_unknown_table_maps_to_unknown_name_error(self, server_with_one_table) -> None:
         _content, structured = asyncio.run(
             server_with_one_table.call_tool("describe_table", {"qualified_name": "public.nope"})
@@ -453,6 +470,22 @@ class TestDescribeColumnEnvelope:
         # describe_column → describe_table is the canonical "what siblings
         # does this column have?" follow-up.
         assert "describe_table" in (structured["follow_up_hints"] or [])
+
+    def test_success_envelope_carries_schema_provenance(self, server_with_one_table) -> None:
+        # Same contract as describe_table: column detail is read from the
+        # live information_schema, so HIGH is legitimate but must be
+        # justified by `provenance.source='schema'`. The 2D signal stays
+        # None — direct physical introspection isn't a derived inference.
+        _content, structured = asyncio.run(
+            server_with_one_table.call_tool(
+                "describe_column", {"qualified_name": "public.users.email"}
+            )
+        )
+        assert structured["confidence"] == "HIGH"
+        assert structured["provenance"] is not None
+        assert structured["provenance"]["source"] == "schema"
+        assert structured["provenance"]["inference_method"] is None
+        assert structured["provenance"]["validation_state"] is None
 
     def test_unknown_column_maps_to_unknown_name_error(self, server_with_one_table) -> None:
         _content, structured = asyncio.run(

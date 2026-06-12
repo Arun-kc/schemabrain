@@ -1,0 +1,196 @@
+/* ============================================================
+   SchemaBrain product UI — dual-theme token system
+   "Observatory" (dark · glass/indigo) + "Atlas" (light · editorial paper)
+   Ported from the design handoff (app/tokens.css).
+
+   Scoping contract:
+   - Every token lives under `.sb-app` so it cannot collide with the
+     legacy ink/ivory/signal palette in globals.css (which the not-yet-
+     reskinned PII/Refusals/Audit surfaces still depend on — a later
+     reskin moves them onto this system and removes the legacy tokens).
+   - Light/Atlas is the DEFAULT (bare `.sb-app`); Observatory is the
+     `[data-theme="dark"] .sb-app` override, driven by the existing
+     `data-theme` attribute on <html>. No `.sb-app`-level data-theme
+     required, so the established toggle mechanism is unchanged.
+   - Fonts come from <html> via next/font/local (--f-display/-mono/-body);
+     intentionally NOT redefined here so the self-hosted faces win.
+   ============================================================ */
+
+.sb-app {
+  /* radii */
+  --r-sm: 6px;
+  --r-md: 9px;
+  --r-lg: 13px;
+  --r-xl: 18px;
+  --r-pill: 999px;
+
+  /* spacing (4px base) */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+  --s8: 64px;
+
+  /* motion — scoped overrides; outside .sb-app the Tailwind defaults stand */
+  --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 340ms;
+
+  /* on-accent inks — stable across themes */
+  --green-ink: oklch(0.22 0.04 162);
+  --alarm-ink: oklch(0.98 0.02 25);
+
+  /* ---------- Atlas · light editorial paper (DEFAULT) ---------- */
+  --bg: oklch(0.985 0.003 95);
+  --bg-1: oklch(0.965 0.005 95);
+  --bg-grad: radial-gradient(120% 90% at 50% -10%, oklch(0.99 0.004 95), oklch(0.965 0.006 100) 70%);
+  --panel: oklch(1 0 0);
+  --panel-2: oklch(0.975 0.004 100);
+  --glass: oklch(1 0 0 / 0.7);
+  --glass-stroke: oklch(0.55 0.02 270 / 0.18);
+  --hair: oklch(0.86 0.008 270);
+  --hair-2: oklch(0.90 0.006 270);
+  --ink: oklch(0.22 0.012 275);
+  --ink-2: oklch(0.22 0.012 275 / 0.73);
+  /* Opaque, not the old 0.45-alpha tint: muted text (nav-group titles, search
+     placeholder, ⌘K hint, source meta, policy strip meta) must clear WCAG-AA
+     4.5:1 on the white panel, the off-white --bg-1 rail, AND the pale-red policy
+     floor row. --ink-2 was bumped 0.66→0.73 to stay a clear step darker than
+     this opaque --ink-3. Verified by the per-surface axe sweep in tests/e2e. */
+  --ink-3: oklch(0.48 0.012 275);
+  --ink-on-accent: oklch(0.99 0.01 162);
+
+  --green: oklch(0.58 0.15 162);
+  --cyan: oklch(0.54 0.13 230);
+  --violet: oklch(0.52 0.18 285);
+  --amber: oklch(0.83 0.15 75);
+
+  --pii-1: oklch(0.80 0.10 100);
+  --pii-2: oklch(0.70 0.16 65);
+  --pii-3: oklch(0.60 0.19 40);
+  --alarm: oklch(0.55 0.22 25);
+
+  /* AA-safe TEXT shades. The vivid accents above stay for fills (status dots,
+     active bars, node rings, glows, sparklines); these darker variants are used
+     wherever an accent is small TEXT on its own pale tint (chips, selected
+     states, pills, labels), to clear WCAG-AA 4.5:1 on paper. --green-strong also
+     fills the primary button under white ink. Verified by the axe sweep. */
+  --green-strong: oklch(0.45 0.15 162);
+  --cyan-strong: oklch(0.46 0.13 230);
+  --amber-strong: oklch(0.52 0.13 75);
+  --pii-2-strong: oklch(0.52 0.16 65);
+  --alarm-strong: oklch(0.50 0.22 25);
+
+  --shadow: 0 14px 36px oklch(0.25 0.02 275 / 0.12);
+  --shadow-pop: 0 20px 50px oklch(0.25 0.02 275 / 0.18);
+  --glow-green: 0 0 0 1px oklch(0.58 0.15 162 / 0.3);
+  --grid-line: oklch(0.55 0.02 270 / 0.10);
+  --star: oklch(0.4 0.03 280 / 0.12);
+
+  font-family: var(--f-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ---------- Observatory · dark glass/indigo ---------- */
+[data-theme="dark"] .sb-app {
+  --bg: oklch(0.16 0.028 275);
+  --bg-1: oklch(0.185 0.030 278);
+  --bg-grad: radial-gradient(120% 90% at 50% -10%, oklch(0.22 0.04 280), oklch(0.155 0.026 275) 62%);
+  --panel: oklch(0.215 0.030 278);
+  --panel-2: oklch(0.245 0.032 278);
+  --glass: oklch(0.30 0.045 278 / 0.45);
+  --glass-stroke: oklch(0.72 0.05 278 / 0.32);
+  --hair: oklch(0.45 0.03 278 / 0.42);
+  --hair-2: oklch(0.45 0.03 278 / 0.22);
+  --ink: oklch(0.97 0.010 280);
+  --ink-2: oklch(0.97 0.010 280 / 0.64);
+  /* Opaque, not the old 0.42-alpha tint: muted text must clear WCAG-AA 4.5:1 on
+     the dark --bg / --bg-1 surfaces. Verified by the per-surface axe sweep. */
+  --ink-3: oklch(0.70 0.010 280);
+  --ink-on-accent: oklch(0.18 0.03 162);
+
+  --green: oklch(0.82 0.16 160);
+  --cyan: oklch(0.82 0.13 210);
+  --violet: oklch(0.74 0.15 285);
+  --amber: oklch(0.83 0.15 75);
+
+  --pii-1: oklch(0.86 0.09 100);
+  --pii-2: oklch(0.80 0.15 70);
+  --pii-3: oklch(0.74 0.18 45);
+  --alarm: oklch(0.66 0.23 25);
+
+  /* AA-safe TEXT shades (dark). On the dark surfaces the chromatic accents
+     already clear AA as text, so most equal their base; only --alarm lightens
+     so the catastrophic PII chips clear 4.5:1 on the dark-red tint. */
+  --green-strong: oklch(0.82 0.16 160);
+  --cyan-strong: oklch(0.82 0.13 210);
+  --amber-strong: oklch(0.83 0.15 75);
+  --pii-2-strong: oklch(0.80 0.15 70);
+  --alarm-strong: oklch(0.74 0.20 25);
+
+  --shadow: 0 18px 48px oklch(0 0 0 / 0.5);
+  --shadow-pop: 0 24px 64px oklch(0 0 0 / 0.6);
+  --glow-green: 0 0 0 1px oklch(0.82 0.16 160 / 0.25), 0 0 26px oklch(0.82 0.16 160 / 0.30);
+  --grid-line: oklch(0.5 0.03 278 / 0.18);
+  --star: oklch(0.9 0.02 280 / 0.5);
+}
+
+/* ============================================================
+   base element styles (scoped)
+   ============================================================ */
+.sb-app {
+  background: var(--bg-grad), var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+}
+.sb-app * {
+  box-sizing: border-box;
+}
+.sb-app a {
+  color: inherit;
+  text-decoration: none;
+}
+.sb-app h1,
+.sb-app h2,
+.sb-app h3,
+.sb-app h4 {
+  margin: 0;
+  font-family: var(--f-display);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.sb-app p {
+  margin: 0;
+}
+.sb-app code,
+.sb-app .mono {
+  font-family: var(--f-mono);
+}
+.sb-app ::selection {
+  background: color-mix(in oklch, var(--green) 35%, transparent);
+}
+
+/* eyebrow — uppercase mono label */
+.sb-eyebrow {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--ink-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sb-app *,
+  .sb-app *::before,
+  .sb-app *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

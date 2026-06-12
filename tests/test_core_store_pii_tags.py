@@ -252,3 +252,168 @@ class TestStorageEncoding:
                 .fetchone()
             )
             assert row["origin"] == "heuristic"
+
+
+class TestGetColumnPiiConfidence:
+    """v15 per-column PII confidence reader (band + raw score).
+
+    At launch the only WRITER is `write_column_pii_tags`, which does NOT
+    populate `pii_confidence` / `pii_confidence_score` (the index-time
+    score writer lands in a follow-up). So the reachable behaviour today
+    is `(None, None)` for every classified column; the raw-UPDATE-seeded
+    test pins the read path itself against the day the writer exists.
+    """
+
+    def test_returns_none_when_unpopulated(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "sb.db") as store:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={"email": ("pii", frozenset({"contact"}))},
+            )
+            result = store.get_column_pii_confidence(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                columns=["email"],
+            )
+            assert result == {"email": (None, None)}
+
+    def test_reads_raw_seeded_band_and_score(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "sb.db") as store:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={"email": ("pii", frozenset({"contact"}))},
+            )
+            # Seed the band + score directly — stands in for the future
+            # index-time score writer so the read path is locked now.
+            store._require_conn().execute(
+                "UPDATE column_pii_tags SET pii_confidence = ?, pii_confidence_score = ? "
+                "WHERE source_connection_id = ? AND qualified_table = ? AND column_name = ?",
+                ("high", 0.97, SRC, TABLE, "email"),
+            )
+            store._require_conn().commit()
+            result = store.get_column_pii_confidence(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                columns=["email"],
+            )
+            assert result == {"email": ("high", 0.97)}
+
+    def test_missing_columns_omitted_from_result(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "sb.db") as store:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={"email": ("pii", frozenset({"contact"}))},
+            )
+            result = store.get_column_pii_confidence(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                columns=["email", "never_classified"],
+            )
+            assert set(result.keys()) == {"email"}
+
+    def test_empty_columns_returns_empty_dict(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "sb.db") as store:
+            result = store.get_column_pii_confidence(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                columns=[],
+            )
+            assert result == {}
+
+    def test_duplicate_columns_deduplicated(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "sb.db") as store:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={"email": ("pii", frozenset({"contact"}))},
+            )
+            result = store.get_column_pii_confidence(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                columns=["email", "email", "email"],
+            )
+            assert result == {"email": (None, None)}
+
+
+class TestWriteConfidence:
+    """The `confidence` writer param (the index-time score writer)."""
+
+    def test_writer_persists_band_and_score(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "sb.db") as store:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={
+                    "email": ("pii", frozenset({"contact"})),
+                    "ssn": ("pii", frozenset({"government_id"})),
+                },
+                confidence={
+                    "email": ("high", 0.9),
+                    "ssn": ("floor_locked", None),
+                },
+            )
+            result = store.get_column_pii_confidence(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                columns=["email", "ssn"],
+            )
+            assert result == {"email": ("high", 0.9), "ssn": ("floor_locked", None)}
+
+    def test_omitted_confidence_arg_writes_null(self, tmp_path: Path) -> None:
+        # Backward-compatible: callers that don't pass confidence leave
+        # both columns NULL (the pre-spike behaviour).
+        with SQLiteStore(tmp_path / "sb.db") as store:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={"email": ("pii", frozenset({"contact"}))},
+            )
+            result = store.get_column_pii_confidence(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                columns=["email"],
+            )
+            assert result == {"email": (None, None)}
+
+    def test_column_absent_from_confidence_map_writes_null(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "sb.db") as store:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={
+                    "email": ("pii", frozenset({"contact"})),
+                    "id": ("public", frozenset()),
+                },
+                confidence={"email": ("medium", 0.6)},
+            )
+            result = store.get_column_pii_confidence(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                columns=["email", "id"],
+            )
+            assert result == {"email": ("medium", 0.6), "id": (None, None)}
+
+    def test_atomic_replace_clears_stale_confidence(self, tmp_path: Path) -> None:
+        with SQLiteStore(tmp_path / "sb.db") as store:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={"email": ("pii", frozenset({"contact"}))},
+                confidence={"email": ("high", 0.9)},
+            )
+            # A re-index that no longer corroborates drops to medium.
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={"email": ("pii", frozenset({"contact"}))},
+                confidence={"email": ("medium", 0.6)},
+            )
+            result = store.get_column_pii_confidence(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                columns=["email"],
+            )
+            assert result == {"email": ("medium", 0.6)}

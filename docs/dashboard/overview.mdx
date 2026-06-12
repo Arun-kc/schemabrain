@@ -23,7 +23,7 @@ The dashboard answers three operator questions that the MCP envelope alone does 
   <img src="/assets/dashboard-refusals.png" alt="Refusals dashboard surface" />
 </Frame>
 
-<Frame caption="Audit Viewer — the tamper-evident chain, re-walked and verified server-side down to each row's hash linkage.">
+<Frame caption="Audit Viewer — the tamper-evident chain spined by a derived Merkle root, with each row's inclusion proof recomputed in the browser and reconciled to one root.">
   <img src="/assets/dashboard-audit-viewer.png" alt="Audit Viewer dashboard surface" />
 </Frame>
 
@@ -97,7 +97,9 @@ The FastAPI app declares **only `GET` routes**. There is no `POST`, `PUT`, `PATC
 | `GET /api/entities/{name}/columns` | Per-entity column drill-down (physical schema + metrics + canonical joins). |
 | `GET /api/audit/rows` | Paginated rows from `mcp_audit`. |
 | `GET /api/audit/rows/{id}` | One audit row with full body. |
-| `GET /api/audit/verify` | Re-walks the chain hash; returns `intact` or `mismatch`. |
+| `GET /api/audit/verify` | Re-walks the chain hash; returns `intact` or `broken`. |
+| `GET /api/audit/merkle/root` | Derived RFC-6962 Merkle root over every row (`tree_size`, `root_hex`). |
+| `GET /api/audit/rows/{id}/proof` | O(log n) inclusion proof so the browser can reconcile a row to the root. |
 | `GET /api/audit/refusals` | Filtered list of `status='refused'` rows. |
 | `GET /api/audit/refusals/{id}` | One refusal row with envelope detail. |
 | `GET /api/audit/stream` | Server-Sent Events stream for live row push (2s tick). |
@@ -105,7 +107,7 @@ The FastAPI app declares **only `GET` routes**. There is no `POST`, `PUT`, `PATC
 Every JSON response carries two headers:
 
 - `X-Schemabrain-Charter-Version: 1.2` — the MCP envelope contract.
-- `X-Schemabrain-Dashboard-Schema: 1.0` — the dashboard JSON contract.
+- `X-Schemabrain-Dashboard-Schema: 1.5` — the dashboard JSON contract.
 
 Consumers can detect protocol drift without parsing the body.
 

@@ -1,0 +1,13 @@
+version: 1
+name: workspace_billing_profile
+description: Links each workspace to its single legal / tax billing profile.
+source_entity: billing_profile
+target_entity: workspace
+"on":
+  - source: workspace_id
+    target: id
+cardinality: one_to_one
+# Catastrophic-propagation join: the JOIN result inherits the
+# `government_id` tag from billing_profiles.tax_id / national_id, so
+# "show workspaces with their tax IDs" trips the firewall. Cardinality
+# is one_to_one — billing_profiles.workspace_id is UNIQUE in saas.sql.

@@ -1,0 +1,42 @@
+{
+  "source_connection_id": "demo-source",
+  "nodes": [
+    {
+      "id": "order",
+      "label": "order",
+      "group": "billing",
+      "pii_level": "catastrophic",
+      "row_count": null,
+      "refusal_count": 1
+    },
+    {
+      "id": "user",
+      "label": "user",
+      "group": "identity",
+      "pii_level": "catastrophic",
+      "row_count": null,
+      "refusal_count": 1
+    }
+  ],
+  "edges": [
+    {
+      "id": "user_orders",
+      "source": "user",
+      "target": "order",
+      "evidence": "inferred",
+      "canonical_path_rank": 1,
+      "cardinality": null
+    }
+  ],
+  "canonical_path": {
+    "nodes": [
+      "order",
+      "user"
+    ],
+    "edges": [
+      "user_orders"
+    ],
+    "hops": 1
+  },
+  "unattributed_refusals": 0
+}

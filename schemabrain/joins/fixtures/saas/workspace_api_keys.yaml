@@ -1,0 +1,12 @@
+version: 1
+name: workspace_api_keys
+description: Links each API key on file to the workspace that owns it.
+source_entity: api_key
+target_entity: workspace
+"on":
+  - source: workspace_id
+    target: id
+cardinality: many_to_one
+# Catastrophic-propagation join: the JOIN result inherits the
+# `credential` tag from api_keys.api_key_hash, so "show workspaces with
+# their API keys" trips the firewall.

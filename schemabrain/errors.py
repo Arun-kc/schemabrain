@@ -214,6 +214,32 @@ def store_path_unwritable(path: str, exc: Exception) -> GuidedError:
     )
 
 
+def dbt_import_store_not_indexed(store_path: str) -> GuidedError:
+    """The store holds no tables indexed for the import's source URL.
+
+    `import dbt` binds every model's entity to a row in the local
+    `tables` index, so an un-indexed source makes every model fail the
+    bound-table FK at write time — one source round-trip per model
+    before the first error. The CLI pre-flights `Store.list_tables`
+    and short-circuits to this guided error before opening the source,
+    so the index-first requirement is surfaced up front rather than
+    buried in a per-model runtime failure.
+    """
+    return GuidedError(
+        kind="dbt_import_store_not_indexed",
+        message=f"no schema is indexed in {store_path!r} for this source yet",
+        why=(
+            "`import dbt` binds each model to a table in the local index, but this "
+            "source URL has never been indexed into this store"
+        ),
+        fix="run `schemabrain index` with the SAME source URL first, then re-run `import dbt`",
+        next_step=(
+            "e.g. `schemabrain index --url-env DATABASE_URL --store-path <store>` "
+            "(add --no-enrich to skip the LLM step)"
+        ),
+    )
+
+
 def render_error(err: GuidedError, *, console: Console) -> None:
     """Write a `GuidedError` to a `Console` in the guided format.
 
