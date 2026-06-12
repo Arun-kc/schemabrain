@@ -5565,6 +5565,11 @@ def _render_import_dbt_summary(
         f"  orphans: {len(plan.orphans)}",
         f"  skipped: {len(plan.skipped)}",
     ]
+    if plan.joins_to_write or plan.joins_skipped:
+        verb = "would import" if dry_run else "imported"
+        lines.append(
+            f"  joins: {verb} {len(plan.joins_to_write)}, skipped {len(plan.joins_skipped)}"
+        )
     if result is not None:
         lines.append(f"  written: {written}")
         if write_failures:

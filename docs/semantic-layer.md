@@ -178,7 +178,7 @@ Once applied, the agent-facing `resolve_join` MCP tool returns the canonical joi
 
 ## Import from dbt
 
-If you already curate models in dbt, point SchemaBrain at your compiled `target/manifest.json` and import them as entities. Scope today: each dbt **model** with a single-column primary key becomes a SchemaBrain **entity** (dbt owns those rows), and dbt **metrics** import opt-in via `--include-metrics`. dbt **relationships are not yet imported as canonical joins** — joins still come from FK + query-log mining, so run `schemabrain joins suggest` after importing to enable multi-table queries. Two entry points:
+If you already curate models in dbt, point SchemaBrain at your compiled `target/manifest.json` and import them as entities. Scope today: each dbt **model** with a single-column primary key becomes a SchemaBrain **entity** (dbt owns those rows), and dbt **metrics** import opt-in via `--include-metrics`. dbt **`relationships` tests import as canonical joins** (`origin="dbt_import"`); FK + query-log mining fills in any joins dbt doesn't declare. Two entry points:
 
 **During `init` (auto-detected or explicit):** the wizard's stage 1 auto-detects a manifest from `$DBT_PROJECT_DIR/target/manifest.json` or by walking up from the cwd looking for `dbt_project.yml`. When found, stages 3 (entities) and 4 (metrics) route through the importer instead of the LLM. Force a specific manifest with `--from-dbt PATH`:
 
@@ -186,7 +186,7 @@ If you already curate models in dbt, point SchemaBrain at your compiled `target/
 schemabrain init --url-env DATABASE_URL --from-dbt /path/to/dbt/target/manifest.json
 ```
 
-Stage 5 (joins) still uses FK + query-log mining since dbt has no canonical-join concept.
+Stage 5 (joins) imports dbt `relationships` schema tests as canonical joins (each declared FK becomes a `source → target` join with `origin="dbt_import"`), and still mines FK constraints + the query log for joins dbt doesn't declare.
 
 **Standalone import:** if you want to import without going through the wizard, point the importer directly at a manifest. The importer binds each model to a table in the local index, so the store must already be indexed for the **same** source URL:
 
@@ -200,7 +200,7 @@ schemabrain import dbt path/to/target/manifest.json --url-env DATABASE_URL --sto
 
 Run `import dbt` against a store that was never indexed for this URL and it short-circuits with a guided *"run `schemabrain index` first"* error rather than failing per-model. The importer also needs the physical tables to exist (run `dbt run`, not just `dbt compile`) since it verifies each model against the live schema — even under `--dry-run`.
 
-Each dbt model with a single-column primary key lands as a SchemaBrain entity with `origin="dbt_import"`. Re-running is idempotent; entities that previously had `origin="manual"` or `"suggested"` flip to `"dbt_import"` (dbt takes ownership). Subsequent manual edits to dbt-owned rows are refused at the store boundary.
+Each dbt model with a single-column primary key lands as a SchemaBrain entity with `origin="dbt_import"`, and each `relationships` test between two imported models lands as a canonical join (`origin="dbt_import"`). Re-running is idempotent; entities that previously had `origin="manual"` or `"suggested"` flip to `"dbt_import"` (dbt takes ownership), and joins upsert by name. Subsequent manual edits to dbt-owned rows are refused at the store boundary. A relationship whose endpoint model isn't imported (or resolves to a self-join) is skipped and surfaced in the import summary.
 
 | Flag | Behaviour |
 |---|---|

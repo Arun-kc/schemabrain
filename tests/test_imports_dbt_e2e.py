@@ -37,6 +37,13 @@ from schemabrain.core.models import Column, Table
 from schemabrain.core.store import SQLiteStore
 from schemabrain.eval.bundled import resolve_bundled_path
 from schemabrain.imports.dbt import (
+    DbtColumn,
+    DbtColumnTests,
+    DbtConstraint,
+    DbtManifest,
+    DbtModelNode,
+    DbtRelationship,
+    DbtSkipCounts,
     apply_dbt_import_plan,
     parse_dbt_manifest,
     plan_dbt_import,
@@ -212,6 +219,19 @@ class TestBundledFixtureWellFormed:
         path = resolve_bundled_path("ecommerce_manifest.json")
         manifest = parse_dbt_manifest(path)
         assert len(manifest.sources_by_id) >= 1
+
+    def test_fixture_carries_a_relationship_join(self) -> None:
+        # The bundled demo exercises the relationships→joins path: an
+        # order→customer FK declared as a dbt `relationships` test.
+        from schemabrain.imports.dbt import dbt_relationships_to_joins
+
+        path = resolve_bundled_path("ecommerce_manifest.json")
+        manifest = parse_dbt_manifest(path)
+        joins, skips = dbt_relationships_to_joins(manifest)
+        assert skips == ()
+        assert len(joins) == 1
+        assert (joins[0].source_entity, joins[0].target_entity) == ("order", "customer")
+        assert joins[0].origin == "dbt_import"
 
 
 # ----- E2E pipeline: bundled fixture → store -------------------------------
@@ -424,3 +444,116 @@ class TestFixturePathCLI:
         assert out.endswith("ecommerce_manifest.json")
         # Sanity: path is real
         assert Path(out).is_file()
+
+
+def _pk_model(name: str, identifier: str, *extra_cols: str) -> DbtModelNode:
+    cols = [
+        DbtColumn(
+            name="id",
+            data_type=None,
+            description="",
+            constraints=(DbtConstraint(type="primary_key"),),
+            tests=DbtColumnTests(),
+        ),
+    ]
+    cols.extend(
+        DbtColumn(name=c, data_type=None, description="", constraints=(), tests=DbtColumnTests())
+        for c in extra_cols
+    )
+    return DbtModelNode(
+        unique_id=f"model.demo.{name}",
+        name=name,
+        database="db",
+        schema_name="public",
+        identifier=identifier,
+        description="",
+        columns=tuple(cols),
+        depends_on_sources=(),
+    )
+
+
+class TestRelationshipJoinImport:
+    """A `relationships` test on an importable model lands as a canonical
+    join with `origin=dbt_import` after `plan` + `apply`."""
+
+    def _live(self) -> _FakeDataSource:
+        orders = Table(
+            name="orders",
+            schema_name="public",
+            columns=(
+                _column("id", "orders", is_primary_key=True),
+                _column("customer_id", "orders", ordinal=2),
+            ),
+            foreign_keys=(),
+        )
+        customers = Table(
+            name="customers",
+            schema_name="public",
+            columns=(_column("id", "customers", is_primary_key=True),),
+            foreign_keys=(),
+        )
+        return _FakeDataSource({("public", "orders"): orders, ("public", "customers"): customers})
+
+    def _store(self, tmp_path: Path) -> Path:
+        store_path = tmp_path / "store.db"
+        source_id = _make_source_id(_SOURCE_URL)
+        with SQLiteStore(store_path) as store:
+            for t in ("orders", "customers"):
+                cols = [_column("id", t, is_primary_key=True)]
+                if t == "orders":
+                    cols.append(_column("customer_id", t, ordinal=2))
+                store.write_table(
+                    Table(name=t, schema_name="public", columns=tuple(cols), foreign_keys=()),
+                    source_connection_id=source_id,
+                )
+        return store_path
+
+    def _manifest(self) -> DbtManifest:
+        return DbtManifest(
+            manifest_version=12,
+            dbt_project_name="demo",
+            models=(
+                _pk_model("orders", "orders", "customer_id"),
+                _pk_model("customers", "customers"),
+            ),
+            sources_by_id={},
+            skipped=DbtSkipCounts(),
+            relationships=(
+                DbtRelationship(
+                    from_model_unique_id="model.demo.orders",
+                    from_column="customer_id",
+                    to_model_name="customers",
+                    to_column="id",
+                ),
+            ),
+        )
+
+    def test_relationship_lands_as_canonical_join(self, tmp_path: Path) -> None:
+        source_id = _make_source_id(_SOURCE_URL)
+        store_path = self._store(tmp_path)
+        with SQLiteStore(store_path) as store, self._live() as source:
+            plan = plan_dbt_import(self._manifest(), source, store, source_connection_id=source_id)
+            assert len(plan.joins_to_write) == 1
+            assert plan.joins_skipped == ()
+            apply_dbt_import_plan(plan, store, source_connection_id=source_id)
+
+        with SQLiteStore(store_path) as store:
+            joins = store.list_canonical_joins(source_connection_id=source_id)
+        assert len(joins) == 1
+        assert joins[0].source_entity == "orders"
+        assert joins[0].target_entity == "customers"
+        assert joins[0].origin == "dbt_import"
+        assert joins[0].on[0].source_column == "customer_id"
+
+    def test_reimport_is_idempotent(self, tmp_path: Path) -> None:
+        source_id = _make_source_id(_SOURCE_URL)
+        store_path = self._store(tmp_path)
+        for _ in range(2):
+            with SQLiteStore(store_path) as store, self._live() as source:
+                plan = plan_dbt_import(
+                    self._manifest(), source, store, source_connection_id=source_id
+                )
+                apply_dbt_import_plan(plan, store, source_connection_id=source_id)
+        with SQLiteStore(store_path) as store:
+            joins = store.list_canonical_joins(source_connection_id=source_id)
+        assert len(joins) == 1  # upsert by name — no duplicate
