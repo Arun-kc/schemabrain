@@ -1,0 +1,53 @@
+name: Publish to MCP Registry
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish-mcp:
+    name: Publish server.json to registry.modelcontextprotocol.io
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Sync server.json version with pyproject.toml
+        run: |
+          VERSION=$(grep -E '^version\s*=' pyproject.toml | head -1 | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "Failed to extract version from pyproject.toml" >&2
+            exit 1
+          fi
+          echo "pyproject.toml version: $VERSION"
+          python3 -c "
+          import json, sys
+          v = sys.argv[1]
+          with open('server.json') as f:
+              doc = json.load(f)
+          doc['version'] = v
+          for pkg in doc.get('packages', []):
+              pkg['version'] = v
+          with open('server.json', 'w') as f:
+              json.dump(doc, f, indent=2)
+              f.write('\n')
+          print(f'server.json updated to version {v}')
+          " "$VERSION"
+          cat server.json
+
+      - name: Install MCP Publisher CLI
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar -xz
+          chmod +x mcp-publisher
+          ./mcp-publisher --version
+
+      - name: Login to MCP Registry (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server.json
+        run: ./mcp-publisher publish
