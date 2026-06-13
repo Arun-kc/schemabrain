@@ -156,9 +156,7 @@ Human-readable output goes to **stderr** (so it can be redirected separately fro
 
 ## Auto-detected configuration
 
-A `.env` file in your working directory is auto-loaded at startup (shell
-exports win; a missing `.env` is a silent no-op), and several commands
-auto-resolve their inputs from the environment:
+Several commands auto-resolve their inputs when the standard env vars are set:
 
 - `DATABASE_URL` — **not** auto-detected on its own: the source URL is read via the `--url-env <VAR>` flag, which takes the *name* of the variable to read. These examples pass `--url-env DATABASE_URL`, so set `DATABASE_URL` (in your shell or `.env`) to match — or pass the name you use, e.g. `--url-env SCHEMABRAIN_DATABASE_URL` (the name `init` reads by default and writes into the host snippet). Pick one name and use it consistently.
 - `ANTHROPIC_API_KEY` — required for any LLM-touching command; cost-free `--no-enrich` / `--dry-run` modes skip the check.
