@@ -2007,6 +2007,43 @@ class TestWizardRenderer:
             self._make_outcome(7, "next_step", "done", "Ready"),
         )
 
+    def test_closing_block_points_to_emit_yaml_dir_by_default(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A clean init that did NOT emit YAML must tell the operator how
+        # to get the editable pii_policy.yaml + semantic YAML — otherwise
+        # the project holds only schemabrain.db and the edit-config docs
+        # reference files that were never written.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._printed_only_host_result(),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="manual mode")
+        captured = capsys.readouterr()
+        assert "--emit-yaml-dir" in captured.err
+
+    def test_closing_block_omits_emit_pointer_when_yaml_already_emitted(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # When the operator already passed --emit-yaml-dir the YAML tree
+        # exists (the emit confirmation prints separately), so repeating
+        # the pointer would be redundant and misleading.
+        from schemabrain.cli import _render_wizard_result
+        from schemabrain.setup.wizard import WizardResult
+
+        result = WizardResult(
+            outcomes=self._full_clean_outcomes(),  # type: ignore[arg-type]
+            aborted=False,
+            host_install_result=self._printed_only_host_result(),  # type: ignore[arg-type]
+        )
+        _render_wizard_result(result, host_display="manual mode", yaml_emitted=True)
+        captured = capsys.readouterr()
+        assert "--emit-yaml-dir" not in captured.err
+
     def test_closing_block_renders_on_written_host(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

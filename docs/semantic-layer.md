@@ -38,15 +38,17 @@ schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db
 **2. Apply in dependency order.** The store enforces references between definitions — an entity must exist before a join or metric can point at it — so apply **entities → joins → metrics**:
 
 ```bash
-schemabrain entities apply ./entities --url-env DATABASE_URL --store-path ./schemabrain.db
-schemabrain joins    apply ./joins    --url-env DATABASE_URL --store-path ./schemabrain.db
-schemabrain metrics  apply ./metrics  --url-env DATABASE_URL --store-path ./schemabrain.db
+schemabrain entities apply ./schemabrain/entities --url-env DATABASE_URL --store-path ./schemabrain.db
+schemabrain joins    apply ./schemabrain/joins    --url-env DATABASE_URL --store-path ./schemabrain.db
+schemabrain metrics  apply ./schemabrain/metrics  --url-env DATABASE_URL --store-path ./schemabrain.db
 ```
 
-A minimal three-file layer (`origin: manual` marks a hand-authored definition):
+A minimal layer (`origin: manual` marks a hand-authored definition). The
+join below connects two entities, so **both must be defined** — apply the
+entities before the join:
 
 ```yaml
-# entities/order.yaml
+# schemabrain/entities/order.yaml
 version: 1
 name: order
 description: A customer order.
@@ -57,7 +59,18 @@ origin: manual
 ```
 
 ```yaml
-# metrics/total_revenue.yaml
+# schemabrain/entities/customer.yaml
+version: 1
+name: customer
+description: A customer who places orders.
+binding:
+  single_table: public.customers
+identity: id
+origin: manual
+```
+
+```yaml
+# schemabrain/metrics/total_revenue.yaml
 version: 1
 name: total_revenue
 description: Sum of order totals per requested grain.
@@ -70,7 +83,7 @@ time_grains: [day, week, month]
 ```
 
 ```yaml
-# joins/order_customer.yaml
+# schemabrain/joins/order_customer.yaml
 version: 1
 name: order_customer
 description: Links each order to the customer who placed it.

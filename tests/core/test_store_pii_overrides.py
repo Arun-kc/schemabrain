@@ -216,6 +216,109 @@ def test_list_orders_by_qualified_table_then_column(tmp_path: Path) -> None:
         store.close()
 
 
+class TestReindexPreservesOperatorOverride:
+    """Re-running `schemabrain index` (a bulk heuristic
+    `write_column_pii_tags`) must NOT clobber an operator override on
+    the same column. The explicit human assertion survives the
+    mechanical re-classification; columns the operator has not asserted
+    on still refresh.
+    """
+
+    def test_reindex_keeps_operator_override_on_overridden_column(self, tmp_path: Path) -> None:
+        store = SQLiteStore(tmp_path / "sb.db")
+        try:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={
+                    "id": ("public", frozenset()),
+                    "email": ("pii", frozenset({"contact"})),
+                },
+            )
+            store.upsert_column_pii_tag_override(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                column_name="email",
+                sensitivity="internal",
+                categories=frozenset(),
+            )
+            # Re-index: the heuristic re-classifies email as contact again.
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={
+                    "id": ("public", frozenset()),
+                    "email": ("pii", frozenset({"contact"})),
+                },
+            )
+            rows = store.list_column_pii_tags_with_origin(source_connection_id=SRC)
+            by_col = {col: (sens, cats, origin) for _qt, col, sens, cats, origin in rows}
+            assert by_col["email"] == ("internal", frozenset(), "operator")
+            assert by_col["id"] == ("public", frozenset(), "heuristic")
+        finally:
+            store.close()
+
+    def test_reindex_refreshes_nonoverridden_columns(self, tmp_path: Path) -> None:
+        """Preservation is scoped to operator rows only — a heuristic
+        re-write still updates columns the operator has NOT overridden."""
+        store = SQLiteStore(tmp_path / "sb.db")
+        try:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={"phone": ("public", frozenset())},
+            )
+            store.upsert_column_pii_tag_override(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                column_name="email",
+                sensitivity="internal",
+                categories=frozenset(),
+            )
+            # Re-index now classifies phone as contact PII.
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={"phone": ("pii", frozenset({"contact"}))},
+            )
+            rows = store.list_column_pii_tags_with_origin(source_connection_id=SRC)
+            by_col = {col: (sens, cats, origin) for _qt, col, sens, cats, origin in rows}
+            assert by_col["phone"] == ("pii", frozenset({"contact"}), "heuristic")
+            assert by_col["email"] == ("internal", frozenset(), "operator")
+        finally:
+            store.close()
+
+    def test_empty_tags_wipe_preserves_operator_override(self, tmp_path: Path) -> None:
+        """The `--no-pii-classify` empty-tags wipe clears heuristic rows
+        but must leave operator overrides intact."""
+        store = SQLiteStore(tmp_path / "sb.db")
+        try:
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={"phone": ("pii", frozenset({"contact"}))},
+            )
+            store.upsert_column_pii_tag_override(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                column_name="email",
+                sensitivity="internal",
+                categories=frozenset(),
+            )
+            store.write_column_pii_tags(
+                source_connection_id=SRC,
+                qualified_table=TABLE,
+                tags={},
+            )
+            rows = store.list_column_pii_tags_with_origin(source_connection_id=SRC)
+            assert len(rows) == 1
+            _qt, col, _sens, _cats, origin = rows[0]
+            assert col == "email"
+            assert origin == "operator"
+        finally:
+            store.close()
+
+
 # ---- LB-2: operator cannot downgrade a catastrophic column below the floor ----
 #
 # firewall E2E audit 2026-05-30. `upsert_column_pii_tag_override`

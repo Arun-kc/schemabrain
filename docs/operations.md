@@ -9,6 +9,22 @@ description: "What you do after init — inspecting the local store, catching dr
 
 For live observability (tail, audit log, OTel, PII refusal), see [`docs/observability.md`](observability.md).
 
+## See your schema (dashboard)
+
+`schemabrain dashboard` opens a read-only, `127.0.0.1`-only view of the
+indexed store — a Knowledge Graph of your entities and joins, the PII
+matrix, refusals, the audit log, a (copy-the-CLI) policy view, and drift.
+It requires the `[ui]` extra:
+
+```bash
+pip install "schemabrain[ui]"
+schemabrain dashboard --store-path ./schemabrain.db
+```
+
+The dashboard reflects what's in the store — it never writes to your
+database or edits your YAML. Full surface tour:
+[`docs/dashboard/overview.mdx`](dashboard/overview.mdx).
+
 ## Inspect what's indexed
 
 See what the agent has — same view it has, no LLM call, no source connection:
