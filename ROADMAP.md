@@ -44,7 +44,7 @@ What you get from `pip install schemabrain` right now:
   sha256 hash-chained audit log with browser-verifiable RFC-6962 Merkle proofs
   and `audit verify`.
 - **Dashboard, 9 surfaces** — Overview, Knowledge Graph, Entities, Data
-  Dictionary, PII Ledger, Audit Viewer, Refusals, Policy, and Drift. Opt-in,
+  Dictionary, PII matrix, Audit Viewer, Refusals, Policy, and Drift. Opt-in,
   read-only, `127.0.0.1`-only.
 - **CLI** — `init`, `demo`, `index`, `import dbt`, `inspect`, `diff`, `check`,
   `entities`, `joins`, `metrics`, `policy {show, apply, tag}`, `docs`,

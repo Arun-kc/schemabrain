@@ -3,14 +3,19 @@
 // shipped test suite — keep it deliberately tiny.
 //
 // Usage:
-//   node scripts/screenshot.mjs <url> <out> [width] [theme] [clickRow]
+//   node scripts/screenshot.mjs <url> <out> [width] [theme] [clickRow] [settleMs]
 //
 // clickRow (optional): "tr:has(td:has-text('order'))" or similar
 // Playwright locator string. If set, clicks before screenshotting.
+// settleMs (optional): extra post-load settle wait (default 800). Bump it for
+// surfaces with an animated layout that hasn't stopped moving by networkidle —
+// e.g. the /graph force simulation.
 
 import { chromium } from "@playwright/test";
 
-const [, , url, out, widthArg = "1440", theme = "light", clickRow = ""] = process.argv;
+const [, , url, out, widthArg = "1440", theme = "light", clickRow = "", settleArg = "800"] =
+  process.argv;
+const settleMs = Number.parseInt(settleArg, 10);
 if (!url || !out) {
   console.error(
     "usage: node screenshot.mjs <url> <out> [width] [theme] [clickRow]",
@@ -34,7 +39,7 @@ await context.addInitScript((t) => {
 
 await page.goto(url, { waitUntil: "networkidle", timeout: 15_000 });
 await page.waitForLoadState("networkidle");
-await page.waitForTimeout(800);
+await page.waitForTimeout(settleMs);
 
 if (clickRow) {
   if (clickRow.startsWith("hover:")) {

@@ -3,6 +3,9 @@
   "theme": "mint",
   "name": "SchemaBrain",
   "description": "The trust and intelligence layer between AI agents and your database. Read-only, PII-aware, audit-evident.",
+  "redirects": [
+    { "source": "/dashboard/pii-ledger", "destination": "/dashboard/pii-matrix" }
+  ],
   "colors": {
     "primary": "#3ECF8E",
     "light": "#3ECF8E",
@@ -67,7 +70,7 @@
             "icon": "chart-line",
             "pages": [
               "dashboard/overview",
-              "dashboard/pii-ledger",
+              "dashboard/pii-matrix",
               "dashboard/refusals",
               "dashboard/audit-viewer"
             ]

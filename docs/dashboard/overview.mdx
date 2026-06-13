@@ -11,20 +11,46 @@ description: "A read-only Next.js dashboard, served by a FastAPI sidecar bound t
 
 The dashboard answers three operator questions that the MCP envelope alone does not surface visually:
 
-1. **Which entities carry catastrophic-leak PII categories?** — see [PII Ledger](/dashboard/pii-ledger).
+1. **Which entities carry catastrophic-leak PII categories?** — see [PII matrix](/dashboard/pii-matrix).
 2. **What did SchemaBrain refuse, and what envelope did the agent receive?** — see [Refusals](/dashboard/refusals).
 3. **Is the hash-chained audit log still intact?** — see [Audit Viewer](/dashboard/audit-viewer).
 
-<Frame caption="PII Ledger — which entities carry catastrophic PII, and what the default policy blocks.">
-  <img src="/assets/dashboard-pii-ledger.png" alt="PII Ledger dashboard surface" />
+SchemaBrain renders **nine read-only surfaces** over that same store. The signature surface is the **Knowledge Graph** — your schema as the entity-relationship projection the semantic layer compiles joins against.
+
+<Frame caption="Knowledge Graph — entities as nodes, canonical joins as edges, catastrophic-PII entities flagged, and the compiled join path traced.">
+  <img src="/assets/dashboard-graph.png" alt="Knowledge Graph dashboard surface" />
 </Frame>
 
-<Frame caption="Refusals — every blocked call, the reason that fired, and the recovery hint the agent received.">
+<Frame caption="Overview — the whole boundary on one screen: bound entities, catastrophic-PII floors, refusals, and audit-chain health, each panel opening its detail view.">
+  <img src="/assets/dashboard-overview.png" alt="Overview dashboard surface" />
+</Frame>
+
+<Frame caption="Entities — every business entity bound out of the raw schema, with PII exposure, binding confidence, metrics, and join counts.">
+  <img src="/assets/dashboard-entities.png" alt="Entities dashboard surface" />
+</Frame>
+
+<Frame caption="Data Dictionary — every table, column, type, PII class, and join, exportable to Markdown for your repo or wiki.">
+  <img src="/assets/dashboard-dict.png" alt="Data Dictionary dashboard surface" />
+</Frame>
+
+<Frame caption="PII matrix — one row per classified column across the 12 PII categories, each tagged block / redact / allow; catastrophic columns are hard-blocked regardless of policy.">
+  <img src="/assets/dashboard-pii-ledger.png" alt="PII matrix dashboard surface" />
+</Frame>
+
+<Frame caption="Refusals — every held call; expand a row to reveal the reason that fired, the blocked category set, the recovery hint, and the reconstructed envelope.">
   <img src="/assets/dashboard-refusals.png" alt="Refusals dashboard surface" />
 </Frame>
 
-<Frame caption="Audit Viewer — the tamper-evident chain spined by a derived Merkle root, with each row's inclusion proof recomputed in the browser and reconciled to one root.">
+<Frame caption="Audit Viewer — the tamper-evident chain spined by a derived Merkle root, re-walked and verified intact down to each row's inclusion proof.">
   <img src="/assets/dashboard-audit-viewer.png" alt="Audit Viewer dashboard surface" />
+</Frame>
+
+<Frame caption="Policy — the block / redact / allow grid the firewall enforces, with the always-on catastrophic-leak floor disclosed and the schemabrain.yaml it compiles.">
+  <img src="/assets/dashboard-policy.png" alt="Policy dashboard surface" />
+</Frame>
+
+<Frame caption="Drift — config and enrichment drift the store can detect, each with a copy-the-CLI fix; here, a fresh and in-sync context.">
+  <img src="/assets/dashboard-drift.png" alt="Drift dashboard surface" />
 </Frame>
 
 It is intentionally a viewer, not a console. No settings, no entity editor, no SQL pad. Configuration still lives in the CLI; YAML still lives on disk.
@@ -92,7 +118,7 @@ The FastAPI app declares **only `GET` routes**. There is no `POST`, `PUT`, `PATC
 | `GET /` | Serves the bundled Next.js static export (the UI itself). |
 | `GET /api/health` | Liveness + a `SELECT 1` probe against the SQLite store. |
 | `GET /api/meta` | Charter version, dashboard schema version, list of indexed sources. Credential-safe — connection URLs are hashed to a canonical short ID before being echoed. |
-| `GET /api/entities/pii-matrix` | Per-entity PII category counts + totals for the PII Ledger surface. |
+| `GET /api/entities/pii-matrix` | Per-entity PII category counts + totals for the PII matrix surface. |
 | `GET /api/entities` | Flat entity list. |
 | `GET /api/entities/{name}/columns` | Per-entity column drill-down (physical schema + metrics + canonical joins). |
 | `GET /api/audit/rows` | Paginated rows from `mcp_audit`. |
@@ -140,7 +166,7 @@ This means a freshly-installed `schemabrain[ui]` against a previously-indexed st
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="PII Ledger" icon="shield" href="/dashboard/pii-ledger">
+  <Card title="PII matrix" icon="shield" href="/dashboard/pii-matrix">
     Which entities and columns carry catastrophic-leak categories.
   </Card>
   <Card title="Refusals" icon="ban" href="/dashboard/refusals">
