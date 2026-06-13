@@ -33,7 +33,7 @@ SchemaBrain compiles every query from definitions you control — no path from a
 Three guarantees that close the trust gap between AI agents and your database:
 
 - **[Read-only by architecture](#1-read-only-by-architecture-not-configuration)** — twelve MCP tools, none of which can write. No `execute()` tool, no `query()` tool, no path from agent prompt to a write at your database.
-- **[PII refusal at retrieval](#2-pii-aware-refusal-at-the-get_metric-tool-boundary)** — PII tags propagate from the physical schema through joins and metrics. If a query touches a blocked category, SchemaBrain refuses before the database is queried.
+- **[PII-aware refusal at retrieval](#2-pii-aware-refusal-at-the-get_metric-tool-boundary)** — PII tags propagate from the physical schema through joins and metrics. If a query touches a blocked category, SchemaBrain refuses before the database is queried.
 - **[Cryptographic audit chain](#3-tamper-evident-audit-log)** — every call, refusal, and recovery is recorded in a SHA256-hashed append-only log (best-effort: a disk-full or no-writer configuration logs a warning and continues rather than failing the query). `audit verify` exits non-zero if any past row was rewritten.
 
 **See it in action** — ask for something the schema can't answer, and it refuses instead of fabricating a join:
@@ -455,7 +455,7 @@ The five most common first-run failures. Full troubleshooter in [`docs/setup/man
 | [`docs/setup.md`](docs/setup.md) | Activation wizard (recommended) — pick a host, run the wizard, ask the agent (~60s) |
 | [`docs/setup/docker.md`](docs/setup/docker.md) | Docker install (image with embedding model baked in, no first-run download) |
 | [`docs/setup/manual.md`](docs/setup/manual.md) | Manual `index`, mine-queries, logs config, troubleshooting, MCP Inspector, SQL-validation ladder |
-| [`docs/first-5-queries.md`](docs/first-5-queries.md) | What to actually *do* after `init` — five queries that exercise read-only, PII refusal, audit chain, and structured recovery |
+| [`docs/first-5-queries.md`](docs/first-5-queries.md) | What to actually *do* after `init` — five queries that exercise read-only, PII-aware refusal, audit chain, and structured recovery |
 | [`docs/semantic-layer.md`](docs/semantic-layer.md) | Building entities, metrics (incl. composite expressions), canonical joins (incl. multi-hop), dbt import |
 | [`docs/operations.md`](docs/operations.md) | `inspect`, `check` (drift), `index --dry-run`, Docker compose |
 | [`docs/observability.md`](docs/observability.md) | `tail`, audit log, OTel export, PII classification |
@@ -481,7 +481,7 @@ Postgres 16+ is the only **source** connector today (the local store itself is a
 The consumer is an agent, not a service. MCP standardizes tool registration, schema description, and request/response transport. Agents discover SchemaBrain natively and get its tool surface — no API wrapper, no SDK to maintain per language.
 
 **Is this a semantic layer like Cube or dbt Semantic Layer?**
-Not exactly — SchemaBrain is the trust and intelligence layer between AI agents and your database, built on a semantic-layer substrate. Entities, metrics, and canonical joins are first-class persisted definitions (`list_entities`, `describe_entity`, `resolve_join`, `get_metric`), and they make the safety primitives possible — read-only-by-architecture, PII refusal, audit chain. The semantic substrate is the foundation; SQL-boundary safety, including the firewall, is one proof-point of the layer, not its whole identity. Full comparison vs Cube / dbt-mcp / Vanna / WrenAI in [`docs/landscape.md`](docs/landscape.md).
+Not exactly — SchemaBrain is the trust and intelligence layer between AI agents and your database, built on a semantic-layer substrate. Entities, metrics, and canonical joins are first-class persisted definitions (`list_entities`, `describe_entity`, `resolve_join`, `get_metric`), and they make the safety primitives possible — read-only-by-architecture, PII-aware refusal, audit chain. The semantic substrate is the foundation; SQL-boundary safety, including the firewall, is one proof-point of the layer, not its whole identity. Full comparison vs Cube / dbt-mcp / Vanna / WrenAI in [`docs/landscape.md`](docs/landscape.md).
 
 More questions answered in [`docs/setup/manual.md`](docs/setup/manual.md#5-troubleshooting) (why local embeddings, more troubleshooting).
 

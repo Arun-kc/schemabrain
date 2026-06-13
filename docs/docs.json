@@ -70,6 +70,7 @@
             "icon": "chart-line",
             "pages": [
               "dashboard/overview",
+              "dashboard/graph",
               "dashboard/pii-matrix",
               "dashboard/refusals",
               "dashboard/audit-viewer"

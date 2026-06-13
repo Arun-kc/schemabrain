@@ -1,0 +1,80 @@
+---
+title: "Knowledge graph"
+description: "The signature dashboard surface — your schema as an entity-relationship graph: entities as nodes, canonical joins as edges, catastrophic-PII entities flagged, refusal hotspots overlaid, and the compiled canonical join path traced."
+---
+
+# Knowledge graph
+
+<Note>
+**Route:** `/graph` on the dashboard. **Backed by:** `GET /api/graph` (the persisted `graph_nodes` / `graph_edges` projection, ADR 0010).
+</Note>
+
+<Frame caption="Knowledge graph — entities as nodes, canonical joins as edges, catastrophic-PII entities ringed in red, and the canonical join path traced as the green spine.">
+  <img src="/assets/dashboard-graph.png" alt="Knowledge graph dashboard surface — entity-relationship projection with catastrophic-PII nodes flagged and the canonical path highlighted" />
+</Frame>
+
+The Knowledge graph is the lead **Explore** surface — the same entity-relationship projection the semantic layer compiles joins against, rendered as a graph instead of a table list. It answers *how does my schema actually connect, and where is the risk?* at a glance:
+
+- **Nodes are entities** — one node per confirmed entity, grouped by domain.
+- **Edges are canonical joins** — **solid** for declared foreign keys, **dashed** for log-mined / inferred joins (the projection never inspects SQL, so an unverified shape never reads as engine-derived).
+- **Catastrophic-PII entities are ringed in red** with a `CATASTROPHIC` label; lighter PII tiers get a halo when the **PII heat** overlay is on.
+- **Refusal hotspots** — with the **Refusal hotspots** overlay on, any entity that has been the anchor of a refused `get_metric` call shows a live count badge and a pulse ring.
+- **The canonical path** — the diameter spine (the rank-1 edges) is highlighted green and traced in a chip at the bottom-left with its hop count.
+
+A floating legend toggles the **PII heat**, **Refusal hotspots**, and **Log-mined joins** overlays; a minimap and a **Copy re-index command** action sit in the corners.
+
+<Note>
+This surface needs the `[ui]` extra (`pip install 'schemabrain[ui]'`). Like every dashboard route it is read-only and binds to `127.0.0.1` only.
+</Note>
+
+---
+
+## What each node carries
+
+| Field | Meaning |
+|---|---|
+| entity name | The node id — one node per confirmed entity. |
+| `group` | A cosmetic domain grouping (e.g. `Identity`, `Billing & revenue`). |
+| `row_count` | The cached table row count from the last index. |
+| `pii_level` | The entity's PII severity, recomputed **live** from the current PII tags via the same helper the [PII matrix](/dashboard/pii-matrix) uses — so the graph never disagrees with `/pii`. Full five-state severity (`catastrophic` / `pii` / `confidential` / `internal` / `none`), not a collapsed boolean. |
+| `refusal_count` | A **live** tally of append-only `mcp_audit` rows with `status='refused'` anchored to this entity. Never persisted to the projection (refusals accrue between rebuilds, so a snapshot would go stale). |
+
+A refused call whose anchor entity was renamed or dropped since the immutable row was logged is counted in the response's `unattributed_refusals` instead — so the per-node counts plus `unattributed_refusals` always equal the log's refused-row count. A refusal is never silently dropped or misattributed.
+
+## What each edge carries
+
+| Field | Meaning |
+|---|---|
+| source / target | The two entities the canonical join connects. |
+| `evidence` | How the join was established: **declared FK** / **log-mined** / **inferred** — never inspected SQL. Drives solid vs dashed rendering. |
+| `cardinality` | The equi-join shape (`1:1` / `1:N` / `N:1` / `N:N`), **for declared-FK edges only** (`null` for mined/inferred, so an unverified shape never reads as engine-derived). The label is drawn only on **emphasised** edges — the highlighted canonical path and the edges of the currently selected node — not on every edge. |
+| `canonical_path_rank` | Rank-1 edges form the canonical path (the green spine); the path is reconstructed from these. |
+
+---
+
+## How it stays honest
+
+- **PII matches `/pii` live.** `pii_level` is recomputed per request from the current tags, so a tag override the last projection did not see still renders correctly.
+- **Cardinality is shown only where it is verified.** Declared-FK edges only; mined/inferred edges carry no cardinality, and the legend says so.
+- **Refusal counts are exhaustive, never persisted.** Tallied live from the audit log and reconciled against `unattributed_refusals`.
+
+A source that exists but has no projection returns empty arrays at `200`; an unresolvable source returns `409`. The route writes nothing.
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Local dashboard" icon="layout-dashboard" href="/dashboard/overview">
+    The full nine-surface dashboard and how it's served.
+  </Card>
+  <Card title="PII matrix" icon="shield" href="/dashboard/pii-matrix">
+    The per-column PII heatmap the graph's node levels share a source with.
+  </Card>
+  <Card title="Refusals" icon="ban" href="/dashboard/refusals">
+    Where a refusal hotspot's blocked calls are explained.
+  </Card>
+  <Card title="schemabrain dashboard CLI" icon="terminal" href="/reference/cli/dashboard">
+    Flags and defaults for the launch command.
+  </Card>
+</CardGroup>
