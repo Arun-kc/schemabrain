@@ -66,6 +66,22 @@ Integration tests boot ephemeral Postgres 16 containers via
 Docker (or Colima / Podman with the Docker socket exposed) running.
 Without Docker, skip those tests with `-m "not integration"`.
 
+### Frontend apps
+
+The repo has **two** separate frontend apps, each with its own dependency tree
+(`package.json`, `pnpm-lock.yaml`, `node_modules`). End users never touch these
+— the dashboard ships pre-built inside the wheel — but a contributor changing
+the UI needs to know which app to run.
+
+| App | What it is | Dev command |
+|---|---|---|
+| `web/` | The **dashboard** UI (Next.js). Exported to a static bundle that the FastAPI sidecar serves from `schemabrain/dashboard/static/` (it ships inside the `[ui]` wheel). | `pnpm --dir web dev` (port 3000). Rebuild the bundle the sidecar serves with `pnpm --dir web export`. Tests: `pnpm --dir web test` (Vitest) and `pnpm --dir web test:e2e` (Playwright). |
+| `site/` | The standalone **marketing site** (Next.js), deployed to Vercel — **not** part of the wheel. | `pnpm --dir site dev` (port 3001). |
+
+Run pnpm from the repo root with **`--dir <app>`**, not `--filter` — there is no
+workspace root, so `--filter web` silently matches nothing and exits 0 (a green
+no-op). Each app installs its own `node_modules` (`pnpm --dir web install`).
+
 ## Code standards
 
 ### Test-driven, with high coverage

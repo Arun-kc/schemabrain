@@ -5,18 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- `schemabrain init`'s closing "next steps" now points to `--emit-yaml-dir` when no editable YAML was written, so an operator can find the `pii_policy.yaml` + entity/metric/join YAML to edit. ([#240])
-
-### Fixed
-- `schemabrain index` preserves operator PII overrides (`origin='operator'`) across a re-index — it now re-classifies only the columns the operator has not asserted on, instead of silently discarding hand-applied false-positive fixes when a schema change triggers a re-index. ([#240])
-
-### Documentation
-- New **Your project** guide (the files `init` creates, the editable YAML tree behind `--emit-yaml-dir`, the edit → apply → restart loop, the `.env` model, and the least-privilege DB-role note), wired into Get started and linked from the README quickstart. Fixed the semantic-layer worked example (added the missing `customer` entity), reconciled the YAML layout to `./schemabrain/…` across docs, added a dashboard section to `operations.md`, and corrected the env-var / `--url-env` framing in the CLI reference. ([#240])
-
-## [0.6.0] - 2026-06-12
+## [0.6.0] - 2026-06-13
 
 **Highlights** — the marketed launch. The dashboard grows from 4 surfaces into a **graph-led, 9-surface** experience: a signature **Knowledge Graph**, an **Overview** home, an **Entities** index, a **Data Dictionary**, an editable **Policy** editor, and a **Drift** view join the PII / Refusals / Audit trio. Audit logs are now **browser-verifiable** via a derived Merkle root, the marketing **landing moves to a standalone site**, and the product is repositioned from "SQL firewall" to the **trust + intelligence layer**. A zero-setup `schemabrain demo` command tells the whole story offline in seconds, the PII firewall now refuses **grouping by** a PII column as row-level disclosure, and `import dbt` imports `relationships` tests as canonical joins.
 
@@ -39,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **dbt `relationships` → canonical joins** — `import dbt` now turns generic `relationships` schema tests into `dbt_import`-origin canonical joins (single-column, idempotent, FK-safe — both endpoint entities must be imported), completing the dbt-import path beyond entities. ([#237])
 - **Type- and nullability-aware drift** — `schemabrain check` adds `type_mismatch` and `nullability_change` drift kinds compared against the indexed column snapshot, closing the existence-only silent-correctness gap; additive (reports drift without cascade-suppressing dependents). ([#236])
 - **`init --enable-sonnet`** — the opt-in two-tier router (Sonnet 4.6 for cryptic column names, Haiku 4.5 otherwise) is now reachable from the onboarding wizard, with the same off-by-default semantics as `index --enable-sonnet`. ([#235])
+- `schemabrain init`'s closing "next steps" now points to `--emit-yaml-dir` when no editable YAML was written, so an operator can find the `pii_policy.yaml` + entity/metric/join YAML to edit. ([#240])
 
 ### Changed
 - **Repositioned from "SQL firewall" to the trust + intelligence layer**, with the firewall demoted to one of six proof-points; a canonical positioning source (`positioning.py`) + sweep engine keep the public surface consistent. ([#189], [#190], [#191], [#217], [#221])
@@ -59,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `init` wizard no longer misclassifies a user's own Postgres as the bundled demo — demo detection probes the SaaS-specific `workspaces` table instead of suffix-matching the demo URL tail. ([#234])
 - `import dbt` on a never-indexed store now fails fast with a guided "run `schemabrain index` first" pre-flight instead of a per-model foreign-key error. ([#234])
 - Quieted the Hugging Face download progress bar that printed even when the embedding model was already cached. ([#233])
+- `schemabrain index` preserves operator PII overrides (`origin='operator'`) across a re-index — it now re-classifies only the columns the operator has not asserted on, instead of silently discarding hand-applied false-positive fixes when a schema change triggers a re-index. ([#240])
 
 ### Documentation
 - **Code of Conduct** (Contributor Covenant 2.1) wired into README / ROADMAP / CONTRIBUTING. ([#226])
@@ -66,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README hero recast around the pain hook; pre-launch community on-ramp + surface-count accuracy. ([#215], [#217])
 - Claim-truth sweep from the full-scope E2E audit: SQLite framed as a roadmap **source** connector (the local store is SQLite; no SQLite source connector ships yet), per-column enrichment cost `~$0.0004`, `--max-cost` default `$1`, audit framed best-effort, two-tier routing opt-in, ROADMAP at 9 surfaces / v0.6.x; 68 broken `mechanism/*` doc links fixed and ADRs 0006–0012 registered in `docs.json`. ([#234])
 - ADR 0012 — group-by-PII row-level disclosure — plus threat-model, PII-taxonomy, security, and semantic-layer updates. ([#233])
+- New **Your project** guide (the files `init` creates, the editable YAML tree behind `--emit-yaml-dir`, the edit → apply → restart loop, the `.env` model, and the least-privilege DB-role note), wired into Get started and linked from the README quickstart. Fixed the semantic-layer worked example (added the missing `customer` entity), reconciled the YAML layout to `./schemabrain/…` across docs, added a dashboard section to `operations.md`, and corrected the env-var / `--url-env` framing in the CLI reference. ([#240])
+- **Demo recordings** — three reproducible `vhs` tapes/GIFs (firewall showcase + live and curated CLI tours); the curated CLI tour is embedded in the README. ([#241])
+- **Dashboard screenshots** refreshed to the current dark-theme UI across all nine surfaces; the PII surface renamed **PII Ledger → PII matrix** to match the UI (old docs URL redirected); a code-grounded accuracy pass corrected stale dashboard claims (graph cardinality, audit verify ribbon / in-browser proofs / SSE, refusal recovery field). ([#242])
+- Pre-release docs polish — a dedicated **Knowledge Graph** dashboard page (`/dashboard/graph`), an `examples/` index, a normalized PII-capability label, and a CONTRIBUTING note on the two-app (`web/` vs `site/`) frontend layout. ([#243])
 
 ### Internal
 - Visual-regression baselines in a pinned Playwright container + web performance budgets; a 9-surface axe a11y sweep + AA-contrast fixes; dependency bumps. ([#209], [#210], [#212], [#213], [#222], [#223])
@@ -1383,3 +1378,6 @@ First public preview. Live on PyPI as `schemabrain==0.1.0a1`.
 [#236]: https://github.com/Arun-kc/schemabrain/pull/236
 [#237]: https://github.com/Arun-kc/schemabrain/pull/237
 [#240]: https://github.com/Arun-kc/schemabrain/pull/240
+[#241]: https://github.com/Arun-kc/schemabrain/pull/241
+[#242]: https://github.com/Arun-kc/schemabrain/pull/242
+[#243]: https://github.com/Arun-kc/schemabrain/pull/243
