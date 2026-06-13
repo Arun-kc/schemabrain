@@ -43,6 +43,12 @@ jobs:
   build:
     name: Build wheel
     runs-on: ubuntu-latest
+    outputs:
+      # The version the post-publish `verify` job pins its install to. Parsed
+      # from the wheel filename (the canonical record of what this run builds
+      # and uploads) rather than re-reading pyproject, so verify can never test
+      # a different version than the one actually shipped.
+      version: ${{ steps.wheelver.outputs.version }}
     steps:
       - uses: actions/checkout@v6
 
@@ -135,6 +141,20 @@ jobs:
             || { echo "BLOCKED: wheel missing csp-script-hashes.json (CSP script-src would break the dashboard at runtime)"; exit 1; }
           echo "OK: dashboard bundled — index.html + overview/graph/entities/dict/pii/audit/refusals/policy/drift routes + csp-script-hashes.json + $next_count _next assets"
 
+      - name: Extract published version from the wheel filename
+        id: wheelver
+        run: |
+          set -euo pipefail
+          wheel=$(ls dist/*.whl)
+          # schemabrain-0.6.0-py3-none-any.whl -> 0.6.0. The first hyphen-
+          # delimited field after the package name is the version; pin verify
+          # to exactly this so it can never test a stale or mismatched build.
+          version=$(basename "$wheel" | sed -E 's/^schemabrain-([^-]+)-.*/\1/')
+          [ -n "$version" ] && [ "$version" != "$(basename "$wheel")" ] \
+            || { echo "BLOCKED: could not parse version from wheel '$wheel'"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Published version parsed from wheel: $version"
+
       - name: Show built artifacts
         run: ls -la dist/
 
@@ -175,12 +195,129 @@ jobs:
         if: inputs.target == 'pypi'
         uses: pypa/gh-action-pypi-publish@release/v1
 
+  verify:
+    # Post-publish smoke: prove the *live, installed* package works, not just
+    # that the upload returned 200. The build job already verifies the wheel's
+    # contents pre-upload; this job is the missing half — install from the real
+    # index into a clean venv, assert the version, and boot the engine + the
+    # dashboard sidecar. Runs for BOTH targets so a TestPyPI dress-rehearsal
+    # exercises the exact same gate the production publish does. A failure here
+    # blocks the Docker image build below.
+    name: Verify published package (${{ inputs.target }}) installs + boots
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      TARGET: ${{ inputs.target }}
+    steps:
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Wait for the index, install from it, assert version, smoke-boot
+        run: |
+          set -euo pipefail
+
+          if [ "$TARGET" = "pypi" ]; then
+            json_host="https://pypi.org/pypi"
+            # Real index only — schemabrain + all runtime deps live here.
+            index_args=""
+          else
+            json_host="https://test.pypi.org/pypi"
+            # schemabrain comes from TestPyPI; its runtime deps (fastapi,
+            # uvicorn, sse-starlette, ...) are NOT mirrored there, so resolve
+            # them from real PyPI. The exact-version pin below guarantees pip
+            # still takes schemabrain itself from TestPyPI (the only index that
+            # has this just-published version pre-production).
+            index_args="--index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/"
+          fi
+
+          # 1. Wait out index/CDN propagation. Right after upload the JSON API
+          #    + Fastly can lag by tens of seconds; without this an immediate
+          #    install 404s and the gate looks broken when it is not. ~3 min cap.
+          echo "Waiting for $TARGET to serve schemabrain==$VERSION ..."
+          for attempt in $(seq 1 12); do
+            code=$(curl -fsS -o /dev/null -w '%{http_code}' \
+              "$json_host/schemabrain/$VERSION/json" || true)
+            if [ "$code" = "200" ]; then
+              echo "  index serving $VERSION (attempt $attempt)"
+              break
+            fi
+            if [ "$attempt" = "12" ]; then
+              echo "BLOCKED: schemabrain==$VERSION never appeared on $TARGET after ~3m (last HTTP $code)"
+              exit 1
+            fi
+            echo "  not yet (HTTP $code) — retry in 15s [$attempt/12]"
+            sleep 15
+          done
+
+          # 2. Clean-install from the live index. Fresh venv + --no-cache-dir so
+          #    a cached older wheel can never satisfy the pin.
+          python -m venv /tmp/verifyenv
+          # shellcheck disable=SC1091
+          . /tmp/verifyenv/bin/activate
+          python -m pip install --quiet --upgrade pip
+          # shellcheck disable=SC2086
+          pip install --no-cache-dir $index_args "schemabrain[ui]==$VERSION"
+
+          # 3. The installed package must report exactly the published version,
+          #    via both the CLI flag and importlib.metadata.
+          cli_ver=$(schemabrain --version | awk '{print $NF}')
+          meta_ver=$(python -c "import importlib.metadata as m; print(m.version('schemabrain'))")
+          echo "CLI=$cli_ver  metadata=$meta_ver  expected=$VERSION"
+          [ "$cli_ver" = "$VERSION" ]  || { echo "BLOCKED: schemabrain --version=$cli_ver != $VERSION"; exit 1; }
+          [ "$meta_ver" = "$VERSION" ] || { echo "BLOCKED: importlib.metadata=$meta_ver != $VERSION"; exit 1; }
+
+          # 4. Engine smoke — builds the offline showcase store and runs the
+          #    firewall showcase end to end. Proves the classifier/firewall/
+          #    engine actually import and run from the installed wheel (pure
+          #    Python, no Docker, no API key). Also seeds the store the sidecar
+          #    reads next. </dev/null + timeout guard against any stray prompt.
+          timeout 180 schemabrain demo --showcase --store-path /tmp/sb.db --no-open < /dev/null
+
+          # 5. Sidecar smoke — boot the read-only dashboard against that store
+          #    and confirm it actually serves: liveness, one data route (proves
+          #    store resolution + the graph projection), and the static export.
+          schemabrain dashboard --store-path /tmp/sb.db --port 7878 --no-open < /dev/null \
+            > /tmp/sidecar.log 2>&1 &
+          sidecar_pid=$!
+          trap 'kill "$sidecar_pid" 2>/dev/null || true' EXIT
+
+          base="http://127.0.0.1:7878"
+          for attempt in $(seq 1 30); do
+            code=$(curl -fsS -o /dev/null -w '%{http_code}' "$base/api/health" || true)
+            if [ "$code" = "200" ]; then
+              echo "  sidecar up (attempt $attempt)"
+              break
+            fi
+            if [ "$attempt" = "30" ]; then
+              echo "BLOCKED: /api/health never returned 200 (last HTTP $code)"
+              echo "----- sidecar log -----"; cat /tmp/sidecar.log || true
+              exit 1
+            fi
+            sleep 1
+          done
+
+          for route in /api/graph /overview; do
+            code=$(curl -fsS -o /dev/null -w '%{http_code}' "$base$route" || true)
+            [ "$code" = "200" ] \
+              || { echo "BLOCKED: $route returned HTTP $code"; echo "----- sidecar log -----"; cat /tmp/sidecar.log || true; exit 1; }
+            echo "  $route -> 200"
+          done
+
+          echo "OK: schemabrain==$VERSION installs from $TARGET, version matches, demo runs, sidecar serves /api/health + /api/graph + /overview"
+
   docker:
     name: Build + push Docker (linux/amd64 + linux/arm64)
     # Only runs on production publishes (PyPI). TestPyPI runs skip this
     # so we are not minting container images for unstable releases.
     if: inputs.target == 'pypi'
-    needs: publish
+    # Gate on `verify`, not just `publish`: if the published wheel fails to
+    # install or boot, do not mint container images for it.
+    needs: [publish, verify]
     runs-on: ubuntu-latest
     permissions:
       contents: read
