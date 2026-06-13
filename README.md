@@ -133,6 +133,17 @@ If Claude calls `list_entities` and reports `user`, `order`, etc., you're done. 
 
 After the wizard, `schemabrain inspect` shows what the agent has and `schemabrain tail` streams every tool call live — see [`docs/operations.md`](docs/operations.md).
 
+### Your project files
+
+`init` writes just `./schemabrain.db` (the local store — gitignore it) plus your host config. To tune the **PII policy** and **semantic layer** as editable YAML, re-run with `--emit-yaml-dir`:
+
+```bash
+schemabrain init --url-env DATABASE_URL --emit-yaml-dir ./schemabrain
+# → ./schemabrain/pii_policy.yaml + entities/ + metrics/ + joins/
+```
+
+Edit a file, `schemabrain apply ./schemabrain`, `schemabrain check` to validate, restart `serve`. There is no `schemabrain.yaml` — config is CLI flags + `SCHEMABRAIN_*` env vars (auto-loaded from `.env`) + that YAML tree. Full map: [**Your project**](docs/your-project.md).
+
 ---
 
 ## Safety guarantees

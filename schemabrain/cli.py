@@ -7648,7 +7648,9 @@ def _cmd_init(
         console.print("[yellow]cancelled[/] no changes made.")
         return 0
 
-    _render_wizard_after(result, host_display=host_display, console=console)
+    _render_wizard_after(
+        result, host_display=host_display, console=console, yaml_emitted=emit_yaml_dir is not None
+    )
     if result.aborted:
         return 2
 
@@ -9015,7 +9017,9 @@ def _render_wizard_header(*, host_display: str | None, console: object) -> None:
     console.print()  # type: ignore[attr-defined]
 
 
-def _render_wizard_result(result: object, *, host_display: str | None = None) -> None:
+def _render_wizard_result(
+    result: object, *, host_display: str | None = None, yaml_emitted: bool = False
+) -> None:
     """Render the multi-stage outcome of a wizard run.
 
     Caller is `_cmd_init`. Typed as `object` here so the cli module
@@ -9053,7 +9057,9 @@ def _render_wizard_result(result: object, *, host_display: str | None = None) ->
         raise TypeError(f"_render_wizard_result expected WizardResult, got {type(result).__name__}")
     console = _stderr_console()
     _render_wizard_header(host_display=host_display, console=console)
-    _render_wizard_after(result, host_display=host_display, console=console)
+    _render_wizard_after(
+        result, host_display=host_display, console=console, yaml_emitted=yaml_emitted
+    )
 
 
 def _compose_progress_rule(
@@ -9112,7 +9118,9 @@ def _compose_progress_rule(
     return top_rule(f"{total} stages", right, width=min(width, _STAGE_PANEL_MAX_WIDTH))
 
 
-def _render_wizard_after(result: object, *, host_display: str | None, console: object) -> None:
+def _render_wizard_after(
+    result: object, *, host_display: str | None, console: object, yaml_emitted: bool = False
+) -> None:
     """Render everything that follows the wizard's header — progress
     rule, stage list, host install detail, closing block (clean run)
     or failure panel (abort).
@@ -9230,7 +9238,9 @@ def _render_wizard_after(result: object, *, host_display: str | None, console: o
         )
         return
     if host_result is not None:
-        _render_closing_block(result, host_display=host_display, console=console)
+        _render_closing_block(
+            result, host_display=host_display, console=console, yaml_emitted=yaml_emitted
+        )
 
 
 def _render_abort_panel(result: object, *, total: int, console: object) -> None:
@@ -9313,6 +9323,7 @@ def _render_closing_block(
     *,
     host_display: str | None,
     console: object,
+    yaml_emitted: bool = False,
 ) -> None:
     """Render the post-stage closing block for clean runs.
 
@@ -9403,6 +9414,17 @@ def _render_closing_block(
     console.print("See what was curated:  [bold]schemabrain inspect[/]")  # type: ignore[attr-defined]
     console.print("Verify the wiring:     [bold]schemabrain doctor[/]")  # type: ignore[attr-defined]
     console.print("Detect schema drift:   [bold]schemabrain check[/]")  # type: ignore[attr-defined]
+    # YAML-projection discovery: a plain `init` writes only the store, so
+    # an operator who wants to EDIT the PII policy or semantic defs has no
+    # files on disk to open. Point them at the flag that emits the editable
+    # tree. Skipped when they already passed --emit-yaml-dir — the emit
+    # confirmation that follows names the path.
+    if not yaml_emitted:
+        console.print(  # type: ignore[attr-defined]
+            "Edit policy / semantics:  "
+            "[bold]schemabrain init --emit-yaml-dir ./schemabrain[/]  "
+            "[dim](writes pii_policy.yaml + entity/metric/join YAML)[/]"
+        )
     # Dashboard discovery line — only when we did NOT already lead with the
     # graph payoff (avoids duplicating the CTA). The dashboard is opt-in via
     # the `[ui]` extra: an indie dev who ran `pip install schemabrain` (no

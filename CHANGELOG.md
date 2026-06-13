@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `schemabrain init`'s closing "next steps" now points to `--emit-yaml-dir` when no editable YAML was written, so an operator can find the `pii_policy.yaml` + entity/metric/join YAML to edit. ([#240])
+
+### Fixed
+- `schemabrain index` preserves operator PII overrides (`origin='operator'`) across a re-index — it now re-classifies only the columns the operator has not asserted on, instead of silently discarding hand-applied false-positive fixes when a schema change triggers a re-index. ([#240])
+
+### Documentation
+- New **Your project** guide (the files `init` creates, the editable YAML tree behind `--emit-yaml-dir`, the edit → apply → restart loop, the `.env` model, and the least-privilege DB-role note), wired into Get started and linked from the README quickstart. Fixed the semantic-layer worked example (added the missing `customer` entity), reconciled the YAML layout to `./schemabrain/…` across docs, added a dashboard section to `operations.md`, and corrected the env-var / `--url-env` framing in the CLI reference. ([#240])
+
 ## [0.6.0] - 2026-06-12
 
 **Highlights** — the marketed launch. The dashboard grows from 4 surfaces into a **graph-led, 9-surface** experience: a signature **Knowledge Graph**, an **Overview** home, an **Entities** index, a **Data Dictionary**, an editable **Policy** editor, and a **Drift** view join the PII / Refusals / Audit trio. Audit logs are now **browser-verifiable** via a derived Merkle root, the marketing **landing moves to a standalone site**, and the product is repositioned from "SQL firewall" to the **trust + intelligence layer**. A zero-setup `schemabrain demo` command tells the whole story offline in seconds, the PII firewall now refuses **grouping by** a PII column as row-level disclosure, and `import dbt` imports `relationships` tests as canonical joins.
@@ -1373,3 +1382,4 @@ First public preview. Live on PyPI as `schemabrain==0.1.0a1`.
 [#235]: https://github.com/Arun-kc/schemabrain/pull/235
 [#236]: https://github.com/Arun-kc/schemabrain/pull/236
 [#237]: https://github.com/Arun-kc/schemabrain/pull/237
+[#240]: https://github.com/Arun-kc/schemabrain/pull/240

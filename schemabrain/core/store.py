@@ -3079,18 +3079,27 @@ class SQLiteStore:
         tags: Mapping[str, ColumnPiiTag],
         confidence: Mapping[str, tuple[PiiConfidenceBand | None, float | None]] | None = None,
     ) -> None:
-        """Replace all PII tags for `qualified_table` atomically.
+        """Replace the heuristic PII tags for `qualified_table`.
 
         Each entry in `tags` is `column_name → (sensitivity, categories)`.
-        The write is all-or-nothing: every existing row for the table
-        is deleted, then the new rows are inserted. Re-classifying a
-        table after a schema change is therefore a clean swap — no
-        stale rows survive, no partial-state read window exposed.
+        The write is all-or-nothing for the heuristic rows: every
+        existing `origin='heuristic'` row for the table is deleted, then
+        the new heuristic rows are inserted. Re-classifying a table after
+        a schema change is therefore a clean swap — no stale heuristic
+        rows survive, no partial-state read window exposed.
 
-        Empty `tags` is a valid call: it deletes every row for the
-        table without writing replacements. The index pipeline's
-        `--no-pii-classify` opt-out uses this shape to wipe pre-
-        existing heuristic tags rather than leave them stale.
+        Operator overrides are PRESERVED: `origin='operator'` rows are
+        never deleted here, and a heuristic tag is NOT written for any
+        column that already carries an operator override (the operator's
+        explicit assertion wins). A re-index thus keeps the operator's
+        false-positive fixes instead of silently discarding them — see
+        `upsert_column_pii_tag_override`.
+
+        Empty `tags` is a valid call: it deletes the heuristic rows for
+        the table (preserving operator overrides) without writing
+        replacements. The index pipeline's `--no-pii-classify` opt-out
+        uses this shape to wipe pre-existing heuristic tags rather than
+        leave them stale.
 
         `categories` is stored as the sorted comma-separated encoding
         (same convention as `example_queries.pii_categories`); the
@@ -3106,25 +3115,44 @@ class SQLiteStore:
         delete+insert replaces every row, a re-index that no longer
         corroborates a tag cleanly overwrites a stale higher band.
 
-        Always writes `origin='heuristic'` at v12 — operator overrides
-        land via a follow-up PR that writes `origin='operator'`
-        through a separate code path.
+        Always writes `origin='heuristic'`; operator overrides
+        (`origin='operator'`) are written through
+        `upsert_column_pii_tag_override` and skipped here so they
+        survive a re-index.
         """
         conn = self._require_conn()
         now = int(time.time())
         confidence = confidence or {}
         with conn:
+            # Preserve operator overrides across a re-index. Delete only
+            # the heuristic rows for the table, then re-insert heuristic
+            # tags ONLY for columns the operator has not asserted on. An
+            # `origin='operator'` row is an explicit human assertion (from
+            # `pii_policy.yaml` / `policy tag`) and must survive the
+            # mechanical re-classification a re-index performs — otherwise
+            # a re-index silently discards the operator's false-positive
+            # fixes exactly when they re-index to pick up a schema change.
             conn.execute(
                 "DELETE FROM column_pii_tags "
-                "WHERE source_connection_id = ? AND qualified_table = ?",
+                "WHERE source_connection_id = ? AND qualified_table = ? "
+                "AND origin = 'heuristic'",
                 (source_connection_id, qualified_table),
             )
+            overridden = {
+                row["column_name"]
+                for row in conn.execute(
+                    "SELECT column_name FROM column_pii_tags "
+                    "WHERE source_connection_id = ? AND qualified_table = ? "
+                    "AND origin = 'operator'",
+                    (source_connection_id, qualified_table),
+                )
+            }
             if not tags:
                 # Empty-tags shape is the `--no-pii-classify` wipe
-                # contract. Returning from inside `with conn:` still
-                # triggers __exit__ which commits the DELETE — the
-                # transaction is NOT left open. Python's sqlite3
-                # context manager finalises on any control-flow exit.
+                # contract: it clears the heuristic rows (above) but
+                # leaves operator overrides intact. Returning from inside
+                # `with conn:` still triggers __exit__ which commits the
+                # DELETE — the transaction is NOT left open.
                 return
             conn.executemany(
                 "INSERT INTO column_pii_tags "
@@ -3143,6 +3171,7 @@ class SQLiteStore:
                         *confidence.get(column_name, (None, None)),
                     )
                     for column_name, (sensitivity, categories) in tags.items()
+                    if column_name not in overridden
                 ],
             )
 
@@ -3245,12 +3274,11 @@ class SQLiteStore:
         heuristic OR operator row for the same column — there is no
         layering, by design (per the schema comment at the table DDL).
 
-        Re-running `schemabrain index` after an override exists will
-        overwrite the operator row with the new heuristic value
-        unless the index pipeline is taught to skip override rows.
-        That's tracked separately; for v0.4 the operator workflow is
-        "override → server reads the override → next index wipes the
-        override, operator re-applies from pii_policy.yaml."
+        Operator overrides survive a re-index: `write_column_pii_tags`
+        (the bulk heuristic path) deletes only `origin='heuristic'`
+        rows and skips re-classifying any column that already carries
+        an operator override, so `schemabrain index` no longer wipes
+        an override the operator applied from `pii_policy.yaml`.
 
         LB-2 guard (firewall E2E audit 2026-05-30): because the override
         replaces the row with no layering, emptying or re-categorising a
