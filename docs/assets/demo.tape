@@ -1,109 +1,92 @@
 # SchemaBrain demo recording — scripted with charmbracelet/vhs.
 #
-# vhs renders this tape into a reproducible animated GIF. The output is
-# read by the README hero. Re-render after any user-visible CLI surface
-# change:
+# vhs renders this tape into a reproducible animated GIF used as the
+# README hero. Re-render after any user-visible change to
+# `schemabrain demo --showcase` or `schemabrain audit verify`:
 #
 #     vhs docs/assets/demo.tape
 #
-# The four acts (run-time ~45s):
-#   1. schemabrain init   — seven-stage activation wizard
-#   2. schemabrain inspect — operator-side browser, no LLM, no agent
-#   3. MCP get_metric call — Claude resolves a metric through the server
-#   4. schemabrain tail   — live stream of the tool call from act 3
+# The recorded flow is the ZERO-SETUP showcase — no API key, no Docker,
+# no Postgres. Three acts (~40s):
+#   1. schemabrain demo --showcase — the firewall in five get_metric
+#      calls: it COMPUTES the safe metric, REFUSES the two leaks (PII +
+#      credential), and RECOVERS the two unreachable/ambiguous calls,
+#      then verifies the seeded tamper-evident audit chain.
+#   2. schemabrain audit verify   — re-proves the chain independently.
+#   3. punchline                  — the agent never wrote SQL.
 #
-# Prerequisites for re-recording — see CONTRIBUTING.md, section
-# "Recording the demo asset", for the full setup script:
-#   - A running Postgres at localhost:5432 with the bundled SaaS
-#     fixture applied (12 tables, 84 columns).
-#   - ANTHROPIC_API_KEY exported in the recording shell so stages 3
-#     (entities, LLM) and 4 (metrics, LLM) of init do NOT skip — a
-#     skipped stage 3 means no entities are applied, so Act 2's
-#     `inspect user` drill exits 1 with a guided error and Act 3's
-#     get_metric call has nothing to resolve. Stage 5 (joins) is
-#     deterministic and runs regardless of the API key.
-#   - --skip-llm-confirm passed to init so the recording doesn't hang
-#     on the Enter-to-continue prompt before stages 3 + 4. The prompt
-#     auto-suppresses in non-TTY environments, but a TTY-backed
-#     recording shell sees the prompt; the flag bypasses it cleanly.
-#   - Pre-warm the fastembed model cache by running `schemabrain init`
-#     manually once before recording. The Sleep budget below assumes
-#     the embedding model is already on disk; a cold first-run download
-#     can take 30s+ on its own.
+# Prerequisites for re-recording:
+#   - Run from the repo root with the project venv built
+#     (`uv sync`). The tape's hidden preamble runs
+#     `source .venv/bin/activate` so the freshly-spawned recording
+#     shell can resolve `schemabrain` — without it the shell vhs spawns
+#     does NOT have the CLI on PATH and every command renders as
+#     "command not found". (This is the failure the rewrite fixes.)
+#   - No API key, no Docker, no Postgres: the showcase replays through
+#     the real MCP server against the bundled offline SaaS store and a
+#     stubbed executor, so every refusal is real and the whole run is
+#     ~1s. The long Sleeps below are pure read time, not compute.
+#   - The store is written to ./demo.db (gitignored / disposable) so
+#     the printed dashboard hint stays a clean relative path rather than
+#     leaking an absolute home-directory path.
 #   - vhs installed (`brew install vhs` or
 #     `go install github.com/charmbracelet/vhs@latest`).
 
 Output docs/assets/demo.gif
 
+Set Shell "bash"
 Set FontSize 14
 Set Width 1200
-Set Height 720
+Set Height 860
 Set Theme "Dracula"
-Set TypingSpeed 35ms
+Set TypingSpeed 30ms
 Set PlaybackSpeed 1.0
 
+# Hidden preamble: put `schemabrain` on PATH, set a minimal prompt, and
+# start from a clean screen. None of this is recorded — the GIF opens on
+# the first visible keystroke of Act 1.
 Hide
+Type "source .venv/bin/activate"
+Enter
+Type "export PS1='$ '"
+Enter
 Type "clear"
 Enter
 Show
 
-# --- Act 1: init ----------------------------------------------------------
-Type "# Index a Postgres schema and wire Claude Desktop in one command."
-Sleep 800ms
+# --- Act 1: the showcase --------------------------------------------------
+Type "# One command. No API key, no Docker, no Postgres."
+Sleep 1s
 Enter
-Type "export DATABASE_URL='postgresql+psycopg://postgres:local@localhost:5432/postgres'"
+Type "# Watch the firewall compute the safe metric — and refuse the leaks."
+Sleep 1s
 Enter
-Sleep 400ms
-Type "schemabrain init --url-env DATABASE_URL --store-path ./demo.db --skip-llm-confirm"
+Type "schemabrain demo --showcase --store-path ./demo.db"
+Sleep 600ms
 Enter
-# The wizard renders seven stages: source_check → index → entities
-# (LLM) → metrics (LLM) → joins (FK + query-log, no LLM) → wire_host
-# → next_step. Stages 3 and 4 each make a live Anthropic call which
-# adds 5–10s apiece on top of indexing. 30s is the headroom needed
-# for a warm-cache run that exercises both LLM stages; bump higher
-# if mid-stage cuts appear at re-render time.
-Sleep 30s
+# Builds the bundled SaaS store (12 entities · 11 joins · 5 metrics),
+# then replays five get_metric calls through the REAL MCP server:
+#   ✓ revenue by plan tier        — computed, no SQL written
+#   ✕ users by email address      — pii_blocked (row-level disclosure)
+#   ⚠ usage volume by plan tier   — unreachable_entity + resolve_join
+#   ⚠ revenue over time           — ambiguous_time_dimension
+#   ✕ accounts by password hash   — pii_blocked (credential floor)
+#   ✓ audit chain intact (5 calls, tamper-evident)
+# Runs in ~1s; the Sleep is read time for the whole scorecard.
+Sleep 14s
 
-# --- Act 2: inspect -------------------------------------------------------
-Type "# Look at the surface the agent will see — no LLM call needed."
-Sleep 800ms
+# --- Act 2: independent audit verification --------------------------------
+Type "# Every one of those calls was logged to a tamper-evident chain."
+Sleep 1s
 Enter
-Type "schemabrain inspect --store-path ./demo.db"
+Type "schemabrain audit verify --store-path ./demo.db"
+Sleep 600ms
 Enter
-Sleep 3s
-Type "schemabrain inspect user --store-path ./demo.db"
-Enter
-Sleep 3s
+Sleep 6s
 
-# --- Act 3: MCP get_metric ------------------------------------------------
-# A scripted MCP call simulating what Claude would do. The example
-# uses `examples/anthropic_demo.py` to keep the demo self-contained
-# and shell out to one Anthropic call rather than recording two
-# separate windows.
-Type "# Ask Claude (via the MCP server) for a validated metric."
-Sleep 800ms
+# --- Act 3: the punchline -------------------------------------------------
+Type "# Computed the metric. Refused the leaks. Logged all of it."
+Sleep 1500ms
 Enter
-Type "python examples/anthropic_demo.py \\"
-Enter
-Type "    --url-env DATABASE_URL \\"
-Enter
-Type "    --store-path ./demo.db \\"
-Enter
-Type "    --question 'How much revenue did we invoice each month?'"
-Enter
-# Haiku tool-use loops typically run 8–20s depending on how many
-# turns Claude takes (max 8 per the demo's cap). 18s leaves headroom
-# for the worst-case run without consistently cutting mid-answer.
-# If the answer still gets clipped at re-render time, bump higher.
-Sleep 18s
-
-# --- Act 4: tail ----------------------------------------------------------
-Type "# Every tool call lands here in real time."
-Sleep 800ms
-Enter
-Type "schemabrain tail --since 5m"
-Enter
-Sleep 4s
-
 Type "# The agent never wrote SQL. SchemaBrain did."
-Sleep 2s
+Sleep 3s
