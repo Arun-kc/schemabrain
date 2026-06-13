@@ -48,12 +48,12 @@ The sidecar exposes **only `GET` routes** — no `POST`, `PUT`, `PATCH`, or `DEL
 | `/` | The bundled Next.js static export. |
 | `/api/health` | Liveness + a `SELECT 1` against the SQLite store. |
 | `/api/meta` | Charter version, dashboard schema version, list of indexed sources. Credential-safe. |
-| `/api/entities/pii-matrix` | Per-entity PII counts for the PII Ledger surface. |
+| `/api/entities/pii-matrix` | Per-entity PII counts for the PII matrix surface. |
 | `/api/entities` | Flat entity list. |
 | `/api/entities/{name}/columns` | Per-entity column drill-down. |
 | `/api/audit/rows` | Paginated `mcp_audit` rows. |
 | `/api/audit/rows/{id}` | One audit row with full body. |
-| `/api/audit/verify` | Re-walks the chain; returns `intact` / `mismatch`. |
+| `/api/audit/verify` | Re-walks the chain; returns `intact` / `broken`. |
 | `/api/audit/refusals` | Filtered list of refused rows. |
 | `/api/audit/refusals/{id}` | One refusal row with envelope detail. |
 | `/api/audit/stream` | SSE stream of new audit rows (2s tick). |
@@ -118,7 +118,7 @@ kill $DASHBOARD_PID
   <Card title="Dashboard overview" icon="chart-line" href="/dashboard/overview">
     What each surface shows and how source IDs resolve.
   </Card>
-  <Card title="PII Ledger" icon="shield" href="/dashboard/pii-ledger">
+  <Card title="PII matrix" icon="shield" href="/dashboard/pii-matrix">
     The `/pii` surface.
   </Card>
   <Card title="Refusals" icon="ban" href="/dashboard/refusals">

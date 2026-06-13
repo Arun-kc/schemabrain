@@ -215,39 +215,69 @@ schemabrain dashboard
 
 It's a viewer, not a console — no settings, no SQL pad, no write path. **Nine read-only surfaces**, each answering an operator question the MCP envelope alone never surfaces visually. The signature surface is the **Knowledge Graph** — your schema rendered as the same entity-relationship projection the semantic layer compiles joins against:
 
-- **Knowledge Graph** (`/graph`) — *how does my schema actually connect?* Entities as nodes, canonical joins as cardinality-labelled edges, PII-bearing entities flagged, and refusal hotspots highlighted — the schema as a graph, not a table list.
+- **Knowledge Graph** (`/graph`) — *how does my schema actually connect?* Entities as nodes, canonical joins as edges (solid for declared FKs, dashed for log-mined), PII-bearing entities flagged, and refusal hotspots highlighted, with declared-FK cardinality shown on the highlighted join path — the schema as a graph, not a table list.
 - **Overview** (`/overview`) — the home surface: entity / metric / join / catastrophic-PII counts at a glance.
 - **Entities** (`/entities`) — a sortable index; drill into any entity's columns, PII, metrics, and canonical joins.
 - **Data Dictionary** (`/dict`) — every table, column, type, PII class, join, and metric, with one-click Markdown export (the same artifact `schemabrain docs` writes).
-- **PII Ledger** (`/pii`) — *which entities carry sensitive data?* A heatmap with one row per confirmed entity and one column per PII category, each cell counting how many columns inside that entity carry that category. Entities holding a catastrophic-leak category (`credential`, `payment_card`, `government_id`) get a gutter marker — so you can see at a glance which entities will trip the default `--pii-block` policy, and catch a `payment_card` column hiding inside `users` before you point an agent at a new schema. Each row also carries the entity's origin, inference method, and validation state for triaging mis-tags.
-- **Refusals** (`/refusals`) — *what did SchemaBrain block, and what did the agent see?* A two-pane timeline: refused incidents on the left, the full envelope on the right — the reason that fired (`pii_blocked`, `allowlist_violation`, `fragment_unsafe`, `cost_cap_exceeded`, `ambiguous_resolution`, `schema_drift`), the exact category set that intersected the policy, and the `follow_up_hints` the agent got back to recover. Use it to triage "the agent says it can't access that" and to review whether those hints actually helped.
-- **Audit Viewer** (`/audit`) — *is the audit chain still intact?* The visual face of the tamper-evident log: every tool call writes exactly one row — whatever the outcome — anchored by `chain_hash = sha256(prev_hash || canonical(row))`. A ribbon shows **Chain Intact** / **Mismatch**, the **Verify** button re-walks the chain *and* checks per-row Merkle inclusion proofs server-side, and selecting a row opens the full body (tool, status, cost class, PII categories, fingerprint, and the prev → row → next hash linkage). Live calls stream in over SSE.
+- **PII matrix** (`/pii`) — *which columns carry sensitive data?* A heatmap with one row per classified column and one cell per PII category, each column tagged block / redact / allow by its advisory band. Columns in a catastrophic-leak category (`credential`, `payment_card`, `government_id`) are hard-blocked regardless of policy and pinned to the top — so you catch a `payment_card` column hiding inside `users` before you point an agent at a new schema, and see at a glance what trips the default `--pii-block` policy. Select any row to drill into its entity's columns, metrics, and joins.
+- **Refusals** (`/refusals`) — *what did SchemaBrain block, and what did the agent see?* A chronological feed of held calls; expand any row to reveal the full envelope inline — the reason that fired (`pii_blocked`, `allowlist_violation`, `fragment_unsafe`, `cost_cap_exceeded`, `ambiguous_resolution`, `schema_drift`), the exact category set that intersected the policy, and the structured `error.recovery` (suggested tool + args) the agent got back to recover. Use it to triage "the agent says it can't access that" and to review whether those hints actually helped.
+- **Audit Viewer** (`/audit`) — *is the audit chain still intact?* The visual face of the tamper-evident log: every tool call writes exactly one row — whatever the outcome — anchored by `chain_hash = sha256(prev_hash || canonical(row))`. An integrity strip reads `not verified this session` until you run a pass, then `verified · n/N intact` (or flags `N rows edited after write`); the **Verify** button re-walks the chain server-side *and* recomputes each visible row's RFC-6962 Merkle inclusion proof in your browser. Selecting a row opens the full body (tool, status, cost class, PII categories, fingerprint, `chain_hash`, and the proof ladder up to the root). Reload to pick up new calls.
 - **Policy** (`/policy`) — the block / redact / allow grid the firewall enforces, with the always-on catastrophic-leak floor disclosed (it can't be removed). Changes are made via copy-the-CLI actions — the dashboard never writes.
 - **Drift** (`/drift`) — config and enrichment drift the store can detect, each with a copy-the-CLI fix.
 
 <p align="center">
-  <img src="docs/assets/dashboard-pii-ledger.png" alt="PII Ledger — catastrophic-exposure counter and an entity × PII-category heatmap" width="100%"><br>
-  <em>PII Ledger — which entities carry catastrophic PII, and what the default policy blocks.</em>
+  <img src="docs/assets/dashboard-graph.png" alt="Knowledge Graph — entities as nodes, canonical joins as edges, catastrophic-PII entities flagged red, with the compiled join path highlighted" width="100%"><br>
+  <em>Knowledge Graph — your schema as the entity-relationship projection the semantic layer compiles joins against; catastrophic-PII entities flagged, the canonical join path traced.</em>
 </p>
 
 <details>
-<summary><strong>More dashboard views</strong> — Refusals &amp; Audit Viewer</summary>
+<summary><strong>More dashboard views</strong> — Overview, PII matrix, Refusals, Audit, Entities, Data Dictionary, Policy &amp; Drift</summary>
 
 <p align="center">
-  <img src="docs/assets/dashboard-refusals.png" alt="Refusals — incident timeline with the full refusal envelope on the right" width="100%"><br>
+  <img src="docs/assets/dashboard-overview.png" alt="Overview — bento summary of bound entities, catastrophic-PII floors, refusals, and audit-chain health" width="100%"><br>
+  <em>Overview — the whole boundary on one screen: what's bound, what's protected, what's drifted.</em>
+</p>
+
+<p align="center">
+  <img src="docs/assets/dashboard-pii-ledger.png" alt="PII matrix — one row per classified column across the PII categories, catastrophic columns hard-blocked" width="100%"><br>
+  <em>PII matrix — which columns carry sensitive data, and what the default policy blocks.</em>
+</p>
+
+<p align="center">
+  <img src="docs/assets/dashboard-refusals.png" alt="Refusals — a held call expanded to show the reason, blocked category, recovery hint, and reconstructed envelope" width="100%"><br>
   <em>Refusals — every blocked call, the reason that fired, and the recovery hint the agent received.</em>
 </p>
 
 <p align="center">
-  <img src="docs/assets/dashboard-audit-viewer.png" alt="Audit Viewer — hash-chained ledger, re-walked and verified intact" width="100%"><br>
+  <img src="docs/assets/dashboard-audit-viewer.png" alt="Audit Viewer — hash-chained ledger re-walked and verified intact, every row proven against the Merkle root" width="100%"><br>
   <em>Audit Viewer — the tamper-evident chain, verified server-side down to each row's hash linkage.</em>
+</p>
+
+<p align="center">
+  <img src="docs/assets/dashboard-entities.png" alt="Entities — sortable index of every bound entity with PII exposure, binding confidence, metrics, and joins" width="100%"><br>
+  <em>Entities — every business entity bound out of the raw schema, with PII exposure and join counts.</em>
+</p>
+
+<p align="center">
+  <img src="docs/assets/dashboard-dict.png" alt="Data Dictionary — per-entity columns, types, PII classes, and joins with one-click Markdown export" width="100%"><br>
+  <em>Data Dictionary — every table, column, type, and join, exportable to Markdown for your repo or wiki.</em>
+</p>
+
+<p align="center">
+  <img src="docs/assets/dashboard-policy.png" alt="Policy — per-column block/redact/allow grid with the catastrophic-leak floor disclosed and the schemabrain.yaml it compiles" width="100%"><br>
+  <em>Policy — the block / redact / allow grid the firewall enforces, with the always-on floor disclosed.</em>
+</p>
+
+<p align="center">
+  <img src="docs/assets/dashboard-drift.png" alt="Drift — config and enrichment drift detection, here showing a fresh, in-sync context" width="100%"><br>
+  <em>Drift — config and enrichment drift the store can detect, each with a copy-the-CLI fix.</em>
 </p>
 
 </details>
 
 The dashboard binds **`127.0.0.1` only** — there is no `--host` flag, by design. It's read-only and reads the same SQLite store `serve` writes to. No agent talks to it.
 
-[Dashboard guide →](docs/dashboard/overview.mdx) · [PII Ledger →](docs/dashboard/pii-ledger.mdx) · [Refusals →](docs/dashboard/refusals.mdx) · [Audit Viewer →](docs/dashboard/audit-viewer.mdx)
+[Dashboard guide →](docs/dashboard/overview.mdx) · [PII matrix →](docs/dashboard/pii-matrix.mdx) · [Refusals →](docs/dashboard/refusals.mdx) · [Audit Viewer →](docs/dashboard/audit-viewer.mdx)
 
 ---
 
@@ -379,7 +409,7 @@ What you get from `pip install schemabrain`:
 - **Def-driven compilation** — the agent never writes raw SQL; answers compile from definitions you control, with read-only execution enforced at the database layer plus statement timeouts and row caps.
 - **Schema-intelligence engine** — index Postgres into a local SQLite store; cost-capped LLM semantic enrichment (with opt-in Sonnet routing for cryptic columns, `--enable-sonnet`); on-device embeddings (BAAI/bge-small ONNX); hybrid retrieval (bge query-prefix + BM25 via RRF); entity identification with rationale + confidence; declared-FK, query-log, and dbt-`relationships` join mining; a persisted canonical join graph with multi-hop BFS; and a metrics layer.
 - **Trust & safety** — PII classification (60 rules across 12 categories) with per-column confidence, tag propagation, a catastrophic-leak floor (grouping *by* a PII column refuses as row-level disclosure), an editable policy (block / redact / allow plus per-column overrides), and a tamper-evident sha256 hash-chained audit log with browser-verifiable RFC-6962 Merkle proofs and `audit verify`.
-- **Graph-led dashboard, 9 surfaces** — a signature interactive **Knowledge Graph**, plus **Overview**, **Entities** (sortable index + drilldown with a semantic pane), **Data Dictionary** (Export-to-Markdown), **PII Ledger**, **Refusals**, **Audit Viewer**, an editable **Policy** editor, and **Drift** intelligence. Dual-theme, opt-in, read-only, `127.0.0.1`-only.
+- **Graph-led dashboard, 9 surfaces** — a signature interactive **Knowledge Graph**, plus **Overview**, **Entities** (sortable index + drilldown with a semantic pane), **Data Dictionary** (Export-to-Markdown), **PII matrix**, **Refusals**, **Audit Viewer**, an editable **Policy** editor, and **Drift** intelligence. Dual-theme, opt-in, read-only, `127.0.0.1`-only.
 - **CLI** — `init`, `demo`, `index`, `import dbt`, `inspect`, `diff`, `check`, `entities`, `joins`, `metrics`, `policy {show, apply, tag}`, `docs`, `dashboard`, `doctor`, `serve`, `audit`. Distributed on PyPI (Apache-2.0 licensed) and as a headless Docker image.
 
 ### Later — roadmap (deferred; future direction only)
@@ -431,7 +461,7 @@ The five most common first-run failures. Full troubleshooter in [`docs/setup/man
 | [`docs/observability.md`](docs/observability.md) | `tail`, audit log, OTel export, PII classification |
 | [`docs/reference/mcp-tools/overview.mdx`](docs/reference/mcp-tools/overview.mdx) | Full reference for all 12 MCP tools (overview + 12 per-tool pages) |
 | [`docs/architecture.mdx`](docs/architecture.mdx) | Pipeline, retrieval contract, cache logic, cost model, eval |
-| [`docs/dashboard/overview.mdx`](docs/dashboard/overview.mdx) | Read-only observability dashboard — PII ledger, refusals, audit viewer |
+| [`docs/dashboard/overview.mdx`](docs/dashboard/overview.mdx) | Read-only observability dashboard — PII matrix, refusals, audit viewer |
 | [`docs/landscape.md`](docs/landscape.md) | Comparison vs Vanna / Atlan / dbt-mcp / WrenAI; "is this a semantic layer?" |
 | [`docs/threat-model.md`](docs/threat-model.md) | Security model + boundaries |
 | [`docs/adr/`](docs/adr/) | Architecture decision records (audit/PII taxonomy, store protocol, versioning policy, observability bus) |

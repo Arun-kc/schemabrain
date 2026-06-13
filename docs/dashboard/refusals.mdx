@@ -9,16 +9,16 @@ description: "A live feed of refused tool calls — what the agent asked for, wh
 **Route:** `/refusals` on the dashboard. **Backed by:** `GET /api/audit/refusals` (list) and `GET /api/audit/refusals/{id}` (detail).
 </Note>
 
-<Frame caption="Refusals — a chronological list of refused calls on the left, the full envelope on the right: the reason that fired, the blocked category set, and the recovery hint the agent received.">
-  <img src="/assets/dashboard-refusals.png" alt="Refusals dashboard surface — incident timeline with the full refusal envelope detail" />
+<Frame caption="Refusals — a chronological feed of held calls; expand a row to reveal the full envelope inline: the reason that fired, the blocked category set, and the recovery hint the agent received.">
+  <img src="/assets/dashboard-refusals.png" alt="Refusals dashboard surface — a held call expanded to its full refusal envelope" />
 </Frame>
 
-Every tool call that ended with `status='refused'` lands on this surface. The page renders a two-pane layout: a chronological list of incidents on the left, the full envelope detail (what the agent saw, what reason fired, which categories the policy intersected) on the right.
+Every tool call that ended with `status='refused'` lands on this surface. The page renders a chronological feed of incidents; expanding any row reveals the full envelope detail inline (what the agent saw, what reason fired, which categories the policy intersected).
 
 This is the surface for two distinct workflows:
 
 1. **Operator triage.** A user complained the agent kept saying "I don't have access to that." Open Refusals, find the relevant row, see exactly what category list intersected the policy. Decide whether to widen `--pii-block` or fix the question.
-2. **Recovery quality review.** Read the envelopes SchemaBrain returned. Were the `follow_up_hints` actually useful? Did the agent self-correct on the next turn?
+2. **Recovery quality review.** Read the envelopes SchemaBrain returned. Were the `error.recovery` suggestions actually useful? Did the agent self-correct on the next turn?
 
 ---
 
@@ -35,7 +35,7 @@ Each refusal row in the feed shows the same fields the underlying `mcp_audit` ro
 | `pii_categories` | The category set the envelope returned. **On `pii_blocked` refusals, this is the *blocked* set** — the intersection of policy and request that fired. |
 | `cost_class` | `refused` for this surface. |
 
-The detail panel adds the full envelope body: status, `follow_up_hints`, the structured recovery payload the agent received, and the `chain_hash` that anchors the row in the audit log.
+The detail panel adds the full envelope body: status, the structured `error.recovery` payload the agent received (the suggested tool + args to recover with), and the `chain_hash` that anchors the row in the audit log. (On a `pii_blocked` refusal the recovery rides `error.recovery`; the sibling `follow_up_hints` field is `null`.)
 
 <Note>
 The audit row's `pii_categories` records **only the blocked set** — the categories the policy intersected. The full attempted (propagated) set the agent's plan would have touched lives only on the `PiiBlockedError` exception object and the event bus. See [audit-chain — What this is *not*](/mechanism/audit-chain) for the forensic implication and the roadmap item.
@@ -45,13 +45,13 @@ The audit row's `pii_categories` records **only the blocked set** — the catego
 
 ## What "refused" means upstream
 
-A refusal is **not** an error. It is a Charter-conformant envelope with `status='refused'` and a structured `follow_up_hint`. The agent receives enough information to either:
+A refusal is **not** an error. It is a Charter-conformant envelope with `status='refused'` and a structured `error.recovery` block (the suggested tool + args). The agent receives enough information to either:
 
 - Pick a different tool path that does not touch the blocked categories.
 - Ask the user to confirm the access is intended.
 - Surface a clean "this is policy" message instead of a hallucinated retry.
 
-The six refusal reasons each map to a recovery path documented in [Structured Recovery](/mechanism/structured-recovery).
+Each refusal reason maps to a recovery path documented in [Structured Recovery](/mechanism/structured-recovery). Today, `pii_blocked` is the reason the engine actually emits; the other five are reserved, schema-valid enum values whose recovery paths land as those checks ship.
 
 ---
 
@@ -60,7 +60,7 @@ The six refusal reasons each map to a recovery path documented in [Structured Re
 In normal operation, refused rows accumulate as agents use the MCP server. To verify the surface works end-to-end on a fresh install (or to seed a demo), use the bundled seeding script:
 
 ```bash
-python scripts/seed_refused_audit_row.py
+python scripts/seed_refused_audit_row.py --store-path ./schemabrain.db --source-id <your-source-id>
 ```
 
 This writes one synthetic `pii_blocked` row to your local store. Refresh the dashboard tab and the row appears at the top of the feed.

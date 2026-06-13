@@ -1,0 +1,103 @@
+---
+title: "PII matrix"
+description: "A column-by-category matrix that shows which database columns carry catastrophic-leak PII categories — the same tags that drive automatic refusals at the get_metric boundary."
+---
+
+# PII matrix
+
+<Note>
+**Route:** `/pii` on the dashboard. **Backed by:** `GET /api/entities/pii-matrix`.
+</Note>
+
+<Frame caption="The PII matrix — one row per classified column, one cell per PII category; each column is tagged block / redact / allow, and catastrophic columns are hard-blocked regardless of policy.">
+  <img src="/assets/dashboard-pii-ledger.png" alt="PII matrix dashboard surface — block/redact/allow counters and a column-by-PII-category heatmap" />
+</Frame>
+
+The PII matrix renders one row per classified column, one cell per category in the [PII taxonomy](/mechanism/pii-taxonomy), with each lit cell shaded by the column's single advisory band (ADR 0009 — one band per column, never a fabricated per-category score). Each column also carries a derived **block / redact / allow** status; columns in a catastrophic-leak category (`credential`, `payment_card`, `government_id`) are floor-locked to **block** and pinned to the top, regardless of policy. Select any row to open its entity's drilldown — columns, metrics, and joins — below the grid.
+
+This is the surface to open before you trust an agent against a new schema. It answers, at a glance:
+
+- *Does my `users` entity have a `payment_card` column hiding inside?*
+- *Which entities will trip the default `--pii-block` policy on `schemabrain serve`?*
+- *Did the heuristic classifier mis-tag anything I should review?*
+
+---
+
+## What the matrix shows
+
+Each row is one classified column and carries:
+
+| Field | Meaning |
+|---|---|
+| `entity` | The semantic entity the column belongs to (e.g. `user`, `payment_method`). |
+| `qualified_table` · column | The bound physical `schema.table` and column name (e.g. `public.users` · `password_hash`). |
+| category cells | One cell per PII category; lit when the classifier tagged the column with that category. |
+| `band` | The column's single advisory confidence band (ADR 0009) — drives the cell shading. A classified column with no band renders `—`, never a faked `0`. |
+| `status` | The classification-derived disposition: **block** (catastrophic floor), **redact** (other pii / confidential), or **allow** (public / internal). |
+
+The summary strip across the top totals the grid: **blocked**, **redact**, and **allow** column counts, the total columns scanned, and the active category count. Floor-locked (catastrophic) columns pin to the top as the alarm band.
+
+<Note>
+The `status` here is the **default disposition from classification**, not the operator's live enforcement. The editable block / redact / allow grid lives on [Policy](/dashboard/policy); a non-floor `redact` understates only if the operator has additionally blocked that category there. The catastrophic floor is the one disposition the matrix asserts as a hard guarantee.
+</Note>
+
+---
+
+## How the tags get there
+
+The cell tags come from the **heuristic PII classifier** that runs during `schemabrain index`. The classifier is local — no LLM call, no network — and inspects column names, declared types, and a small set of well-known patterns (`email`, `ssn`, `card_number`, etc.).
+
+<Warning>
+The classifier is heuristic, not exhaustive. A column called `customer_email_address` will match; a column called `c_em_addr_str` may not. The PII matrix surfaces what the classifier saw — review and override is on the operator. A future LLM-assisted classifier is on the roadmap; the [PII taxonomy](/mechanism/pii-taxonomy) page is the source of truth for what categories exist today.
+</Warning>
+
+If you ran `schemabrain index --no-pii-classify`, every column renders unclassified — no lit category cells, no band, status `allow` — the audit row's `pii_categories` column is also empty in that mode, and `--pii-block` enforcement on `serve` has nothing to act on.
+
+---
+
+## How this connects to refusals
+
+The same tags that populate the matrix drive refusal behaviour at `schemabrain serve`:
+
+- The `--pii-block` flag on `serve` takes a comma-separated category list.
+- When omitted, it defaults to `credential,payment_card,government_id` — the catastrophic-leak set.
+- If a compiled `get_metric` plan touches a blocked category, the call returns a `refused` envelope (`refusal_reason='pii_blocked'`) and appears as a row on the [Refusals](/dashboard/refusals) surface.
+
+So the PII matrix is the **policy preview**: every column with a catastrophic marker is one a future query path may refuse against. Use it to decide whether to broaden the policy (`--pii-block contact,health,...`) or to revise the schema before exposing it to an agent.
+
+---
+
+## When to refresh
+
+The matrix is computed from the SQLite store, which is updated by `schemabrain index`. Re-runs:
+
+- Are idempotent — unchanged tables stay tagged.
+- Re-tag changed columns selectively.
+- Cost zero LLM dollars (the classifier is heuristic).
+
+So the workflow after a schema change is:
+
+```bash
+schemabrain index --url-env DATABASE_URL --store-path ./schemabrain.db
+```
+
+Then refresh the dashboard tab. The numbers update against the new index.
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="PII taxonomy" icon="shield" href="/mechanism/pii-taxonomy">
+    The 12 categories the classifier emits, with sensitivity tiers.
+  </Card>
+  <Card title="Refusals surface" icon="ban" href="/dashboard/refusals">
+    Where a blocked tag becomes a refused envelope.
+  </Card>
+  <Card title="schemabrain index" icon="terminal" href="/reference/cli/index-command">
+    The command that populates these tags.
+  </Card>
+  <Card title="schemabrain serve --pii-block" icon="lock" href="/reference/cli/serve">
+    The runtime policy that consumes them.
+  </Card>
+</CardGroup>
