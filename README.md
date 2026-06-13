@@ -46,6 +46,12 @@ Three guarantees that close the trust gap between AI agents and your database:
 
 → [Full session, with the SQL and results](#sample-session)
 
+**Watch it run** — a live Postgres schema becomes a governed knowledge graph, the firewall computes the safe metric and refuses the leaks, and every call lands in a tamper-evident audit log. No agent, no API key:
+
+<p align="center">
+  <img src="docs/assets/demo-cli-curated.gif" alt="SchemaBrain command-line walkthrough: indexing a live Postgres schema, applying the curated semantic layer of entities, joins, and metrics, then the firewall computing a safe revenue metric, refusing PII and credential leaks, recovering an unreachable join, and the operator inspecting definitions and verifying a tamper-evident audit log." width="100%">
+</p>
+
 ---
 
 ```bash

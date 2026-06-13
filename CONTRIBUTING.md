@@ -163,36 +163,47 @@ The maintainer reviews every PR. Expect direct, opinionated feedback —
 that's how the codebase stays coherent. If you disagree with a review
 comment, push back; reasoned disagreement is welcome.
 
-## Recording the demo asset
+## Recording the demos
 
-The README's hero block points readers at a scripted ~45-second
-recording of the activation arc: `init` → `inspect` → MCP
-`get_metric` call → `tail` streams it live. The recording is
-reproducible — it ships as a [`vhs`](https://github.com/charmbracelet/vhs)
-tape at [`docs/assets/demo.tape`](docs/assets/demo.tape) which renders
-to `docs/assets/demo.gif`.
+Three reproducible [`vhs`](https://github.com/charmbracelet/vhs) tapes live in
+`docs/assets/`. The README embeds **`demo-cli-curated.gif`**.
 
-To re-render after a user-visible CLI change:
+| Tape | Renders to | Shows | Needs |
+|------|-----------|-------|-------|
+| `demo.tape` | `demo.gif` | the firewall showcase — five `get_metric` beats (compute / refuse PII / unreachable / ambiguous / refuse credential) + `audit verify` | `vhs` + the venv only (fully offline) |
+| `demo-cli-curated.tape` | `demo-cli-curated.gif` | end-to-end CLI tour on the **curated** SaaS pack: index → apply → firewall showcase → operator console | the demo Postgres; **no API key** |
+| `demo-cli.tape` | `demo-cli.gif` | the same tour, but with a **live-LLM** `init` whose curation stages visibly progress | the demo Postgres **and** `ANTHROPIC_API_KEY` |
+
+All three run from the repo root with the venv built (`uv sync`). Each
+tape's hidden preamble runs `source .venv/bin/activate` so the fresh
+shell `vhs` spawns can resolve `schemabrain` (without it every command
+renders "command not found").
+
+The two `demo-cli*` tapes connect to the demo Postgres `sb-demo-pg`
+(127.0.0.1:5433, password `local`). Start it once (needs Docker):
 
 ```bash
-# Prerequisites
-brew install vhs                                      # macOS; see vhs README for Linux
-docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=local --name sb-pg postgres:16-alpine
-docker exec -i sb-pg psql -U postgres -d postgres < $(uv run schemabrain fixture-path saas.sql)
-export DATABASE_URL='postgresql+psycopg://postgres:local@localhost:5432/postgres'
-export ANTHROPIC_API_KEY=sk-ant-...                   # stage 3 of init needs this; otherwise skip
-
-# Render
-vhs docs/assets/demo.tape
-git add docs/assets/demo.gif
+schemabrain demo --wire --host manual   # provisions sb-demo-pg + loads the SaaS fixture
 ```
 
-Acceptance bar: clean run, no error frames, total duration under 60s,
-GIF size under ~4 MB (keeps page-load fast for readers on slower
-connections; GitHub's hard inline-image cap is much higher but a
-trim file rewards the 80th-percentile reader). If the recording
-busts the size budget, lower `Set FontSize` first (it's the biggest
-lever), then trim sleeps in the tape.
+`demo-cli.tape` additionally needs an Anthropic key for `init`'s curation
+stages; the CLI auto-loads `ANTHROPIC_API_KEY` from a repo `.env`. Pre-warm
+the embedding cache once (`schemabrain init …`) so the index stage doesn't
+download the model mid-record.
+
+Render and stage a GIF (example: the README asset):
+
+```bash
+brew install vhs                              # macOS; see vhs README for Linux
+vhs docs/assets/demo-cli-curated.tape
+git add docs/assets/demo-cli-curated.gif
+```
+
+Acceptance bar: clean run, no "command not found" / error frames, and the
+firewall scorecard fully visible during its read window. Keep files
+reasonable — lower `Set FontSize`/`Set Height` or trim sleeps if a render
+balloons. (The curated tour lands ~100s / ~4 MB; the live tour is longer
+because the LLM stages run for real.)
 
 ## Reporting bugs and requesting features
 

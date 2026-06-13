@@ -98,6 +98,13 @@ schemabrain.db-wal
 schemabrain.db-shm
 schemabrain-*.db
 *.schemabrain.db
+# VHS demo render stores (the .gif is the only committed output)
+demo.db
+demo.db-shm
+demo.db-wal
+demo-cli.db
+demo-cli.db-shm
+demo-cli.db-wal
 .schemabrain/
 .fastembed_cache/
 # schemabrain serve writes a drift-detection sentinel here when invoked
