@@ -487,6 +487,12 @@ More questions answered in [`docs/setup/manual.md`](docs/setup/manual.md#5-troub
 
 ---
 
+## Running it on your own Postgres?
+
+If you're pointing AI agents at a real (non-demo) Postgres, I'd genuinely like to hear how it goes — what worked, what broke, what felt sharp or rough. Open a [GitHub Discussion](https://github.com/Arun-kc/schemabrain/discussions) or a [GitHub issue](https://github.com/Arun-kc/schemabrain/issues), or reach me on GitHub ([@Arun-kc](https://github.com/Arun-kc)). Happy to help you wire it up.
+
+---
+
 ## Contributors
 
 <a href="https://github.com/Arun-kc/schemabrain/graphs/contributors">

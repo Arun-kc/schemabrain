@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "schemabrain": {
+      "command": "uvx",
+      "args": ["schemabrain", "serve", "--url-env", "SCHEMABRAIN_DATABASE_URL"],
+      "env": {
+        "SCHEMABRAIN_DATABASE_URL": "postgresql+psycopg://user:pass@host:5432/db"
+      },
+      "type": "stdio"
+    }
+  }
+}
