@@ -229,6 +229,16 @@ filterwarnings = [
     # the warning doesn't tip the strict-warnings filter into a test
     # collection failure on every OTel SDK ≥1.42 bump.
     "ignore::DeprecationWarning:opentelemetry.*",
+    # Starlette 1.3.x moved its `TestClient` HTTP backend to `httpx2`
+    # (Tom Christie / Pydantic's httpx successor): it imports `httpx2`
+    # first and falls back to the still-supported `httpx` with a
+    # `StarletteDeprecationWarning`. We keep the `httpx` fallback for now
+    # rather than add a ~1-week-old package to the dev deps, so suppress
+    # the warning here to keep the strict-warnings filter from failing
+    # the `[ui]` sidecar TestClient tests at import. TODO: adopt `httpx2`
+    # when it has more track record / before Starlette removes the
+    # `httpx` fallback.
+    "ignore::starlette.exceptions.StarletteDeprecationWarning",
 ]
 
 [tool.coverage.run]
