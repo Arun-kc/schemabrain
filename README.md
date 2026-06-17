@@ -74,7 +74,7 @@ uvx schemabrain init
 |---|---|
 | Try it on the bundled fixture | [Quickstart](#quickstart) |
 | Understand the safety guarantees | [Safety guarantees](#safety-guarantees) |
-| Wire up your MCP client | [Claude Desktop](docs/setup/claude-desktop.md) · [Claude Code](docs/setup/claude-code.md) · [Cursor](docs/setup/cursor.md) · [Windsurf](docs/setup/windsurf.md) · [ChatGPT (roadmap)](docs/setup/chatgpt.md) |
+| Wire up your MCP client | [Claude Desktop](docs/setup/claude-desktop.md) · [Claude Code](docs/setup/claude-code.md) · [Cursor](docs/setup/cursor.md) · [Windsurf](docs/setup/windsurf.md) · [Cline](docs/setup/cline.md) · [ChatGPT (roadmap)](docs/setup/chatgpt.md) |
 | Plug into your own agent loop | [`docs/setup/manual.md`](docs/setup/manual.md#3-wire-your-own-agent-anthropic-sdk) |
 | Build a semantic layer | [`docs/semantic-layer.md`](docs/semantic-layer.md) |
 | Run in production (audit, drift, Docker) | [`docs/operations.md`](docs/operations.md) |
@@ -302,7 +302,7 @@ SchemaBrain speaks the [Model Context Protocol](https://modelcontextprotocol.io)
 
 - **Zed** — full walkthrough at [`docs/setup/zed.md`](docs/setup/zed.md)
 - **Codex CLI** (working path for ChatGPT users) — full walkthrough at [`docs/setup/codex.md`](docs/setup/codex.md)
-- **Cline** (VS Code extension) — paste into the MCP server settings
+- **Cline** (VS Code extension) — `schemabrain init --host manual` prints the `mcpServers` block; paste it into Cline's settings via **MCP Servers → Configure MCP Servers**. Full walkthrough at [`docs/setup/cline.md`](docs/setup/cline.md)
 - **Continue** — paste into `~/.continue/config.json`
 - **Your own agent loop** — see [`examples/anthropic_demo.py`](examples/anthropic_demo.py) for a ~250-LOC Anthropic-SDK reference
 

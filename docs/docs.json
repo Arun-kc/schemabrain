@@ -43,6 +43,7 @@
               "setup/windsurf",
               "setup/zed",
               "setup/codex",
+              "setup/cline",
               "setup/chatgpt"
             ]
           },
