@@ -50,7 +50,7 @@ dependencies = [
     # this can't silently drift again. Widen the bound only after
     # porting the AST walk off the version-specific `args.get("from")`
     # key (e.g. to `select.find(exp.From)`).
-    "sqlglot>=25.0,<27.0",
+    "sqlglot>=25.0,<31.0",
     # PyYAML powers the entity YAML grammar parser
     # (`schemabrain entities apply <yaml-path>` and the in-process
     # loader behind it). It also arrives transitively via fastembed's
