@@ -2,7 +2,14 @@
   "mcpServers": {
     "schemabrain": {
       "command": "uvx",
-      "args": ["schemabrain", "serve", "--url-env", "SCHEMABRAIN_DATABASE_URL"],
+      "args": [
+        "schemabrain",
+        "serve",
+        "--url-env",
+        "SCHEMABRAIN_DATABASE_URL",
+        "--store-path",
+        "/absolute/path/to/schemabrain.db"
+      ],
       "env": {
         "SCHEMABRAIN_DATABASE_URL": "postgresql+psycopg://user:pass@host:5432/db"
       },
