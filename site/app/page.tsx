@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { BrainMark } from "@/components/BrainMark";
 import { Icon } from "@/components/Icon";
 import { INSTALL_PRIMARY, LICENSE_LABEL, TAGLINE } from "@/lib/positioning";
@@ -67,6 +68,7 @@ function Nav({ theme, toggle }: { theme: Theme; toggle: () => void }) {
           <a href="#intelligence">Intelligence</a>
           <a href="#how">How it works</a>
           <a href="#safety">Safety</a>
+          <Link href="/blog">Blog</Link>
           <a href={DOCS_URL}>Docs</a>
         </div>
         <div className="ld-nav-right">
@@ -469,7 +471,10 @@ function Footer() {
         <span className="base">
           — schemabrain · the trust boundary between AI agents and production data · {LICENSE_LABEL}
         </span>
-        <span style={{ display: "inline-flex", gap: 16, color: "var(--ink-2)" }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 16, color: "var(--ink-2)" }}>
+          <Link href="/blog" style={{ fontFamily: "var(--f-mono)", fontSize: 12.5 }}>
+            Blog
+          </Link>
           <a href={GITHUB_URL} target="_blank" rel="noreferrer" aria-label="GitHub">
             <Icon name="github" size={17} />
           </a>
