@@ -2065,15 +2065,15 @@ Per `index` run, with the default Haiku 4.5 + local embeddings:
 
 | Schema size | Cost | Time | Source |
 |---|---|---|---|
-| 12 tables / 84 columns (bundled fixture) | ~$0.034 | ~45 sec | measured |
+| 12 tables / 84 columns (bundled fixture) | ~$0.03 | ~45 sec | estimated |
 | 15 tables / 87 columns (Pagila, partition children deduplicated) | $0.0299 | 105 sec | measured |
 | ~50 tables / ~300 columns | $0.10–0.15 | 5–8 min | extrapolated |
 | ~200 tables / ~1500 columns | $0.45–0.55 | 30–40 min | extrapolated |
 | ~500 tables / ~5000 columns | $1.50–2.50 | 90–130 min | extrapolated |
 
 Both cost and time scale near-linearly with **column count**, not table
-count: across the two measured anchors, the per-column cost holds at
-~$0.00035 and per-column time falls between 1.2–1.6 seconds. The
+count: at the measured Pagila anchor the per-column cost is ~$0.00034
+and per-column time is ~1.2 seconds. The
 extrapolated rows assume that ratio continues; production-scale anchors
 will tighten or revise it.
 

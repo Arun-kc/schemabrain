@@ -33,8 +33,9 @@ What you get from `pip install schemabrain` right now:
 - **Schema-intelligence engine** — index Postgres into a local SQLite store;
   cost-capped LLM semantic enrichment (with opt-in Sonnet routing for cryptic
   columns via `--enable-sonnet`); on-device embeddings (BAAI/bge-small ONNX);
-  hybrid retrieval (bge query-prefix + BM25 via RRF); entity identification
-  with rationale + confidence; declared-FK, query-log, and dbt-`relationships`
+  semantic table retrieval (cosine similarity, ranked per-table by
+  best-matching column); entity identification with rationale +
+  confidence; declared-FK, query-log, and dbt-`relationships`
   join mining; a persisted canonical join graph with multi-hop BFS; and a
   metrics layer.
 - **Trust & safety** — PII classification (60 rules across 12 categories) with
