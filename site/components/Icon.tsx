@@ -10,6 +10,7 @@ import {
   Github,
   GitMerge,
   Lock,
+  Menu,
   Moon,
   Radar,
   ScanSearch,
@@ -20,6 +21,7 @@ import {
   Sun,
   Terminal,
   Waypoints,
+  X,
   type LucideIcon,
 } from "lucide-react";
 
@@ -42,6 +44,7 @@ const ICONS: Record<string, LucideIcon> = {
   github: Github,
   "git-merge": GitMerge,
   lock: Lock,
+  menu: Menu,
   moon: Moon,
   radar: Radar,
   "scan-search": ScanSearch,
@@ -52,6 +55,7 @@ const ICONS: Record<string, LucideIcon> = {
   sun: Sun,
   terminal: Terminal,
   waypoints: Waypoints,
+  x: X,
 };
 
 interface IconProps {

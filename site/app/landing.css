@@ -68,7 +68,7 @@
 .ld-mm-arrow.a2 .flow { animation-delay: 1.2s; }
 @keyframes ldflow { 0% { left: 2%; opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { left: 92%; opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .ld-mm-arrow .flow, .ld-mm-core .live { animation: none; } .ld-mm-arrow .flow { display: none; } }
-@media (max-width: 880px) { .ld-mm-arrow { min-height: 54px; } .ld-mm-arrow .ln { width: 14px; height: 100%; flex-direction: column; } .ld-mm-arrow .ln::before { width: 1.5px; height: auto; flex: 1; background: linear-gradient(180deg, color-mix(in oklch, var(--green) 25%, transparent), var(--green)); } }
+@media (max-width: 880px) { .ld-mm-arrow { min-height: 54px; } .ld-mm-arrow .ln { width: 14px; height: 100%; flex-direction: column; } .ld-mm-arrow .ln::before { width: 1.5px; height: auto; flex: 1; background: linear-gradient(180deg, color-mix(in oklch, var(--green) 25%, transparent), var(--green)); } .ld-mm-arrow .tip { transform: rotate(90deg); margin-left: 0; } }
 
 /* sections */
 .ld-section { padding: 84px 0; }
@@ -87,7 +87,7 @@
 .ld-layer .ic { width: 42px; height: 42px; border-radius: var(--r-md); display: flex; align-items: center; justify-content: center; margin: 14px 0 16px; border: 1px solid; }
 .ld-layer h3 { font-family: var(--f-display); font-weight: 600; font-size: 19px; letter-spacing: -0.01em; }
 .ld-layer p { font-family: var(--f-body); font-size: 14px; line-height: 1.6; color: var(--ink-2); margin-top: 9px; }
-.ld-layer .ex { margin-top: 14px; font-family: var(--f-mono); font-size: 11.5px; color: var(--ink-3); background: var(--bg-1); border: 1px solid var(--hair-2); border-radius: var(--r-sm); padding: 9px 11px; }
+.ld-layer .ex { margin-top: 14px; font-family: var(--f-mono); font-size: 11.5px; color: var(--ink-3); background: var(--bg-1); border: 1px solid var(--hair-2); border-radius: var(--r-sm); padding: 9px 11px; overflow-wrap: anywhere; }
 .ld-layer .ex .g { color: var(--green); } .ld-layer .ex .c { color: var(--cyan); }
 
 /* how it works */
@@ -124,4 +124,68 @@
   .ld-layers, .ld-flow, .ld-proof, .ld-install-in, .ld-mm { grid-template-columns: 1fr; }
   .ld-links { display: none; }
   .ld-step .conn { display: none; }
+}
+
+/* ============================================================
+   Mobile nav — hamburger + dropdown panel.
+   Desktop (≥881px) keeps the inline links + action buttons unchanged; this
+   block only engages ≤880px, where the section links are already hidden. The
+   panel drops under the sticky bar (absolute to .ld-nav) and carries every
+   link + action, so nothing the desktop bar offers is unreachable on mobile.
+   ============================================================ */
+.ld-desk-actions { display: flex; align-items: center; gap: 12px; }
+.ld-menu { display: none; }     /* hamburger wrapper — hidden on desktop */
+.ld-mobile { display: none; }   /* dropdown panel — hidden until opened on mobile */
+
+@keyframes ld-mobile-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 880px) {
+  .ld-desk-actions { display: none; }            /* collapse bar actions into the panel */
+  .ld-menu { display: inline-flex; align-items: center; }
+
+  .ld-mobile {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    /* Opaque surface — a translucent panel let the high-contrast hero bleed
+       through between links (esp. light theme), which read as unintentional. */
+    background: var(--bg);
+    border-bottom: 1px solid var(--hair);
+    box-shadow: var(--shadow);
+  }
+  .ld-mobile[data-open="true"] {
+    display: block;
+    animation: ld-mobile-in var(--dur-2) var(--ease-out);
+  }
+  .ld-mobile-in {
+    max-width: 1160px;
+    margin: 0 auto;
+    padding: 6px 20px 20px;
+    display: flex;
+    flex-direction: column;
+  }
+  .ld-mobile-link {
+    font-family: var(--f-mono);
+    font-size: 14px;
+    color: var(--ink-2);
+    padding: 14px 4px;
+    border-bottom: 1px solid var(--hair-2);
+    transition: color var(--dur-2) var(--ease);
+  }
+  .ld-mobile-link:last-of-type { border-bottom: none; }
+  .ld-mobile-link:hover,
+  .ld-mobile-link:focus-visible { color: var(--ink); }
+  .ld-mobile-actions { display: flex; gap: 10px; margin-top: 16px; }
+  .ld-mobile-actions .sb-btn { flex: 1; justify-content: center; padding: 12px 14px; }
+}
+
+/* Small phones — trim the section gutter so dense cards / the terminal / the
+   mental-model diagram get back the horizontal room the 32px wrap padding eats. */
+@media (max-width: 480px) {
+  .ld-wrap { padding: 0 18px; }
+  .ld-footer-in { justify-content: flex-start; }
 }

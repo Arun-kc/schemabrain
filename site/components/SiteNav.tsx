@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { BrainMark } from "@/components/BrainMark";
 import { Icon } from "@/components/Icon";
+import { MobileMenu } from "@/components/MobileMenu";
 import { useTheme } from "@/lib/use-theme";
 
 const GITHUB_URL = "https://github.com/Arun-kc/schemabrain";
@@ -43,12 +44,27 @@ export function SiteNav() {
           >
             <Icon name={theme === "dark" ? "sun" : "moon"} size={16} />
           </button>
-          <a className="sb-btn" href={GITHUB_URL} target="_blank" rel="noreferrer">
-            <Icon name="github" size={14} /> GitHub
-          </a>
-          <Link className="sb-btn primary" href="/#install">
-            Get started <Icon name="arrow-right" size={14} />
-          </Link>
+          <div className="ld-desk-actions">
+            <a className="sb-btn" href={GITHUB_URL} target="_blank" rel="noreferrer">
+              <Icon name="github" size={14} /> GitHub
+            </a>
+            <Link className="sb-btn primary" href="/#install">
+              Get started <Icon name="arrow-right" size={14} />
+            </Link>
+          </div>
+          <MobileMenu
+            links={[
+              { label: "Intelligence", href: "/#intelligence", internal: true },
+              { label: "How it works", href: "/#how", internal: true },
+              { label: "Safety", href: "/#safety", internal: true },
+              { label: "Blog", href: "/blog", internal: true },
+              { label: "Docs", href: DOCS_URL },
+            ]}
+            actions={[
+              { label: "GitHub", href: GITHUB_URL, icon: "github", external: true },
+              { label: "Get started", href: "/#install", icon: "arrow-right", primary: true, internal: true },
+            ]}
+          />
         </div>
       </div>
     </nav>
