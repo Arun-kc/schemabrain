@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { BrainMark } from "@/components/BrainMark";
 import { Icon } from "@/components/Icon";
+import { MobileMenu } from "@/components/MobileMenu";
 import { INSTALL_PRIMARY, LICENSE_LABEL, TAGLINE } from "@/lib/positioning";
 
 /* Faithful port of the design handoff (landing/landing-app.jsx). Honest
@@ -81,12 +82,27 @@ function Nav({ theme, toggle }: { theme: Theme; toggle: () => void }) {
           >
             <Icon name={theme === "dark" ? "sun" : "moon"} size={16} />
           </button>
-          <a className="sb-btn" href={GITHUB_URL} target="_blank" rel="noreferrer">
-            <Icon name="github" size={14} /> GitHub
-          </a>
-          <a className="sb-btn primary" href="#install">
-            Get started <Icon name="arrow-right" size={14} />
-          </a>
+          <div className="ld-desk-actions">
+            <a className="sb-btn" href={GITHUB_URL} target="_blank" rel="noreferrer">
+              <Icon name="github" size={14} /> GitHub
+            </a>
+            <a className="sb-btn primary" href="#install">
+              Get started <Icon name="arrow-right" size={14} />
+            </a>
+          </div>
+          <MobileMenu
+            links={[
+              { label: "Intelligence", href: "#intelligence" },
+              { label: "How it works", href: "#how" },
+              { label: "Safety", href: "#safety" },
+              { label: "Blog", href: "/blog", internal: true },
+              { label: "Docs", href: DOCS_URL },
+            ]}
+            actions={[
+              { label: "GitHub", href: GITHUB_URL, icon: "github", external: true },
+              { label: "Get started", href: "#install", icon: "arrow-right", primary: true },
+            ]}
+          />
         </div>
       </div>
     </nav>
