@@ -76,7 +76,7 @@ jobs:
         # `publish.yml` are pinned to the same point tag; bump them
         # together. Dependabot manages bumps via the `github-actions`
         # ecosystem in `.github/dependabot.yml`.
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -139,7 +139,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -229,7 +229,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -346,7 +346,7 @@ jobs:
         if: steps.filter.outputs.dashboard == 'true'
         # Same point-tag pin as the rest of this workflow. See the
         # lint-and-unit job for the full rationale on why @v8 is unsafe.
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -538,7 +538,7 @@ jobs:
 
       - name: Install uv
         if: steps.filter.outputs.dashboard == 'true'
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -750,7 +750,7 @@ jobs:
         # for the @v8-is-unsafe rationale). Used only to build the wheel and
         # provision Python — the install itself goes through pip so the
         # resolver matches what a `pip install` end user actually gets.
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
